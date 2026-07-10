@@ -1,12 +1,11 @@
-import * as fs from "node:fs/promises";
-
 import type { ImageContent, TextContent } from "@pk-nerdsaver-ai/pi-ai";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions";
+import type { ExtensionAPI, ExtensionContext } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions";
+import type { KeyId } from "@pk-nerdsaver-ai/pi-tui";
 import { logger } from "@pk-nerdsaver-ai/pi-utils";
 
 import { CaptureService } from "./context";
-import { createDefaultRegistry, routeContext, updateAvailability } from "./router";
-import type { CaptureMode } from "./types";
+import { type CapabilityRegistry, createDefaultRegistry, routeContext, updateAvailability } from "./router";
+import type { CaptureMode, ContextPacket } from "./types";
 
 const MODES: CaptureMode[] = ["screen", "window", "region", "browser"];
 
@@ -20,7 +19,7 @@ export default function desktopTagExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("tag", {
 		description: "Capture desktop context and send it to the agent",
 		async handler(args, ctx) {
-			const { mode, request } = parseCommandArgs(args, ctx);
+			const { mode, request } = parseCommandArgs(args);
 			await captureAndSend(pi, ctx, captureService, registry, mode, request);
 		},
 	});
@@ -38,7 +37,7 @@ async function captureAndSend(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	captureService: CaptureService,
-	registry: ReturnType<typeof createDefaultRegistry>,
+	registry: CapabilityRegistry,
 	mode: CaptureMode,
 	userRequest: string,
 ): Promise<void> {
@@ -66,14 +65,16 @@ async function captureAndSend(
 	}
 }
 
-function buildPromptText(packet: Awaited<ReturnType<CaptureService["capture"]>>, routingMessage: string): string {
+function buildPromptText(packet: ContextPacket, routingMessage: string): string {
 	const lines = [
 		`[desktop-tag] ${routingMessage}`,
 		`Capture mode: ${packet.captureMode}`,
 		`User request: ${packet.userRequest}`,
 	];
 	if (packet.foregroundApp.processName) {
-		lines.push(`Foreground app: ${packet.foregroundApp.processName} — ${packet.foregroundApp.windowTitle ?? "unknown window"}`);
+		lines.push(
+			`Foreground app: ${packet.foregroundApp.processName} — ${packet.foregroundApp.windowTitle ?? "unknown window"}`,
+		);
 	}
 	if (packet.browser.url) {
 		lines.push(`Browser tab: ${packet.browser.title ?? ""} (${packet.browser.url})`);
@@ -85,11 +86,11 @@ function buildPromptText(packet: Awaited<ReturnType<CaptureService["capture"]>>,
 }
 
 async function loadImage(path: string): Promise<ImageContent> {
-	const bytes = await fs.readFile(path);
-	return { type: "image", data: bytes.toString("base64"), mimeType: "image/png", detail: "high" };
+	const bytes = await Bun.file(path).bytes();
+	return { type: "image", data: bytes.toBase64(), mimeType: "image/png", detail: "high" };
 }
 
-function parseCommandArgs(args: string, ctx: ExtensionCommandContext): { mode: CaptureMode; request: string } {
+function parseCommandArgs(args: string): { mode: CaptureMode; request: string } {
 	const tokens = args.trim().split(/\s+/).filter(Boolean);
 	const firstMode = tokens[0] as CaptureMode | undefined;
 	if (firstMode && MODES.includes(firstMode)) {
@@ -97,6 +98,3 @@ function parseCommandArgs(args: string, ctx: ExtensionCommandContext): { mode: C
 	}
 	return { mode: "screen", request: args.trim() };
 }
-
-// KeyId is intentionally a branded string type; cast the shortcut literal.
-type KeyId = import("@pk-nerdsaver-ai/pi-tui").KeyId;

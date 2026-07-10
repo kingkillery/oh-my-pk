@@ -1,7 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
-
-import desktopTagExtension from "../src/extension";
 import type { ExtensionAPI } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions";
+import desktopTagExtension from "../src/extension";
 
 function createFakeApi(): ExtensionAPI {
 	return {

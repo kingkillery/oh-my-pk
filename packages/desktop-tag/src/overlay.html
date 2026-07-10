@@ -98,7 +98,7 @@
       ws.send(JSON.stringify(payload));
       logEl.textContent = '';
       setStatus('Capturing...');
-      approvalsEl.innerHTML = '';
+      approvalsEl.replaceChildren();
     });
 
     document.getElementById('cancel').addEventListener('click', () => {
@@ -108,13 +108,35 @@
     function showApproval(req) {
       const div = document.createElement('div');
       div.className = 'approval';
-      div.innerHTML = `<div class="tool">${req.toolName}</div><p>${req.effects}</p><pre>${JSON.stringify(req.arguments, null, 2)}</pre><div class="row"><button id="allow-${req.actionId}" class="primary">Allow</button><button id="deny-${req.actionId}">Deny</button></div>`;
+
+      const tool = document.createElement('div');
+      tool.className = 'tool';
+      tool.textContent = String(req.toolName ?? 'Unknown tool');
+
+      const effects = document.createElement('p');
+      effects.textContent = String(req.effects ?? '');
+
+      const argumentsEl = document.createElement('pre');
+      argumentsEl.textContent = JSON.stringify(req.arguments, null, 2);
+
+      const actions = document.createElement('div');
+      actions.className = 'row';
+      const allow = document.createElement('button');
+      allow.className = 'primary';
+      allow.type = 'button';
+      allow.textContent = 'Allow';
+      const deny = document.createElement('button');
+      deny.type = 'button';
+      deny.textContent = 'Deny';
+      actions.append(allow, deny);
+
+      div.append(tool, effects, argumentsEl, actions);
       approvalsEl.appendChild(div);
-      document.getElementById(`allow-${req.actionId}`).addEventListener('click', () => {
+      allow.addEventListener('click', () => {
         ws.send(JSON.stringify({ type: 'approve', actionId: req.actionId, allowed: true, scope: req.scope || 'once' }));
         div.remove();
       });
-      document.getElementById(`deny-${req.actionId}`).addEventListener('click', () => {
+      deny.addEventListener('click', () => {
         ws.send(JSON.stringify({ type: 'approve', actionId: req.actionId, allowed: false }));
         div.remove();
       });

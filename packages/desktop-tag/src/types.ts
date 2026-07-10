@@ -3,6 +3,27 @@ import type { ImageContent } from "@pk-nerdsaver-ai/pi-ai";
 /** What surface to capture when the overlay is invoked. */
 export type CaptureMode = "screen" | "window" | "region" | "browser";
 
+/** Whether a wire value names a supported capture mode. */
+export function isCaptureMode(value: unknown): value is CaptureMode {
+	switch (value) {
+		case "screen":
+		case "window":
+		case "region":
+		case "browser":
+			return true;
+		default:
+			return false;
+	}
+}
+
+/** A rectangular desktop capture area in physical pixels. */
+export interface CaptureRegion {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
 /** Normalized annotation on a captured screenshot. */
 export interface Annotation {
 	id: string;
@@ -15,12 +36,7 @@ export interface Annotation {
 export interface VisualContext {
 	screenshotPath?: string;
 	screenshotImage?: ImageContent;
-	selectedRegion?: {
-		x: number;
-		y: number;
-		width: number;
-		height: number;
-	};
+	selectedRegion?: CaptureRegion;
 	displayScale: number;
 	annotations: Annotation[];
 }

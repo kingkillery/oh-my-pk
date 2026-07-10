@@ -3,15 +3,18 @@ import * as path from "node:path";
 import { logger } from "@pk-nerdsaver-ai/pi-utils";
 
 import { CaptureService } from "./context";
-import { serializeAgentEvent, parseAgentEvent } from "./events";
-import { createDefaultRegistry, routeContext, updateAvailability, type CapabilityRegistry } from "./router";
+import { parseAgentEvent, serializeAgentEvent } from "./events";
+import { type CapabilityRegistry, createDefaultRegistry, routeContext, updateAvailability } from "./router";
 import type { AgentEvent, AgentWorker, ApprovalDecision, CaptureMode, ContextPacket } from "./types";
 import { PiWorker } from "./worker";
 
-interface ServerOptions {
+export interface ServerOptions {
 	port: number;
 	hostname?: string;
 	overlayHtmlPath?: string;
+	captureService?: CaptureService;
+	registry?: CapabilityRegistry;
+	worker?: AgentWorker;
 }
 
 interface SocketData {
@@ -19,26 +22,32 @@ interface SocketData {
 	pumpAbort?: AbortController;
 }
 
+const LOOPBACK_HOSTNAMES: Readonly<Record<string, true>> = { "127.0.0.1": true, localhost: true, "::1": true };
+
 /** Local gateway that serves the overlay and wires it to an {@link AgentWorker}. */
 export class TagGatewayServer {
 	readonly captureService: CaptureService;
 	readonly registry: CapabilityRegistry;
 	readonly worker: AgentWorker;
 	readonly #options: ServerOptions;
+	readonly #activeTasks = new Map<string, { socket: Bun.ServerWebSocket<SocketData>; pumpAbort: AbortController }>();
 	#server?: Bun.Server<SocketData>;
 	#overlayHtml?: string;
-
 	constructor(options: ServerOptions) {
 		this.#options = options;
-		this.captureService = new CaptureService();
-		this.registry = createDefaultRegistry();
-		this.worker = new PiWorker();
+		this.captureService = options.captureService ?? new CaptureService();
+		this.registry = options.registry ?? createDefaultRegistry();
+		this.worker = options.worker ?? new PiWorker();
 	}
 
 	start(): Bun.Server<SocketData> {
+		const hostname = this.#options.hostname ?? "127.0.0.1";
+		if (!isLoopbackHostname(hostname)) {
+			throw new Error(`Desktop tag gateway must bind to a loopback host, received: ${hostname}`);
+		}
 		const server = Bun.serve<SocketData>({
 			port: this.#options.port,
-			hostname: this.#options.hostname ?? "127.0.0.1",
+			hostname,
 			fetch: (req, server) => this.#handleFetch(req, server),
 			websocket: {
 				open: ws => {
@@ -46,35 +55,44 @@ export class TagGatewayServer {
 					ws.data = {} as SocketData;
 				},
 				message: (ws, message) => this.#handleSocketMessage(ws, message),
-				close: (ws, code, reason) => this.#handleSocketClose(ws, code, reason),
+				close: (ws, code, reason) => void this.#handleSocketClose(ws, code, reason),
 			},
 		});
 
 		this.#server = server;
-		logger.info("Tag gateway listening", { url: `http://${server.hostname}:${server.port}` });
+		logger.info("Tag gateway listening", { url: this.url });
 		return server;
 	}
 
 	stop(): void {
+		for (const { socket } of this.#activeTasks.values()) void this.#closeTask(socket);
 		this.#server?.stop(true);
 		this.#server = undefined;
 	}
 
 	get url(): string {
 		if (!this.#server) return "";
-		return `http://${this.#server.hostname}:${this.#server.port}`;
+		return `http://${formatUrlHostname(this.#server.hostname ?? this.#options.hostname ?? "127.0.0.1")}:${this.#server.port ?? this.#options.port}`;
 	}
 
 	async #handleFetch(req: Request, server: Bun.Server<SocketData>): Promise<Response | undefined> {
 		const url = new URL(req.url);
+		const serverPort = server.port;
+		if (serverPort === undefined) return new Response("Gateway port unavailable", { status: 503 });
 
 		if (url.pathname === "/ws") {
+			if (!isAllowedWebSocketOrigin(req.headers.get("Origin"), serverPort)) {
+				return new Response("WebSocket origin forbidden", { status: 403 });
+			}
 			const upgraded = server.upgrade(req, { data: {} as SocketData });
 			if (upgraded) return undefined;
 			return new Response("WebSocket upgrade failed", { status: 400 });
 		}
 
 		if (url.pathname.startsWith("/api/")) {
+			if (!isAllowedWebSocketOrigin(req.headers.get("Origin"), serverPort)) {
+				return new Response("Origin forbidden", { status: 403 });
+			}
 			return this.#handleApi(req, url.pathname);
 		}
 
@@ -147,33 +165,68 @@ export class TagGatewayServer {
 		userRequest: string,
 		includeClipboard: boolean,
 	): Promise<void> {
-		this.#closeTask(ws);
+		const previousTaskId = this.#detachTask(ws);
+		const abortController = new AbortController();
 		ws.data.taskId = taskId;
+		ws.data.pumpAbort = abortController;
+		this.#activeTasks.set(taskId, { socket: ws, pumpAbort: abortController });
+		if (previousTaskId) await this.#cancelWorkerTask(previousTaskId);
 
 		try {
 			const packet = await this.captureService.capture({ mode, userRequest, includeClipboard });
+			if (!this.#isCurrentTask(ws, taskId)) return;
 			await updateAvailability(this.registry);
+			if (!this.#isCurrentTask(ws, taskId)) return;
 			const routing = routeContext(this.registry, packet);
 
 			send(ws, { type: "task.started", taskId });
 			send(ws, { type: "agent.message.delta", text: routing.message });
 
 			await this.worker.createSession(taskId, { contextPacket: packet, routing });
+			if (!this.#isCurrentTask(ws, taskId)) {
+				await this.#cancelWorkerTask(taskId);
+				return;
+			}
 
-			const abortController = new AbortController();
-			ws.data.pumpAbort = abortController;
 			void this.#pumpEvents(ws, taskId, abortController.signal);
 		} catch (error) {
-			logger.error("Failed to start desktop task", { error: error instanceof Error ? error.message : String(error) });
+			if (!this.#isCurrentTask(ws, taskId)) return;
+			logger.error("Failed to start desktop task", {
+				error: error instanceof Error ? error.message : String(error),
+			});
 			send(ws, { type: "task.failed", taskId, error: error instanceof Error ? error.message : String(error) });
+			await this.#closeTask(ws);
 		}
 	}
 
-	#closeTask(ws: Bun.ServerWebSocket<SocketData>): void {
-		if (ws.data.taskId) {
-			ws.data.pumpAbort?.abort();
-			ws.data.taskId = undefined;
-			ws.data.pumpAbort = undefined;
+	async #closeTask(ws: Bun.ServerWebSocket<SocketData>): Promise<void> {
+		const taskId = this.#detachTask(ws);
+		if (taskId) await this.#cancelWorkerTask(taskId);
+	}
+
+	#detachTask(ws: Bun.ServerWebSocket<SocketData>): string | undefined {
+		const taskId = ws.data.taskId;
+		if (!taskId) return undefined;
+
+		ws.data.pumpAbort?.abort();
+		ws.data.taskId = undefined;
+		ws.data.pumpAbort = undefined;
+		this.#activeTasks.delete(taskId);
+		return taskId;
+	}
+
+	#isCurrentTask(ws: Bun.ServerWebSocket<SocketData>, taskId: string): boolean {
+		return ws.data.taskId === taskId && !ws.data.pumpAbort?.signal.aborted;
+	}
+
+	async #cancelWorkerTask(taskId: string): Promise<void> {
+		try {
+			await this.worker.cancel(taskId);
+		} catch (error) {
+			logger.debug("Failed to cancel desktop task", {
+				taskId,
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 	}
 
@@ -186,12 +239,18 @@ export class TagGatewayServer {
 		} catch (error) {
 			if (signal.aborted) return;
 			logger.error("Event pump error", { error: error instanceof Error ? error.message : String(error) });
+		} finally {
+			this.#activeTasks.delete(taskId);
+			if (ws.data.taskId === taskId) {
+				ws.data.taskId = undefined;
+				ws.data.pumpAbort = undefined;
+			}
 		}
 	}
 
-	#handleSocketClose(ws: Bun.ServerWebSocket<SocketData>, code: number, reason: string): void {
+	async #handleSocketClose(ws: Bun.ServerWebSocket<SocketData>, code: number, reason: string): Promise<void> {
 		logger.debug("Overlay disconnected", { code, reason });
-		this.#closeTask(ws);
+		await this.#closeTask(ws);
 	}
 
 	async #runCapture(body: unknown): Promise<{ ok: boolean; taskId?: string; error?: string; packet?: ContextPacket }> {
@@ -223,11 +282,35 @@ export class TagGatewayServer {
 	}
 }
 
+function formatUrlHostname(hostname: string): string {
+	return hostname.includes(":") ? `[${hostname}]` : hostname;
+}
+
+export function isLoopbackHostname(hostname: string): boolean {
+	const normalized = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+	return LOOPBACK_HOSTNAMES[normalized.toLowerCase()] === true;
+}
+
+export function isAllowedWebSocketOrigin(origin: string | null, port: number): boolean {
+	if (origin === null) return true;
+
+	try {
+		const parsed = new URL(origin);
+		if (parsed.origin !== origin || parsed.protocol !== "http:" || !isLoopbackHostname(parsed.hostname)) return false;
+		const originPort = parsed.port ? Number.parseInt(parsed.port, 10) : 80;
+		return originPort === port;
+	} catch {
+		return false;
+	}
+}
+
 function send(ws: Bun.ServerWebSocket<SocketData>, event: AgentEvent): void {
 	try {
 		ws.send(serializeAgentEvent(event));
 	} catch (error) {
-		logger.debug("Failed to send event to overlay", { error: error instanceof Error ? error.message : String(error) });
+		logger.debug("Failed to send event to overlay", {
+			error: error instanceof Error ? error.message : String(error),
+		});
 	}
 }
 
@@ -263,7 +346,9 @@ function parseClientMessage(raw: string): ClientMessage | undefined {
 	return parsed;
 }
 
-function parseCaptureBody(body: unknown):
+function parseCaptureBody(
+	body: unknown,
+):
 	| { ok: true; options: { mode: CaptureMode; userRequest: string; includeClipboard: boolean } }
 	| { ok: false; error: string } {
 	if (!body || typeof body !== "object") return { ok: false, error: "body must be an object" };

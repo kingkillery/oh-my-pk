@@ -20,7 +20,7 @@ omp --extension packages/desktop-tag/src/extension.ts
 - `context.ts` — `ContextPacket` capture (screenshot, foreground app, browser URL/DOM, clipboard, selection).
 - `router.ts` — intent + capability router that maps a request to an executor and constrained tool set.
 - `events.ts` — unified `AgentEvent` protocol consumed by the overlay.
-- `pi-worker.ts` — `AgentSession` worker adapter (`pi` as the runtime).
+- `worker.ts` — `AgentSession` worker adapter (`omp` as the runtime).
 - `gateway.ts` — local HTTP + WebSocket gateway for the overlay.
 - `extension.ts` — `omp` extension entrypoint (`/tag` command).
 - `cli.ts` — `ompk-tag` wrapper that boots the gateway and overlay.

@@ -1,6 +1,12 @@
 import { logger } from "@pk-nerdsaver-ai/pi-utils";
+import type { ActionLevel, ContextPacket, Executor, RoutingDecision } from "./types";
+import { isCaptureMode } from "./types";
 
-import type { ActionLevel, Capability, ContextPacket, Executor, RoutingDecision } from "./types";
+interface RouteSpec {
+	executorId: string;
+	tools: string[];
+	level: ActionLevel;
+}
 
 /** Registry of available executors and their declared capabilities. */
 export class CapabilityRegistry {
@@ -41,7 +47,13 @@ export function createDefaultRegistry(): CapabilityRegistry {
 		riskLevel: "low",
 		available: true,
 		capabilities: [
-			{ name: "answer", description: "Answer from a screenshot or selected context", sideEffect: false, reversible: true, approval: "none" },
+			{
+				name: "answer",
+				description: "Answer from a screenshot or selected context",
+				sideEffect: false,
+				reversible: true,
+				approval: "none",
+			},
 		],
 	});
 
@@ -120,44 +132,105 @@ export function createDefaultRegistry(): CapabilityRegistry {
 
 /** Route a captured context packet to an executor and a constrained tool set. */
 export function routeContext(registry: CapabilityRegistry, packet: ContextPacket): RoutingDecision {
+	assertContextPacket(packet);
+	const availableExecutors = registry.listExecutors().filter(executor => executor.available);
+	if (availableExecutors.length === 0) {
+		throw new Error("No available executors are registered");
+	}
+
 	const request = packet.userRequest.toLowerCase();
 	const url = packet.browser.url?.toLowerCase() ?? "";
 	const title = packet.browser.title?.toLowerCase() ?? "";
-	const app = packet.foregroundApp.processName?.toLowerCase() ?? "";
+	let preferred: RouteSpec;
 
 	if (request.match(/\bemail\b|\bmail\b|\bgmail\b/)) {
-		return decision("gmail-mcp", ["email.search", "email.read", "email.draft"], 2);
+		preferred = { executorId: "gmail-mcp", tools: ["email.search", "email.read", "email.draft"], level: 2 };
+	} else if (request.match(/\bserver\b|\bremote\b|\bssh\b|\brun on the server\b/)) {
+		preferred = { executorId: "remote-hub", tools: ["remote.execute", "ssh"], level: 2 };
+	} else if (request.match(/\bclick\b|\bpress\b|\btype in\b|\bscreen\b/)) {
+		preferred = { executorId: "computer-use", tools: ["screen.click", "screen.type", "screen.keypress"], level: 3 };
+	} else if (request.match(/\bsalesforce\b/) || url.includes("salesforce.com") || title.includes("salesforce")) {
+		preferred = { executorId: "ix-bridge", tools: ["ix_bridge", "browser", "web_search"], level: 2 };
+	} else if (request.match(/\bportal\b|\bpowerclerk\b|\bxcel\b/)) {
+		preferred = { executorId: "ix-bridge", tools: ["ix_bridge", "browser"], level: 2 };
+	} else if (request.match(/\bfix\b|\bcode\b|\bedit\b|\brefactor\b|\btest\b|\bbuild\b/)) {
+		preferred = {
+			executorId: "local-pi",
+			tools: ["bash", "read", "edit", "write", "search", "find", "lsp"],
+			level: 2,
+		};
+	} else if (request.match(/\bupdate\b|\bchange\b|\bsave\b|\bcreate\b|\bdelete\b/)) {
+		preferred = { executorId: "local-pi", tools: ["bash", "read", "write", "edit"], level: 2 };
+	} else {
+		preferred = { executorId: "answer-only", tools: ["inspect_image", "web_search", "ask"], level: 0 };
 	}
 
-	if (request.match(/\bserver\b|\bremote\b|\bssh\b|\brun on the server\b/)) {
-		return decision("remote-hub", ["remote.execute", "ssh"], 2);
-	}
+	const selected = availableExecutors.find(executor => executor.id === preferred.executorId);
+	if (selected) return decision(preferred.executorId, preferred.tools, preferred.level);
 
-	if (request.match(/\bclick\b|\bpress\b|\btype in\b|\bscreen\b/)) {
-		return decision("computer-use", ["screen.click", "screen.type", "screen.keypress"], 3);
-	}
+	const fallback = availableExecutors.find(executor => executor.id === "answer-only") ?? availableExecutors[0];
+	if (!fallback) throw new Error("No available executors are registered");
+	const level: ActionLevel = fallback.riskLevel === "high" ? 3 : fallback.riskLevel === "medium" ? 2 : 0;
+	return decision(
+		fallback.id,
+		fallback.capabilities.map(capability => capability.name),
+		level,
+	);
+}
 
-	if (request.match(/\bsalesforce\b/) || url.includes("salesforce.com") || title.includes("salesforce")) {
-		return decision("ix-bridge", ["ix_bridge", "browser", "web_search"], 2);
+/** Reject a malformed context packet before routing decisions inspect it. */
+export function assertContextPacket(packet: unknown): void {
+	if (!isRecord(packet)) throw new TypeError("Context packet must be an object");
+	assertNonblankString(packet.captureId, "Context packet captureId");
+	assertNonblankString(packet.timestamp, "Context packet timestamp");
+	if (Number.isNaN(Date.parse(packet.timestamp))) throw new TypeError("Context packet timestamp must be a valid date");
+	assertNonblankString(packet.userRequest, "Context packet userRequest");
+	if (!isCaptureMode(packet.captureMode)) {
+		throw new TypeError(`Unsupported context capture mode: ${String(packet.captureMode)}`);
 	}
-
-	if (request.match(/\bportal\b|\bpowerclerk\b|\bxcel\b/)) {
-		return decision("ix-bridge", ["ix_bridge", "browser"], 2);
+	if (!isRecord(packet.visual)) throw new TypeError("Context packet visual must be an object");
+	if (
+		typeof packet.visual.displayScale !== "number" ||
+		!Number.isFinite(packet.visual.displayScale) ||
+		packet.visual.displayScale <= 0
+	) {
+		throw new TypeError("Context packet visual.displayScale must be a finite positive number");
 	}
-
-	if (request.match(/\bfix\b|\bcode\b|\bedit\b|\brefactor\b|\btest\b|\bbuild\b/)) {
-		return decision("local-pi", ["bash", "read", "edit", "write", "search", "find", "lsp"], 2);
+	if (!Array.isArray(packet.visual.annotations))
+		throw new TypeError("Context packet visual.annotations must be an array");
+	assertOptionalString(packet.visual.screenshotPath, "Context packet visual.screenshotPath");
+	const foregroundApp = packet.foregroundApp;
+	const browser = packet.browser;
+	if (!isRecord(foregroundApp)) throw new TypeError("Context packet foregroundApp must be an object");
+	if (!isRecord(browser)) throw new TypeError("Context packet browser must be an object");
+	if (!isRecord(packet.selection)) throw new TypeError("Context packet selection must be an object");
+	assertOptionalString(foregroundApp.processName, "Context packet foregroundApp.processName");
+	assertOptionalNonblankString(foregroundApp.windowTitle, "Context packet foregroundApp.windowTitle");
+	assertOptionalString(browser.url, "Context packet browser.url");
+	assertOptionalString(browser.title, "Context packet browser.title");
+	if (
+		!Array.isArray(packet.availableCapabilities) ||
+		!packet.availableCapabilities.every(value => typeof value === "string")
+	) {
+		throw new TypeError("Context packet availableCapabilities must be an array of strings");
 	}
+}
 
-	if (request.match(/\bupdate\b|\bchange\b|\bsave\b|\bcreate\b|\bdelete\b/)) {
-		return decision("local-pi", ["bash", "read", "write", "edit"], 2);
-	}
+function assertOptionalString(value: unknown, name: string): void {
+	if (value !== undefined && typeof value !== "string") throw new TypeError(`${name} must be a string`);
+}
 
-	if (request.match(/\bwhat\b|\bwhy\b|\bhow\b|\bexplain\b|\berror\b|\bmean\b/) || !packet.visual.screenshotPath) {
-		return decision("answer-only", ["inspect_image", "web_search", "ask"], 0);
-	}
+function assertOptionalNonblankString(value: unknown, name: string): void {
+	if (value === undefined) return;
+	assertNonblankString(value, name);
+}
 
-	return decision("answer-only", ["inspect_image", "web_search", "ask"], 0);
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assertNonblankString(value: unknown, name: string): asserts value is string {
+	if (typeof value !== "string" || value.trim().length === 0) throw new TypeError(`${name} must be a nonblank string`);
 }
 
 function decision(executorId: string, tools: string[], level: ActionLevel): RoutingDecision {
@@ -181,7 +254,9 @@ export async function updateAvailability(registry: CapabilityRegistry): Promise<
 			ix.available = response.ok;
 		}
 	} catch (error) {
-		logger.debug("IX Bridge availability probe failed", { error: error instanceof Error ? error.message : String(error) });
+		logger.debug("IX Bridge availability probe failed", {
+			error: error instanceof Error ? error.message : String(error),
+		});
 		const ix = registry.getExecutor("ix-bridge");
 		if (ix) ix.available = false;
 	}

@@ -1,7 +1,9 @@
-import * as fs from "node:fs/promises";
-
 import type { ImageContent } from "@pk-nerdsaver-ai/pi-ai";
-import { createAgentSession, type CreateAgentSessionOptions } from "@pk-nerdsaver-ai/pi-coding-agent";
+import {
+	type CreateAgentSessionOptions,
+	type CreateAgentSessionResult,
+	createAgentSession,
+} from "@pk-nerdsaver-ai/pi-coding-agent";
 import { AgentSessionGateway } from "@pk-nerdsaver-ai/pi-coding-agent/gateway/agent-session-gateway";
 import type { GatewayEvent } from "@pk-nerdsaver-ai/pi-coding-agent/gateway/types";
 import type { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
@@ -27,22 +29,30 @@ import type {
 } from "./types";
 
 interface ActiveSession {
+	session: AgentSession;
 	gateway: AgentSessionGateway;
 	channel: AgentEventChannel;
 	bridge: DesktopTagClientBridge;
+	controller: AbortController;
 	taskId: string;
+	settled: boolean;
+	cancelling: boolean;
+	cancellation?: Promise<void>;
+	assistantError?: string;
 }
+
+type AgentSessionFactory = (options: CreateAgentSessionOptions) => Promise<CreateAgentSessionResult>;
 
 /** Bridges permission requests from the agent into the overlay approval flow. */
 class DesktopTagClientBridge implements ClientBridge {
 	readonly capabilities = { requestPermission: true };
 	readonly #channel: AgentEventChannel;
+	readonly #lifecycleSignal: AbortSignal;
 	readonly #pending = new Map<string, (outcome: ClientBridgePermissionOutcome) => void>();
-	readonly #taskId: string;
 
-	constructor(taskId: string, channel: AgentEventChannel) {
-		this.#taskId = taskId;
+	constructor(channel: AgentEventChannel, lifecycleSignal: AbortSignal) {
 		this.#channel = channel;
+		this.#lifecycleSignal = lifecycleSignal;
 	}
 
 	async requestPermission(
@@ -50,6 +60,7 @@ class DesktopTagClientBridge implements ClientBridge {
 		options: ClientBridgePermissionOption[],
 		signal?: AbortSignal,
 	): Promise<ClientBridgePermissionOutcome> {
+		if (this.#lifecycleSignal.aborted) return { outcome: "cancelled" };
 		const { promise, resolve } = Promise.withResolvers<ClientBridgePermissionOutcome>();
 		this.#pending.set(toolCall.toolCallId, resolve);
 
@@ -72,13 +83,15 @@ class DesktopTagClientBridge implements ClientBridge {
 			request,
 		});
 
-		if (signal) {
-			signal.addEventListener("abort", () => this.resolve(toolCall.toolCallId, { outcome: "cancelled" }), { once: true });
-		}
+		const cancel = () => this.resolve(toolCall.toolCallId, { outcome: "cancelled" });
+		signal?.addEventListener("abort", cancel, { once: true });
+		this.#lifecycleSignal.addEventListener("abort", cancel, { once: true });
 
 		try {
 			return await promise;
 		} finally {
+			signal?.removeEventListener("abort", cancel);
+			this.#lifecycleSignal.removeEventListener("abort", cancel);
 			this.#pending.delete(toolCall.toolCallId);
 		}
 	}
@@ -96,6 +109,11 @@ class DesktopTagClientBridge implements ClientBridge {
 /** A worker that delegates tasks to a local {@link AgentSession} through the gateway. */
 export class PiWorker implements AgentWorker {
 	readonly #sessions = new Map<string, ActiveSession>();
+	readonly #sessionFactory: AgentSessionFactory;
+
+	constructor(sessionFactory: AgentSessionFactory = createAgentSession) {
+		this.#sessionFactory = sessionFactory;
+	}
 
 	async createSession(taskId: string, input: TaskInput): Promise<SessionHandle> {
 		const { contextPacket, preferredExecutor } = input;
@@ -117,28 +135,40 @@ export class PiWorker implements AgentWorker {
 			appendSystemPrompt: promptLines.join("\n"),
 		};
 
-		const { session } = await createAgentSession(options);
-
-		const channel = new AgentEventChannel();
-		const bridge = new DesktopTagClientBridge(taskId, channel);
-		session.setClientBridge(bridge);
-
-		const gateway = new AgentSessionGateway(session as AgentSession);
-		const active: ActiveSession = { gateway, channel, bridge, taskId };
-		this.#sessions.set(taskId, active);
-
-		this.#attachListener(active, gateway);
-
 		const message = buildInitialMessage(contextPacket, routing);
 		const images = contextPacket.visual.screenshotPath ? [await loadImage(contextPacket.visual.screenshotPath)] : [];
 
-		await gateway.dispatch({
-			id: crypto.randomUUID(),
-			type: "prompt",
-			identity: { channelId: "desktop-tag", sessionKey: taskId },
-			message,
-			images,
-		});
+		const { session } = await this.#sessionFactory(options);
+
+		const channel = new AgentEventChannel();
+		const controller = new AbortController();
+		const bridge = new DesktopTagClientBridge(channel, controller.signal);
+		session.setClientBridge(bridge);
+
+		const gateway = new AgentSessionGateway(session);
+		const active: ActiveSession = {
+			session,
+			gateway,
+			channel,
+			bridge,
+			controller,
+			taskId,
+			settled: false,
+			cancelling: false,
+		};
+		this.#sessions.set(taskId, active);
+		this.#attachListener(active);
+
+		// Let the caller attach its replaying subscription before a fast session can settle and leave the active registry.
+		void Bun.sleep(0).then(() =>
+			gateway.dispatch({
+				id: crypto.randomUUID(),
+				type: "prompt",
+				identity: { channelId: "desktop-tag", sessionKey: taskId },
+				message,
+				images,
+			}),
+		);
 
 		return { sessionId: taskId };
 	}
@@ -159,21 +189,35 @@ export class PiWorker implements AgentWorker {
 		const active = this.#sessions.get(sessionId);
 		if (!active) throw new Error(`Session ${sessionId} not found`);
 		if (decision.allowed) {
-			const optionId = decision.scope === "session" || decision.scope === "application" ? "allow_always" : "allow_once";
+			const optionId =
+				decision.scope === "session" || decision.scope === "application" ? "allow_always" : "allow_once";
 			active.bridge.resolve(actionId, { outcome: "selected", optionId });
 		} else {
 			active.bridge.resolve(actionId, { outcome: "cancelled" });
 		}
 	}
 
-	async cancel(sessionId: string): Promise<void> {
+	/** Abort and dispose an active task. Idempotent; concurrent callers await the same settlement. */
+	cancel(sessionId: string): Promise<void> {
 		const active = this.#sessions.get(sessionId);
-		if (!active) return;
-		await active.gateway.dispatch({
-			id: crypto.randomUUID(),
-			type: "abort",
-			identity: { channelId: "desktop-tag", sessionKey: sessionId },
-		});
+		if (!active || active.settled) return Promise.resolve();
+		if (active.cancellation) return active.cancellation;
+		active.cancelling = true;
+		active.controller.abort();
+		active.cancellation = this.#abortAndSettle(active, sessionId);
+		return active.cancellation;
+	}
+
+	async #abortAndSettle(active: ActiveSession, sessionId: string): Promise<void> {
+		try {
+			await active.gateway.dispatch({
+				id: crypto.randomUUID(),
+				type: "abort",
+				identity: { channelId: "desktop-tag", sessionKey: sessionId },
+			});
+		} finally {
+			await this.#settle(active, { type: "task.failed", taskId: active.taskId, error: "Task cancelled." });
+		}
 	}
 
 	subscribe(sessionId: string): AsyncIterable<AgentEvent> {
@@ -182,21 +226,55 @@ export class PiWorker implements AgentWorker {
 		return active.channel.subscribe();
 	}
 
-	#attachListener(active: ActiveSession, gateway: AgentSessionGateway): void {
-		gateway.subscribe(event => {
+	#attachListener(active: ActiveSession): void {
+		active.gateway.subscribe(event => {
+			if (active.settled) return;
+			if (active.cancelling) return;
+			if (event.type === "session_event" && event.event.type === "assistant_end") {
+				active.assistantError = event.event.hasError ? "Assistant turn ended with an error." : undefined;
+			}
+			if (event.type === "session_event" && event.event.type === "agent_end") {
+				const terminal: AgentEvent = active.assistantError
+					? { type: "task.failed", taskId: active.taskId, error: active.assistantError }
+					: { type: "task.completed", taskId: active.taskId, summary: "" };
+				void this.#settle(active, terminal);
+				return;
+			}
+
 			const translated = translateGatewayEvent(active.taskId, event);
-			for (const e of translated) {
-				active.channel.push(e);
+			for (const translatedEvent of translated) {
+				if (translatedEvent.type === "task.failed") {
+					void this.#settle(active, translatedEvent);
+					return;
+				}
+				active.channel.push(translatedEvent);
 			}
 		});
+	}
+
+	async #settle(active: ActiveSession, terminal: AgentEvent): Promise<void> {
+		if (active.settled) return;
+		active.settled = true;
+		this.#sessions.delete(active.taskId);
+		active.channel.push(terminal);
+		active.channel.close();
+		active.gateway.dispose();
+		try {
+			await active.session.dispose();
+		} catch (error) {
+			logger.error("Failed to dispose desktop-tag agent session", {
+				error: error instanceof Error ? error.message : String(error),
+				taskId: active.taskId,
+			});
+		}
 	}
 }
 
 async function loadImage(path: string): Promise<ImageContent> {
-	const bytes = await fs.readFile(path);
+	const bytes = await Bun.file(path).bytes();
 	return {
 		type: "image",
-		data: bytes.toString("base64"),
+		data: bytes.toBase64(),
 		mimeType: "image/png",
 		detail: "high",
 	};
@@ -209,7 +287,9 @@ function buildInitialMessage(packet: ContextPacket, routing: RoutingDecision): s
 		`Routing: ${routing.message}`,
 	];
 	if (packet.foregroundApp.processName) {
-		lines.push(`Foreground app: ${packet.foregroundApp.processName} - ${packet.foregroundApp.windowTitle ?? "unknown window"}`);
+		lines.push(
+			`Foreground app: ${packet.foregroundApp.processName} - ${packet.foregroundApp.windowTitle ?? "unknown window"}`,
+		);
 	}
 	if (packet.browser.url) {
 		lines.push(`Active browser tab: ${packet.browser.title ?? ""} (${packet.browser.url})`);
@@ -235,9 +315,7 @@ function translateGatewayEvent(taskId: string, event: GatewayEvent): AgentEvent[
 				case "assistant_text_delta":
 					return [{ type: "agent.message.delta", text: ev.text }];
 				case "assistant_end":
-					return ev.hasError
-						? [{ type: "task.failed", taskId, error: "Assistant turn ended with an error." }]
-						: [{ type: "task.completed", taskId, summary: "" }];
+					return [];
 				case "tool_start":
 					return [{ type: "tool.started", callId: ev.toolCallId, toolName: ev.toolName }];
 				case "tool_end":

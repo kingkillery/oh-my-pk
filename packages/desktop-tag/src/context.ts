@@ -3,25 +3,89 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { logger } from "@pk-nerdsaver-ai/pi-utils";
-
 import type {
 	Annotation,
 	BrowserContext,
 	CaptureMode,
+	CaptureRegion,
 	ContextPacket,
 	ForegroundAppContext,
 	SelectionContext,
 	VisualContext,
 } from "./types";
+import { isCaptureMode } from "./types";
 
 /** Options for a single capture. */
 export interface CaptureOptions {
 	mode: CaptureMode;
-	region?: { x: number; y: number; width: number; height: number };
+	region?: CaptureRegion;
 	includeClipboard?: boolean;
 	includeActiveAppState?: boolean;
 	userRequest: string;
 	annotations?: Annotation[];
+}
+
+const annotationTypes = new Set<string>(["rectangle", "point", "arrow", "blur"]);
+
+/** Reject malformed capture input before any filesystem or screenshot operation begins. */
+export function assertCaptureOptions(options: unknown): asserts options is CaptureOptions {
+	if (!isRecord(options)) throw new TypeError("Capture options must be an object");
+	if (!isCaptureMode(options.mode)) {
+		throw new TypeError(`Unsupported capture mode: ${String(options.mode)}`);
+	}
+	if (typeof options.userRequest !== "string" || options.userRequest.trim().length === 0) {
+		throw new TypeError("Capture userRequest must be a nonblank string");
+	}
+	if (options.includeClipboard !== undefined && typeof options.includeClipboard !== "boolean") {
+		throw new TypeError("Capture includeClipboard must be a boolean");
+	}
+	if (options.includeActiveAppState !== undefined && typeof options.includeActiveAppState !== "boolean") {
+		throw new TypeError("Capture includeActiveAppState must be a boolean");
+	}
+	if (options.region !== undefined) assertCaptureRegion(options.region);
+	if (options.mode === "region" && options.region === undefined) {
+		throw new TypeError("Region capture requires a region");
+	}
+	if (options.annotations !== undefined) {
+		if (!Array.isArray(options.annotations)) throw new TypeError("Capture annotations must be an array");
+		for (const annotation of options.annotations) {
+			if (
+				!isRecord(annotation) ||
+				typeof annotation.id !== "string" ||
+				typeof annotation.type !== "string" ||
+				!annotationTypes.has(annotation.type)
+			) {
+				throw new TypeError("Capture annotation is malformed");
+			}
+			if (
+				!Array.isArray(annotation.bounds) ||
+				annotation.bounds.length !== 4 ||
+				!annotation.bounds.every(value => typeof value === "number" && Number.isFinite(value))
+			) {
+				throw new TypeError("Capture annotation bounds must contain four finite numbers");
+			}
+			if (annotation.label !== undefined && typeof annotation.label !== "string")
+				throw new TypeError("Capture annotation label must be a string");
+		}
+	}
+}
+
+function assertCaptureRegion(region: unknown): asserts region is CaptureRegion {
+	if (!isRecord(region)) throw new TypeError("Capture region must be an object");
+	for (const name of ["x", "y", "width", "height"] as const) {
+		const value = region[name];
+		if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+			throw new TypeError(`Capture region ${name} must be a finite positive number`);
+		}
+	}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assertNever(value: never): never {
+	throw new TypeError(`Unsupported capture mode: ${String(value)}`);
 }
 
 /** Service that captures the desktop context for a tag request. */
@@ -37,6 +101,7 @@ export class CaptureService {
 	}
 
 	async capture(options: CaptureOptions): Promise<ContextPacket> {
+		assertCaptureOptions(options);
 		await this.init();
 
 		const captureId = crypto.randomUUID();
@@ -44,7 +109,7 @@ export class CaptureService {
 		const screenshotPath = path.join(this.#tempDir, `${captureId}.png`);
 
 		const [visual, foregroundApp, selection, browser, availableCapabilities] = await Promise.all([
-			this.#captureVisual(options, captureId, screenshotPath),
+			this.#captureVisual(options, screenshotPath),
 			options.includeActiveAppState ? this.#captureForegroundApp() : Promise.resolve({}),
 			options.includeClipboard ? this.#captureSelection() : Promise.resolve({}),
 			this.#captureBrowserContext(),
@@ -64,13 +129,22 @@ export class CaptureService {
 		};
 	}
 
-	async #captureVisual(options: CaptureOptions, captureId: string, screenshotPath: string): Promise<VisualContext> {
+	async #captureVisual(options: CaptureOptions, screenshotPath: string): Promise<VisualContext> {
 		try {
 			const { region } = options;
-			if (options.mode === "screen" || options.mode === "browser" || options.mode === "window") {
-				await captureScreenshot(screenshotPath, options.mode === "window" ? undefined : region);
-			} else if (options.mode === "region" && region) {
-				await captureScreenshot(screenshotPath, region);
+			switch (options.mode) {
+				case "screen":
+				case "browser":
+					await captureScreenshot(screenshotPath, region);
+					break;
+				case "window":
+					await captureScreenshot(screenshotPath);
+					break;
+				case "region":
+					await captureScreenshot(screenshotPath, region);
+					break;
+				default:
+					assertNever(options.mode);
 			}
 
 			return {
@@ -123,7 +197,9 @@ if ($process) {
 				executablePath: parsed.Path,
 			};
 		} catch (error) {
-			logger.debug("Foreground app capture failed", { error: error instanceof Error ? error.message : String(error) });
+			logger.debug("Foreground app capture failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
 			return {};
 		}
 	}
@@ -212,7 +288,8 @@ async function extractJsonText(response: Response | undefined, key: string): Pro
 	return undefined;
 }
 
-export async function captureScreenshot(screenshotPath: string, region?: { x: number; y: number; width: number; height: number }): Promise<void> {
+export async function captureScreenshot(screenshotPath: string, region?: CaptureRegion): Promise<void> {
+	if (region !== undefined) assertCaptureRegion(region);
 	if (process.platform !== "win32") {
 		throw new Error(`Screenshot capture not implemented for ${process.platform}`);
 	}

@@ -2,55 +2,66 @@ import { logger } from "@pk-nerdsaver-ai/pi-utils";
 
 import type { AgentEvent } from "./types";
 
-/** A typed channel that lets one or more consumers subscribe to {@link AgentEvent}s. */
-export class AgentEventChannel {
-	readonly #pending: AgentEvent[] = [];
-	readonly #waiters: Array<(event: AgentEvent) => void> = [];
+/** A replaying typed channel that lets consumers independently subscribe to {@link AgentEvent}s. */
+export class TaskEventChannel {
+	readonly #events: AgentEvent[] = [];
+	readonly #waiters = new Set<() => void>();
 	#closed = false;
 
 	push(event: AgentEvent): void {
 		if (this.#closed) return;
-		const waiter = this.#waiters.shift();
-		if (waiter) {
-			waiter(event);
-		} else {
-			this.#pending.push(event);
-		}
+		this.#events.push(event);
+		this.#wakeWaiters();
 	}
 
 	close(): void {
+		if (this.#closed) return;
 		this.#closed = true;
-		while (this.#waiters.length > 0) {
-			const waiter = this.#waiters.shift();
-			if (waiter) waiter({ type: "task.completed", taskId: "", summary: "" });
-		}
+		this.#wakeWaiters();
 	}
 
-	subscribe(): AsyncIterable<AgentEvent> {
-		const pending = this.#pending;
-		const waiters = this.#waiters;
-		const closed = () => this.#closed;
+	subscribe(signal?: AbortSignal): AsyncIterable<AgentEvent> {
+		const channel = this;
 		return {
 			async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
-				while (true) {
-					if (pending.length > 0) {
-						yield pending.shift()!;
+				let cursor = 0;
+				while (!signal?.aborted) {
+					if (cursor < channel.#events.length) {
+						yield channel.#events[cursor++];
 						continue;
 					}
-					if (closed()) return;
-					const { promise, resolve } = Promise.withResolvers<AgentEvent>();
-					waiters.push(resolve);
-					try {
-						yield await promise;
-					} catch (error) {
-						logger.error("Agent event channel iterator error", { error: String(error) });
-						return;
-					}
+					if (channel.#closed) return;
+					await channel.#waitForEvent(signal);
 				}
 			},
 		};
 	}
+
+	#waitForEvent(signal?: AbortSignal): Promise<void> {
+		if (signal?.aborted) return Promise.resolve();
+
+		const { promise, resolve } = Promise.withResolvers<void>();
+		const wake = (): void => {
+			this.#waiters.delete(wake);
+			signal?.removeEventListener("abort", wake);
+			resolve();
+		};
+
+		this.#waiters.add(wake);
+		signal?.addEventListener("abort", wake, { once: true });
+		if (signal?.aborted) wake();
+		return promise;
+	}
+
+	#wakeWaiters(): void {
+		const waiters = [...this.#waiters];
+		this.#waiters.clear();
+		for (const wake of waiters) wake();
+	}
 }
+
+/** Backward-compatible name for the task event channel. */
+export { TaskEventChannel as AgentEventChannel };
 
 /** Serialize an event for wire transport. */
 export function serializeAgentEvent(event: AgentEvent): string {
@@ -64,7 +75,10 @@ export function parseAgentEvent(text: string): AgentEvent | undefined {
 		if (!parsed || typeof parsed !== "object" || !("type" in parsed)) return undefined;
 		return parsed;
 	} catch (error) {
-		logger.debug("Failed to parse agent event", { error: error instanceof Error ? error.message : String(error), text });
+		logger.debug("Failed to parse agent event", {
+			error: error instanceof Error ? error.message : String(error),
+			text,
+		});
 		return undefined;
 	}
 }

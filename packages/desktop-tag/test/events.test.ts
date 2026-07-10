@@ -1,37 +1,69 @@
 import { describe, expect, it } from "bun:test";
 
-import { AgentEventChannel, parseAgentEvent, serializeAgentEvent } from "../src/events";
+import { parseAgentEvent, serializeAgentEvent, TaskEventChannel } from "../src/events";
 import type { AgentEvent } from "../src/types";
 
-describe("AgentEventChannel", () => {
-	it("pushes events to an async iterator", async () => {
-		const channel = new AgentEventChannel();
-		const event: AgentEvent = { type: "task.started", taskId: "t1" };
-		channel.push(event);
-
-		const iterator = channel.subscribe()[Symbol.asyncIterator]();
-		const next = await iterator.next();
-		expect(next.value).toEqual(event);
-	});
-
-	it("waits for new events when the buffer is empty", async () => {
-		const channel = new AgentEventChannel();
-		const iterator = channel.subscribe()[Symbol.asyncIterator]();
-
-		const nextPromise = iterator.next();
-		channel.push({ type: "agent.message.delta", text: "hello" });
-
-		const next = await nextPromise;
-		expect(next.value).toEqual({ type: "agent.message.delta", text: "hello" });
-	});
-
-	it("ends iteration after close", async () => {
-		const channel = new AgentEventChannel();
-		const iterator = channel.subscribe()[Symbol.asyncIterator]();
+describe("TaskEventChannel", () => {
+	it("replays events published before subscription in order", async () => {
+		const channel = new TaskEventChannel();
+		const events: AgentEvent[] = [
+			{ type: "task.started", taskId: "t1" },
+			{ type: "agent.message.delta", text: "hello" },
+		];
+		for (const event of events) channel.push(event);
 		channel.close();
 
-		const next = await iterator.next();
-		expect(next.done).toBe(true);
+		const received = await Array.fromAsync(channel.subscribe());
+		expect(received).toEqual(events);
+	});
+
+	it("multicasts the full ordered stream to simultaneous subscribers", async () => {
+		const channel = new TaskEventChannel();
+		const first = Array.fromAsync(channel.subscribe());
+		const second = Array.fromAsync(channel.subscribe());
+		const events: AgentEvent[] = [
+			{ type: "task.started", taskId: "t1" },
+			{ type: "agent.message.delta", text: "one" },
+			{ type: "agent.message.delta", text: "two" },
+		];
+
+		for (const event of events) channel.push(event);
+		channel.close();
+
+		expect(await first).toEqual(events);
+		expect(await second).toEqual(events);
+	});
+
+	it("closes a waiting iterator without fabricating an event", async () => {
+		const channel = new TaskEventChannel();
+		const iterator = channel.subscribe()[Symbol.asyncIterator]();
+		const next = iterator.next();
+
+		channel.close();
+
+		expect(await next).toEqual({ done: true, value: undefined });
+		expect(await iterator.next()).toEqual({ done: true, value: undefined });
+	});
+
+	it("aborts one subscriber without interfering with another", async () => {
+		const channel = new TaskEventChannel();
+		const controller = new AbortController();
+		const aborted = channel.subscribe(controller.signal)[Symbol.asyncIterator]();
+		const active = channel.subscribe()[Symbol.asyncIterator]();
+		const abortedNext = aborted.next();
+		const activeNext = active.next();
+
+		controller.abort();
+		channel.push({ type: "agent.message.delta", text: "still active" });
+
+		expect(await abortedNext).toEqual({ done: true, value: undefined });
+		expect(await activeNext).toEqual({
+			done: false,
+			value: { type: "agent.message.delta", text: "still active" },
+		});
+
+		channel.close();
+		expect(await active.next()).toEqual({ done: true, value: undefined });
 	});
 });
 
