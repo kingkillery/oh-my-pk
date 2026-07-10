@@ -1,30 +1,33 @@
 # pi-desktop-tag
 
-Oh My Pi extension that turns your desktop into an agent trigger surface.
+Oh My Pi extension that captures desktop context and delegates a request to an agent.
 
-Press a shortcut (or run `ompk tag`) to capture the current screen, selected region, active browser tab, or selected text, type an instruction, and let `omp` route the task to the right executor: local tools, the IX Bridge browser, a remote hub, or a vision-only answer.
-
-## Quick start
+## Use
 
 ```bash
-# Run as a standalone wrapper (starts the gateway and opens the overlay)
+# Standalone gateway and overlay
 bun --cwd=packages/desktop-tag src/cli.ts
 
-# Or load it as an omp extension and use the slash command
+# omp extension
 omp --extension packages/desktop-tag/src/extension.ts
 /tag
 ```
 
-## Architecture
+`/tag [screen|window|browser] [request]` immediately captures context and sends it to the current agent; `/tag` defaults to a screen description. Region syntax is `/tag region <x> <y> <width> <height> [request]`. The standalone command prints the loopback overlay URL. Region coordinates use physical pixels: `x` and `y` are finite signed values; `width` and `height` are finite positive values.
 
-- `context.ts` — `ContextPacket` capture (screenshot, foreground app, browser URL/DOM, clipboard, selection).
-- `router.ts` — intent + capability router that maps a request to an executor and constrained tool set.
-- `events.ts` — unified `AgentEvent` protocol consumed by the overlay.
-- `worker.ts` — `AgentSession` worker adapter (`omp` as the runtime).
-- `gateway.ts` — local HTTP + WebSocket gateway for the overlay.
-- `extension.ts` — `omp` extension entrypoint (`/tag` command).
-- `cli.ts` — `ompk-tag` wrapper that boots the gateway and overlay.
+## Security and lifecycle
 
-## Status
+The gateway binds only to loopback (`127.0.0.1`, `localhost`, or `::1`) and rejects non-loopback `Host` values. Browser HTTP and WebSocket requests must use the gateway's exact loopback origin and port. An absent `Origin` remains supported for local native clients; it does not permit a non-loopback host.
 
-This is the Phase 1 desktop delegation surface: screenshot/region/selection capture, a compact web overlay, and `pi` AgentSession execution. Later phases will add the IX Bridge DOM snapshot, Desktop Commander native actions, and hub-based remote routing.
+Task execution is asynchronous. A task completes only when the agent emits `agent_end`; dispatch failures emit `task.failed`. Cancellation is idempotent, rejects pending approvals, and disposes the agent session. `TagGatewayServer.stop()` is async and must be awaited so active tasks and sockets are closed before shutdown.
+
+## Components
+
+- `context.ts` — capture and validate desktop context.
+- `router.ts` — select an executor and constrained tools.
+- `events.ts` — stream overlay-facing task events.
+- `worker.ts` — adapt local `AgentSession` execution.
+- `gateway.ts` — serve the loopback-only HTTP and WebSocket API.
+- `extension.ts` / `cli.ts` — extension and standalone entrypoints.
+
+Phase 1 ships screenshot, region, selection, and browser-context capture with local `pi` AgentSession execution. IX Bridge DOM snapshots, native desktop actions, and remote hubs are future work.

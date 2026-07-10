@@ -1,6 +1,12 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 
-import { assertContextPacket, CapabilityRegistry, createDefaultRegistry, routeContext } from "../src/router";
+import {
+	assertContextPacket,
+	CapabilityRegistry,
+	createDefaultRegistry,
+	routeContext,
+	updateAvailability,
+} from "../src/router";
 import type { ContextPacket } from "../src/types";
 
 function makePacket(overrides: Partial<ContextPacket> = {}): ContextPacket {
@@ -127,5 +133,23 @@ describe("routeContext", () => {
 		const malformed = { ...makePacket(), foregroundApp: { windowTitle: "   " } };
 
 		expect(() => assertContextPacket(malformed)).toThrow("windowTitle must be a nonblank string");
+	});
+});
+
+describe("updateAvailability", () => {
+	it("requires an attached IX Bridge browser extension", async () => {
+		const fetchSpy = spyOn(globalThis, "fetch");
+		try {
+			const registry = createDefaultRegistry();
+			fetchSpy.mockResolvedValueOnce(Response.json({ running: true, extension_connected: false }));
+			await updateAvailability(registry);
+			expect(registry.getExecutor("ix-bridge")?.available).toBe(false);
+
+			fetchSpy.mockResolvedValueOnce(Response.json({ running: true, extension_connected: true }));
+			await updateAvailability(registry);
+			expect(registry.getExecutor("ix-bridge")?.available).toBe(true);
+		} finally {
+			fetchSpy.mockRestore();
+		}
 	});
 });

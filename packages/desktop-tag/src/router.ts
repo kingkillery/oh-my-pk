@@ -244,20 +244,22 @@ function decision(executorId: string, tools: string[], level: ActionLevel): Rout
 
 /** Set executor availability based on runtime probes (e.g. IX Bridge reachable). */
 export async function updateAvailability(registry: CapabilityRegistry): Promise<void> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), 1_500);
 	try {
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), 1_500);
 		const response = await fetch("http://127.0.0.1:18086/ix-bridge/status", { signal: controller.signal });
-		clearTimeout(timer);
+		const status = response.ok
+			? ((await response.json().catch(() => ({}))) as { extension_connected?: unknown })
+			: undefined;
 		const ix = registry.getExecutor("ix-bridge");
-		if (ix) {
-			ix.available = response.ok;
-		}
+		if (ix) ix.available = status?.extension_connected === true;
 	} catch (error) {
 		logger.debug("IX Bridge availability probe failed", {
 			error: error instanceof Error ? error.message : String(error),
 		});
 		const ix = registry.getExecutor("ix-bridge");
 		if (ix) ix.available = false;
+	} finally {
+		clearTimeout(timer);
 	}
 }

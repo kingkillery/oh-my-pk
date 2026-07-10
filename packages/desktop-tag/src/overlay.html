@@ -18,6 +18,12 @@
     button.active { outline: 2px solid var(--accent); }
     textarea { width: 100%; min-height: 80px; background: #0b0c0f; color: var(--text); border: 1px solid #2f353d; border-radius: 10px; padding: 14px; font-size: 15px; resize: vertical; }
     label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 12px 0; }
+    input[type="number"] { width: 100%; background: #0b0c0f; color: var(--text); border: 1px solid #2f353d; border-radius: 8px; padding: 9px 10px; font-size: 14px; }
+    .region-inputs { margin: 0 0 16px; padding: 14px; border: 1px solid #2f353d; border-radius: 10px; }
+    .region-inputs legend { padding: 0 6px; color: var(--text); font-size: 13px; font-weight: 600; }
+    .region-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 12px; }
+    .region-grid label { display: block; margin: 0; }
+    .region-grid input { display: block; margin-top: 6px; }
     #status { margin-top: 16px; font-size: 13px; color: var(--muted); min-height: 1.2em; }
     #log { margin-top: 16px; max-height: 260px; overflow: auto; font-size: 13px; line-height: 1.45; color: var(--muted); white-space: pre-wrap; }
     .approval { margin-top: 12px; padding: 12px; border: 1px solid #2f353d; border-radius: 10px; background: #0b0c0f; }
@@ -40,6 +46,16 @@
 
     <textarea id="request" placeholder="What would you like to do with this? (e.g. Explain this error, file a bug, update Salesforce...)"></textarea>
 
+    <fieldset id="region-inputs" class="region-inputs hidden" disabled>
+      <legend>Region coordinates</legend>
+      <div class="region-grid">
+        <label for="region-x">X <input type="number" id="region-x" value="0" step="any" required></label>
+        <label for="region-y">Y <input type="number" id="region-y" value="0" step="any" required></label>
+        <label for="region-width">Width <input type="number" id="region-width" value="640" step="any" required></label>
+        <label for="region-height">Height <input type="number" id="region-height" value="480" step="any" required></label>
+      </div>
+    </fieldset>
+
     <label><input type="checkbox" id="clipboard" checked> Include clipboard / selected text</label>
 
     <div class="row">
@@ -54,11 +70,15 @@
 
   <script>
     const modeButtons = [...document.querySelectorAll('.mode')];
+    const regionInputsEl = document.getElementById('region-inputs');
     let mode = 'screen';
     modeButtons.forEach(btn => btn.addEventListener('click', () => {
       modeButtons.forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       mode = btn.id.replace('mode-', '');
+      const regionMode = mode === 'region';
+      regionInputsEl.classList.toggle('hidden', !regionMode);
+      regionInputsEl.disabled = !regionMode;
     }));
 
     const requestEl = document.getElementById('request');
@@ -69,6 +89,20 @@
 
     function log(text) { logEl.textContent += text + '\n'; logEl.scrollTop = logEl.scrollHeight; }
     function setStatus(text) { statusEl.textContent = text; }
+
+    function readRegion() {
+      const fields = ['x', 'y', 'width', 'height'];
+      const region = Object.fromEntries(fields.map(name => [name, document.getElementById(`region-${name}`).valueAsNumber]));
+      if (!Number.isFinite(region.x) || !Number.isFinite(region.y)) {
+        setStatus('Region X and Y must be finite numbers.');
+        return;
+      }
+      if (!Number.isFinite(region.width) || region.width <= 0 || !Number.isFinite(region.height) || region.height <= 0) {
+        setStatus('Region width and height must be positive finite numbers.');
+        return;
+      }
+      return region;
+    }
 
     function connect() {
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -92,9 +126,14 @@
       const payload = {
         type: 'capture',
         mode,
-        userRequest: requestEl.value.trim(),
+        request: requestEl.value.trim(),
         includeClipboard: document.getElementById('clipboard').checked,
       };
+      if (mode === 'region') {
+        const region = readRegion();
+        if (!region) return;
+        payload.region = region;
+      }
       ws.send(JSON.stringify(payload));
       logEl.textContent = '';
       setStatus('Capturing...');

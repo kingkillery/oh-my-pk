@@ -72,7 +72,13 @@ export function assertCaptureOptions(options: unknown): asserts options is Captu
 
 function assertCaptureRegion(region: unknown): asserts region is CaptureRegion {
 	if (!isRecord(region)) throw new TypeError("Capture region must be an object");
-	for (const name of ["x", "y", "width", "height"] as const) {
+	for (const name of ["x", "y"] as const) {
+		const value = region[name];
+		if (typeof value !== "number" || !Number.isFinite(value)) {
+			throw new TypeError(`Capture region ${name} must be a finite number`);
+		}
+	}
+	for (const name of ["width", "height"] as const) {
 		const value = region[name];
 		if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
 			throw new TypeError(`Capture region ${name} must be a finite positive number`);
@@ -138,7 +144,7 @@ export class CaptureService {
 					await captureScreenshot(screenshotPath, region);
 					break;
 				case "window":
-					await captureScreenshot(screenshotPath);
+					await captureWindowScreenshot(screenshotPath);
 					break;
 				case "region":
 					await captureScreenshot(screenshotPath, region);
@@ -224,10 +230,7 @@ if ($text) { @{ text = $text } | ConvertTo-Json -Compress } else { "{}" }
 
 	async #captureBrowserContext(): Promise<BrowserContext> {
 		try {
-			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), 1_500);
-			const response = await fetch("http://127.0.0.1:18086/ix-bridge/status", { signal: controller.signal });
-			clearTimeout(timer);
+			const response = await fetchWithTimeout("http://127.0.0.1:18086/ix-bridge/status", {}, 1_500);
 			if (!response.ok) return {};
 
 			const body = (await response.json().catch(() => ({}))) as {
@@ -236,18 +239,10 @@ if ($text) { @{ text = $text } | ConvertTo-Json -Compress } else { "{}" }
 			};
 			if (!body.extension_connected) return {};
 
-			const urlRes = await fetch("http://127.0.0.1:18086/ix-bridge/command", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ lane: "agent-a", action: "get_url", args: {} }),
-				signal: controller.signal,
-			}).catch(() => undefined);
-			const titleRes = await fetch("http://127.0.0.1:18086/ix-bridge/command", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ lane: "agent-a", action: "get_title", args: {} }),
-				signal: controller.signal,
-			}).catch(() => undefined);
+			const [urlRes, titleRes] = await Promise.all([
+				requestIxBridgeCommand("get_url").catch(() => undefined),
+				requestIxBridgeCommand("get_title").catch(() => undefined),
+			]);
 
 			const url = await extractJsonText(urlRes, "url");
 			const title = await extractJsonText(titleRes, "title");
@@ -263,16 +258,50 @@ if ($text) { @{ text = $text } | ConvertTo-Json -Compress } else { "{}" }
 			capabilities.push("clipboard", "foreground-app");
 		}
 		try {
-			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), 1_000);
-			const response = await fetch("http://127.0.0.1:18086/ix-bridge/status", { signal: controller.signal });
-			clearTimeout(timer);
+			const response = await fetchWithTimeout("http://127.0.0.1:18086/ix-bridge/status", {}, 1_000);
 			if (response.ok) capabilities.push("browser");
 		} catch {
 			// ignore
 		}
 		return capabilities;
 	}
+}
+
+const IX_BRIDGE_COMMAND_TIMEOUT_MS = 1_500;
+
+export async function fetchWithTimeout(
+	input: string | URL | Request,
+	init: RequestInit,
+	timeoutMs: number,
+): Promise<Response> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const response = await fetch(input, { ...init, signal: controller.signal });
+		const body = await response.arrayBuffer();
+		return new Response(body.byteLength === 0 ? null : body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers: response.headers,
+		});
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+export function requestIxBridgeCommand(
+	action: "get_url" | "get_title",
+	timeoutMs = IX_BRIDGE_COMMAND_TIMEOUT_MS,
+): Promise<Response> {
+	return fetchWithTimeout(
+		"http://127.0.0.1:18086/ix-bridge/command",
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ lane: "agent-a", action, args: {} }),
+		},
+		timeoutMs,
+	);
 }
 
 async function extractJsonText(response: Response | undefined, key: string): Promise<string | undefined> {
@@ -294,35 +323,91 @@ export async function captureScreenshot(screenshotPath: string, region?: Capture
 		throw new Error(`Screenshot capture not implemented for ${process.platform}`);
 	}
 
-	const x = region?.x ?? 0;
-	const y = region?.y ?? 0;
-	const width = region?.width ?? 0;
-	const height = region?.height ?? 0;
+	await runPowershell(buildScreenshotScript(screenshotPath, region));
+}
 
-	const script = region
-		? `
-Add-Type -AssemblyName System.Windows.Forms
+/** Capture the actual foreground window rather than falling back to the primary screen. */
+export async function captureWindowScreenshot(screenshotPath: string): Promise<void> {
+	if (process.platform !== "win32") {
+		throw new Error(`Window screenshot capture not implemented for ${process.platform}`);
+	}
+
+	await runPowershell(buildWindowScreenshotScript(screenshotPath));
+}
+
+export function buildScreenshotScript(screenshotPath: string, region?: CaptureRegion): string {
+	const outputPath = quotePowerShellString(screenshotPath);
+	if (region) {
+		assertCaptureRegion(region);
+		return `
 Add-Type -AssemblyName System.Drawing
-$bmp = New-Object System.Drawing.Bitmap(${width}, ${height})
+$bmp = New-Object System.Drawing.Bitmap(${region.width}, ${region.height})
 $g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen(${x}, ${y}, 0, 0, $bmp.Size)
-$bmp.Save("${screenshotPath}", [System.Drawing.Imaging.ImageFormat]::Png)
-$g.Dispose()
-$bmp.Dispose()
-`
-		: `
+try {
+    $g.CopyFromScreen(${region.x}, ${region.y}, 0, 0, $bmp.Size)
+    $bmp.Save(${outputPath}, [System.Drawing.Imaging.ImageFormat]::Png)
+} finally {
+    $g.Dispose()
+    $bmp.Dispose()
+}
+`;
+	}
+
+	return `
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-$bmp.Save("${screenshotPath}", [System.Drawing.Imaging.ImageFormat]::Png)
-$g.Dispose()
-$bmp.Dispose()
+try {
+    $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+    $bmp.Save(${outputPath}, [System.Drawing.Imaging.ImageFormat]::Png)
+} finally {
+    $g.Dispose()
+    $bmp.Dispose()
+}
 `;
+}
 
-	await runPowershell(script);
+export function buildWindowScreenshotScript(screenshotPath: string): string {
+	const outputPath = quotePowerShellString(screenshotPath);
+	return `
+Add-Type -AssemblyName System.Drawing
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class DesktopTagWindowCapture {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+}
+"@
+$hwnd = [DesktopTagWindowCapture]::GetForegroundWindow()
+if ($hwnd -eq [IntPtr]::Zero) { throw "No foreground window is available" }
+$bounds = New-Object 'DesktopTagWindowCapture+RECT'
+if (-not [DesktopTagWindowCapture]::GetWindowRect($hwnd, [ref]$bounds)) {
+    throw "GetWindowRect failed for foreground window"
+}
+$width = $bounds.Right - $bounds.Left
+$height = $bounds.Bottom - $bounds.Top
+if ($width -le 0 -or $height -le 0) { throw "Foreground window has invalid bounds" }
+$bmp = New-Object System.Drawing.Bitmap($width, $height)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+try {
+    $g.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bmp.Size)
+    $bmp.Save(${outputPath}, [System.Drawing.Imaging.ImageFormat]::Png)
+} finally {
+    $g.Dispose()
+    $bmp.Dispose()
+}
+`;
+}
+
+function quotePowerShellString(value: string): string {
+	return `'${value.replaceAll("'", "''")}'`;
 }
 
 async function runPowershell(script: string): Promise<string> {

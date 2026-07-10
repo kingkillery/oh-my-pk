@@ -5,8 +5,11 @@ import {
 	createAgentSession,
 } from "@pk-nerdsaver-ai/pi-coding-agent";
 import { AgentSessionGateway } from "@pk-nerdsaver-ai/pi-coding-agent/gateway/agent-session-gateway";
-import type { GatewayEvent } from "@pk-nerdsaver-ai/pi-coding-agent/gateway/types";
-import type { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
+import type {
+	GatewayCommand,
+	GatewayEvent,
+	GatewayEventListener,
+} from "@pk-nerdsaver-ai/pi-coding-agent/gateway/types";
 import type {
 	ClientBridge,
 	ClientBridgePermissionOption,
@@ -28,9 +31,23 @@ import type {
 	TaskInput,
 } from "./types";
 
-interface ActiveSession {
-	session: AgentSession;
-	gateway: AgentSessionGateway;
+interface WorkerSession {
+	setClientBridge(bridge: ClientBridge): void;
+	dispose(): Promise<void>;
+}
+
+interface WorkerGateway {
+	dispatch(command: GatewayCommand): Promise<void>;
+	subscribe(listener: GatewayEventListener): () => void;
+	dispose(): void;
+}
+
+interface WorkerRuntime {
+	session: WorkerSession;
+	gateway: WorkerGateway;
+}
+
+interface ActiveSession extends WorkerRuntime {
 	channel: AgentEventChannel;
 	bridge: DesktopTagClientBridge;
 	controller: AbortController;
@@ -42,6 +59,8 @@ interface ActiveSession {
 }
 
 type AgentSessionFactory = (options: CreateAgentSessionOptions) => Promise<CreateAgentSessionResult>;
+type AgentRuntimeFactory = (options: CreateAgentSessionOptions) => Promise<WorkerRuntime>;
+type WorkerFactory = AgentSessionFactory | AgentRuntimeFactory;
 
 /** Bridges permission requests from the agent into the overlay approval flow. */
 class DesktopTagClientBridge implements ClientBridge {
@@ -65,14 +84,19 @@ class DesktopTagClientBridge implements ClientBridge {
 		this.#pending.set(toolCall.toolCallId, resolve);
 
 		const allowedOptions = options.map(o => o.optionId).filter(id => id.startsWith("allow"));
-		const scope: ApprovalRequest["scope"] = allowedOptions.includes("allow_always") ? "session" : "once";
+		const scope: ApprovalRequest["scope"] = allowedOptions.includes("allow_once") ? "once" : "session";
 		const level: ActionLevel = scope === "session" ? 2 : 1;
+		const rawInput = toolCall.rawInput;
+		const requestArguments: Record<string, unknown> =
+			typeof rawInput === "object" && rawInput !== null && !Array.isArray(rawInput)
+				? Object.fromEntries(Object.entries(rawInput))
+				: {};
 
 		const request: ApprovalRequest = {
 			actionId: toolCall.toolCallId,
 			stepId: toolCall.toolCallId,
 			toolName: toolCall.toolName,
-			arguments: (toolCall.rawInput as Record<string, unknown>) ?? {},
+			arguments: requestArguments,
 			effects: toolCall.title,
 			level,
 			scope,
@@ -106,13 +130,13 @@ class DesktopTagClientBridge implements ClientBridge {
 	}
 }
 
-/** A worker that delegates tasks to a local {@link AgentSession} through the gateway. */
+/** A worker that delegates tasks to a local agent session through the gateway. */
 export class PiWorker implements AgentWorker {
 	readonly #sessions = new Map<string, ActiveSession>();
-	readonly #sessionFactory: AgentSessionFactory;
+	readonly #factory: WorkerFactory;
 
-	constructor(sessionFactory: AgentSessionFactory = createAgentSession) {
-		this.#sessionFactory = sessionFactory;
+	constructor(factory: WorkerFactory = createAgentSession) {
+		this.#factory = factory;
 	}
 
 	async createSession(taskId: string, input: TaskInput): Promise<SessionHandle> {
@@ -138,14 +162,12 @@ export class PiWorker implements AgentWorker {
 		const message = buildInitialMessage(contextPacket, routing);
 		const images = contextPacket.visual.screenshotPath ? [await loadImage(contextPacket.visual.screenshotPath)] : [];
 
-		const { session } = await this.#sessionFactory(options);
+		const { session, gateway } = await this.#createRuntime(options);
 
 		const channel = new AgentEventChannel();
 		const controller = new AbortController();
 		const bridge = new DesktopTagClientBridge(channel, controller.signal);
 		session.setClientBridge(bridge);
-
-		const gateway = new AgentSessionGateway(session);
 		const active: ActiveSession = {
 			session,
 			gateway,
@@ -160,17 +182,32 @@ export class PiWorker implements AgentWorker {
 		this.#attachListener(active);
 
 		// Let the caller attach its replaying subscription before a fast session can settle and leave the active registry.
-		void Bun.sleep(0).then(() =>
-			gateway.dispatch({
-				id: crypto.randomUUID(),
-				type: "prompt",
-				identity: { channelId: "desktop-tag", sessionKey: taskId },
-				message,
-				images,
-			}),
-		);
+		void Bun.sleep(0)
+			.then(async () => {
+				if (active.settled || active.cancelling || controller.signal.aborted) return;
+				await gateway.dispatch({
+					id: crypto.randomUUID(),
+					type: "prompt",
+					identity: { channelId: "desktop-tag", sessionKey: taskId },
+					message,
+					images,
+				});
+			})
+			.catch(error =>
+				this.#settle(active, {
+					type: "task.failed",
+					taskId,
+					error: `Failed to start task: ${error instanceof Error ? error.message : String(error)}`,
+				}),
+			);
 
 		return { sessionId: taskId };
+	}
+
+	async #createRuntime(options: CreateAgentSessionOptions): Promise<WorkerRuntime> {
+		const created = await this.#factory(options);
+		if ("gateway" in created) return created;
+		return { session: created.session, gateway: new AgentSessionGateway(created.session) };
 	}
 
 	async sendMessage(sessionId: string, message: string, images?: ImageContent[]): Promise<void> {
@@ -188,9 +225,14 @@ export class PiWorker implements AgentWorker {
 	async approve(sessionId: string, actionId: string, decision: ApprovalDecision): Promise<void> {
 		const active = this.#sessions.get(sessionId);
 		if (!active) throw new Error(`Session ${sessionId} not found`);
+		if (decision.editedArguments !== undefined) {
+			throw new Error("Edited approval arguments are not supported by the desktop-tag worker.");
+		}
+		if (decision.scope === "group" || decision.scope === "application") {
+			throw new Error(`Approval scope "${decision.scope}" is not supported by the desktop-tag worker.`);
+		}
 		if (decision.allowed) {
-			const optionId =
-				decision.scope === "session" || decision.scope === "application" ? "allow_always" : "allow_once";
+			const optionId = decision.scope === "session" ? "allow_always" : "allow_once";
 			active.bridge.resolve(actionId, { outcome: "selected", optionId });
 		} else {
 			active.bridge.resolve(actionId, { outcome: "cancelled" });

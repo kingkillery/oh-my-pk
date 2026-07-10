@@ -3,9 +3,9 @@ import * as path from "node:path";
 import { logger } from "@pk-nerdsaver-ai/pi-utils";
 
 import { CaptureService } from "./context";
-import { parseAgentEvent, serializeAgentEvent } from "./events";
+import { serializeAgentEvent } from "./events";
 import { type CapabilityRegistry, createDefaultRegistry, routeContext, updateAvailability } from "./router";
-import type { AgentEvent, AgentWorker, ApprovalDecision, CaptureMode, ContextPacket } from "./types";
+import type { AgentEvent, AgentWorker, ApprovalDecision, CaptureMode, CaptureRegion, ContextPacket } from "./types";
 import { PiWorker } from "./worker";
 
 export interface ServerOptions {
@@ -31,8 +31,11 @@ export class TagGatewayServer {
 	readonly worker: AgentWorker;
 	readonly #options: ServerOptions;
 	readonly #activeTasks = new Map<string, { socket: Bun.ServerWebSocket<SocketData>; pumpAbort: AbortController }>();
+	readonly #inFlightOperations = new Set<Promise<void>>();
 	#server?: Bun.Server<SocketData>;
+	#stopPromise?: Promise<void>;
 	#overlayHtml?: string;
+	#stopping = false;
 	constructor(options: ServerOptions) {
 		this.#options = options;
 		this.captureService = options.captureService ?? new CaptureService();
@@ -41,10 +44,12 @@ export class TagGatewayServer {
 	}
 
 	start(): Bun.Server<SocketData> {
+		if (this.#stopPromise) throw new Error("Desktop tag gateway shutdown is still in progress");
 		const hostname = this.#options.hostname ?? "127.0.0.1";
 		if (!isLoopbackHostname(hostname)) {
 			throw new Error(`Desktop tag gateway must bind to a loopback host, received: ${hostname}`);
 		}
+		this.#stopping = false;
 		const server = Bun.serve<SocketData>({
 			port: this.#options.port,
 			hostname,
@@ -54,8 +59,11 @@ export class TagGatewayServer {
 					logger.debug("Overlay connected");
 					ws.data = {} as SocketData;
 				},
-				message: (ws, message) => this.#handleSocketMessage(ws, message),
-				close: (ws, code, reason) => void this.#handleSocketClose(ws, code, reason),
+				message: (ws, message) => {
+					if (this.#stopping) return;
+					this.#trackSocketOperation(this.#handleSocketMessage(ws, message));
+				},
+				close: (ws, code, reason) => this.#trackSocketOperation(this.#handleSocketClose(ws, code, reason)),
 			},
 		});
 
@@ -64,10 +72,54 @@ export class TagGatewayServer {
 		return server;
 	}
 
-	stop(): void {
-		for (const { socket } of this.#activeTasks.values()) void this.#closeTask(socket);
-		this.#server?.stop(true);
+	stop(): Promise<void> {
+		if (this.#stopPromise) return this.#stopPromise;
+		this.#stopping = true;
+		const stopping = this.#finishStop();
+		this.#stopPromise = stopping;
+		void stopping.then(
+			() => {
+				if (this.#stopPromise === stopping) this.#stopPromise = undefined;
+			},
+			() => {
+				if (this.#stopPromise === stopping) this.#stopPromise = undefined;
+			},
+		);
+		return stopping;
+	}
+
+	async #finishStop(): Promise<void> {
+		const server = this.#server;
 		this.#server = undefined;
+		const sockets = new Set([...this.#activeTasks.values()].map(({ socket }) => socket));
+		await Promise.all([...sockets].map(socket => this.#closeTask(socket)));
+		await this.#awaitOperations();
+		await server?.stop(true);
+		await this.#awaitOperations();
+	}
+
+	async #awaitOperations(): Promise<void> {
+		while (this.#inFlightOperations.size > 0) {
+			await Promise.all(this.#inFlightOperations);
+		}
+	}
+
+	#trackSocketOperation(operation: Promise<void>): void {
+		void this.#trackOperation(operation).catch(error => {
+			logger.error("Gateway socket operation failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+	}
+
+	#trackOperation<T>(operation: Promise<T>): Promise<T> {
+		const tracked = operation.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.#inFlightOperations.add(tracked);
+		void tracked.finally(() => this.#inFlightOperations.delete(tracked));
+		return operation;
 	}
 
 	get url(): string {
@@ -81,21 +133,24 @@ export class TagGatewayServer {
 		if (serverPort === undefined) return new Response("Gateway port unavailable", { status: 503 });
 
 		if (url.pathname === "/ws") {
-			if (!isAllowedWebSocketOrigin(req.headers.get("Origin"), serverPort)) {
+			if (!isAllowedWebSocketOrigin(req.headers.get("Origin"), url)) {
 				return new Response("WebSocket origin forbidden", { status: 403 });
 			}
+			if (this.#stopping) return new Response("Gateway is shutting down", { status: 503 });
 			const upgraded = server.upgrade(req, { data: {} as SocketData });
 			if (upgraded) return undefined;
 			return new Response("WebSocket upgrade failed", { status: 400 });
 		}
 
 		if (url.pathname.startsWith("/api/")) {
-			if (!isAllowedWebSocketOrigin(req.headers.get("Origin"), serverPort)) {
+			if (!isAllowedWebSocketOrigin(req.headers.get("Origin"), url)) {
 				return new Response("Origin forbidden", { status: 403 });
 			}
+			if (this.#stopping) return new Response("Gateway is shutting down", { status: 503 });
 			return this.#handleApi(req, url.pathname);
 		}
 
+		if (this.#stopping) return new Response("Gateway is shutting down", { status: 503 });
 		const html = await this.#getOverlayHtml();
 		return new Response(html, { headers: { "Content-Type": "text/html" } });
 	}
@@ -110,9 +165,10 @@ export class TagGatewayServer {
 		} catch {
 			return new Response("Invalid JSON", { status: 400 });
 		}
+		if (this.#stopping) return new Response("Gateway is shutting down", { status: 503 });
 
 		if (pathname === "/api/capture") {
-			const result = await this.#runCapture(body);
+			const result = await this.#trackOperation(this.#runCapture(body));
 			return Response.json(result, { status: result.ok ? 200 : 400 });
 		}
 
@@ -120,17 +176,28 @@ export class TagGatewayServer {
 	}
 
 	async #handleSocketMessage(ws: Bun.ServerWebSocket<SocketData>, raw: string | Buffer): Promise<void> {
-		const message = typeof raw === "string" ? parseClientMessage(raw) : undefined;
-		if (!message) {
-			ws.send(JSON.stringify({ type: "protocol_error", error: "expected JSON text message" }));
+		if (this.#stopping) return;
+		const parsed =
+			typeof raw === "string"
+				? parseClientMessage(raw)
+				: { ok: false as const, error: "expected JSON text message" };
+		if (!parsed.ok) {
+			ws.send(JSON.stringify({ type: "protocol_error", error: parsed.error }));
 			return;
 		}
+		const message = parsed.message;
 
 		switch (message.type) {
 			case "capture": {
-				const { mode, userRequest, includeClipboard } = message;
 				const taskId = crypto.randomUUID();
-				await this.#startTask(ws, taskId, mode, userRequest, includeClipboard ?? true);
+				await this.#startTask(
+					ws,
+					taskId,
+					message.mode,
+					message.request,
+					message.includeClipboard ?? true,
+					message.region,
+				);
 				break;
 			}
 			case "message": {
@@ -143,18 +210,15 @@ export class TagGatewayServer {
 				const decision: ApprovalDecision = {
 					allowed: message.allowed,
 					scope: message.scope,
-					editedArguments: message.editedArguments,
 				};
 				await this.worker.approve(ws.data.taskId, message.actionId, decision);
 				break;
 			}
 			case "cancel": {
-				if (!ws.data.taskId) return;
-				await this.worker.cancel(ws.data.taskId);
+				const taskId = this.#detachTask(ws);
+				if (taskId) await this.#cancelWorkerTask(taskId);
 				break;
 			}
-			default:
-				send(ws, { type: "task.failed", taskId: ws.data.taskId ?? "", error: "Unknown message type" });
 		}
 	}
 
@@ -164,6 +228,7 @@ export class TagGatewayServer {
 		mode: CaptureMode,
 		userRequest: string,
 		includeClipboard: boolean,
+		region?: CaptureRegion,
 	): Promise<void> {
 		const previousTaskId = this.#detachTask(ws);
 		const abortController = new AbortController();
@@ -171,9 +236,10 @@ export class TagGatewayServer {
 		ws.data.pumpAbort = abortController;
 		this.#activeTasks.set(taskId, { socket: ws, pumpAbort: abortController });
 		if (previousTaskId) await this.#cancelWorkerTask(previousTaskId);
+		if (!this.#isCurrentTask(ws, taskId)) return;
 
 		try {
-			const packet = await this.captureService.capture({ mode, userRequest, includeClipboard });
+			const packet = await this.captureService.capture({ mode, userRequest, includeClipboard, region });
 			if (!this.#isCurrentTask(ws, taskId)) return;
 			await updateAvailability(this.registry);
 			if (!this.#isCurrentTask(ws, taskId)) return;
@@ -188,7 +254,7 @@ export class TagGatewayServer {
 				return;
 			}
 
-			void this.#pumpEvents(ws, taskId, abortController.signal);
+			this.#trackSocketOperation(this.#pumpEvents(ws, taskId, abortController.signal));
 		} catch (error) {
 			if (!this.#isCurrentTask(ws, taskId)) return;
 			logger.error("Failed to start desktop task", {
@@ -258,7 +324,7 @@ export class TagGatewayServer {
 		if (!parsed.ok) return { ok: false, error: parsed.error };
 
 		try {
-			const packet = await this.captureService.capture(parsed.options);
+			const packet = await this.captureService.capture(parsed.value);
 			await updateAvailability(this.registry);
 			const routing = routeContext(this.registry, packet);
 			const taskId = crypto.randomUUID();
@@ -291,14 +357,11 @@ export function isLoopbackHostname(hostname: string): boolean {
 	return LOOPBACK_HOSTNAMES[normalized.toLowerCase()] === true;
 }
 
-export function isAllowedWebSocketOrigin(origin: string | null, port: number): boolean {
-	if (origin === null) return true;
-
+export function isAllowedWebSocketOrigin(origin: string | null, requestUrl: string | URL): boolean {
 	try {
-		const parsed = new URL(origin);
-		if (parsed.origin !== origin || parsed.protocol !== "http:" || !isLoopbackHostname(parsed.hostname)) return false;
-		const originPort = parsed.port ? Number.parseInt(parsed.port, 10) : 80;
-		return originPort === port;
+		const url = typeof requestUrl === "string" ? new URL(requestUrl) : requestUrl;
+		if (url.protocol !== "http:" || !isLoopbackHostname(url.hostname)) return false;
+		return origin === null || origin === url.origin;
 	} catch {
 		return false;
 	}
@@ -317,8 +380,9 @@ function send(ws: Bun.ServerWebSocket<SocketData>, event: AgentEvent): void {
 interface ClientCaptureMessage {
 	type: "capture";
 	mode: CaptureMode;
-	userRequest: string;
+	request: string;
 	includeClipboard?: boolean;
+	region?: CaptureRegion;
 }
 
 interface ClientTextMessage {
@@ -330,8 +394,7 @@ interface ClientApproveMessage {
 	type: "approve";
 	actionId: string;
 	allowed: boolean;
-	scope?: "once" | "group" | "session" | "application";
-	editedArguments?: Record<string, unknown>;
+	scope?: "once" | "session";
 }
 
 interface ClientCancelMessage {
@@ -339,29 +402,152 @@ interface ClientCancelMessage {
 }
 
 type ClientMessage = ClientCaptureMessage | ClientTextMessage | ClientApproveMessage | ClientCancelMessage;
+type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
-function parseClientMessage(raw: string): ClientMessage | undefined {
-	const parsed = parseAgentEvent(raw) as ClientMessage | undefined;
-	if (!parsed || typeof parsed !== "object" || !("type" in parsed)) return undefined;
-	return parsed;
+function parseClientMessage(raw: string): { ok: true; message: ClientMessage } | { ok: false; error: string } {
+	let value: unknown;
+	try {
+		value = JSON.parse(raw);
+	} catch {
+		return { ok: false, error: "expected valid JSON text message" };
+	}
+	if (!isRecord(value) || typeof value.type !== "string")
+		return { ok: false, error: "message must be an object with a type" };
+
+	let result: ParseResult<ClientMessage>;
+	switch (value.type) {
+		case "capture":
+			result = parseCaptureMessage(value);
+			break;
+		case "message":
+			result = parseTextMessage(value);
+			break;
+		case "approve":
+			result = parseApproveMessage(value);
+			break;
+		case "cancel":
+			result = hasOnlyKeys(value, ["type"])
+				? { ok: true, value: { type: "cancel" } }
+				: { ok: false, error: "cancel contains unknown fields" };
+			break;
+		default:
+			return { ok: false, error: "unknown message type" };
+	}
+	return result.ok ? { ok: true, message: result.value } : result;
 }
 
-function parseCaptureBody(
-	body: unknown,
-):
-	| { ok: true; options: { mode: CaptureMode; userRequest: string; includeClipboard: boolean } }
-	| { ok: false; error: string } {
-	if (!body || typeof body !== "object") return { ok: false, error: "body must be an object" };
-	const record = body as Record<string, unknown>;
+function parseCaptureMessage(record: Record<string, unknown>): ParseResult<ClientCaptureMessage> {
+	if (!hasOnlyKeys(record, ["type", "mode", "request", "includeClipboard", "region"])) {
+		return { ok: false, error: "capture contains unknown fields" };
+	}
+	const capture = parseCaptureFields(record);
+	return capture.ok ? { ok: true, value: { type: "capture", ...capture.value } } : capture;
+}
+
+function parseTextMessage(record: Record<string, unknown>): ParseResult<ClientTextMessage> {
+	if (!hasOnlyKeys(record, ["type", "text"])) return { ok: false, error: "message contains unknown fields" };
+	if (typeof record.text !== "string" || !record.text.trim())
+		return { ok: false, error: "text must be a non-empty string" };
+	return { ok: true, value: { type: "message", text: record.text } };
+}
+
+function parseApproveMessage(record: Record<string, unknown>): ParseResult<ClientApproveMessage> {
+	if (record.editedArguments !== undefined) {
+		return { ok: false, error: "editedArguments are not supported by the desktop-tag worker" };
+	}
+	if (!hasOnlyKeys(record, ["type", "actionId", "allowed", "scope"])) {
+		return { ok: false, error: "approve contains unknown fields" };
+	}
+	if (typeof record.actionId !== "string" || !record.actionId.trim()) {
+		return { ok: false, error: "actionId must be a non-empty string" };
+	}
+	if (typeof record.allowed !== "boolean") return { ok: false, error: "allowed must be a boolean" };
+	const scope = record.scope;
+	if (scope !== undefined && scope !== "once" && scope !== "session") {
+		return { ok: false, error: "scope must be once or session" };
+	}
+	return {
+		ok: true,
+		value: {
+			type: "approve",
+			actionId: record.actionId,
+			allowed: record.allowed,
+			scope,
+		},
+	};
+}
+
+function parseCaptureBody(body: unknown): ParseResult<{
+	mode: CaptureMode;
+	userRequest: string;
+	includeClipboard: boolean;
+	region?: CaptureRegion;
+}> {
+	if (!isRecord(body)) return { ok: false, error: "body must be an object" };
+	if (!hasOnlyKeys(body, ["mode", "request", "includeClipboard", "region"])) {
+		return { ok: false, error: "body contains unknown fields" };
+	}
+	const parsed = parseCaptureFields(body);
+	if (!parsed.ok) return parsed;
+	return {
+		ok: true,
+		value: {
+			mode: parsed.value.mode,
+			userRequest: parsed.value.request,
+			includeClipboard: parsed.value.includeClipboard ?? true,
+			region: parsed.value.region,
+		},
+	};
+}
+
+function parseCaptureFields(record: Record<string, unknown>): ParseResult<Omit<ClientCaptureMessage, "type">> {
 	const mode = record.mode;
 	if (typeof mode !== "string" || !["screen", "window", "region", "browser"].includes(mode)) {
 		return { ok: false, error: "mode must be one of screen, window, region, browser" };
 	}
-	const userRequest = record.userRequest;
-	if (typeof userRequest !== "string" || !userRequest.trim()) {
-		return { ok: false, error: "userRequest must be a non-empty string" };
+	if (typeof record.request !== "string" || !record.request.trim()) {
+		return { ok: false, error: "request must be a non-empty string" };
 	}
-	const includeClipboard = record.includeClipboard ?? true;
-	if (typeof includeClipboard !== "boolean") return { ok: false, error: "includeClipboard must be a boolean" };
-	return { ok: true, options: { mode: mode as CaptureMode, userRequest, includeClipboard } };
+	if (record.includeClipboard !== undefined && typeof record.includeClipboard !== "boolean") {
+		return { ok: false, error: "includeClipboard must be a boolean" };
+	}
+	const region = parseRegion(record.region, mode === "region");
+	if (!region.ok) return region;
+	return {
+		ok: true,
+		value: {
+			mode: mode as CaptureMode,
+			request: record.request,
+			includeClipboard: record.includeClipboard as boolean | undefined,
+			region: region.value,
+		},
+	};
+}
+
+function parseRegion(value: unknown, required: boolean): ParseResult<CaptureRegion | undefined> {
+	if (value === undefined) {
+		return required ? { ok: false, error: "region is required for region capture" } : { ok: true, value: undefined };
+	}
+	if (!isRecord(value) || !hasOnlyKeys(value, ["x", "y", "width", "height"])) {
+		return { ok: false, error: "region must contain only x, y, width, and height" };
+	}
+	for (const key of ["x", "y"] as const) {
+		if (typeof value[key] !== "number" || !Number.isFinite(value[key])) {
+			return { ok: false, error: `region ${key} must be a finite number` };
+		}
+	}
+	for (const key of ["width", "height"] as const) {
+		if (typeof value[key] !== "number" || !Number.isFinite(value[key]) || value[key] <= 0) {
+			return { ok: false, error: `region ${key} must be a finite positive number` };
+		}
+	}
+	return { ok: true, value: value as unknown as CaptureRegion };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(record: Record<string, unknown>, allowed: readonly string[]): boolean {
+	return Object.keys(record).every(key => allowed.includes(key));
 }

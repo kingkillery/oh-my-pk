@@ -16,16 +16,17 @@ function main(): void {
 	logger.info("ompk-tag running", { url: server.url });
 	console.log(`ompk-tag listening at ${server.url}`);
 
-	process.on("SIGINT", () => {
-		logger.info("Shutting down ompk-tag");
-		server.stop();
+	let stopping = false;
+	const shutdown = async (signal: string): Promise<void> => {
+		if (stopping) return;
+		stopping = true;
+		logger.info("Shutting down ompk-tag", { signal });
+		await server.stop();
 		process.exit(0);
-	});
+	};
 
-	process.on("SIGTERM", () => {
-		server.stop();
-		process.exit(0);
-	});
+	process.on("SIGINT", () => void shutdown("SIGINT"));
+	process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 main();

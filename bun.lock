@@ -159,11 +159,10 @@
         "ompk-tag": "src/cli.ts",
       },
       "dependencies": {
-        "@pk-nerdsaver-ai/pi-agent-core": "workspace:*",
         "@pk-nerdsaver-ai/pi-ai": "workspace:*",
         "@pk-nerdsaver-ai/pi-coding-agent": "workspace:*",
+        "@pk-nerdsaver-ai/pi-tui": "workspace:*",
         "@pk-nerdsaver-ai/pi-utils": "workspace:*",
-        "arktype": "catalog:",
       },
       "devDependencies": {
         "@types/bun": "catalog:",

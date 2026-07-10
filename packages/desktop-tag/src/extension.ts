@@ -5,9 +5,11 @@ import { logger } from "@pk-nerdsaver-ai/pi-utils";
 
 import { CaptureService } from "./context";
 import { type CapabilityRegistry, createDefaultRegistry, routeContext, updateAvailability } from "./router";
-import type { CaptureMode, ContextPacket } from "./types";
+import type { CaptureMode, CaptureRegion, ContextPacket } from "./types";
 
 const MODES: CaptureMode[] = ["screen", "window", "region", "browser"];
+
+const DEFAULT_REQUEST = "Describe what is on my screen.";
 
 /** Default factory function loaded by the pi extension system. */
 export default function desktopTagExtension(pi: ExtensionAPI): void {
@@ -19,8 +21,14 @@ export default function desktopTagExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("tag", {
 		description: "Capture desktop context and send it to the agent",
 		async handler(args, ctx) {
-			const { mode, request } = parseCommandArgs(args);
-			await captureAndSend(pi, ctx, captureService, registry, mode, request);
+			try {
+				const { mode, request, region } = parseCommandArgs(args);
+				await captureAndSend(pi, ctx, captureService, registry, mode, request, region);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				logger.error("desktop-tag command rejected", { error: message });
+				if (ctx.hasUI) ctx.ui.notify(message, "error");
+			}
 		},
 	});
 
@@ -40,11 +48,12 @@ async function captureAndSend(
 	registry: CapabilityRegistry,
 	mode: CaptureMode,
 	userRequest: string,
+	region?: CaptureRegion,
 ): Promise<void> {
 	try {
 		if (ctx.hasUI) ctx.ui.setStatus("desktop-tag", "Capturing desktop context...");
 
-		const packet = await captureService.capture({ mode, userRequest, includeClipboard: true });
+		const packet = await captureService.capture({ mode, userRequest, region, includeClipboard: true });
 		await updateAvailability(registry);
 		const routing = routeContext(registry, packet);
 
@@ -58,10 +67,11 @@ async function captureAndSend(
 		}
 
 		pi.sendUserMessage(content);
-		if (ctx.hasUI) ctx.ui.setStatus("desktop-tag", undefined);
 	} catch (error) {
 		logger.error("desktop-tag extension failed", { error: error instanceof Error ? error.message : String(error) });
 		if (ctx.hasUI) ctx.ui.notify("Failed to capture desktop context", "error");
+	} finally {
+		if (ctx.hasUI) ctx.ui.setStatus("desktop-tag", undefined);
 	}
 }
 
@@ -90,11 +100,34 @@ async function loadImage(path: string): Promise<ImageContent> {
 	return { type: "image", data: bytes.toBase64(), mimeType: "image/png", detail: "high" };
 }
 
-function parseCommandArgs(args: string): { mode: CaptureMode; request: string } {
+export interface ParsedTagCommand {
+	mode: CaptureMode;
+	request: string;
+	region?: CaptureRegion;
+}
+
+const REGION_USAGE = "Usage: /tag region <x> <y> <width> <height> [request]";
+
+export function parseCommandArgs(args: string): ParsedTagCommand {
 	const tokens = args.trim().split(/\s+/).filter(Boolean);
 	const firstMode = tokens[0] as CaptureMode | undefined;
-	if (firstMode && MODES.includes(firstMode)) {
-		return { mode: firstMode, request: tokens.slice(1).join(" ") };
+	if (firstMode === "region") {
+		if (tokens.length < 5) throw new TypeError(REGION_USAGE);
+		const [x, y, width, height] = tokens.slice(1, 5).map(Number);
+		if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) {
+			throw new TypeError(`${REGION_USAGE}. Coordinates must be finite numbers.`);
+		}
+		if (width <= 0 || height <= 0) {
+			throw new TypeError(`${REGION_USAGE}. Width and height must be positive.`);
+		}
+		return {
+			mode: "region",
+			region: { x, y, width, height },
+			request: tokens.slice(5).join(" ") || DEFAULT_REQUEST,
+		};
 	}
-	return { mode: "screen", request: args.trim() };
+	if (firstMode && MODES.includes(firstMode)) {
+		return { mode: firstMode, request: tokens.slice(1).join(" ") || DEFAULT_REQUEST };
+	}
+	return { mode: "screen", request: args.trim() || DEFAULT_REQUEST };
 }
