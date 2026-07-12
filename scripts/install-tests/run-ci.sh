@@ -30,12 +30,13 @@ smoke_cli() {
 find_tarball() {
    local pattern="$1"
    local matches=()
-   shopt -s nullglob
-   matches=("$pattern")
-   shopt -u nullglob
+   # Expand the glob *inside* the function so the exact-match check is real:
+   # an unquoted glob at the call site would pre-expand, hiding zero matches
+   # (literal pattern passed through) and extra matches (dropped as $2, $3…).
+   mapfile -t matches < <(compgen -G "$pattern" || true)
 
    if [ "${#matches[@]}" -ne 1 ]; then
-      echo "Expected exactly one tarball matching: $pattern"
+      echo "Expected exactly one tarball matching: $pattern" >&2
       exit 1
    fi
 
@@ -119,20 +120,20 @@ agent_rc=0
 cp "$agent_pkg_backup" "$ROOT_DIR/packages/coding-agent/package.json"
 [ "$agent_rc" -eq 0 ] || exit "$agent_rc"
 
-utils_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-pi-utils-*.tgz)"
-wire_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-pi-wire-*.tgz)"
-natives_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-pi-natives-[0-9]*.tgz)"
-natives_leaf_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-pi-natives-"$host_tag"-*.tgz)"
-hashline_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-hashline-*.tgz)"
-catalog_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-pi-catalog-*.tgz)"
-ai_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-pi-ai-*.tgz)"
-mnemopi_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-pi-mnemopi-*.tgz)"
-snapcompact_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-snapcompact-*.tgz)"
-agent_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-pi-agent-core-*.tgz)"
-tui_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-pi-tui-*.tgz)"
-stats_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-omp-stats-*.tgz)"
-coding_agent_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-pi-coding-agent-*.tgz)"
-collab_web_tgz="$(find_tarball "$TARBALL_DIR"/pk-nerdsaver-ai-collab-web-*.tgz)"
+utils_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-pi-utils-*.tgz")"
+wire_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-pi-wire-*.tgz")"
+natives_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-pi-natives-[0-9]*.tgz")"
+natives_leaf_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-pi-natives-"$host_tag"-*.tgz")"
+hashline_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-hashline-*.tgz")"
+catalog_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-pi-catalog-*.tgz")"
+ai_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-pi-ai-*.tgz")"
+mnemopi_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-pi-mnemopi-*.tgz")"
+snapcompact_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-snapcompact-*.tgz")"
+agent_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-pi-agent-core-*.tgz")"
+tui_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-pi-tui-*.tgz")"
+stats_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-omp-stats-*.tgz")"
+coding_agent_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-pi-coding-agent-*.tgz")"
+collab_web_tgz="$(find_tarball "$TARBALL_DIR/pk-nerdsaver-ai-collab-web-*.tgz")"
 
 TARBALL_APP_DIR="$WORK_DIR/tarball-install"
 mkdir -p "$TARBALL_APP_DIR"
