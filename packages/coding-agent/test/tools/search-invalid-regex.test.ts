@@ -3,7 +3,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { SearchTool, type ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import { SearchTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/search";
 import { ToolError } from "@pk-nerdsaver-ai/pi-coding-agent/tools/tool-errors";
 
 function createTestSession(cwd: string, overrides: Partial<ToolSession> = {}): ToolSession {

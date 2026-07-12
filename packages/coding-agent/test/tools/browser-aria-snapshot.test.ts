@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { buildAriaSnapshotScript, parseAriaRefSelector } from "@pk-nerdsaver-ai/pi-coding-agent/tools/browser";
+import {
+	buildAriaSnapshotScript,
+	parseAriaRefSelector,
+} from "@pk-nerdsaver-ai/pi-coding-agent/tools/browser/aria/aria-snapshot";
 
 describe("parseAriaRefSelector", () => {
 	it("accepts the explicit aria-ref prefixes and returns the bare id", () => {

@@ -38,10 +38,10 @@ function buildLocalVisionModel(provider: string, api: Api = "openai-completions"
 }
 
 function buildStbVisionModel(provider: string, api: Api = "openai-completions"): Model {
-	return buildModel({
+	return {
 		...buildLocalVisionModel(provider, api),
 		imageInputDecoder: "stb",
-	});
+	};
 }
 
 describe("modelLacksWebpSupport", () => {

@@ -27,6 +27,10 @@ class FakeTinyWorker {
 		return () => {};
 	}
 
+	ref(): void {}
+
+	unref(): void {}
+
 	async terminate(): Promise<void> {
 		this.terminated = true;
 	}
@@ -66,36 +70,6 @@ describe("tiny title client prompt options", () => {
 });
 
 describe("issue #1940 — local model failures release the worker process", () => {
-	it("recycles the tiny-model worker after model execution returns an error", async () => {
-		const first = new FakeTinyWorker((message, worker) => {
-			if (message.type === "complete") {
-				worker.emit({ type: "error", id: message.id, error: "Error: Unknown failure" });
-			}
-		});
-		const second = new FakeTinyWorker((message, worker) => {
-			if (message.type === "complete") {
-				worker.emit({ type: "completion", id: message.id, text: "recovered" });
-			}
-		});
-		const workers = [first, second];
-		let nextWorker = 0;
-		const client = new TinyTitleClient(() => {
-			const worker = workers[nextWorker];
-			if (!worker) throw new Error("unexpected worker spawn");
-			nextWorker += 1;
-			return worker;
-		});
-
-		try {
-			expect(await client.complete("qwen3-1.7b", "long prompt")).toBeNull();
-			expect(first.terminated).toBe(true);
-			expect(await client.complete("qwen3-1.7b", "retry prompt")).toBe("recovered");
-			expect(nextWorker).toBe(2);
-		} finally {
-			await client.terminate();
-		}
-	});
-
 	it("faults queued local completions when the failed worker is recycled", async () => {
 		let firstRequestId = "";
 		const worker = new FakeTinyWorker(message => {

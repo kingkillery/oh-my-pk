@@ -67,8 +67,7 @@ describe("EvalTool language dispatch", () => {
 
 		const tool = new EvalTool(makeSession());
 		await tool.execute("call-js", {
-			language: "js",
-			code: "const x = 1;",
+			cells: [{ language: "js", code: "const x = 1;" }],
 		});
 
 		expect(jsExecuteSpy).toHaveBeenCalledTimes(1);
@@ -83,8 +82,7 @@ describe("EvalTool language dispatch", () => {
 
 		const tool = new EvalTool(makeSession());
 		await tool.execute("call-py", {
-			language: "py",
-			code: "print('hi')",
+			cells: [{ language: "py", code: "print('hi')" }],
 		});
 
 		expect(pythonExecuteSpy).toHaveBeenCalledTimes(1);
@@ -98,8 +96,8 @@ describe("EvalTool language dispatch", () => {
 		const jsExecuteSpy = vi.spyOn(evalIndex.jsBackend, "execute").mockResolvedValue(mockResult);
 
 		const tool = new EvalTool(makeSession());
-		await tool.execute("call-py", { language: "py", code: "x = 1" });
-		await tool.execute("call-js", { language: "js", code: "const y = 2;" });
+		await tool.execute("call-py", { cells: [{ language: "py", code: "x = 1" }] });
+		await tool.execute("call-js", { cells: [{ language: "js", code: "const y = 2;" }] });
 
 		expect(pythonExecuteSpy).toHaveBeenCalledTimes(1);
 		expect(jsExecuteSpy).toHaveBeenCalledTimes(1);
@@ -111,8 +109,7 @@ describe("EvalTool language dispatch", () => {
 		const tool = new EvalTool(makeSession(settings));
 		await expect(
 			tool.execute("call-py-disabled", {
-				language: "py",
-				code: "print('hi')",
+				cells: [{ language: "py", code: "print('hi')" }],
 			}),
 		).rejects.toThrow(/eval\.py = false/);
 	});
@@ -123,8 +120,7 @@ describe("EvalTool language dispatch", () => {
 		const tool = new EvalTool(makeSession(settings));
 		await expect(
 			tool.execute("call-js-disabled", {
-				language: "js",
-				code: "const x = 1;",
+				cells: [{ language: "js", code: "const x = 1;" }],
 			}),
 		).rejects.toThrow(/eval\.js = false/);
 	});
@@ -151,8 +147,7 @@ describe("EvalTool language dispatch", () => {
 
 		await expect(
 			tool.execute("call-js-env-disabled", {
-				language: "js",
-				code: "const x = 1;",
+				cells: [{ language: "js", code: "const x = 1;" }],
 			}),
 		).rejects.toThrow(/PI_JS=0/);
 	});

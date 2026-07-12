@@ -79,7 +79,6 @@ const todoBatch = type({
 const todoSchema = todoBatch.or(TodoOpEntry).describe("apply ordered todo operations");
 
 type TodoParams = typeof todoBatch.infer;
-type TodoSchema = typeof todoSchema.infer;
 type TodoOpEntryValue = TodoParams["ops"][number];
 
 /**

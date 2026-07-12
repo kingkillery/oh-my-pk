@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { AssignmentContractV2 } from "../../src/task/assignment-contract";
+import type { AssignmentContractV2, AssignmentResultV2 } from "../../src/task/assignment-contract";
 import {
 	ASSIGNMENT_CONTRACT_V2_VERSION,
 	ASSIGNMENT_CONTRACT_VERSION,
@@ -54,7 +54,7 @@ function v2ContractInput(): Omit<AssignmentContractV2, "digest"> {
 	};
 }
 
-function v2ResultEnvelope(): Record<string, unknown> {
+function v2ResultEnvelope(): AssignmentResultV2 {
 	return {
 		version: ASSIGNMENT_RESULT_V2_VERSION,
 		contractId: "roundtrip-v2",
@@ -127,6 +127,7 @@ describe("assignment-contract lossless V2", () => {
 
 		expect(parsed.ok).toBe(true);
 		if (!parsed.ok) return;
+		if (parsed.contract.version !== ASSIGNMENT_CONTRACT_V2_VERSION) throw new Error("expected a V2 contract");
 		expect(parsed.contract).toEqual(contract);
 		expect(Object.isFrozen(parsed.contract.evidencePolicy)).toBe(true);
 		expect(Object.isFrozen(parsed.contract.priorBlockedRoutes)).toBe(true);
@@ -201,17 +202,37 @@ describe("assignment-contract lossless V2", () => {
 	});
 
 	it("rejects V2 evidence and claim references that cannot be resolved", () => {
-		const duplicateEvidenceIds = v2ResultEnvelope();
-		duplicateEvidenceIds.evidenceRefs = [
-			...(duplicateEvidenceIds.evidenceRefs as unknown[]),
-			{ id: "evidence-test", type: "trace", locator: "duplicate", producedBy: "worker", sourceAuthority: "direct" },
-		];
-		const unknownEvidence = v2ResultEnvelope();
-		(unknownEvidence.claims as Array<Record<string, unknown>>)[0].evidenceRefs = ["not-present"];
-		const selfDependency = v2ResultEnvelope();
-		(selfDependency.claims as Array<Record<string, unknown>>)[0].dependsOnClaims = ["claim-base"];
-		const unknownClaim = v2ResultEnvelope();
-		(unknownClaim.counterevidence as Array<Record<string, unknown>>)[0].claimIds = ["not-present"];
+		const duplicateEvidenceIds: AssignmentResultV2 = {
+			...v2ResultEnvelope(),
+			evidenceRefs: [
+				...(v2ResultEnvelope().evidenceRefs ?? []),
+				{
+					id: "evidence-test",
+					type: "trace",
+					locator: "duplicate",
+					producedBy: "worker",
+					sourceAuthority: "direct",
+				},
+			],
+		};
+		const unknownEvidence: AssignmentResultV2 = {
+			...v2ResultEnvelope(),
+			claims: v2ResultEnvelope().claims?.map((claim, index) =>
+				index === 0 ? { ...claim, evidenceRefs: ["not-present"] } : claim,
+			),
+		};
+		const selfDependency: AssignmentResultV2 = {
+			...v2ResultEnvelope(),
+			claims: v2ResultEnvelope().claims?.map((claim, index) =>
+				index === 0 ? { ...claim, dependsOnClaims: ["claim-base"] } : claim,
+			),
+		};
+		const unknownClaim: AssignmentResultV2 = {
+			...v2ResultEnvelope(),
+			counterevidence: v2ResultEnvelope().counterevidence?.map((entry, index) =>
+				index === 0 ? { ...entry, claimIds: ["not-present"] } : entry,
+			),
+		};
 
 		for (const input of [duplicateEvidenceIds, unknownEvidence, selfDependency, unknownClaim]) {
 			const parsed = parseAssignmentResult(input);
