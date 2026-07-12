@@ -12198,6 +12198,30 @@ export class AgentSession {
 	}
 
 	/**
+	 * Dump the current LLM request JSON to a temp file and return its path
+	 * (used by the session-copy command to attach a raw-request sidecar).
+	 *
+	 * NOTE: Not yet ported from upstream. The caller treats a thrown error as
+	 * "sidecar unavailable" and still copies the transcript, so this degrades
+	 * gracefully rather than shipping a reconstructed request serializer.
+	 */
+	async dumpLlmRequestToTmpDir(): Promise<string> {
+		throw new Error("LLM request dump is not supported in this build (pending upstream sync).");
+	}
+
+	/**
+	 * Bookkeeping hook invoked after a `/move` creates a fresh session file, so
+	 * the empty session left behind can be reclaimed.
+	 *
+	 * NOTE: Not yet ported from upstream. Implemented as a safe no-op — session
+	 * correctness is unaffected; at worst an empty session file is not eagerly
+	 * cleaned up. `/move` itself is gated by {@link SessionManager.createEmptySessionFile}.
+	 */
+	markMovedFromEmptySessionFile(_sessionFile: string): void {
+		// Intentionally a no-op until the upstream cleanup bookkeeping is ported.
+	}
+
+	/**
 	 * Switch to a different session file.
 	 * Aborts current operation, loads messages, restores model/thinking.
 	 * Listeners are preserved and will continue receiving events.
