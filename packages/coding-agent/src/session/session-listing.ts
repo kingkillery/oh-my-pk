@@ -551,6 +551,21 @@ export function listSessions(sessionDir: string, storage: SessionStorage): Promi
 	return scanSessionDir(sessionDir, storage, true);
 }
 
+/**
+ * Read-only counterpart of {@link listSessions}: scans a directory for session
+ * files without the orphaned-backup recovery writes {@link scanSessionDir}
+ * performs. Used by the gc CLI, which must enumerate sessions without mutating
+ * them before deciding what to collect.
+ */
+export async function listSessionsReadOnly(sessionDir: string, storage: SessionStorage): Promise<SessionInfo[]> {
+	try {
+		const files = storage.listFilesSync(sessionDir, "*.jsonl");
+		return await collectSessionsFromFiles(files, storage, true);
+	} catch {
+		return [];
+	}
+}
+
 /** List all sessions across all project directories (newest first). */
 export async function listAllSessions(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
 	const sessionsRoot = path.join(getDefaultAgentDir(), "sessions");

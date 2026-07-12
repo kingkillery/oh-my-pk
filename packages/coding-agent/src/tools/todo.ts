@@ -1,3 +1,5 @@
+import * as os from "node:os";
+import * as path from "node:path";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -941,3 +943,19 @@ export const todoToolRenderer = {
 	},
 	mergeCallAndResult: true,
 };
+
+const DEFAULT_TODO_MARKDOWN_FILE = "TODO.md";
+
+/**
+ * Resolve the target markdown file for `/todo export` and `/todo import`.
+ *
+ * An empty argument defaults to `TODO.md`; a leading `~` expands to the home
+ * directory; relative paths resolve against the provided working directory.
+ */
+export function resolveTodoMarkdownPath(rest: string, cwd: string): string {
+	const trimmed = rest.trim();
+	const target = trimmed.length > 0 ? trimmed : DEFAULT_TODO_MARKDOWN_FILE;
+	const expanded =
+		target === "~" ? os.homedir() : target.startsWith("~/") ? path.join(os.homedir(), target.slice(2)) : target;
+	return path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+}
