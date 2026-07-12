@@ -20,7 +20,7 @@ impl RestartBackoff {
         self.base.saturating_mul(multiplier).min(self.maximum)
     }
 
-    pub fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.failures = 0;
     }
 }
