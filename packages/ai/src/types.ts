@@ -523,6 +523,8 @@ export interface AssistantMessage {
 	stopReason: StopReason;
 	stopDetails?: StopDetails | null;
 	errorMessage?: string;
+	/** Classified error flag bitmask (see `AIError.Flag`) describing the failure. Consumers test it with `AIError.is(message.errorId, Flag.X)` to branch on error kind without scraping `errorMessage`. */
+	errorId?: number;
 	/** HTTP status surfaced by the provider when the request failed. Populated by every provider's catch block alongside `errorMessage` so consumers (auth retry, telemetry, UI) can branch without regex-scraping the message. */
 	errorStatus?: number;
 	/**
