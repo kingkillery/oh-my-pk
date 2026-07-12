@@ -218,6 +218,10 @@ export interface OpenAICompat {
 	thinkingKeep?: "all" | false;
 	/** Which reasoning content field to emit on assistant messages. Default: auto-detected. */
 	reasoningContentField?: "reasoning_content" | "reasoning" | "reasoning_text";
+	/** Replay prior assistant reasoning content back into the request (needed by some chat-template renderers, e.g. Qwen proxies). Default: auto-detected (local/loopback non-proxy hosts). Opt in for a custom proxy fronting a llama.cpp-style backend. */
+	replayReasoningContent?: boolean;
+	/** Preserve Qwen `<think>` blocks in history instead of stripping them when reasoning is disabled. Default: auto-detected (local Qwen thinking dialects). Opt in for a cloud-fronted llama.cpp/vLLM whose template benefits from the replay. */
+	qwenPreserveThinking?: boolean;
 	/** Whether assistant tool-call messages must include reasoning content. Default: false. */
 	requiresReasoningContentForToolCalls?: boolean;
 	/** Whether all assistant messages must include reasoning content. Default: false. */
@@ -487,6 +491,8 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "supportsToolChoice"
 			| "supportsForcedToolChoice"
 			| "reasoningContentField"
+			| "replayReasoningContent"
+			| "qwenPreserveThinking"
 			| "requiresReasoningContentForToolCalls"
 			| "requiresReasoningContentForAllAssistantTurns"
 			| "allowsSyntheticReasoningContentForToolCalls"
@@ -735,4 +741,6 @@ export interface RemoteCompactionConfig<TApi extends Api = Api> {
 export interface ModelSpec<TApi extends Api = Api> extends Omit<Model<TApi>, "compat" | "compatConfig"> {
 	/** Sparse compatibility overrides; resolved into `Model.compat` by `buildModel`. */
 	compat?: CompatConfigOf<TApi>;
+	/** GitLab Duo Workflow: root namespace the model was discovered under, when scoped. */
+	gitlabDuoWorkflowRootNamespaceId?: string;
 }

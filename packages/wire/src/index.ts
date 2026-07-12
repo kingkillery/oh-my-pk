@@ -335,11 +335,20 @@ export type HostFrame =
 			t: "welcome";
 			proto: number;
 			header: SessionHeader;
-			entries: SessionEntry[];
+			/** proto v1 only: the full transcript. proto v2 omits this and streams it via `snapshot-chunk`. */
+			entries?: SessionEntry[];
 			state: SessionState;
 			agents: AgentSnapshot[];
 			readOnly?: boolean;
+			/**
+			 * proto v2: total transcript entry count. When present and 0 the guest
+			 * goes live immediately; otherwise it waits for the `snapshot-chunk`
+			 * train (terminated by `final: true`) before transitioning to live.
+			 */
+			entryCount?: number;
 	  }
+	/** proto v2: a fragment of the transcript snapshot streamed after `welcome`. */
+	| { t: "snapshot-chunk"; entries: SessionEntry[]; final: boolean }
 	| { t: "entry"; entry: SessionEntry }
 	| { t: "event"; event: AgentEvent }
 	| { t: "state"; state: SessionState }
