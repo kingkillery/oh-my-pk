@@ -562,10 +562,16 @@ export class AssistantMessageComponent extends Container {
 
 				// Thinking traces in thinkingText color, italic. When prose-only is on,
 				// strip structural markup for display (matching the streaming reveal path).
-				const md = new Markdown(formatThinkingForDisplay(thinkingText, this.proseOnlyThinking), 1, 0, getMarkdownTheme(), {
-					color: (text: string) => theme.fg("thinkingText", text),
-					italic: true,
-				});
+				const md = new Markdown(
+					formatThinkingForDisplay(thinkingText, this.proseOnlyThinking),
+					1,
+					0,
+					getMarkdownTheme(),
+					{
+						color: (text: string) => theme.fg("thinkingText", text),
+						italic: true,
+					},
+				);
 				md.transientRenderCache = this.#lastUpdateTransient;
 				this.#contentContainer.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: thinkingText });

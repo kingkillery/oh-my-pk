@@ -1256,8 +1256,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "model",
 			group: "Sampling",
 			label: "Text Verbosity",
-			description:
-				"Output verbosity hint sent to OpenAI Responses / Codex Responses models (low, medium, or high)",
+			description: "Output verbosity hint sent to OpenAI Responses / Codex Responses models (low, medium, or high)",
 		},
 	},
 
