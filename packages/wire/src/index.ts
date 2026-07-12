@@ -372,7 +372,7 @@ export type HostFrame =
 export type WireFrame = GuestFrame | HostFrame;
 
 /** Wire protocol version carried in `hello`; the host rejects mismatches. */
-export const COLLAB_PROTO = 1;
+export const COLLAB_PROTO = 2;
 
 /** Parameter key used for intent tracing (e.g. prompt explanation/reasoning) */
 export const INTENT_FIELD = "i";
