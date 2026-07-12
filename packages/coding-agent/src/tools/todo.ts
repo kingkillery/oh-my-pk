@@ -63,16 +63,41 @@ const TodoOpEntry = type({
 	"list?": InitListEntry.array().describe("phased task list (init)"),
 	"task?": type("string").describe("task content"),
 	"phase?": type("string").describe("phase name"),
-	"items?": type("string").describe("task content").array().atLeastLength(1).describe("tasks to append"),
+	// Empty `items` is tolerated at the schema boundary and rejected per-op at
+	// runtime (e.g. "Missing items for append operation") so a malformed call
+	// yields a helpful, op-specific error instead of a generic schema failure.
+	"items?": type("string").describe("task content").array().describe("tasks to append"),
 });
 
-const todoSchema = type({
+// Canonical batch form used internally after normalization.
+const todoBatch = type({
 	ops: TodoOpEntry.array().atLeastLength(1).describe("ordered todo operations"),
 }).describe("apply ordered todo operations");
 
-type TodoParams = TodoSchema;
+// Accept either the canonical batch (`{ ops: [...] }`) or a flattened single
+// op (`{ op, items }`) that models and legacy transcripts commonly send.
+const todoSchema = todoBatch.or(TodoOpEntry).describe("apply ordered todo operations");
+
+type TodoParams = typeof todoBatch.infer;
 type TodoSchema = typeof todoSchema.infer;
 type TodoOpEntryValue = TodoParams["ops"][number];
+
+/**
+ * Models (and legacy transcripts) routinely flatten a single-op call, sending
+ * `{ op: "init", items: [...] }` instead of the canonical `{ ops: [{ ... }] }`.
+ * `normalizeTodoArg` accepts either shape and returns the canonical batch form,
+ * tolerating malformed/partial input from streaming deltas without throwing.
+ */
+type FlatTodoOp = Partial<TodoOpEntryValue> & { op?: TodoOpEntryValue["op"] };
+function normalizeTodoArg(raw: TodoParams | FlatTodoOp | undefined | null): TodoParams {
+	if (raw && typeof raw === "object" && Array.isArray((raw as TodoParams).ops)) {
+		return raw as TodoParams;
+	}
+	if (raw && typeof raw === "object" && typeof (raw as FlatTodoOp).op === "string") {
+		return { ops: [raw as TodoOpEntryValue] };
+	}
+	return { ops: [] as unknown as TodoParams["ops"] };
+}
 
 // =============================================================================
 // State helpers
@@ -640,14 +665,15 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 
 	async execute(
 		_toolCallId: string,
-		params: TodoParams,
+		rawParams: TodoParams | FlatTodoOp,
 		_signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
+		const params = normalizeTodoArg(rawParams);
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
 		// Pure-view calls are reads: no normalization, no state write.
-		const readOnly = params.ops.every(entry => entry.op === "view");
+		const readOnly = params.ops.length > 0 && params.ops.every(entry => entry.op === "view");
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
 			: applyParams(clonePhases(previousPhases), params);
@@ -681,6 +707,12 @@ type TodoRenderArgs = {
 		phase?: string;
 		items?: string[];
 	}>;
+	// A single-op call may arrive flattened (`{ op, items }`) instead of wrapped
+	// in `ops`; the renderer normalizes both shapes.
+	op?: string;
+	task?: string;
+	phase?: string;
+	items?: string[];
 };
 
 // =============================================================================
@@ -830,7 +862,11 @@ export const todoToolRenderer = {
 		// entries that are `null` / strings before fields stream. Guard
 		// against non-array `ops` and non-object entries so a malformed
 		// delta never breaks the TUI render loop (#2005).
-		const opsList = Array.isArray(args?.ops) ? args.ops : [];
+		const opsList = Array.isArray(args?.ops)
+			? args.ops
+			: args && typeof args === "object" && typeof args.op === "string"
+				? [args]
+				: [];
 		const ops =
 			opsList.length === 0
 				? ["update"]
@@ -953,7 +989,16 @@ const DEFAULT_TODO_MARKDOWN_FILE = "TODO.md";
  * directory; relative paths resolve against the provided working directory.
  */
 export function resolveTodoMarkdownPath(rest: string, cwd: string): string {
-	const trimmed = rest.trim();
+	let trimmed = rest.trim();
+	// Users (and shells) frequently wrap paths with spaces in double quotes.
+	if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+		trimmed = trimmed.slice(1, -1).trim();
+	}
+	// Reject internal URL schemes (e.g. `artifact://…`) that are not real paths.
+	const schemeMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//.exec(trimmed);
+	if (schemeMatch) {
+		throw new Error(`Todo path must be a filesystem path, not an internal scheme: ${schemeMatch[1]}`);
+	}
 	const target = trimmed.length > 0 ? trimmed : DEFAULT_TODO_MARKDOWN_FILE;
 	const expanded =
 		target === "~" ? os.homedir() : target.startsWith("~/") ? path.join(os.homedir(), target.slice(2)) : target;
