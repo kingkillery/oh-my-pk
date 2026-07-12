@@ -65,11 +65,7 @@ import { filterAutoToolNames, type ResolvedToolProfile, resolveToolProfile } fro
 import type { EventBus } from "../utils/event-bus";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
-import {
-	type AssignmentContract,
-	type AssignmentResult,
-	parseAssignmentResult,
-} from "./assignment-contract";
+import { type AssignmentContract, type AssignmentResult, parseAssignmentResult } from "./assignment-contract";
 import {
 	type AssignmentVerificationResult,
 	type AssignmentVerifierRunners,
@@ -2358,19 +2354,19 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					const contractPrompt = options.assignmentContract
 						? `${prompt.render(assignmentContractPromptTemplate, {})}\n\n\`\`\`json\n${JSON.stringify(options.assignmentContract, null, 2)}\n\`\`\``
 						: undefined;
-				const recoveryPrompt = options.recoveryCapsule
-					? `# Recovery Capsule\n\nThis is a fresh child. Use only this compact failure capsule; do not request or reconstruct the failed transcript.\n\n\`\`\`json\n${JSON.stringify(options.recoveryCapsule, null, 2)}\n\`\`\``
-					: undefined;
-				const harnessGuidancePrompt = options.harnessGuidance
-					? `<harness-guidance>\n${options.harnessGuidance}\n</harness-guidance>`
-					: undefined;
-				const prompts =
-					defaultPrompt.length === 0
-						? [subagentPrompt]
-						: [...defaultPrompt.slice(0, -1), subagentPrompt, defaultPrompt[defaultPrompt.length - 1]];
-				return [...prompts, harnessGuidancePrompt, contractPrompt, recoveryPrompt].filter(
-					(value): value is string => value !== undefined,
-				);
+					const recoveryPrompt = options.recoveryCapsule
+						? `# Recovery Capsule\n\nThis is a fresh child. Use only this compact failure capsule; do not request or reconstruct the failed transcript.\n\n\`\`\`json\n${JSON.stringify(options.recoveryCapsule, null, 2)}\n\`\`\``
+						: undefined;
+					const harnessGuidancePrompt = options.harnessGuidance
+						? `<harness-guidance>\n${options.harnessGuidance}\n</harness-guidance>`
+						: undefined;
+					const prompts =
+						defaultPrompt.length === 0
+							? [subagentPrompt]
+							: [...defaultPrompt.slice(0, -1), subagentPrompt, defaultPrompt[defaultPrompt.length - 1]];
+					return [...prompts, harnessGuidancePrompt, contractPrompt, recoveryPrompt].filter(
+						(value): value is string => value !== undefined,
+					);
 				},
 				sessionManager: sessionManagerForRun,
 				hasUI: false,

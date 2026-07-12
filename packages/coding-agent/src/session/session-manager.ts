@@ -68,10 +68,7 @@ import {
 	type SessionStorage,
 	type SessionStorageWriter,
 } from "./session-storage";
-import {
-	SessionWriterGuard,
-	type SessionWriterGuardHandle,
-} from "./session-writer-guard";
+import { SessionWriterGuard, type SessionWriterGuardHandle } from "./session-writer-guard";
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 
