@@ -481,6 +481,8 @@ export interface SessionSelectorOptions {
 	loadAllSessions?: () => Promise<SessionInfo[]>;
 	/** Preloaded all-projects list; cached so the first Tab toggle is instant. */
 	allSessions?: SessionInfo[];
+	/** Open the selector already in the all-projects scope instead of the current project. */
+	startInAllScope?: boolean;
 	/**
 	 * Reads the live terminal height so the visible window fits the viewport.
 	 * Omitted only in tests; defaults to a conservative 24 rows.

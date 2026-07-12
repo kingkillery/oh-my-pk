@@ -242,6 +242,14 @@ export class CustomEditor extends Editor {
 		}
 	}
 
+	/**
+	 * Reset the editor content, optionally replacing it with `text` (used when
+	 * clearing the input after submit or swapping in a queued/draft message).
+	 */
+	clearDraft(text?: string): void {
+		this.setText(text ?? "");
+	}
+
 	/** Schedule one shimmer frame if none is already pending. The next render
 	 *  decides whether to schedule another, so the chain stops by itself when
 	 *  `focused` flips off or the keyword leaves the buffer. */

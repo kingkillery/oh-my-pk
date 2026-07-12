@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentTelemetryConfig, ThinkingLevel } from "@pk-nerdsaver-ai/pi-agent-core";
 import { recordHandoff, resolveTelemetry } from "@pk-nerdsaver-ai/pi-agent-core";
-import type { Api, Model, Usage } from "@pk-nerdsaver-ai/pi-ai";
+import type { Api, Model, ServiceTier, Usage } from "@pk-nerdsaver-ai/pi-ai";
 import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@pk-nerdsaver-ai/pi-utils";
 import type { Rule } from "../capability/rule";
 import { ModelRegistry } from "../config/model-registry";
@@ -326,6 +326,8 @@ function getReportFindingKey(value: unknown): string | null {
 export interface ExecutorOptions {
 	cwd: string;
 	worktree?: string;
+	/** Keep the underlying session/runtime alive after the run completes (e.g. long-lived eval bridges). */
+	keepAlive?: boolean;
 	agent: AgentDefinition;
 	task: string;
 	assignment?: string;
@@ -470,6 +472,12 @@ export interface ExecutorOptions {
 	 * passes its own `getAgentId()`).
 	 */
 	parentAgentId?: string;
+	/**
+	 * Parent session's live service tier, forwarded so a subagent with
+	 * `serviceTierSubagent: inherit` matches the parent. `null` means an explicit
+	 * "no tier"; `undefined` means the parent did not resolve one.
+	 */
+	parentServiceTier?: ServiceTier | null;
 }
 
 function parseStringifiedJson(value: unknown): unknown {

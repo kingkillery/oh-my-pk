@@ -229,6 +229,8 @@ export type SymbolKey =
 	| "tool.exa"
 	| "tool.browser"
 	| "tool.eval"
+	| "tool.delete"
+	| "tool.move"
 	| "tool.debug"
 	| "tool.mcp"
 	| "tool.job"
@@ -429,6 +431,8 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tool.exa": "🔭",
 	"tool.browser": "🌐",
 	"tool.eval": "▶",
+	"tool.delete": "🗑",
+	"tool.move": "➜",
 	"tool.debug": "🐞",
 	"tool.mcp": "🔌",
 	"tool.job": "⚙",
@@ -733,6 +737,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"tool.exa": "\uEB68",
 	"tool.browser": "\uEAAE",
 	"tool.eval": "\uEBAF",
+	"tool.delete": "\uF48E",
+	"tool.move": "\uF0B2",
 	"tool.debug": "\uEAD8",
 	"tool.mcp": "\uEB2D",
 	"tool.job": "\uEBA2",
@@ -930,6 +936,8 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"tool.exa": "exa",
 	"tool.browser": "[w]",
 	"tool.eval": ">_",
+	"tool.delete": "del",
+	"tool.move": "mv",
 	"tool.debug": "dbg",
 	"tool.mcp": "<>",
 	"tool.job": "job",
@@ -1886,6 +1894,12 @@ export class Theme {
 		const normalized = lang.toLowerCase();
 		const key = langMap[normalized];
 		return key ? this.#symbols[key] : this.#symbols["lang.default"];
+	}
+
+	/** Language icon with a subtle neutral color applied, for inline headers/badges. */
+	getLangIconStyled(lang: string | undefined): string {
+		const icon = this.getLangIcon(lang);
+		return icon ? this.fg("dim", icon) : icon;
 	}
 }
 

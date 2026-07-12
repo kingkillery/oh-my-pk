@@ -205,7 +205,7 @@ async function listInstalledPluginRoots(ctx: LoadContext): Promise<InjectedRoot[
 		);
 		return installedRoots
 			.filter(root => !marketplaceRealpaths.has(root.realpath))
-			.map(({ path: p, scope }) => ({ path: p, level: scope }));
+			.map(({ path: p, scope }) => ({ path: p, level: scope ?? "user" }));
 	} catch (err) {
 		logger.debug("listInstalledPluginRoots: enumeration failed", { error: String(err) });
 		return [];

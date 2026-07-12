@@ -23,7 +23,8 @@ export type ModelRole =
 	| "budget"
 	| "balanced"
 	| "max-intelligence"
-	| "free";
+	| "free"
+	| "tiny";
 
 export interface ModelRoleInfo {
 	tag?: string;
@@ -52,6 +53,8 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 	balanced: { tag: "BALANCED", name: "Balanced", color: "accent" },
 	"max-intelligence": { tag: "MAXINT", name: "Max Intelligence", color: "success" },
 	free: { tag: "FREE", name: "Free", color: "dim" },
+	// Hidden alias role: an unset `tiny` resolves to the same fast model `smol` picks.
+	tiny: { tag: "TINY", name: "Tiny", color: "warning", hidden: true },
 };
 
 export const MODEL_ROLE_IDS: ModelRole[] = [
@@ -73,6 +76,7 @@ export const MODEL_ROLE_IDS: ModelRole[] = [
 	"balanced",
 	"max-intelligence",
 	"free",
+	"tiny",
 ];
 
 export type RoleInfo = ModelRoleInfo;

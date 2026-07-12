@@ -427,6 +427,22 @@ export class InteractiveMode implements InteractiveModeContext {
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
 	todoPhases: TodoPhase[] = [];
 	hideThinkingBlock = false;
+	initialChatRendered = false;
+	/**
+	 * Effective thinking-block visibility for rendered/streamed turns. Currently a
+	 * direct forward of `hideThinkingBlock`; kept as a distinct accessor so future
+	 * derivations (e.g. model/thinking-level gating) have a single hook.
+	 */
+	get effectiveHideThinkingBlock(): boolean {
+		return this.hideThinkingBlock;
+	}
+	/**
+	 * Whether thinking content renders as prose only. Matches the codebase-wide
+	 * default used by the streaming reveal and transcript builders.
+	 */
+	get proseOnlyThinking(): boolean {
+		return true;
+	}
 	pendingImages: ImageContent[] = [];
 	pendingImageLinks: (string | undefined)[] = [];
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
@@ -1484,6 +1500,26 @@ export class InteractiveMode implements InteractiveModeContext {
 		// signature is cleared by `EventController`, so this replay is a no-op
 		// post-streaming and cannot duplicate.
 		this.#replayOptimisticUserMessage();
+	}
+
+	/**
+	 * The real `message_start` for the optimistic message has arrived and already
+	 * matches what is displayed, so just drop the signature; the shown block is now
+	 * backed by an authoritative session entry.
+	 */
+	clearOptimisticUserMessage(): void {
+		this.optimisticUserMessageSignature = undefined;
+	}
+
+	/**
+	 * A different authoritative user message arrived while an optimistic one was on
+	 * screen. Drop the optimistic signature and rebuild the transcript from the
+	 * authoritative session entries so the stale optimistic block is replaced
+	 * (mirrors `cancelPendingSubmission`'s rebuild-from-messages recovery).
+	 */
+	replaceOptimisticUserMessage(_message: AgentMessage): void {
+		this.optimisticUserMessageSignature = undefined;
+		this.rebuildChatFromMessages();
 	}
 
 	#replayOptimisticUserMessage(): void {

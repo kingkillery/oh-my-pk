@@ -116,6 +116,8 @@ export interface InstalledPlugin {
 	enabledFeatures: string[] | null;
 	/** Whether the plugin is enabled */
 	enabled: boolean;
+	/** Installation scope this plugin was discovered in. */
+	scope?: "user" | "project";
 }
 
 // =============================================================================

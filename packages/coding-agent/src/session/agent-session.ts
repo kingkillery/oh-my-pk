@@ -376,7 +376,7 @@ export type AgentSessionEvent =
 			/** True when compaction was skipped for a benign reason (no model, no candidates, nothing to compact). */
 			skipped?: boolean;
 	  }
-	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
+	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string; errorId?: number }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "retry_fallback_applied"; from: string; to: string; role: string }
 	| { type: "retry_fallback_succeeded"; model: string; role: string }
@@ -5390,8 +5390,14 @@ export class AgentSession {
 	 * fired (instead of replacing prior history). Display-only — NEVER feed
 	 * the result to `agent.replaceMessages` or a provider.
 	 */
-	buildTranscriptSessionContext(): SessionContext {
-		return deobfuscateSessionContext(this.sessionManager.buildSessionContext({ transcript: true }), this.#obfuscator);
+	buildTranscriptSessionContext(options?: { collapseCompactedHistory?: boolean }): SessionContext {
+		return deobfuscateSessionContext(
+			this.sessionManager.buildSessionContext({
+				transcript: true,
+				collapseCompactedHistory: options?.collapseCompactedHistory,
+			}),
+			this.#obfuscator,
+		);
 	}
 
 	#obfuscateTextArrayForProvider(value: readonly string[] | undefined): string[] | undefined {

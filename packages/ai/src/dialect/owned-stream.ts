@@ -22,6 +22,8 @@ const RESPONSE_OPEN_TOKENS: Record<Dialect, readonly string[]> = {
 	qwen3: ["<tool_response>"],
 	gemini: ["```tool_outputs"],
 	gemma: ["<|tool_response>"],
+	// pi renders tool results inside `‡` fences (see RESULT_FENCE in pi.ts).
+	pi: ["‡"],
 };
 
 function firstTokenIndex(text: string, tokens: readonly string[]): number {

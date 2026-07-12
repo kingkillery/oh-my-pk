@@ -52,6 +52,8 @@ export interface IrcSendOptions {
 	expectsReply?: boolean;
 	/** Marks fan-out deliveries so report-only and narrowed peer policies can reject broadcasts. */
 	isBroadcast?: boolean;
+	/** When set, suppress relaying the delivered message to the main UI (used for internal/side deliveries). */
+	suppressRelay?: boolean;
 }
 
 interface WakeReservation {

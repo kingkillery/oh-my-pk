@@ -2601,7 +2601,10 @@ export interface CoreWeaveModelManagerConfig {
 export function coreWeaveModelManagerOptions(
 	config?: CoreWeaveModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
-	return createSimpleOpenAICompletionsOptions("coreweave", "https://api.inference.wandb.ai/v1", {
+	return createSimpleOpenAICompletionsOptions(
+		"coreweave" as Parameters<typeof getBundledModels>[0],
+		"https://api.inference.wandb.ai/v1",
+		{
 		...config,
 		headers: () => coreWeaveProjectHeaders(Bun.env),
 	});
@@ -2737,7 +2740,9 @@ export interface SakanaModelManagerConfig {
 export function sakanaModelManagerOptions(config?: SakanaModelManagerConfig): ModelManagerOptions<"openai-responses"> {
 	const apiKey = config?.apiKey;
 	const baseUrl = normalizeSakanaBaseUrl(config?.baseUrl ?? Bun.env.SAKANA_BASE_URL ?? Bun.env.FUGU_BASE_URL);
-	const references = createBundledReferenceMap<"openai-responses">("sakana");
+	const references = createBundledReferenceMap<"openai-responses">(
+		"sakana" as Parameters<typeof getBundledModels>[0],
+	);
 	return {
 		providerId: "sakana",
 		dynamicModelsAuthoritative: true,

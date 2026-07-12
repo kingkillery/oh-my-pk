@@ -15,7 +15,9 @@ export type KnownApi =
 	| "google-vertex"
 	| "google-interactions"
 	| "ollama-chat"
-	| "cursor-agent";
+	| "cursor-agent"
+	| "gitlab-duo-agent"
+	| "devin-agent";
 export type Api = KnownApi | (string & {});
 
 /** Canonical thinking transport used by a model. */
@@ -429,6 +431,12 @@ export interface ResolvedOpenAISharedCompat {
 	disableReasoningOnToolChoice: boolean;
 	supportsToolChoice: boolean;
 	supportsForcedToolChoice: boolean;
+	/** Whether the endpoint honors a named/function `tool_choice` (some OpenAI-compat hosts only support `auto`/`none`). */
+	supportsNamedToolChoice?: boolean;
+	/** Replay prior assistant reasoning content back into the request (needed by some chat-template renderers, e.g. Qwen proxies). */
+	replayReasoningContent?: boolean;
+	/** Preserve Qwen `<think>` blocks in history instead of stripping them when reasoning is disabled. */
+	qwenPreserveThinking?: boolean;
 	reasoningContentField?: OpenAICompat["reasoningContentField"];
 	requiresReasoningContentForToolCalls: boolean;
 	requiresReasoningContentForAllAssistantTurns: boolean;
@@ -534,6 +542,18 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	supportsImageDetailOriginal: boolean;
 	requiresJuiceZeroHack: boolean;
 	supportsObfuscationOptOut: boolean;
+	/** Abort the stream if no bytes arrive within this many milliseconds (unset = no idle timeout). */
+	streamIdleTimeoutMs?: number;
+}
+
+/**
+ * Fully-resolved devin-agent (Codeium Cascade) compat view. Cascade exposes no
+ * wire reasoning/effort field, so the only resolved knob is whether the thinking
+ * deriver must trust explicit routed metadata only.
+ */
+export interface ResolvedDevinCompat {
+	/** When true, never fabricate an effort ladder from identity; only explicit routed thinking metadata counts. */
+	trustExplicitThinkingOnly?: boolean;
 }
 
 /**
@@ -575,7 +595,9 @@ export type CompatOf<TApi extends Api> = TApi extends "openrouter"
 			? ResolvedOpenAIResponsesCompat
 			: TApi extends "anthropic-messages"
 				? ResolvedAnthropicCompat
-				: undefined;
+				: TApi extends "devin-agent"
+					? ResolvedDevinCompat
+					: undefined;
 
 // Model interface for the unified model system
 export interface Model<TApi extends Api = Api> {
@@ -675,6 +697,34 @@ export interface Model<TApi extends Api = Api> {
 	 * `options.isOAuth = true` for the underlying provider call.
 	 */
 	isOAuth?: boolean;
+	/**
+	 * Optional model id used for remote context compaction requests when it
+	 * should differ from this model's own id. When unset, compaction reuses
+	 * `remoteCompaction.model`, then `requestModelId`, then `id`.
+	 */
+	compactionModel?: string;
+	/**
+	 * Remote (provider-side) context compaction configuration. When present it
+	 * lets a provider summarize/compact conversation history server-side instead
+	 * of the local compactor. See `RemoteCompactionConfig`.
+	 */
+	remoteCompaction?: RemoteCompactionConfig<TApi>;
+}
+
+/**
+ * Configuration for remote (provider-side) context compaction. All fields are
+ * optional; an absent config means remote compaction is disabled unless the
+ * provider enables it by default.
+ */
+export interface RemoteCompactionConfig<TApi extends Api = Api> {
+	/** Explicitly enable (`true`) or disable (`false`) remote compaction for this model. */
+	enabled?: boolean;
+	/** API used for the compaction request when it differs from the model's own `api`. */
+	api?: TApi;
+	/** Endpoint override for the compaction request. */
+	endpoint?: string;
+	/** Model id to send on the compaction request when it differs from the model's own id. */
+	model?: string;
 }
 
 /**

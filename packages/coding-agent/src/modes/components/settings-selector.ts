@@ -368,7 +368,7 @@ export interface SettingsRuntimeContext {
 	/** Available themes */
 	availableThemes: string[];
 	/** Provider/source ids shown in /model. */
-	providers: string[];
+	providers?: string[];
 	/** Working directory for plugins tab */
 	cwd: string;
 	/** Active model (api + id); resolves what the snapcompact `auto` shape maps to. */
@@ -1004,7 +1004,7 @@ export class SettingsSelectorComponent implements Component {
 
 	#createProviderLimitsInput(done: (value?: string) => void): Container {
 		return new ProviderLimitsSubmenu(
-			this.context.providers,
+			this.context.providers ?? [],
 			value => {
 				this.callbacks.onChange("providers.maxInFlightRequests", value);
 				done(this.#formatProviderLimitsValue(value));

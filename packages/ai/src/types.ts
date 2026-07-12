@@ -36,6 +36,8 @@ import type { AnthropicOptions } from "./providers/anthropic";
 import type { StopDetails } from "./providers/anthropic-wire";
 import type { AzureOpenAIResponsesOptions } from "./providers/azure-openai-responses";
 import type { CursorOptions } from "./providers/cursor";
+import type { DevinOptions } from "./providers/devin";
+import type { GitLabDuoWorkflowOptions } from "./providers/gitlab-duo-workflow";
 import type { GoogleOptions } from "./providers/google";
 import type { GoogleGeminiCliOptions } from "./providers/google-gemini-cli";
 import type { GoogleInteractionsOptions } from "./providers/google-interactions";
@@ -76,6 +78,8 @@ export interface ApiOptionsMap {
 	"google-interactions": GoogleInteractionsOptions;
 	"ollama-chat": OllamaChatOptions;
 	"cursor-agent": CursorOptions;
+	"gitlab-duo-agent": GitLabDuoWorkflowOptions;
+	"devin-agent": DevinOptions;
 }
 // Compile-time exhaustiveness check - this will fail if ApiOptionsMap doesn't have all KnownApi keys
 type _CheckExhaustive =
@@ -395,6 +399,12 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	openrouterVariant?: string;
 	/** Antigravity endpoint routing mode: "auto" (default with failover), "production", "sandbox". */
 	antigravityEndpointMode?: "auto" | "production" | "sandbox";
+	/** Output verbosity hint for OpenAI Responses / Codex Responses models. Ignored by other providers. */
+	textVerbosity?: "low" | "medium" | "high";
+	/** Per-provider cap on concurrent in-flight requests (map of provider id to a positive integer). */
+	maxInFlightRequests?: Record<string, number>;
+	/** Working directory associated with the request; used by agent-side providers that shell out or resolve local paths. */
+	cwd?: string;
 }
 
 // Generic StreamFunction with typed options

@@ -48,6 +48,8 @@ export interface SessionMessageEntry extends SessionEntryBase {
 export interface ThinkingLevelChangeEntry extends SessionEntryBase {
 	type: "thinking_level_change";
 	thinkingLevel?: string | null;
+	/** The user-configured thinking level, distinct from an auto-classified effective level. */
+	configured?: string | null;
 }
 
 export interface ModelChangeEntry extends SessionEntryBase {

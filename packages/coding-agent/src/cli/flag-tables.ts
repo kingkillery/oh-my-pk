@@ -311,3 +311,25 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--cleanup-workspace",
 	"--copy-env",
 ]);
+
+/**
+ * True when `arg` is a bare `--long` option the bootstrap pre-parser cannot
+ * classify from the built-in flag tables — i.e. not a known value-less
+ * ({@link VALUELESS_FLAGS}), string-value ({@link STRING_VALUE_FLAGS}), or
+ * optional-value ({@link OPTIONAL_VALUE_FLAGS}) flag, nor the internal boundary
+ * marker. Such an option may be an extension string flag that consumes its
+ * successor as a value, so the bootstrap must protect that successor rather than
+ * steal it as a global `--profile`/`--alias`. Inline-value forms (`--x=y`) and a
+ * bare `--` (end-of-options) are never candidates.
+ */
+export function isUnknownLongValueCandidate(arg: string): boolean {
+	return (
+		arg.startsWith("--") &&
+		arg !== "--" &&
+		!arg.includes("=") &&
+		arg !== PROFILE_BOOTSTRAP_BOUNDARY_ARG &&
+		!VALUELESS_FLAGS.has(arg) &&
+		!STRING_VALUE_FLAGS.has(arg) &&
+		!OPTIONAL_VALUE_FLAGS.has(arg)
+	);
+}

@@ -13,7 +13,7 @@ import type { AssistantThinkingRenderer } from "../../extensibility/extensions/t
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { resolveAbortLabel, shouldRenderAbortReason } from "../../session/messages";
 import { getPreviewLines, resolveImageOptions, TRUNCATE_LENGTHS } from "../../tools/render-utils";
-import { canonicalizeMessage } from "../../utils/thinking-display";
+import { canonicalizeMessage, formatThinkingForDisplay } from "../../utils/thinking-display";
 import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cache-invalidation-marker";
 
 /**
@@ -144,6 +144,7 @@ export class AssistantMessageComponent extends Container {
 		private readonly onImageUpdate?: () => void,
 		private readonly thinkingRenderers: readonly AssistantThinkingRenderer[] = [],
 		private readonly imageBudget?: ImageBudget,
+		private readonly proseOnlyThinking = true,
 	) {
 		super();
 		this.#transcriptBlockFinalized = message !== undefined;
@@ -436,11 +437,11 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "toolCall") return false;
 		}
 		if (this.#toolImagesByCallId.size > 0) return false;
-		if (message.stopReason === "aborted" && shouldRenderAbortReason(message.errorMessage)) return false;
+		if (message.stopReason === "aborted" && shouldRenderAbortReason(message)) return false;
 		if (message.stopReason === "error" && !this.#errorPinned) return false;
 		if (
 			message.errorMessage &&
-			shouldRenderAbortReason(message.errorMessage) &&
+			shouldRenderAbortReason(message) &&
 			message.stopReason !== "aborted" &&
 			message.stopReason !== "error"
 		)
@@ -559,8 +560,9 @@ export class AssistantMessageComponent extends Container {
 							(c.type === "thinking" && canonicalizeMessage(c.thinking)),
 					);
 
-				// Thinking traces in thinkingText color, italic
-				const md = new Markdown(thinkingText, 1, 0, getMarkdownTheme(), {
+				// Thinking traces in thinkingText color, italic. When prose-only is on,
+				// strip structural markup for display (matching the streaming reveal path).
+				const md = new Markdown(formatThinkingForDisplay(thinkingText, this.proseOnlyThinking), 1, 0, getMarkdownTheme(), {
 					color: (text: string) => theme.fg("thinkingText", text),
 					italic: true,
 				});
@@ -589,8 +591,8 @@ export class AssistantMessageComponent extends Container {
 		// But only if there are no tool calls (tool execution components will show the error)
 		const hasToolCalls = message.content.some(c => c.type === "toolCall");
 		if (!hasToolCalls) {
-			if (message.stopReason === "aborted" && shouldRenderAbortReason(message.errorMessage)) {
-				const abortMessage = resolveAbortLabel(message.errorMessage);
+			if (message.stopReason === "aborted" && shouldRenderAbortReason(message)) {
+				const abortMessage = resolveAbortLabel(message);
 				if (hasVisibleContent) {
 					this.#contentContainer.addChild(new Spacer(1));
 				} else {
@@ -603,7 +605,7 @@ export class AssistantMessageComponent extends Container {
 		}
 		if (
 			message.errorMessage &&
-			shouldRenderAbortReason(message.errorMessage) &&
+			shouldRenderAbortReason(message) &&
 			message.stopReason !== "aborted" &&
 			message.stopReason !== "error"
 		) {
