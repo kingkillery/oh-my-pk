@@ -978,6 +978,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"terminal.showProgress": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Terminal",
+			label: "Show Terminal Progress",
+			description: "Emit an OSC terminal progress indicator while the agent is working",
+		},
+	},
+
 	"images.autoResize": {
 		type: "boolean",
 		default: true,
@@ -1237,6 +1248,19 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	// Sampling
+	textVerbosity: {
+		type: "enum",
+		values: ["low", "medium", "high"] as const,
+		default: "medium",
+		ui: {
+			tab: "model",
+			group: "Sampling",
+			label: "Text Verbosity",
+			description:
+				"Output verbosity hint sent to OpenAI Responses / Codex Responses models (low, medium, or high)",
+		},
+	},
+
 	temperature: {
 		type: "number",
 		default: -1,
@@ -1833,6 +1857,19 @@ export const SETTINGS_SCHEMA = {
 			group: "Collab",
 			label: "Share Secret Redaction",
 			description: "Run the secret obfuscator over /share snapshots before upload (uses the secrets.* config)",
+		},
+	},
+
+	"share.store": {
+		type: "enum",
+		values: ["blob", "gist"] as const,
+		default: "blob",
+		ui: {
+			tab: "interaction",
+			group: "Collab",
+			label: "Share Store",
+			description:
+				"Where /share uploads the encrypted snapshot: the share server ('blob') or a secret GitHub gist ('gist')",
 		},
 	},
 
@@ -2545,6 +2582,17 @@ export const SETTINGS_SCHEMA = {
 			condition: "mnemopiActive",
 		},
 	},
+	"mnemopi.proactiveLinking": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "memory",
+			group: "Mnemopi",
+			label: "Mnemopi Proactive Linking",
+			description: "Proactively link related memories as new turns are retained",
+			condition: "mnemopiActive",
+		},
+	},
 	"mnemopi.noEmbeddings": {
 		type: "boolean",
 		default: false,
@@ -2646,6 +2694,15 @@ export const SETTINGS_SCHEMA = {
 	"mnemopi.recallMaxQueryChars": { type: "number", default: 1200 },
 	"mnemopi.injectionTokenLimit": { type: "number", default: 1000 },
 	"mnemopi.debug": { type: "boolean", default: false },
+
+	// Storage garbage collection (oh-my-pk gc). Booleans pick which passes run when no
+	// pass flag is given on the CLI; numbers are the retention defaults.
+	"gc.blobs": { type: "boolean", default: true },
+	"gc.archive": { type: "boolean", default: true },
+	"gc.wal": { type: "boolean", default: true },
+	"gc.coldArchiveAfterDays": { type: "number", default: 30 },
+	"gc.retainNewestGlobal": { type: "number", default: 200 },
+	"gc.retainNewestPerCwd": { type: "number", default: 20 },
 
 	// WikiGraph Lite sidecar wiki index.
 	"wikigraph.enabled": { type: "boolean", default: true },
@@ -3277,6 +3334,28 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"eval.rb": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "shell",
+			group: "Eval & Python",
+			label: "Ruby Eval Backend",
+			description: "Allow the eval tool to dispatch Ruby cells to a Ruby kernel (opt-in)",
+		},
+	},
+
+	"eval.jl": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "shell",
+			group: "Eval & Python",
+			label: "Julia Eval Backend",
+			description: "Allow the eval tool to dispatch Julia cells to a Julia kernel (opt-in)",
+		},
+	},
+
 	// Python kernel knobs (consumed by the eval py backend and the /python slash command)
 	"python.kernelMode": {
 		type: "enum",
@@ -3298,6 +3377,28 @@ export const SETTINGS_SCHEMA = {
 			label: "Python Interpreter",
 			description:
 				"Optional path to an exact Python executable. When set, automatic Python runtime discovery is skipped.",
+		},
+	},
+	"ruby.interpreter": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "shell",
+			group: "Eval & Python",
+			label: "Ruby Interpreter",
+			description:
+				"Optional path to an exact Ruby executable. When set, automatic Ruby runtime discovery is skipped.",
+		},
+	},
+	"julia.interpreter": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "shell",
+			group: "Eval & Python",
+			label: "Julia Interpreter",
+			description:
+				"Optional path to an exact Julia executable. When set, automatic Julia runtime discovery is skipped.",
 		},
 	},
 
@@ -3576,6 +3677,50 @@ export const SETTINGS_SCHEMA = {
 			label: "GitHub CLI",
 			description:
 				"Enable the github tool (op-based dispatch for repository, issue, pull request, diff, search, checkout, push, and Actions watch workflows)",
+		},
+	},
+
+	"glob.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Glob",
+			description: "Enable the glob tool for fast filename pattern matching",
+		},
+	},
+
+	"grep.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Grep",
+			description: "Enable the grep tool for ripgrep-backed content search",
+		},
+	},
+
+	"grep.contextBefore": {
+		type: "number",
+		default: 0,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Grep Context Before",
+			description: "Default number of context lines to show before each grep match (0 disables leading context)",
+		},
+	},
+
+	"grep.contextAfter": {
+		type: "number",
+		default: 0,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Grep Context After",
+			description: "Default number of context lines to show after each grep match (0 disables trailing context)",
 		},
 	},
 
@@ -3967,6 +4112,18 @@ export const SETTINGS_SCHEMA = {
 			group: "Isolation",
 			label: "Workspace Root",
 			description: "Directory where Ethereal Workspaces are created. Defaults to the OS temp directory.",
+		},
+	},
+
+	"worktree.base": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tasks",
+			group: "Isolation",
+			label: "Worktree Base Directory",
+			description:
+				"Base directory for git worktrees created in worktree workspace mode. Supports '~'; must be an absolute path when set. Leave empty to use the default location.",
 		},
 	},
 
@@ -4462,6 +4619,17 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	// Provider selection
+	"providers.maxInFlightRequests": {
+		type: "record",
+		default: {} as Record<string, number>,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Max In-Flight Requests",
+			description:
+				"Per-provider cap on concurrent in-flight requests (map of provider id to a positive integer; omit a provider to leave it unlimited)",
+		},
+	},
 	"providers.webSearch": {
 		type: "enum",
 		values: SEARCH_PROVIDER_PREFERENCES,
@@ -4867,6 +5035,18 @@ export const SETTINGS_SCHEMA = {
 		type: "boolean",
 		default: true,
 		ui: { tab: "providers", group: "Services", label: "Exa", description: "Master toggle for all Exa search tools" },
+	},
+
+	"exa.searchDelayMs": {
+		type: "number",
+		default: 0,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Exa Search Throttle (ms)",
+			description:
+				"Minimum delay between consecutive Exa search requests, in milliseconds (0 disables client-side throttling)",
+		},
 	},
 
 	"exa.enableSearch": {
