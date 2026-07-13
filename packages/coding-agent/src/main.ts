@@ -159,7 +159,9 @@ const RPC_BACKGROUND_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 
 function applyDefaultSettingOverrides(settingPaths: SettingPath[], targetSettings: Settings): void {
 	for (const settingPath of settingPaths) {
-		targetSettings.override(settingPath, getDefault(settingPath));
+		if (!targetSettings.isConfigured(settingPath)) {
+			targetSettings.override(settingPath, getDefault(settingPath));
+		}
 	}
 }
 

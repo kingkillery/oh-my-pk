@@ -55,6 +55,8 @@ function createContext() {
 		} as unknown as InteractiveModeContext["session"],
 		sessionManager: { getSessionName: () => "named-session" } as unknown as InteractiveModeContext["sessionManager"],
 		compactionQueuedMessages: [] as InteractiveModeContext["compactionQueuedMessages"],
+		pendingImages: [],
+		pendingImageLinks: [],
 		locallySubmittedUserSignatures: new Set<string>(),
 		onInputCallback,
 		startPendingSubmission,

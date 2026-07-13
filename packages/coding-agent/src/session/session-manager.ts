@@ -1673,8 +1673,22 @@ export class SessionManager {
 	 * guessing backend semantics and risking session corruption. `/move` surfaces
 	 * the thrown message to the user until this is ported.
 	 */
-	static createEmptySessionFile(_cwd: string): string {
-		throw new Error("Moving a session to a new directory is not supported in this build (pending upstream sync).");
+	static createEmptySessionFile(cwd: string): string {
+		const resolvedCwd = path.resolve(cwd);
+		const sessionDir = SessionManager.getDefaultSessionDir(resolvedCwd);
+		fs.mkdirSync(sessionDir, { recursive: true });
+		const timestamp = nowIso();
+		const sessionId = mintSessionId();
+		const sessionFile = path.join(sessionDir, `${fileSafeTimestamp(timestamp)}_${sessionId}.jsonl`);
+		const header: SessionHeader = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: sessionId,
+			timestamp,
+			cwd: resolvedCwd,
+		};
+		fs.writeFileSync(sessionFile, `${JSON.stringify(header)}\n`, "utf8");
+		return sessionFile;
 	}
 
 	/**

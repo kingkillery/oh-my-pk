@@ -33,7 +33,7 @@ import {
 	Snowflake,
 } from "@pk-nerdsaver-ai/pi-utils";
 import { INTENT_FIELD } from "@pk-nerdsaver-ai/pi-wire";
-import { ADVISOR_READONLY_TOOL_NAMES, discoverWatchdogFiles } from "./advisor";
+import { ADVISOR_READONLY_TOOL_NAMES, discoverWatchdogFiles, formatActiveRepoWatchdogPrompt } from "./advisor";
 import { type AsyncJob, AsyncJobManager } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
 import { loadCapability } from "./capability";
@@ -197,6 +197,7 @@ import { getImageGenTools } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { queueResolveHandler } from "./tools/resolve";
 import { ttsTool } from "./tools/tts";
+import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
 import { buildNamedToolChoice } from "./utils/tool-choice";
 import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
@@ -1177,6 +1178,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	contextFilesPromise.catch(() => {});
 	const watchdogFilesPromise = logger.time("discoverWatchdogFiles", () => discoverWatchdogFiles(cwd, agentDir));
 	watchdogFilesPromise.catch(() => {});
+	const activeRepoContextPromise = logger.time("resolveActiveRepoContext(advisor)", () => resolveActiveRepoContext(cwd));
+	activeRepoContextPromise.catch(() => {});
 	const promptTemplatesPromise = options.promptTemplates
 		? Promise.resolve(options.promptTemplates)
 		: logger.time("discoverPromptTemplates", discoverPromptTemplates, cwd, agentDir);
@@ -1420,10 +1423,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 		return result;
 	};
-	const [contextFiles, resolvedWorkspaceTree, watchdogFiles] = await Promise.all([
+	const [contextFiles, resolvedWorkspaceTree, watchdogFiles, activeRepoContextForAdvisor] = await Promise.all([
 		contextFilesPromise,
 		raceWithDeadline("buildWorkspaceTree", workspaceTreePromise),
 		watchdogFilesPromise,
+		activeRepoContextPromise.catch(() => null),
 	]);
 
 	let agent: Agent;
@@ -2755,10 +2759,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			.filter((tool): tool is Tool => tool != null)
 			.map(wrapToolWithMetaNotice);
 
-		let advisorWatchdogPrompt: string | undefined;
-		if (watchdogFiles && watchdogFiles.length > 0) {
-			advisorWatchdogPrompt = watchdogFiles.join("\n\n");
+		const watchdogParts: string[] = watchdogFiles && watchdogFiles.length > 0 ? [...watchdogFiles] : [];
+		if (activeRepoContextForAdvisor) {
+			watchdogParts.push(formatActiveRepoWatchdogPrompt(activeRepoContextForAdvisor));
 		}
+		const advisorWatchdogPrompt = watchdogParts.length > 0 ? watchdogParts.join("\n\n") : undefined;
 		// Owned only when this session created the manager; subagents receive a
 		// parent's manager via `options.mcpManager` and MUST NOT disconnect it.
 		const ownedMcpManager = options.mcpManager ? undefined : mcpManager;

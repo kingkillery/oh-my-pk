@@ -186,6 +186,8 @@ function createContext(): {
 			getKeys: () => [],
 		} as unknown as InteractiveModeContext["keybindings"],
 		compactionQueuedMessages: [],
+		pendingImages: [],
+		pendingImageLinks: [],
 		isBashMode: false,
 		isPythonMode: false,
 		optimisticUserMessageSignature: undefined,

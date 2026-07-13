@@ -41,6 +41,7 @@ import {
 	mapModelsDevToModels,
 	SAKANA_FUGU_STATIC_MODELS,
 	stripFireworksDeepSeekThinkingToggle,
+	UMANS_VIA_HANDOFF_MODEL_IDS,
 } from "../src/provider-models/openai-compat";
 import type { ModelSpec } from "../src/types";
 import { cleanModelName } from "../src/utils";
@@ -275,10 +276,38 @@ function applyKimiMaxTokensCap(models: readonly ModelSpec[]): ModelSpec[] {
 }
 
 /**
- * Fireworks' DeepSeek V4 endpoint accepts the user's effort through
- * `reasoning_effort` and rejects the DeepSeek-native binary `thinking` toggle
- * when both are present. Strip stale reference metadata from generated fallbacks.
+ * Umans reports `supports_vision: "via-handoff"` for GLM models that route
+ * image inputs through a vision pre-analysis step rather than accepting raw
+ * image blocks. Only `true` means direct image support. Correct stale bundled
+ * snapshots (generated before the via-handoff sentinel handling was added) so
+ * they match what a fresh API fetch would produce — text-only input and the
+ * max-budget reasoning shape from the live capability response.
  */
+function applyUmansViaHandoffCorrection(models: readonly ModelSpec[]): ModelSpec[] {
+	const viaHandoffIds = new Set<string>(UMANS_VIA_HANDOFF_MODEL_IDS);
+	return models.map(model => {
+		if (model.provider !== "umans" || !viaHandoffIds.has(model.id)) return model;
+		const needsInputFix =
+			!Array.isArray(model.input) || model.input.length !== 1 || model.input[0] !== "text";
+		const needsThinkingFix = model.thinking?.mode !== "anthropic-budget-effort";
+		if (!needsInputFix && !needsThinkingFix) return model;
+		return {
+			...model,
+			...(needsInputFix ? { input: ["text"] } : {}),
+			...(needsThinkingFix
+				? {
+						thinking: {
+							mode: "anthropic-budget-effort",
+							efforts: ["high", "xhigh"],
+							effortMap: { xhigh: "max" },
+						},
+					}
+				: {}),
+		} as ModelSpec;
+	});
+}
+
+
 function applyFireworksDeepSeekReasoningShape(models: readonly ModelSpec[]): ModelSpec[] {
 	return models.map(model => {
 		if (model.provider !== "fireworks" || model.api !== "openai-completions") return model;
@@ -574,6 +603,7 @@ async function generateModels() {
 	allModels = applyPremiumMultiplierOverrides(allModels);
 	allModels = applyCodexPricingFallback(allModels);
 	allModels = applyKimiMaxTokensCap(allModels);
+	allModels = applyUmansViaHandoffCorrection(allModels);
 	allModels = applyFireworksDeepSeekReasoningShape(allModels);
 	allModels = dropFireworksWireIds(allModels);
 	allModels = dropUnusableZaiContextTierIds(allModels);

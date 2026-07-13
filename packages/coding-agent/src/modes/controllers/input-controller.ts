@@ -138,6 +138,15 @@ export class InputController {
 	// queuedMessageCount (still 0) and no-ops instead of flushing. Chaining each
 	// submit onto the previous makes successive Enters strictly sequential.
 	#submitChain: Promise<void> = Promise.resolve();
+	// Streaming double-tap abort: timestamp when the streaming Esc arm was set, 0 when unarmed.
+	#streamingEscArmedAt = 0;
+	#streamingEscUnsubscribe: (() => void) | null = null;
+
+	#clearStreamingEscArm(): void {
+		this.#streamingEscArmedAt = 0;
+		this.#streamingEscUnsubscribe?.();
+		this.#streamingEscUnsubscribe = null;
+	}
 
 	#showTinyTitleDownloadProgress(modelKey: string): void {
 		if (!isTinyTitleLocalModelKey(modelKey)) return;
@@ -214,6 +223,20 @@ export class InputController {
 			// to clobber the single saved-handler slot (auto-compaction start
 			// → /compact → auto end → manual finally), leaving Esc wired to a
 			// stale no-op closure until restart.
+			if (this.ctx.focusedAgentId) {
+				// Esc never interrupts the focused agent's turn: clear typed text,
+				// else return the view to the main session. Interrupt via empty
+				// steer-flush submit if needed. Maintenance-abort for the focused
+				// agent's own session is intentionally skipped (#2819).
+				if (this.ctx.editor.getText().trim()) {
+					this.ctx.editor.setText("");
+					this.ctx.ui.requestRender();
+				} else {
+					void this.ctx.unfocusSession();
+				}
+				return; // double-escape backtrack (/tree, /branch) stays main-only
+			}
+
 			const viewSession = this.ctx.viewSession;
 			let aborted = false;
 			if (viewSession.isCompacting) {
@@ -251,18 +274,6 @@ export class InputController {
 			if (this.ctx.hasActiveOmfg() && this.ctx.handleOmfgEscape()) {
 				return;
 			}
-			if (this.ctx.focusedAgentId) {
-				// Esc never interrupts the focused agent's turn: clear typed text,
-				// else return the view to the main session. Interrupt via empty
-				// steer-flush submit if needed.
-				if (this.ctx.editor.getText().trim()) {
-					this.ctx.editor.setText("");
-					this.ctx.ui.requestRender();
-				} else {
-					void this.ctx.unfocusSession();
-				}
-				return; // double-escape backtrack (/tree, /branch) stays main-only
-			}
 			if (this.ctx.collabGuest) {
 				// Guest Esc: ask the host to interrupt its agent; the local replica
 				// session is never streaming, so the native abort path below would
@@ -290,7 +301,23 @@ export class InputController {
 				this.ctx.isPythonMode = false;
 				this.ctx.updateEditorBorderColor();
 			} else if (this.ctx.session.isStreaming) {
-				void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+				// Double-tap to abort streaming: first Esc arms a 2-second window and
+				// shows a status prompt; second Esc within that window aborts.
+				const now = Date.now();
+				const STREAMING_ESC_TIMEOUT_MS = 2_000;
+				if (this.#streamingEscArmedAt > 0 && now - this.#streamingEscArmedAt <= STREAMING_ESC_TIMEOUT_MS) {
+					this.#clearStreamingEscArm();
+					void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+				} else {
+					this.#clearStreamingEscArm();
+					this.#streamingEscArmedAt = now;
+					this.#streamingEscUnsubscribe = this.ctx.session.subscribe((event: { type: string }) => {
+						if (event.type === "agent_end" || event.type === "agent_start") {
+							this.#clearStreamingEscArm();
+						}
+					});
+					this.ctx.showStatus("Press Esc again within 2s to cancel streaming.");
+				}
 			} else if (this.ctx.editor.getText().trim()) {
 				// Esc with typed text clears the draft instead of (or before) any double-Esc action
 				this.ctx.editor.setText("");
@@ -902,10 +929,8 @@ export class InputController {
 	}
 
 	handleCtrlZ(): void {
-		// SIGTSTP is POSIX job-control: Windows has no equivalent and
-		// `process.kill(_, "SIGTSTP")` throws `TypeError: Unknown signal:
-		// SIGTSTP` there, taking the whole agent down via an uncaught
-		// exception (issue #2036). No-op on platforms that cannot suspend.
+		// SIGSTOP is not available on Windows (issue #2036). No-op on platforms
+		// that cannot suspend.
 		if (process.platform === "win32") {
 			this.ctx.showStatus("Suspend (Ctrl+Z) is not supported on this platform");
 			return;
@@ -926,9 +951,8 @@ export class InputController {
 		this.ctx.ui.stop();
 
 		try {
-			// pid=0 → entire foreground process group; the shell receives
-			// SIGTSTP and parks the job.
-			process.kill(0, "SIGTSTP");
+			// pid=0 → entire foreground process group; SIGSTOP parks the job (#3461).
+			process.kill(0, "SIGSTOP");
 		} catch (err) {
 			// Either the runtime refused the signal or the kernel rejected
 			// it (some sandboxes block sending to pid=0). Tear the resume

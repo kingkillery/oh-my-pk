@@ -49,7 +49,7 @@ import {
 	zenmuxModelManagerOptions,
 	zhipuCodingPlanModelManagerOptions,
 } from "./openai-compat";
-import { cursorModelManagerOptions, zaiModelManagerOptions } from "./special";
+import { cursorModelManagerOptions, gitLabDuoWorkflowModelManagerOptions, zaiModelManagerOptions } from "./special";
 
 export const CATALOG_PROVIDERS = [
 	{
@@ -142,6 +142,13 @@ export const CATALOG_PROVIDERS = [
 		envVars: ["GITLAB_TOKEN"],
 	},
 	{
+		id: "gitlab-duo-agent",
+		defaultModel: "claude_sonnet_4_6_vertex",
+		envVars: ["GITLAB_TOKEN"],
+		createModelManagerOptions: (config: ModelManagerConfig) => gitLabDuoWorkflowModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+	},
+	{
 		id: "google",
 		defaultModel: "gemini-3.1-pro-preview",
 		envVars: ["GEMINI_API_KEY"],
@@ -232,7 +239,7 @@ export const CATALOG_PROVIDERS = [
 	{
 		id: "moonshot",
 		defaultModel: "kimi-k2.7-code",
-		envVars: ["MOONSHOT_API_KEY"],
+		envVars: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => moonshotModelManagerOptions(config),
 		catalogDiscovery: { label: "Moonshot" },
 	},

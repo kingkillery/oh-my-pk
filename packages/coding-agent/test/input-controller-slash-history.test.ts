@@ -40,6 +40,8 @@ function makeCtx() {
 		handleMCPCommand,
 		showStatus: vi.fn(),
 		ui: { requestRender: vi.fn() },
+		pendingImages: [],
+		pendingImageLinks: [],
 	} as unknown as InteractiveModeContext;
 	return { ctx, editor, addToHistory, handleMCPCommand };
 }

@@ -52,9 +52,11 @@ describe("session title source persistence", () => {
 		const entries = await loadEntriesFromFile(sessionFile!);
 		expect(getHeader(entries)?.titleSource).toBe("auto");
 
+		await session.close();
 		const reopened = await SessionManager.open(sessionFile!);
 		expect(reopened.getSessionName()).toBe("Auto title");
 		expect(reopened.titleSource).toBe("auto");
+		await reopened.close();
 	});
 
 	it("persists user title source across reopen", async () => {
@@ -70,9 +72,11 @@ describe("session title source persistence", () => {
 		const entries = await loadEntriesFromFile(sessionFile!);
 		expect(getHeader(entries)?.titleSource).toBe("user");
 
+		await session.close();
 		const reopened = await SessionManager.open(sessionFile!);
 		expect(reopened.getSessionName()).toBe("Manual title");
 		expect(reopened.titleSource).toBe("user");
+		await reopened.close();
 	});
 	it("notifies name-change subscribers only after successful applied names", async () => {
 		const session = SessionManager.inMemory(cwd);

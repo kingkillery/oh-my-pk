@@ -224,6 +224,8 @@ describe("SessionManager temp cwd session dirs", () => {
 
 describe("SessionManager legacy session migration persistence", () => {
 	let tempDir: string;
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
 	function makeAssistantMessage() {
 		return {
@@ -251,9 +253,16 @@ describe("SessionManager legacy session migration persistence", () => {
 
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-session-manager-legacy-"));
+		setAgentDir(tempDir);
 	});
 
 	afterEach(() => {
+		if (originalAgentDir) {
+			setAgentDir(originalAgentDir);
+		} else {
+			setAgentDir(fallbackAgentDir);
+			delete process.env.PI_CODING_AGENT_DIR;
+		}
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 

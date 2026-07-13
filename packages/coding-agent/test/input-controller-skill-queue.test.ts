@@ -90,6 +90,8 @@ function createStubInputControllerContext(opts: { skillCommands: Map<string, str
 		isPythonMode: false,
 		loopModeEnabled: false,
 		compactionQueuedMessages: [],
+		pendingImages: [],
+		pendingImageLinks: [],
 		locallySubmittedUserSignatures: new Set<string>(),
 		withLocalSubmission: async (_text: string, fn: () => unknown) => fn(),
 	} as unknown as InteractiveModeContext;

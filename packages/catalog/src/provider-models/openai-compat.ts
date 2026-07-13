@@ -590,7 +590,7 @@ const UMANS_REASONING_EFFORT_BY_LEVEL: Record<string, Effort> = {
 };
 const UMANS_MAX_REASONING_EFFORT_MAP = { [Effort.XHigh]: "max" } as const;
 const UMANS_DEFAULT_REASONING_EFFORTS = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] as const;
-const UMANS_VIA_HANDOFF_MODEL_IDS = ["umans-glm-5.1", "umans-glm-5.2"] as const;
+export const UMANS_VIA_HANDOFF_MODEL_IDS = ["umans-glm-5.1", "umans-glm-5.2"] as const;
 
 export interface UmansModelManagerConfig {
 	apiKey?: string;

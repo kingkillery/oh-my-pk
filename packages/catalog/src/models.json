@@ -73991,8 +73991,7 @@
 			"baseUrl": "https://api.code.umans.ai",
 			"reasoning": true,
 			"input": [
-				"text",
-				"image"
+				"text"
 			],
 			"cost": {
 				"input": 0,
@@ -74003,14 +74002,14 @@
 			"contextWindow": 202752,
 			"maxTokens": 131071,
 			"thinking": {
-				"mode": "budget",
+				"mode": "anthropic-budget-effort",
 				"efforts": [
-					"minimal",
-					"low",
-					"medium",
 					"high",
 					"xhigh"
-				]
+				],
+				"effortMap": {
+					"xhigh": "max"
+				}
 			},
 			"compat": {
 				"escapeBuiltinToolNames": true
@@ -74024,18 +74023,17 @@
 			"baseUrl": "https://api.code.umans.ai",
 			"reasoning": true,
 			"thinking": {
-				"mode": "budget",
+				"mode": "anthropic-budget-effort",
 				"efforts": [
-					"minimal",
-					"low",
-					"medium",
 					"high",
 					"xhigh"
-				]
+				],
+				"effortMap": {
+					"xhigh": "max"
+				}
 			},
 			"input": [
-				"text",
-				"image"
+				"text"
 			],
 			"cost": {
 				"input": 0,
