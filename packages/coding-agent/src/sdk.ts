@@ -1948,7 +1948,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 			for (const selector of Object.values(settings.get("subagent.modelAliases"))) addRequiredSelector(selector);
 			for (const selector of Object.values(settings.get("task.agentModelOverrides"))) addRequiredSelector(selector);
-			for (const selector of Object.values(settings.get("modelRoles"))) addRequiredSelector(selector);
+			// `modelRoles` (incl. `default`) are soft preferences: an unresolvable or
+			// path-disallowed role model falls back gracefully to the available set with
+			// a fallback message, so it must not hard-fail spawn validation the way
+			// genuine spawn/task/fusion selectors do (issue #1022).
 			if (settings.get("fusion.enabled")) {
 				for (const selector of fusionPoolSelectors) addRequiredSelector(selector);
 				addRequiredSelector(settings.get("fusion.sidekickModel"));
