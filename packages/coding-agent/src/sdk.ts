@@ -1178,7 +1178,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	contextFilesPromise.catch(() => {});
 	const watchdogFilesPromise = logger.time("discoverWatchdogFiles", () => discoverWatchdogFiles(cwd, agentDir));
 	watchdogFilesPromise.catch(() => {});
-	const activeRepoContextPromise = logger.time("resolveActiveRepoContext(advisor)", () => resolveActiveRepoContext(cwd));
+	const activeRepoContextPromise = logger.time("resolveActiveRepoContext(advisor)", () =>
+		resolveActiveRepoContext(cwd),
+	);
 	activeRepoContextPromise.catch(() => {});
 	const promptTemplatesPromise = options.promptTemplates
 		? Promise.resolve(options.promptTemplates)

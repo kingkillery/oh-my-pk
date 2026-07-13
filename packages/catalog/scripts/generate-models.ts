@@ -287,8 +287,7 @@ function applyUmansViaHandoffCorrection(models: readonly ModelSpec[]): ModelSpec
 	const viaHandoffIds = new Set<string>(UMANS_VIA_HANDOFF_MODEL_IDS);
 	return models.map(model => {
 		if (model.provider !== "umans" || !viaHandoffIds.has(model.id)) return model;
-		const needsInputFix =
-			!Array.isArray(model.input) || model.input.length !== 1 || model.input[0] !== "text";
+		const needsInputFix = !Array.isArray(model.input) || model.input.length !== 1 || model.input[0] !== "text";
 		const needsThinkingFix = model.thinking?.mode !== "anthropic-budget-effort";
 		if (!needsInputFix && !needsThinkingFix) return model;
 		return {
@@ -306,7 +305,6 @@ function applyUmansViaHandoffCorrection(models: readonly ModelSpec[]): ModelSpec
 		} as ModelSpec;
 	});
 }
-
 
 function applyFireworksDeepSeekReasoningShape(models: readonly ModelSpec[]): ModelSpec[] {
 	return models.map(model => {
