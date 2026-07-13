@@ -1,3 +1,4 @@
+import { scheduler } from "node:timers/promises";
 import type { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
 import { isVertexExpressOpenAIUrl, isVertexRawPredictUrl } from "@pk-nerdsaver-ai/pi-catalog/hosts";
 import {
@@ -11,6 +12,7 @@ import { CATALOG_PROVIDERS, type ProviderCatalogEntry } from "@pk-nerdsaver-ai/p
 import { $env, $pickenv, extractHttpStatusFromError } from "@pk-nerdsaver-ai/pi-utils";
 import { getCustomApi } from "./api-registry";
 import { AUTH_RETRY_STEPS, isApiKeyResolver, resolveRetryKey } from "./auth-retry";
+import * as AIError from "./error";
 import { ProviderHttpError } from "./errors";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
@@ -64,7 +66,7 @@ import type {
 } from "./types";
 import { AssistantMessageEventStream } from "./utils/event-stream";
 import { withRequestDebugFetch } from "./utils/request-debug";
-import { withGeminiThinkingLoopGuard } from "./utils/thinking-loop";
+import { isLoopGuardedModel, withGeminiThinkingLoopGuard } from "./utils/thinking-loop";
 
 function isGoogleVertexAuthenticatedModel(model: Model<Api>): boolean {
 	return (
@@ -333,13 +335,44 @@ function streamDispatch<TApi extends Api>(
 	}
 }
 
+// Re-sampling + cook-through fallback for the result-awaiting callers. The
+// per-dispatch guard (withGeminiThinkingLoopGuard, inside stream/streamSimple)
+// only tears down a single runaway and surfaces it as a ThinkingLoop stall;
+// bounding the re-samples and the final "cook through" pass lives here, where
+// the whole result is awaited.
+const THINKING_LOOP_MAX_GUARDED_ATTEMPTS = 3;
+const THINKING_LOOP_BACKOFF_MS = 250;
+
+async function resolveWithThinkingLoopCookFallback<
+	O extends { signal?: AbortSignal; loopGuard?: { enabled?: boolean; checkAssistantContent?: boolean } },
+>(
+	model: Model<Api>,
+	options: O | undefined,
+	dispatch: (options: O | undefined) => AssistantMessageEventStream,
+): Promise<AssistantMessage> {
+	// Non-loop-guarded models (and callers that explicitly disabled the guard)
+	// resolve in a single pass — no re-sampling.
+	if (!isLoopGuardedModel(model, options as StreamOptions | undefined)) {
+		return dispatch(options).result();
+	}
+	for (let attempt = 0; attempt < THINKING_LOOP_MAX_GUARDED_ATTEMPTS; attempt++) {
+		const result = await dispatch(options).result();
+		if (!AIError.is(result.errorId, AIError.Flag.ThinkingLoop)) return result;
+		// A caller abort during the backoff rejects instead of returning the stall.
+		await scheduler.wait(THINKING_LOOP_BACKOFF_MS * (attempt + 1), { signal: options?.signal });
+	}
+	// A stubborn loop: disable the guard for the final pass and let it cook
+	// through rather than burning the turn on repeated stalls.
+	const cookOptions = { ...(options ?? {}), loopGuard: { ...options?.loopGuard, enabled: false } } as O;
+	return dispatch(cookOptions).result();
+}
+
 export async function complete<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): Promise<AssistantMessage> {
-	const s = stream(model, context, options);
-	return s.result();
+	return resolveWithThinkingLoopCookFallback(model, options, opts => stream(model, context, opts));
 }
 
 type AuthRetryFailure = {
@@ -363,7 +396,15 @@ function isRetryableUpstreamError(error: unknown, status: number | undefined, me
 	// `invalidateCredentialMatching` and the latter to `markUsageLimitReached`.
 	if (status === 401) return true;
 	void error;
-	return !!message && isUsageLimitError(message);
+	if (!message) return false;
+	if (isUsageLimitError(message)) return true;
+	// A terse 429 whose body carries no transient-retry guidance (just the bare
+	// status code, as Codex emits for a parked account) is a quota signal —
+	// rotate to a sibling. The informative transient 429s ("too many requests",
+	// "please retry", "overloaded") are owned by the provider's own backoff and
+	// must not burn a sibling credential.
+	if (status === 429 && /^(?:http\s*)?429$/i.test(message.trim())) return true;
+	return false;
 }
 
 function createAssistantAuthError(message: AssistantMessage): Error {
@@ -567,8 +608,7 @@ export async function completeSimple<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): Promise<AssistantMessage> {
-	const s = streamSimple(model, context, options);
-	return s.result();
+	return resolveWithThinkingLoopCookFallback(model, options, opts => streamSimple(model, context, opts));
 }
 
 const MIN_OUTPUT_TOKENS = 1024;
