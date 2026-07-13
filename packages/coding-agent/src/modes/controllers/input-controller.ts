@@ -929,8 +929,8 @@ export class InputController {
 	}
 
 	handleCtrlZ(): void {
-		// SIGSTOP is not available on Windows (issue #2036). No-op on platforms
-		// that cannot suspend.
+		// SIGSTOP (replaces SIGTSTP, see #3461) is a POSIX-only signal — Windows
+		// has no equivalent, so we no-op there (issue #2036).
 		if (process.platform === "win32") {
 			this.ctx.showStatus("Suspend (Ctrl+Z) is not supported on this platform");
 			return;
