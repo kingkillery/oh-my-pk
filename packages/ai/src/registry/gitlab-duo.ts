@@ -17,3 +17,13 @@ export const gitlabDuoProvider = {
 	callbackPort: 8080,
 	pasteCodeFlow: true,
 } as const satisfies ProviderDefinition;
+
+/**
+ * GitLab Duo Agent (Workflow) API — authenticated by `GITLAB_TOKEN` via the
+ * catalog's `envVars`, not an interactive login. A minimal registry entry so it
+ * satisfies the catalog-provider exhaustiveness check without an OAuth flow.
+ */
+export const gitlabDuoAgentProvider = {
+	id: "gitlab-duo-agent",
+	name: "GitLab Duo Agent",
+} as const satisfies ProviderDefinition;

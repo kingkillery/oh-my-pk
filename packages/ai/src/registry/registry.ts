@@ -12,7 +12,7 @@ import { deepseekProvider } from "./deepseek";
 import { firepassProvider } from "./firepass";
 import { fireworksProvider } from "./fireworks";
 import { githubCopilotProvider } from "./github-copilot";
-import { gitlabDuoProvider } from "./gitlab-duo";
+import { gitlabDuoAgentProvider, gitlabDuoProvider } from "./gitlab-duo";
 import { googleProvider } from "./google";
 import { googleAntigravityProvider } from "./google-antigravity";
 import { googleGeminiCliProvider } from "./google-gemini-cli";
@@ -86,6 +86,7 @@ const ALL = [
 	openaiCodexDeviceProvider,
 	xaiOauthProvider,
 	gitlabDuoProvider,
+	gitlabDuoAgentProvider,
 	alibabaCodingPlanProvider,
 	aimlApiProvider,
 	zhipuCodingPlanProvider,

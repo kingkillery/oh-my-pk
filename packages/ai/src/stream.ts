@@ -918,6 +918,7 @@ function mapOptionsForApi<TApi extends Api>(
 				openrouterVariant: options?.openrouterVariant,
 				maxTokensExplicit: rawOptions?.maxTokens !== undefined,
 				disableReasoning: options?.disableReasoning,
+				textVerbosity: options?.textVerbosity,
 			});
 
 		case "azure-openai-responses":
@@ -937,6 +938,7 @@ function mapOptionsForApi<TApi extends Api>(
 				serviceTier: options?.serviceTier,
 				preferWebsockets: options?.preferWebsockets,
 				reasoningSummary: options?.hideThinkingSummary ? null : undefined,
+				textVerbosity: options?.textVerbosity,
 			});
 
 		case "google-generative-ai": {

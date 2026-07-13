@@ -106,7 +106,7 @@ export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${stri
  */
 export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	appearance: ["Theme", "Status Line", "Display", "Images"],
-	model: ["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Vision"],
+	model: ["Thinking", "Sampling", "Prompt", "Agent Model Profiles", "Retry & Fallback", "Advisor", "Vision"],
 	interaction: [
 		"Input",
 		"Approvals",
@@ -983,8 +983,8 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "appearance",
-			group: "Terminal",
-			label: "Show Terminal Progress",
+			group: "Display",
+			label: "Native Terminal Progress",
 			description: "Emit an OSC terminal progress indicator while the agent is working",
 		},
 	},

@@ -51,6 +51,7 @@ import {
 	kStreamingBlockIndex,
 	kStreamingLastParseLen,
 	kStreamingPartialJson,
+	stripStreamingSymbols,
 } from "../utils/block-symbols";
 import { withEmptyCompletionRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
@@ -2262,11 +2263,13 @@ const streamAnthropicOnce = (
 			if (dropFastMode && resolveServiceTier(options?.serviceTier, model.provider) === "priority") {
 				output.disabledFeatures = [...(output.disabledFeatures ?? []), "priority"];
 			}
+			for (const block of output.content) stripStreamingSymbols(block);
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
 			for (const block of output.content) {
 				if (block.type === "toolCall") clearStreamingPartialJson(block);
+				stripStreamingSymbols(block);
 			}
 			const result = await AIError.finalize(error, {
 				api: model.api,

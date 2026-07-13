@@ -30,3 +30,26 @@ export const kStreamingArgumentsDone = Symbol("provider.block.argumentsDone");
 
 /** Classifies Cursor's in-flight tool-call kind without leaking provider-private state. */
 export const kStreamingBlockKind = Symbol("provider.block.kind");
+
+/** All provider-local streaming bookkeeping symbols that must never survive into a
+ *  finalized message — deep-equality (`getOwnPropertySymbols`) would otherwise see them. */
+const STREAMING_ONLY_SYMBOLS: readonly symbol[] = [
+	kStreamingPartialJson,
+	kStreamingBlockIndex,
+	kStreamingLastParseLen,
+	kStreamingArgumentsDone,
+	kStreamingBlockKind,
+];
+
+/**
+ * Removes every provider-local streaming bookkeeping symbol from a finalized content
+ * block so the returned message deep-equals a plain block. Safe to call after the block
+ * is done streaming: these symbols are never read from the finalized message.
+ */
+export function stripStreamingSymbols(block: object): void {
+	for (const symbol of STREAMING_ONLY_SYMBOLS) {
+		if (Object.hasOwn(block, symbol)) {
+			delete (block as Record<symbol, unknown>)[symbol];
+		}
+	}
+}

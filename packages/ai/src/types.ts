@@ -164,6 +164,8 @@ export function shouldSendServiceTier(
 	serviceTier: ServiceTier | null | undefined,
 	provider: Provider | undefined,
 ): boolean {
+	// Fireworks realizes only the Priority serving path; flex/scale are OpenAI-only.
+	if (provider === "fireworks") return resolveServiceTier(serviceTier, provider) === "priority";
 	if (provider !== "openai" && provider !== "openai-codex") return false;
 	const resolved = resolveServiceTier(serviceTier, provider);
 	return resolved === "flex" || resolved === "scale" || resolved === "priority";
