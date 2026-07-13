@@ -781,6 +781,15 @@ function mapOptionsForApi<TApi extends Api>(
 				});
 			}
 
+			// Budget-effort models still carry an effort tier on the wire via
+			// `output_config.effort` (mapped through the model's `effortMap`),
+			// alongside the interleaved thinking budget. Adaptive models handle
+			// their effort in the branch below.
+			const budgetEffort =
+				model.thinking?.mode === "anthropic-budget-effort"
+					? mapEffortToAnthropicAdaptiveEffort(model, reasoning)
+					: undefined;
+
 			// For Opus 4.6+ and Sonnet 4.6+: use adaptive thinking with effort level
 			// For older models: use budget-based thinking
 			if (model.thinking?.mode === "anthropic-adaptive") {
@@ -802,6 +811,7 @@ function mapOptionsForApi<TApi extends Api>(
 					requestModelId: resolveWireModelId(model, reasoning),
 					thinkingEnabled: true,
 					thinkingBudgetTokens: thinkingBudget,
+					...(budgetEffort && { effort: budgetEffort }),
 					toolChoice: mapAnthropicToolChoice(options?.toolChoice),
 					thinkingDisplay: options?.hideThinkingSummary ? "omitted" : undefined,
 					serviceTier: options?.serviceTier,
@@ -833,6 +843,7 @@ function mapOptionsForApi<TApi extends Api>(
 					requestModelId: resolveWireModelId(model, reasoning),
 					thinkingEnabled: true,
 					thinkingBudgetTokens: thinkingBudget,
+					...(budgetEffort && { effort: budgetEffort }),
 					toolChoice: mapAnthropicToolChoice(options?.toolChoice),
 					thinkingDisplay: options?.hideThinkingSummary ? "omitted" : undefined,
 					serviceTier: options?.serviceTier,

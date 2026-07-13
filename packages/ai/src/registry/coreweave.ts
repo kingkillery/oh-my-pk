@@ -1,5 +1,5 @@
 import { coreWeaveProjectHeaders } from "@pk-nerdsaver-ai/pi-catalog/wire/coreweave";
-import { $env } from "@pk-nerdsaver-ai/pi-utils";
+import { $env, $pickenv } from "@pk-nerdsaver-ai/pi-utils";
 import * as AIError from "../error";
 import { createApiKeyLogin } from "./api-key-login";
 import type { OAuthLoginCallbacks } from "./oauth/types";
@@ -35,5 +35,7 @@ export const loginCoreWeave = createApiKeyLogin({
 export const coreWeaveProvider = {
 	id: "coreweave",
 	name: "CoreWeave Serverless Inference",
+	// Env fallback: prefer the dedicated key, then the account's W&B token.
+	envKeys: () => $pickenv("COREWEAVE_API_KEY", "WANDB_API_KEY"),
 	login: (cb: OAuthLoginCallbacks) => loginCoreWeave(cb),
 } as const satisfies ProviderDefinition;

@@ -7,12 +7,15 @@ import { azureProvider } from "./azure";
 import { cerebrasProvider } from "./cerebras";
 import { clineProvider } from "./cline";
 import { cloudflareAiGatewayProvider } from "./cloudflare-ai-gateway";
+import { coreWeaveProvider } from "./coreweave";
 import { cursorProvider } from "./cursor";
 import { deepseekProvider } from "./deepseek";
+import { devinProvider } from "./devin";
 import { firepassProvider } from "./firepass";
 import { fireworksProvider } from "./fireworks";
 import { githubCopilotProvider } from "./github-copilot";
-import { gitlabDuoAgentProvider, gitlabDuoProvider } from "./gitlab-duo";
+import { gitlabDuoProvider } from "./gitlab-duo";
+import { gitLabDuoWorkflowProvider } from "./gitlab-duo-workflow";
 import { googleProvider } from "./google";
 import { googleAntigravityProvider } from "./google-antigravity";
 import { googleGeminiCliProvider } from "./google-gemini-cli";
@@ -24,6 +27,7 @@ import { kagiProvider } from "./kagi";
 import { kiloProvider } from "./kilo";
 import { kimiCodeProvider } from "./kimi-code";
 import { litellmProvider } from "./litellm";
+import { llamaCppProvider } from "./llama-cpp";
 import { lmStudioProvider } from "./lm-studio";
 import { minimaxProvider } from "./minimax";
 import { minimaxCodeProvider } from "./minimax-code";
@@ -86,7 +90,8 @@ const ALL = [
 	openaiCodexDeviceProvider,
 	xaiOauthProvider,
 	gitlabDuoProvider,
-	gitlabDuoAgentProvider,
+	gitLabDuoWorkflowProvider,
+	devinProvider,
 	alibabaCodingPlanProvider,
 	aimlApiProvider,
 	zhipuCodingPlanProvider,
@@ -113,6 +118,7 @@ const ALL = [
 	syntheticProvider,
 	nanogptProvider,
 	waferServerlessProvider,
+	coreWeaveProvider,
 	vercelAiGatewayProvider,
 	cloudflareAiGatewayProvider,
 	litellmProvider,
@@ -126,6 +132,7 @@ const ALL = [
 	ollamaProvider,
 	ollamaCloudProvider,
 	lmStudioProvider,
+	llamaCppProvider,
 	vllmProvider,
 	openaiProvider,
 	googleProvider,
