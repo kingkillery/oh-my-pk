@@ -261,9 +261,16 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		const session = this.session;
 		const excludeWebP = webpExclusionForModel(session.getActiveModel?.());
 
+		// Accept the legacy single-cell shorthand ({ language, code }) in addition
+		// to the { cells: [...] } form, mirroring the normalization in eval-render.
+		const inputCells: EvalCellInput[] = Array.isArray(params.cells)
+			? params.cells
+			: typeof (params as { code?: unknown }).code === "string"
+				? [params as unknown as EvalCellInput]
+				: [];
 		const cells: ResolvedEvalCell[] = [];
-		for (let i = 0; i < params.cells.length; i++) {
-			const cell = params.cells[i];
+		for (let i = 0; i < inputCells.length; i++) {
+			const cell = inputCells[i];
 			const language: EvalLanguage = cell.language === "py" ? "python" : "js";
 			const resolved = await resolveBackend(session, language);
 			cells.push({

@@ -1738,6 +1738,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 									if (!toolRegistry.has("search_tool_bm25")) {
 										const searchTool: Tool | null = SearchToolBm25Tool.createIf(toolSession, {
 											toolProfile: options.toolProfile ?? toolSession.toolProfile,
+											assumeDiscoveryEnabled: true,
 										});
 										if (searchTool) {
 											toolRegistry.set(
@@ -2184,6 +2185,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (effectiveDiscoveryMode !== "off" && !toolRegistry.has("search_tool_bm25")) {
 			const searchTool: Tool | null = SearchToolBm25Tool.createIf(toolSession, {
 				toolProfile: options.toolProfile ?? toolSession.toolProfile,
+				assumeDiscoveryEnabled: true,
 			});
 			if (searchTool) {
 				toolRegistry.set(

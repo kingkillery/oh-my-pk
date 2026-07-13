@@ -124,6 +124,12 @@ export interface SearchToolBm25Options {
 	toolProfile?: ResolvedToolProfile;
 	/** Injected capability predicate; defaults to profile check when profile is set. */
 	capabilityPredicate?: ToolCapabilityPredicate;
+	/**
+	 * Caller has already resolved tool discovery to ON (e.g. `auto` crossed the
+	 * threshold once the deferred MCP toolset connected). Bypasses the count-0
+	 * auto guard below, which can never see the real tool count from here.
+	 */
+	assumeDiscoveryEnabled?: boolean;
 }
 
 function discoverableSource(tool: DiscoverableTool): ToolSource {
@@ -257,7 +263,8 @@ export class SearchToolBm25Tool implements AgentTool<typeof searchToolBm25Schema
 	static createIf(session: ToolSession, options?: SearchToolBm25Options): SearchToolBm25Tool | null {
 		// Direct createTools() calls do not know the final MCP/extension catalog yet, so
 		// auto mode is activated later by createAgentSession after the full registry exists.
-		if (resolveEffectiveToolDiscoveryMode(session.settings, 0) === "off") return null;
+		if (!options?.assumeDiscoveryEnabled && resolveEffectiveToolDiscoveryMode(session.settings, 0) === "off")
+			return null;
 		if (options?.toolProfile && !options.toolProfile.allowDiscovery) return null;
 		return supportsToolDiscoveryExecution(session) ? new SearchToolBm25Tool(session, options) : null;
 	}
