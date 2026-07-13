@@ -1290,8 +1290,9 @@ export class AgentHubOverlayComponent extends Container {
 			return;
 		}
 		void (async () => {
+			let sm: SessionManager | undefined;
 			try {
-				const sm = await SessionManager.open(sessionPath, this.#sessionDir ?? "");
+				sm = await SessionManager.open(sessionPath, this.#sessionDir ?? "");
 				const current = sm.getBackgroundInstance();
 				if (!current) {
 					this.#notice = `Background session "${ref.displayName}" is no longer active.`;
@@ -1307,6 +1308,12 @@ export class AgentHubOverlayComponent extends Container {
 				}
 			} catch (error) {
 				this.#notice = `Failed to rename session: ${error instanceof Error ? error.message : String(error)}`;
+			} finally {
+				// Release the SQLite writer guard: leaving the manager open leaks an
+				// IMMEDIATE write transaction that blocks the next open of this
+				// session (e.g. the subsequent remove), surfacing as
+				// "Session … already has a writable owner".
+				await sm?.close();
 			}
 			this.#renameInput = undefined;
 			this.#refreshRows();

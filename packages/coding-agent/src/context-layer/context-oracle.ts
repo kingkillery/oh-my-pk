@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type AssistantMessage, completeSimple } from "@pk-nerdsaver-ai/pi-ai";
@@ -533,8 +534,12 @@ export class ContextOracle {
 	}
 
 	async #fileStamp(absolute: string): Promise<string> {
-		const stat = await fs.stat(absolute);
-		return `${absolute}:${stat.mtimeMs}:${stat.size}`;
+		// Fold a content hash into the stamp: mtime + size alone collide when a
+		// same-size rewrite lands within the filesystem's mtime resolution window,
+		// which would leave the shared summary cache serving stale content.
+		const [stat, content] = await Promise.all([fs.stat(absolute), fs.readFile(absolute)]);
+		const hash = createHash("sha1").update(content).digest("hex");
+		return `${absolute}:${stat.mtimeMs}:${stat.size}:${hash}`;
 	}
 
 	#resolve(filePath: string): string {
