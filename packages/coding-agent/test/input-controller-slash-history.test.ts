@@ -83,4 +83,16 @@ describe("input controller — slash command history (#3148)", () => {
 		// ...but the secret-bearing text is kept out of recallable history.
 		expect(addToHistory).not.toHaveBeenCalled();
 	});
+
+	it("does NOT record /mcp Add with a --token even when the verb is not lowercase", async () => {
+		// The /mcp dispatcher lowercases the subcommand, so "/mcp Add … --token …"
+		// still runs the token add; the history filter must match case-insensitively.
+		const { ctx, editor, addToHistory, handleMCPCommand } = makeCtx();
+		controllerFor(ctx);
+
+		await editor.onSubmit?.("/mcp Add srv --url http://x --token sk-secret123");
+
+		expect(handleMCPCommand).toHaveBeenCalledWith("/mcp Add srv --url http://x --token sk-secret123");
+		expect(addToHistory).not.toHaveBeenCalled();
+	});
 });

@@ -1667,11 +1667,11 @@ export class SessionManager {
 	 * Create a fresh empty session file in the target directory's session folder
 	 * and return its path (used by the `/move` command).
 	 *
-	 * NOTE: Not yet ported from upstream. The correct implementation must honour
-	 * the active {@link SessionStorage} backend (file/SQL/Redis) rather than
-	 * assuming a file path, so it is intentionally left unimplemented instead of
-	 * guessing backend semantics and risking session corruption. `/move` surfaces
-	 * the thrown message to the user until this is ported.
+	 * NOTE: This assumes the default file-backed {@link SessionStorage}: it mints
+	 * a session id and writes the header directly with `fs` under
+	 * `getDefaultSessionDir`. A non-file backend (SQL/Redis) would orphan the
+	 * file and hide the new session from normal listing/opening — porting the
+	 * backend-aware upstream implementation is still pending.
 	 */
 	static createEmptySessionFile(cwd: string): string {
 		const resolvedCwd = path.resolve(cwd);

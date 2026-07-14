@@ -52,8 +52,11 @@ export function shouldSkipHistory(slashText: string): boolean {
 	if (name === "login" && hasArgs) return true;
 	if (name === "join" && hasArgs) return true;
 	if (name === "mcp") {
+		// The /mcp dispatcher lowercases the subcommand verb, so "/mcp Add --token …"
+		// still runs the token add — match case-insensitively or the bearer token
+		// leaks into recallable input history.
 		const args = body.slice(sep + 1).trim();
-		return args.startsWith("add") && /--token\s/.test(args);
+		return args.toLowerCase().startsWith("add") && /--token\s/i.test(args);
 	}
 	return false;
 }
