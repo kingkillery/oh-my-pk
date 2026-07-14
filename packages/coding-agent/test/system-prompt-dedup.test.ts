@@ -74,7 +74,11 @@ describe("SYSTEM.md prompt assembly", () => {
 		const promptText = renderedPrompt.join("\n\n");
 		const matches = promptText.match(new RegExp(escapeRegExp(systemPrompt), "g")) ?? [];
 		expect(matches).toHaveLength(1);
-		expect(promptText).toContain('<skill name="focused-work">');
+		// Request-only skill discovery: skills are surfaced via the lazy skill://
+		// notice, never rendered inline into the system prompt.
+		expect(promptText).toContain("specialized skills are available but not listed");
+		expect(promptText).toContain("skill://");
+		expect(promptText).not.toContain('<skill name="focused-work">');
 	});
 
 	it("does not resolve already-loaded prompt text as a path", async () => {
