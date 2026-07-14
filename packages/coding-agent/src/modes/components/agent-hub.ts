@@ -1312,8 +1312,13 @@ export class AgentHubOverlayComponent extends Container {
 				// Release the SQLite writer guard: leaving the manager open leaks an
 				// IMMEDIATE write transaction that blocks the next open of this
 				// session (e.g. the subsequent remove), surfacing as
-				// "Session … already has a writable owner".
-				await sm?.close();
+				// "Session … already has a writable owner". A throwing close must
+				// not skip the UI cleanup below or escape the IIFE unhandled.
+				try {
+					await sm?.close();
+				} catch (error) {
+					logger.warn("Agent hub: failed to close session manager", { error: String(error) });
+				}
 			}
 			this.#renameInput = undefined;
 			this.#refreshRows();
@@ -1482,14 +1487,23 @@ export class AgentHubOverlayComponent extends Container {
 				return;
 			}
 			void (async () => {
+				let sm: SessionManager | undefined;
 				try {
-					const sm = await SessionManager.open(sessionPath, this.#sessionDir ?? "");
+					sm = await SessionManager.open(sessionPath, this.#sessionDir ?? "");
 					sm.archiveBackgroundInstance();
 					await sm.flush();
 					this.#backgroundRefs = this.#backgroundRefs.filter(r => r.id !== ref.id);
 					this.#notice = `Removed background session "${ref.displayName}"`;
 				} catch (error) {
 					this.#notice = `Failed to remove session: ${error instanceof Error ? error.message : String(error)}`;
+				} finally {
+					// Same writer-guard release as the rename path: a leaked manager
+					// holds an IMMEDIATE write transaction on this session's lock DB.
+					try {
+						await sm?.close();
+					} catch (error) {
+						logger.warn("Agent hub: failed to close session manager", { error: String(error) });
+					}
 				}
 				this.#refreshRows();
 				this.#requestRender();
