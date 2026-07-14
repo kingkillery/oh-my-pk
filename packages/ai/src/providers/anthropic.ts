@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { scheduler } from "node:timers/promises";
 import * as tls from "node:tls";
 import { isOfficialAnthropicApiUrl } from "@pk-nerdsaver-ai/pi-catalog/compat/anthropic";
+import { preferredDialect } from "@pk-nerdsaver-ai/pi-catalog/identity";
 import { mapEffortToAnthropicAdaptiveEffort } from "@pk-nerdsaver-ai/pi-catalog/model-thinking";
 import { calculateCost } from "@pk-nerdsaver-ai/pi-catalog/models";
 import { isAnthropicOAuthToken } from "@pk-nerdsaver-ai/pi-catalog/utils";
@@ -3196,6 +3197,21 @@ export function convertAnthropicMessages(
 								type: "thinking",
 								thinking: block.thinking.toWellFormed(),
 								signature: "",
+							});
+						} else if (
+							preferredDialect(model.id) === "anthropic" &&
+							preferredDialect(msg.model) === "anthropic"
+						) {
+							// Claude reasons via a native structured block and has no inline
+							// thinking-text idiom, so a wholly-unsigned Claude turn replayed
+							// into a Claude target (e.g. reasoning that streamed inside literal
+							// <thinking> tags and was unwrapped) demotes to bare prose —
+							// re-wrapping would hand the model its own tags back as content.
+							// Cross-model demotion below keeps the target-idiom wrapper, and
+							// mixed signed+unsigned turns are handled in the branch above.
+							blocks.push({
+								type: "text",
+								text: block.thinking.toWellFormed(),
 							});
 						} else {
 							blocks.push({
