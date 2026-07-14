@@ -152,6 +152,9 @@ describe("BashTool through AgentSession runs children in their own session (e2e)
 			// synchronous `executeBash` call, not the async-job manager.
 			"async.enabled": false,
 			"bash.autoBackground.enabled": false,
+			// The per-turn mask-consumed-observations pass rewrites the toolResult
+			// this test must read verbatim; it runs regardless of compaction.enabled.
+			"compaction.maskConsumedObservations": false,
 		});
 		const sessionManager = SessionManager.inMemory(tempDir);
 

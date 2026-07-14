@@ -257,6 +257,7 @@ import planModeReferencePrompt from "../prompts/system/plan-mode-reference.md" w
 import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool-decision-reminder.md" with {
 	type: "text",
 };
+import sideChannelNoToolsPrompt from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
 import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
@@ -4272,6 +4273,7 @@ export class AgentSession {
 
 	/** New session file: reset auto-recall / retain-threshold counters for the new transcript. */
 	#resetHindsightConversationTrackingIfHindsight(): void {
+		this.#promotedMemoryPrompt = undefined;
 		if (this.settings.get("memory.backend") !== "hindsight") return;
 		const state = this.getHindsightSessionState();
 		if (!state || state.aliasOf) return;
@@ -4279,6 +4281,7 @@ export class AgentSession {
 	}
 
 	#resetMnemopiConversationTrackingIfMnemopi(): void {
+		this.#promotedMemoryPrompt = undefined;
 		if (this.settings.get("memory.backend") !== "mnemopi") return;
 		const state = this.getMnemopiSessionState();
 		if (!state || state.aliasOf) return;
@@ -5126,21 +5129,27 @@ export class AgentSession {
 		this.#lastAppliedToolSignature = this.#computeAppliedToolSignature(activeToolNames, activeTools);
 	}
 
+	/** First-turn memory recall promoted into the stable prompt; kept on later
+	 *  turns so the append-only prefix stays byte-stable, cleared on transcript
+	 *  boundaries (new/switch/fork/branch). */
+	#promotedMemoryPrompt: string | undefined;
+
 	async #buildSystemPromptForAgentStart(promptText: string): Promise<string[]> {
 		const backend = await resolveMemoryBackend(this.settings);
 		if (!backend.beforeAgentStartPrompt) return this.#baseSystemPrompt;
 
 		try {
 			const injected = await backend.beforeAgentStartPrompt(this, promptText);
-			if (!injected) return this.#baseSystemPrompt;
-			return [...this.#baseSystemPrompt, injected];
+			if (injected) this.#promotedMemoryPrompt = injected;
 		} catch (err) {
 			logger.debug("Memory backend beforeAgentStartPrompt failed", {
 				backend: backend.id,
 				error: String(err),
 			});
-			return this.#baseSystemPrompt;
 		}
+		return this.#promotedMemoryPrompt
+			? [...this.#baseSystemPrompt, this.#promotedMemoryPrompt]
+			: this.#baseSystemPrompt;
 	}
 
 	/**
@@ -12050,11 +12059,11 @@ export class AgentSession {
 		const context: Context = {
 			systemPrompt: this.systemPrompt,
 			messages: llmMessages,
-			// Empty tools array: with toolChoice="none" some encoders still serialize the
-			// recipient's tool catalog and the model leaks raw call markup
-			// (<function_calls>, DSML envelopes) into IRC replies. Stripping tools here
-			// removes the surface entirely.
-			tools: [],
+			// Forward the native tool catalog so the side-channel request shares a
+			// byte-identical stable prefix with the main turn (prompt cache
+			// survives). Tool calls cannot execute here: the developer reminder in
+			// the snapshot says so, and any emitted calls are discarded below.
+			tools: this.agent.state.tools,
 		};
 		const options = this.prepareSimpleStreamOptions(
 			{
@@ -12071,7 +12080,6 @@ export class AgentSession {
 				hideThinkingSummary: this.agent.hideThinkingSummary,
 				serviceTier: this.serviceTier,
 				signal: args.signal,
-				toolChoice: "none",
 			},
 			model.provider,
 		);
@@ -12094,9 +12102,11 @@ export class AgentSession {
 				continue;
 			}
 			if (event.type === "done") {
+				// The side channel cannot execute tools; drop any emitted calls.
+				const contentWithoutToolCalls = event.message.content.filter(block => block.type !== "toolCall");
 				assistantMessage = this.#obfuscator?.hasSecrets()
-					? { ...event.message, content: deobfuscateAssistantContent(this.#obfuscator, event.message.content) }
-					: event.message;
+					? { ...event.message, content: deobfuscateAssistantContent(this.#obfuscator, contentWithoutToolCalls) }
+					: { ...event.message, content: contentWithoutToolCalls };
 				break;
 			}
 			if (event.type === "error") {
@@ -12154,6 +12164,15 @@ export class AgentSession {
 				}
 			}
 		}
+		// The tool catalog is forwarded for prompt-cache prefix parity, but this
+		// side channel cannot execute tools — remind the model before the virtual
+		// user message so it answers in prose instead of emitting call markup.
+		messages.push({
+			role: "developer",
+			content: [{ type: "text", text: sideChannelNoToolsPrompt }],
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
 		messages.push({
 			role: "user",
 			content: [{ type: "text", text: promptText }],

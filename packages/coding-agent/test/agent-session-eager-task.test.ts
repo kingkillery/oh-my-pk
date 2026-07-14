@@ -141,15 +141,21 @@ describe("AgentSession eager task prelude", () => {
 			convertToLlm,
 			getToolChoice: () => session?.nextToolChoiceDirective(),
 			streamFn: (_model, context, options) => {
-				const lastMessage = context.messages.at(-1);
+				// The task-contract runtime injects a hidden <task-contract> developer
+				// notice on substantial root turns (its own suite covers it); exclude
+				// it here so these assertions observe only the eager preludes.
+				const observedMessages = context.messages.filter(
+					message => !getMessageText(message).includes("<task-contract"),
+				);
+				const lastMessage = observedMessages.at(-1);
 				if (!lastMessage) {
 					throw new Error("Expected prompt context to include a message");
 				}
 				observedCalls.push({
 					toolChoice: getToolChoiceName(options?.toolChoice),
 					toolNames: (context.tools ?? []).map(tool => tool.name),
-					messageRoles: context.messages.map(message => message.role),
-					messageTexts: context.messages.map(message => getMessageText(message)),
+					messageRoles: observedMessages.map(message => message.role),
+					messageTexts: observedMessages.map(message => getMessageText(message)),
 					lastMessageRole: lastMessage.role,
 					lastMessageText: getMessageText(lastMessage),
 				});
