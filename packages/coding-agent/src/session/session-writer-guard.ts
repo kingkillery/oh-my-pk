@@ -1,6 +1,6 @@
+import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Database } from "bun:sqlite";
 import { getAgentDir, toError } from "@pk-nerdsaver-ai/pi-utils";
 
 const LOCK_SCHEMA = `
