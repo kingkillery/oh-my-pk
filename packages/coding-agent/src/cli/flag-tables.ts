@@ -312,3 +312,20 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--cleanup-workspace",
 	"--copy-env",
 ]);
+
+/**
+ * True for a `--`-prefixed token that is not any known launch flag and carries
+ * no inline `=value`: an UNKNOWN long option (typically an extension string
+ * flag) that may consume the next argv token as its value. The bootstrap
+ * pre-parser treats such a token's successor as value-like so it never steals
+ * that token as a global `--profile`/`--alias` value.
+ */
+export function isUnknownLongValueCandidate(arg: string): boolean {
+	if (!arg.startsWith("--") || arg === "--" || arg.includes("=")) return false;
+	return (
+		!STRING_VALUE_FLAGS.has(arg) &&
+		!OPTIONAL_VALUE_FLAGS.has(arg) &&
+		!VALUELESS_FLAGS.has(arg) &&
+		arg !== PROFILE_BOOTSTRAP_BOUNDARY_ARG
+	);
+}
