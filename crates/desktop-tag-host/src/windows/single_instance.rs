@@ -236,9 +236,9 @@ pub fn current_user_sid() -> Result<String> {
 		let len = (0..)
 			.take_while(|&index| unsafe { *text.add(index) } != 0)
 			.count();
-		let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(text, len) })?;
+		let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(text, len) });
 		unsafe { LocalFree(text.cast()) };
-		Ok(sid)
+		Ok(sid?)
 	})();
 	unsafe { CloseHandle(token) };
 	result

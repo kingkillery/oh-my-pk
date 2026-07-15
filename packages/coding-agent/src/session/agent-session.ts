@@ -5755,7 +5755,7 @@ export class AgentSession {
 		this.#clientBridge = bridge;
 		this.#acpPermissionDecisions.clear();
 		const activeToolNames = this.getActiveToolNames().filter(
-			name => !this.#activeToolCeiling || this.#activeToolCeiling.has(name),
+			name => !this.#activeToolCeiling || this.#activeToolCeiling.has(name.toLowerCase()),
 		);
 		const activeTools = activeToolNames
 			.map(name => this.#toolRegistry.get(name))
@@ -12346,7 +12346,7 @@ export class AgentSession {
 				this.#selectedMCPToolNames = new Set(previousSelectedMCPToolNames);
 				this.agent.setTools(
 					this.#activeToolCeiling
-						? previousTools.filter(tool => this.#activeToolCeiling?.has(tool.name))
+						? previousTools.filter(tool => this.#activeToolCeiling?.has(tool.name.toLowerCase()))
 						: previousTools,
 				);
 				this.#baseSystemPrompt = previousBaseSystemPrompt;
