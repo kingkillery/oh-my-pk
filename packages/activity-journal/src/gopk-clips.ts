@@ -141,5 +141,6 @@ function isRawRetentionValid(analysis: GopkClipAnalysis, maximumRawClipRetention
 function isLocalPointer(pointer: string): boolean {
 	if (!pointer.trim()) return false;
 	if (/^[a-z]:[\\/]/i.test(pointer)) return true;
-	return pointer.startsWith("file://");
+	if (pointer.startsWith("file://")) return true;
+	return pointer.startsWith("/");
 }
