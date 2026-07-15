@@ -957,6 +957,7 @@ describe("ACP agent", () => {
 		stored.sessionManager.appendMessage(makeAssistantMessage("reply", "reasoning"));
 		await stored.sessionManager.ensureOnDisk();
 		await stored.sessionManager.flush();
+		await stored.sessionManager.close();
 
 		const loaded = await harness.agent.loadSession({
 			sessionId: stored.sessionId,
@@ -1051,6 +1052,7 @@ describe("ACP agent", () => {
 		});
 		await stored.sessionManager.ensureOnDisk();
 		await stored.sessionManager.flush();
+		await stored.sessionManager.close();
 
 		await harness.agent.loadSession({
 			sessionId: stored.sessionId,
@@ -1123,6 +1125,7 @@ describe("ACP agent", () => {
 		});
 		await stored.sessionManager.ensureOnDisk();
 		await stored.sessionManager.flush();
+		await stored.sessionManager.close();
 
 		await harness.agent.loadSession({
 			sessionId: stored.sessionId,
@@ -1173,6 +1176,7 @@ describe("ACP agent", () => {
 		});
 		await stored.sessionManager.ensureOnDisk();
 		await stored.sessionManager.flush();
+		await stored.sessionManager.close();
 
 		await harness.agent.loadSession({
 			sessionId: stored.sessionId,
@@ -1277,6 +1281,7 @@ describe("ACP agent", () => {
 		});
 		await stored.sessionManager.ensureOnDisk();
 		await stored.sessionManager.flush();
+		await stored.sessionManager.close();
 
 		await harness.agent.loadSession({
 			sessionId: stored.sessionId,

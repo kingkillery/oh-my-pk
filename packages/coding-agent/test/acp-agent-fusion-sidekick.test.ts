@@ -426,6 +426,8 @@ describe("ACP agent fusion sidekick spawn", () => {
 		const source = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
 		const sourceSession = harness.findSession(source.sessionId)!;
 		await sourceSession.sessionManager.ensureOnDisk();
+		// Close source so the fork can acquire its session writer guard.
+		await harness.agent.closeSession({ sessionId: source.sessionId });
 
 		spy.mockClear();
 
