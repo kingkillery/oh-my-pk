@@ -7,17 +7,26 @@ import type { FrameSegment } from "./types";
 export interface BuildClipDerivativeOptions {
 	readonly sessionId: string;
 	readonly captureRoot: string;
+	/**
+	 * Root directory that screenpipe writes its snapshot JPEGs under. A frame's
+	 * `snapshot_path` is only opened for keyframe hashing when it resolves
+	 * inside this root — the path comes from an untrusted process, and hashing
+	 * an attacker-chosen file would leak a content fingerprint of it. When
+	 * unset, no snapshot is ever read and derivatives carry no keyframe hash.
+	 */
+	readonly mediaRoot?: string;
 }
 
 /**
  * Turns a segment of already-redacted screenpipe frames into a
  * `GopkCapturedDerivative` the activity-journal gopk sink will accept:
  * a manifest listing the frame range (written under `captureRoot`), a
- * cryptographic clip/keyframe hash this bridge computes itself (screenpipe's
- * own `content_hash` is a perceptual dedup hash, not an integrity hash), and
- * an attestation built from screenpipe's redaction watermarks. No raw media
- * is copied or retained here — `rawClip` is intentionally omitted, since
- * screenpipe owns the lifecycle of its own snapshot files.
+ * cryptographic clipHash this bridge computes over the frame identity —
+ * never over screen content; screenpipe's `content_hash` fingerprints
+ * pre-redaction content and is deliberately not read — and an attestation
+ * built from screenpipe's redaction watermarks. No raw media is copied or
+ * retained here — `rawClip` is intentionally omitted, since screenpipe owns
+ * the lifecycle of its own snapshot files.
  */
 export async function buildClipDerivative(
 	segment: FrameSegment,
@@ -29,60 +38,54 @@ export async function buildClipDerivative(
 
 	const clipId = `${segment.deviceName}:${first.id}-${last.id}`;
 	const frameIds = segment.frames.map(frame => frame.id);
-	const contentHashes = segment.frames
-		.map(frame => frame.content_hash)
-		.filter((hash): hash is number => hash !== null);
 
 	const clipHash = `sha256:${sha256Hex(
 		JSON.stringify({
 			deviceName: segment.deviceName,
 			frameIds,
-			contentHashes,
 			window: segment.window,
 			appIdentity: segment.appIdentity,
 		}),
 	)}`;
 
-	const keyframeFrame = segment.frames.find(frame => frame.snapshot_path !== null);
-	const keyframeHash = keyframeFrame?.snapshot_path ? await hashLocalFile(keyframeFrame.snapshot_path) : undefined;
+	const keyframeFrame = segment.frames.find(frame => frame.snapshot_path);
+	const keyframeHash =
+		keyframeFrame?.snapshot_path && options.mediaRoot
+			? await hashContainedFile(keyframeFrame.snapshot_path, options.mediaRoot)
+			: undefined;
 
-	const completedAtMs = Math.max(
-		...segment.frames
-			.flatMap(frame => [
-				frame.full_text_redacted_at,
-				frame.accessibility_redacted_at,
-				frame.accessibility_tree_redacted_at,
-				frame.window_name_redacted_at,
-				frame.browser_url_redacted_at,
-				frame.text_json_redacted_at,
-				frame.image_redacted_at,
-			])
-			.filter((value): value is number => value !== null),
-		Date.parse(last.timestamp) / 1000,
-	);
-
-	const imageRedactionVersion = segment.frames.find(
-		frame => frame.image_redaction_version !== null,
-	)?.image_redaction_version;
+	let completedAtSeconds = Date.parse(last.timestamp) / 1000;
+	for (const frame of segment.frames) {
+		for (const watermark of [
+			frame.full_text_redacted_at,
+			frame.accessibility_redacted_at,
+			frame.accessibility_tree_redacted_at,
+			frame.window_name_redacted_at,
+			frame.browser_url_redacted_at,
+			frame.text_json_redacted_at,
+			frame.image_redacted_at,
+		]) {
+			if (watermark !== null && watermark > completedAtSeconds) completedAtSeconds = watermark;
+		}
+	}
 
 	const manifestDir = path.join(path.resolve(options.captureRoot), "manifests");
 	await fs.mkdir(manifestDir, { recursive: true });
 	const manifestPath = path.join(manifestDir, `${sanitizeFileNameSegment(clipId)}.manifest.json`);
-	await fs.writeFile(
-		manifestPath,
-		JSON.stringify(
-			{
-				clipId,
-				deviceName: segment.deviceName,
-				appIdentity: segment.appIdentity,
-				window: segment.window,
-				frameIds,
-				contentHashes,
-			},
-			null,
-			2,
-		),
+	const manifestBody = JSON.stringify(
+		{
+			clipId,
+			deviceName: segment.deviceName,
+			appIdentity: segment.appIdentity,
+			window: segment.window,
+			frameIds,
+		},
+		null,
+		2,
 	);
+	const temporaryManifestPath = `${manifestPath}.${process.pid}.tmp`;
+	await fs.writeFile(temporaryManifestPath, manifestBody);
+	await fs.rename(temporaryManifestPath, manifestPath);
 
 	return {
 		clipId,
@@ -92,8 +95,8 @@ export async function buildClipDerivative(
 		sanitizedDigest: buildSanitizedDigest(segment),
 		sanitizationAttestation: {
 			status: "sanitized",
-			completedAt: new Date(completedAtMs * 1000).toISOString(),
-			sanitizerVersion: `screenpipe-redact;image_redaction_version=${imageRedactionVersion ?? "n/a"}`,
+			completedAt: new Date(completedAtSeconds * 1000).toISOString(),
+			sanitizerVersion: "screenpipe-redact",
 		},
 		clipHash,
 		...(keyframeHash ? { keyframeHash } : {}),
@@ -112,9 +115,12 @@ function sanitizeFileNameSegment(value: string): string {
 	return value.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-async function hashLocalFile(filePath: string): Promise<string | undefined> {
+async function hashContainedFile(filePath: string, mediaRoot: string): Promise<string | undefined> {
 	try {
-		const bytes = await fs.readFile(filePath);
+		const root = await fs.realpath(mediaRoot);
+		const resolved = await fs.realpath(filePath);
+		if (!resolved.startsWith(`${root}${path.sep}`)) return undefined;
+		const bytes = await fs.readFile(resolved);
 		return `sha256:${sha256Hex(bytes)}`;
 	} catch {
 		return undefined;

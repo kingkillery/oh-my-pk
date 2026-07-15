@@ -1,7 +1,7 @@
 import type { GopkActivitySink } from "@pk-nerdsaver-ai/pi-activity-journal";
 import type { BridgeCursorStore } from "./cursor";
 import { buildClipDerivative } from "./manifest";
-import { segmentFramesIntoClips } from "./segmentation";
+import { DEFAULT_MAXIMUM_IDLE_MS, segmentFramesIntoClips } from "./segmentation";
 import type { FrameSegment, ScreenpipeFrameRow } from "./types";
 
 export interface FrameSource {
@@ -14,66 +14,94 @@ export interface ScreenpipeBridgeOptions {
 	readonly cursorStore: BridgeCursorStore;
 	readonly sessionId: string;
 	readonly captureRoot: string;
+	/** See `BuildClipDerivativeOptions.mediaRoot` — snapshot hashing is disabled when unset. */
+	readonly mediaRoot?: string;
 	readonly fetchLimit?: number;
 	readonly maximumIdleMs?: number;
-	/**
-	 * Re-fetches this many already-cursored frames on every poll so a frame
-	 * whose redaction lands out of order (screenpipe's worker does not
-	 * guarantee FIFO completion) still gets picked up. A frame that finishes
-	 * redaction more than this many rows after the cursor has moved past it
-	 * is permanently missed — size this to the worst realistic redaction lag.
-	 */
-	readonly refetchMargin?: number;
 }
 
 export interface BridgeRunSummary {
 	readonly fetchedFrameCount: number;
+	/** Sink calls made, including derivatives the sink's own policy then rejected — not ledger-accepted clips. */
 	readonly emittedClipCount: number;
 	readonly openSegmentCount: number;
 	readonly cursorFrameId: number;
 }
 
 const DEFAULT_FETCH_LIMIT = 2_000;
-const DEFAULT_REFETCH_MARGIN = 200;
 
-/** Polls a local screenpipe instance for newly redacted frames and forwards them to the activity-journal gopk sink. */
+/**
+ * Polls a local screenpipe instance for newly redacted frames and forwards
+ * them to the activity-journal gopk sink. The cursor only ever advances past
+ * frames that were emitted in a closed segment, so a segment still open (its
+ * newest frame is within the idle window of "now", or it may continue past a
+ * full fetch page) is re-fetched whole on the next poll. A frame whose
+ * redaction completes only after the cursor has passed it is never emitted —
+ * a deliberate trade: re-slicing old frames would mint overlapping clipIds
+ * and pollute the ledger with duplicate evidence.
+ */
 export class ScreenpipeBridge {
 	#options: ScreenpipeBridgeOptions;
+	#running = false;
 
 	constructor(options: ScreenpipeBridgeOptions) {
 		this.#options = options;
 	}
 
 	async runOnce(): Promise<BridgeRunSummary> {
-		const { frameSource, sink, cursorStore, sessionId, captureRoot, maximumIdleMs } = this.#options;
+		if (this.#running) throw new Error("a bridge run is already in progress");
+		this.#running = true;
+		try {
+			return await this.#poll();
+		} finally {
+			this.#running = false;
+		}
+	}
+
+	async #poll(): Promise<BridgeRunSummary> {
+		const { frameSource, sink, cursorStore, sessionId, captureRoot, mediaRoot, maximumIdleMs } = this.#options;
 		const fetchLimit = this.#options.fetchLimit ?? DEFAULT_FETCH_LIMIT;
-		const refetchMargin = this.#options.refetchMargin ?? DEFAULT_REFETCH_MARGIN;
 
 		const lastFrameId = await cursorStore.read();
-		const sinceFrameId = Math.max(0, lastFrameId - refetchMargin);
-		const frames = await frameSource.fetchRedactedFrames({ sinceFrameId, limit: fetchLimit });
+		const frames = await frameSource.fetchRedactedFrames({ sinceFrameId: lastFrameId, limit: fetchLimit });
 		if (frames.length === 0)
 			return { fetchedFrameCount: 0, emittedClipCount: 0, openSegmentCount: 0, cursorFrameId: lastFrameId };
 
 		const segments = segmentFramesIntoClips(frames, maximumIdleMs !== undefined ? { maximumIdleMs } : {});
 		const now = Date.now();
-		const idleThresholdMs = maximumIdleMs ?? 5 * 60_000;
+		const idleThresholdMs = maximumIdleMs ?? DEFAULT_MAXIMUM_IDLE_MS;
+		// A full page may have cut a device's newest segment mid-activity, so its
+		// last segment cannot be proven closed by timestamps alone — hold it open.
+		const truncatedLastFrameIds = frames.length === fetchLimit ? lastSegmentFrameIdsByDevice(segments) : undefined;
 
 		let emittedClipCount = 0;
 		let openSegmentCount = 0;
 		let cursorFrameId = lastFrameId;
+		// Frame ids interleave across devices, so a busy device's closed segments
+		// can carry the shared cursor past another device's still-open segment.
+		// Cap the cursor just before the earliest open frame so those frames stay
+		// inside the next poll's fetch window until their segment closes.
+		let earliestOpenFrameId = Number.POSITIVE_INFINITY;
 		for (const segment of segments) {
-			if (!isSegmentClosed(segment, now, idleThresholdMs)) {
+			const truncated = truncatedLastFrameIds?.get(segment.deviceName) === lastFrameIdOf(segment);
+			if (truncated || !isSegmentClosed(segment, now, idleThresholdMs)) {
 				openSegmentCount++;
+				earliestOpenFrameId = Math.min(earliestOpenFrameId, firstFrameIdOf(segment));
 				continue;
 			}
-			const derivative = await buildClipDerivative(segment, { sessionId, captureRoot });
+			const derivative = await buildClipDerivative(segment, {
+				sessionId,
+				captureRoot,
+				...(mediaRoot !== undefined ? { mediaRoot } : {}),
+			});
 			await sink(derivative);
 			emittedClipCount++;
 			cursorFrameId = Math.max(cursorFrameId, lastFrameIdOf(segment));
 		}
 
+		cursorFrameId = Math.min(cursorFrameId, earliestOpenFrameId - 1);
 		if (cursorFrameId > lastFrameId) await cursorStore.write(cursorFrameId);
+		else cursorFrameId = lastFrameId;
 		return { fetchedFrameCount: frames.length, emittedClipCount, openSegmentCount, cursorFrameId };
 	}
 }
@@ -86,4 +114,20 @@ function lastFrameIdOf(segment: FrameSegment): number {
 	const last = segment.frames[segment.frames.length - 1];
 	if (!last) throw new Error("segment must contain at least one frame");
 	return last.id;
+}
+
+function firstFrameIdOf(segment: FrameSegment): number {
+	const first = segment.frames[0];
+	if (!first) throw new Error("segment must contain at least one frame");
+	return first.id;
+}
+
+function lastSegmentFrameIdsByDevice(segments: readonly FrameSegment[]): Map<string, number> {
+	const byDevice = new Map<string, number>();
+	for (const segment of segments) {
+		const lastId = lastFrameIdOf(segment);
+		const current = byDevice.get(segment.deviceName);
+		if (current === undefined || lastId > current) byDevice.set(segment.deviceName, lastId);
+	}
+	return byDevice;
 }

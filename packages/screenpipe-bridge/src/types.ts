@@ -8,7 +8,6 @@ export interface ScreenpipeFrameRow {
 	readonly browser_url: string | null;
 	readonly focused: number | null;
 	readonly snapshot_path: string | null;
-	readonly content_hash: number | null;
 	readonly full_text_redacted_at: number | null;
 	readonly accessibility_redacted_at: number | null;
 	readonly accessibility_tree_redacted_at: number | null;
@@ -16,7 +15,6 @@ export interface ScreenpipeFrameRow {
 	readonly browser_url_redacted_at: number | null;
 	readonly text_json_redacted_at: number | null;
 	readonly image_redacted_at: number | null;
-	readonly image_redaction_version: number | null;
 	readonly has_full_text: number;
 	readonly has_accessibility_text: number;
 	readonly has_accessibility_tree: number;

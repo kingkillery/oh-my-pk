@@ -71,6 +71,28 @@ describe("segmentFramesIntoClips", () => {
 		expect(segments[0]?.appIdentity).toEqual({ processName: "firefox", browserOrigin: "https://example.com" });
 	});
 
+	it("pads a single-frame segment so its window has nonzero duration", () => {
+		const frames = [frame({ id: 1, timestamp: "2026-07-13T14:00:00.000Z" })];
+
+		const segments = segmentFramesIntoClips(frames);
+
+		expect(segments[0]?.window).toEqual({
+			startedAt: "2026-07-13T14:00:00.000Z",
+			endedAt: "2026-07-13T14:00:01.000Z",
+		});
+	});
+
+	it("does not merge distinct app/window pairs whose concatenation collides", () => {
+		const frames = [
+			frame({ id: 1, timestamp: "2026-07-13T14:00:00.000Z", app_name: "A", window_name: "B C" }),
+			frame({ id: 2, timestamp: "2026-07-13T14:00:30.000Z", app_name: "A B", window_name: "C" }),
+		];
+
+		const segments = segmentFramesIntoClips(frames, { maximumIdleMs: 5 * 60_000 });
+
+		expect(segments).toHaveLength(2);
+	});
+
 	it("rejects a non-positive maximumIdleMs", () => {
 		expect(() => segmentFramesIntoClips([], { maximumIdleMs: 0 })).toThrow(
 			"maximumIdleMs must be a positive integer",

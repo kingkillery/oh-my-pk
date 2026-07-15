@@ -105,7 +105,7 @@ describe("ScreenpipeBridge", () => {
 		}
 	});
 
-	it("dedupes a segment re-sent by the refetch margin via the ledger's own idempotency", async () => {
+	it("never re-fetches or re-emits frames behind the cursor", async () => {
 		const captureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "screenpipe-bridge-e2e-"));
 		try {
 			const ledger = new SqliteActivityLedger(":memory:");
@@ -124,12 +124,75 @@ describe("ScreenpipeBridge", () => {
 			});
 
 			await bridge.runOnce();
-			// The refetch margin re-sends the same closed segment on the next poll (to catch
-			// out-of-order redaction completions); the ledger's INSERT OR IGNORE dedupes it.
 			const second = await bridge.runOnce();
 
-			expect(second.emittedClipCount).toBe(1);
+			expect(second).toMatchObject({ fetchedFrameCount: 0, emittedClipCount: 0 });
 			expect(ledger.list()).toHaveLength(1);
+			ledger.close();
+		} finally {
+			await fs.rm(captureRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("holds a device's last segment open when the fetch page is full", async () => {
+		const captureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "screenpipe-bridge-e2e-"));
+		try {
+			const ledger = new SqliteActivityLedger(":memory:");
+			const sink = createGopkActivitySink({ ledger, consent, policy, capture, captureRoot });
+			const longAgo = Date.now() - 60 * 60_000;
+			// Both segments look time-closed, but the page is exactly full (limit 3),
+			// so the newest segment may continue past the page and must be held open.
+			const frames = [
+				frame({ id: 1, timestamp: new Date(longAgo).toISOString(), app_name: "code" }),
+				frame({ id: 2, timestamp: new Date(longAgo + 60_000).toISOString(), app_name: "code" }),
+				frame({ id: 3, timestamp: new Date(longAgo + 120_000).toISOString(), app_name: "firefox" }),
+			];
+			const bridge = new ScreenpipeBridge({
+				frameSource: fakeFrameSource(frames),
+				sink,
+				cursorStore: createFileCursorStore(captureRoot),
+				sessionId: "session-1",
+				captureRoot,
+				fetchLimit: 3,
+			});
+
+			const summary = await bridge.runOnce();
+
+			expect(summary).toMatchObject({ emittedClipCount: 1, openSegmentCount: 1, cursorFrameId: 2 });
+			const followUp = await bridge.runOnce();
+			expect(followUp).toMatchObject({ fetchedFrameCount: 1, emittedClipCount: 1, cursorFrameId: 3 });
+			expect(ledger.list()).toHaveLength(2);
+			ledger.close();
+		} finally {
+			await fs.rm(captureRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects overlapping runOnce invocations", async () => {
+		const captureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "screenpipe-bridge-e2e-"));
+		try {
+			const ledger = new SqliteActivityLedger(":memory:");
+			const sink = createGopkActivitySink({ ledger, consent, policy, capture, captureRoot });
+			let release: ((frames: readonly ReturnType<typeof frame>[]) => void) | undefined;
+			const blockedSource: FrameSource = {
+				fetchRedactedFrames: () =>
+					new Promise(resolve => {
+						release = resolve;
+					}),
+			};
+			const bridge = new ScreenpipeBridge({
+				frameSource: blockedSource,
+				sink,
+				cursorStore: createFileCursorStore(captureRoot),
+				sessionId: "session-1",
+				captureRoot,
+			});
+
+			const first = bridge.runOnce();
+			await expect(bridge.runOnce()).rejects.toThrow("a bridge run is already in progress");
+			while (!release) await new Promise(resolve => setTimeout(resolve, 1));
+			release([]);
+			await first;
 			ledger.close();
 		} finally {
 			await fs.rm(captureRoot, { recursive: true, force: true });
@@ -156,6 +219,77 @@ describe("ScreenpipeBridge", () => {
 			expect(summary.emittedClipCount).toBe(1);
 			expect(ledger.list()).toEqual([]);
 			ledger.close();
+		} finally {
+			await fs.rm(captureRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("caps the cursor behind an open segment on another device", async () => {
+		const captureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "screenpipe-bridge-e2e-"));
+		try {
+			const ledger = new SqliteActivityLedger(":memory:");
+			const sink = createGopkActivitySink({ ledger, consent, policy, capture, captureRoot });
+			const longAgo = Date.now() - 60 * 60_000;
+			const frames = [
+				// device-b's segment is still open (recent frames) but has LOWER ids
+				frame({ id: 5, timestamp: new Date().toISOString(), device_name: "device-b" }),
+				// device-a's segment closed long ago with HIGHER ids
+				frame({ id: 10, timestamp: new Date(longAgo).toISOString(), device_name: "device-a" }),
+				frame({ id: 20, timestamp: new Date(longAgo + 60_000).toISOString(), device_name: "device-a" }),
+			];
+			const cursorStore = createFileCursorStore(captureRoot);
+			const bridge = new ScreenpipeBridge({
+				frameSource: fakeFrameSource(frames),
+				sink,
+				cursorStore,
+				sessionId: "session-1",
+				captureRoot,
+			});
+
+			const summary = await bridge.runOnce();
+
+			// device-a's closed segment is emitted, but the cursor stops just
+			// before device-b's open frame 5, not at device-a's frame 20.
+			expect(summary).toMatchObject({ emittedClipCount: 1, openSegmentCount: 1, cursorFrameId: 4 });
+			expect(await cursorStore.read()).toBe(4);
+			ledger.close();
+		} finally {
+			await fs.rm(captureRoot, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("createFileCursorStore", () => {
+	it("returns 0 when no cursor file exists yet", async () => {
+		const captureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "screenpipe-bridge-cursor-"));
+		try {
+			expect(await createFileCursorStore(captureRoot).read()).toBe(0);
+		} finally {
+			await fs.rm(captureRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("throws on a corrupt cursor file instead of silently restarting from 0", async () => {
+		const captureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "screenpipe-bridge-cursor-"));
+		try {
+			await fs.writeFile(path.join(captureRoot, "cursor.json"), '{"lastFrameId": ');
+			await expect(createFileCursorStore(captureRoot).read()).rejects.toThrow();
+
+			await fs.writeFile(path.join(captureRoot, "cursor.json"), '{"lastFrameId": -3}');
+			await expect(createFileCursorStore(captureRoot).read()).rejects.toThrow("bridge cursor file is malformed");
+		} finally {
+			await fs.rm(captureRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("round-trips writes and leaves no temp file behind", async () => {
+		const captureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "screenpipe-bridge-cursor-"));
+		try {
+			const store = createFileCursorStore(captureRoot);
+			await store.write(42);
+			expect(await store.read()).toBe(42);
+			const leftovers = (await fs.readdir(captureRoot)).filter(name => name.endsWith(".tmp"));
+			expect(leftovers).toEqual([]);
 		} finally {
 			await fs.rm(captureRoot, { recursive: true, force: true });
 		}

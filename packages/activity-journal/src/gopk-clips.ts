@@ -142,5 +142,6 @@ function isLocalPointer(pointer: string): boolean {
 	if (!pointer.trim()) return false;
 	if (/^[a-z]:[\\/]/i.test(pointer)) return true;
 	if (pointer.startsWith("file://")) return true;
-	return pointer.startsWith("/");
+	// A single leading slash only: "//host/share" is a UNC network path on Windows.
+	return pointer.startsWith("/") && !pointer.startsWith("//");
 }

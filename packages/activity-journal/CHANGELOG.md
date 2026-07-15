@@ -9,4 +9,4 @@
 
 ### Fixed
 
-- `gopk-clips.ts`'s `isLocalPointer` only accepted Windows drive paths (`C:\...`) or `file://` URIs, rejecting plain POSIX absolute paths — every clip derivative was silently dropped as "not local" on Linux/macOS. It now also accepts POSIX absolute paths.
+- `gopk-clips.ts`'s `isLocalPointer` only accepted Windows drive paths (`C:\...`) or `file://` URIs, rejecting plain POSIX absolute paths — every clip derivative was silently dropped as "not local" on Linux/macOS. It now accepts single-leading-slash POSIX absolute paths while still rejecting UNC-style `//host/share` network paths.

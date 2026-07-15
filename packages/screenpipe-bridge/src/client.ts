@@ -3,6 +3,8 @@ import type { ScreenpipeFrameRow } from "./types";
 export interface ScreenpipeClientOptions {
 	readonly baseUrl?: string;
 	readonly fetchImpl?: typeof fetch;
+	/** Abort a stalled /raw_sql request after this many milliseconds. Default 30s. */
+	readonly requestTimeoutMs?: number;
 }
 
 export interface FetchRedactedFramesOptions {
@@ -12,20 +14,23 @@ export interface FetchRedactedFramesOptions {
 
 /**
  * Reads already-redacted frame metadata from a local screenpipe instance via
- * its read-only `/raw_sql` endpoint. Every text surface a frame carries must
- * already have its redaction watermark set (screenpipe's async PII worker),
- * and a frame with a screenshot must have its image redaction watermark set
- * too — frames missing either are filtered out in SQL, then re-checked
- * client-side in `parseFrameRow` since screenpipe is a separate, untrusted
- * process from this bridge's point of view.
+ * its read-only `/raw_sql` endpoint. Every text surface a frame actually
+ * carries must have its matching text-redaction watermark, and a frame with a
+ * snapshot must have the image-redaction watermark too — enforced in SQL,
+ * then re-checked in `parseFrameRow` since screenpipe is a separate,
+ * untrusted process from this bridge's point of view.
  */
 export class ScreenpipeClient {
 	#baseUrl: string;
 	#fetchImpl: typeof fetch;
+	#requestTimeoutMs: number;
 
 	constructor(options: ScreenpipeClientOptions = {}) {
 		this.#baseUrl = (options.baseUrl ?? "http://127.0.0.1:3030").replace(/\/+$/, "");
 		this.#fetchImpl = options.fetchImpl ?? fetch;
+		this.#requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+		if (!Number.isSafeInteger(this.#requestTimeoutMs) || this.#requestTimeoutMs <= 0)
+			throw new Error("requestTimeoutMs must be a positive integer");
 	}
 
 	async fetchRedactedFrames(options: FetchRedactedFramesOptions): Promise<readonly ScreenpipeFrameRow[]> {
@@ -40,6 +45,7 @@ export class ScreenpipeClient {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ query }),
+			signal: AbortSignal.timeout(this.#requestTimeoutMs),
 		});
 		if (!response.ok) {
 			const body = await response.text().catch(() => "");
@@ -47,7 +53,13 @@ export class ScreenpipeClient {
 		}
 		const payload: unknown = await response.json();
 		if (!Array.isArray(payload)) throw new Error("screenpipe /raw_sql returned a non-array payload");
-		return payload.map(parseFrameRow).filter((row): row is ScreenpipeFrameRow => row !== undefined);
+		const frames = payload.map(parseFrameRow).filter((row): row is ScreenpipeFrameRow => row !== undefined);
+		if (frames.length < payload.length) {
+			console.warn(
+				`screenpipe bridge dropped ${payload.length - frames.length} of ${payload.length} rows that failed redaction re-validation`,
+			);
+		}
+		return frames;
 	}
 }
 
@@ -55,10 +67,10 @@ function buildRedactedFramesQuery(sinceFrameId: number, limit: number): string {
 	return `
 		SELECT
 			id, timestamp, device_name, app_name, window_name, browser_url, focused,
-			snapshot_path, content_hash,
+			snapshot_path,
 			full_text_redacted_at, accessibility_redacted_at, accessibility_tree_redacted_at,
 			window_name_redacted_at, browser_url_redacted_at, text_json_redacted_at,
-			image_redacted_at, image_redaction_version,
+			image_redacted_at,
 			CASE WHEN full_text IS NOT NULL AND full_text != '' THEN 1 ELSE 0 END AS has_full_text,
 			CASE WHEN accessibility_text IS NOT NULL AND accessibility_text != '' THEN 1 ELSE 0 END AS has_accessibility_text,
 			CASE WHEN accessibility_tree_json IS NOT NULL AND accessibility_tree_json != '' THEN 1 ELSE 0 END AS has_accessibility_tree,
@@ -71,7 +83,7 @@ function buildRedactedFramesQuery(sinceFrameId: number, limit: number): string {
 			AND (window_name IS NULL OR window_name = '' OR window_name_redacted_at IS NOT NULL)
 			AND (browser_url IS NULL OR browser_url = '' OR browser_url_redacted_at IS NOT NULL)
 			AND (text_json IS NULL OR text_json = '' OR text_json_redacted_at IS NOT NULL)
-			AND (snapshot_path IS NULL OR image_redacted_at IS NOT NULL)
+			AND (snapshot_path IS NULL OR snapshot_path = '' OR image_redacted_at IS NOT NULL)
 		ORDER BY id ASC
 		LIMIT ${limit}
 	`.trim();
@@ -83,47 +95,70 @@ function parseFrameRow(value: unknown): ScreenpipeFrameRow | undefined {
 	const row = value as Record<string, unknown>;
 	if (typeof row.id !== "number" || typeof row.timestamp !== "string" || typeof row.device_name !== "string")
 		return undefined;
-	if (!Number.isFinite(Date.parse(row.timestamp))) return undefined;
+	const timestamp = normalizeSqliteTimestamp(row.timestamp);
+	if (timestamp === undefined) return undefined;
 
 	const hasFullText = row.has_full_text === 1;
 	const hasAccessibilityText = row.has_accessibility_text === 1;
 	const hasAccessibilityTree = row.has_accessibility_tree === 1;
 	const hasTextJson = row.has_text_json === 1;
-	const snapshotPath = typeof row.snapshot_path === "string" ? row.snapshot_path : null;
+	// /raw_sql may serialize SQL NULL as "" for TEXT columns; treat both as absent.
+	const appName = optionalText(row.app_name);
+	const windowName = optionalText(row.window_name);
+	const browserUrl = optionalText(row.browser_url);
+	const snapshotPath = optionalText(row.snapshot_path);
 
 	if (hasFullText && typeof row.full_text_redacted_at !== "number") return undefined;
 	if (hasAccessibilityText && typeof row.accessibility_redacted_at !== "number") return undefined;
 	if (hasAccessibilityTree && typeof row.accessibility_tree_redacted_at !== "number") return undefined;
 	if (hasTextJson && typeof row.text_json_redacted_at !== "number") return undefined;
-	if (typeof row.window_name === "string" && row.window_name !== "" && typeof row.window_name_redacted_at !== "number")
-		return undefined;
-	if (typeof row.browser_url === "string" && row.browser_url !== "" && typeof row.browser_url_redacted_at !== "number")
-		return undefined;
+	if (windowName !== null && typeof row.window_name_redacted_at !== "number") return undefined;
+	if (browserUrl !== null && typeof row.browser_url_redacted_at !== "number") return undefined;
 	if (snapshotPath !== null && typeof row.image_redacted_at !== "number") return undefined;
 
 	return {
 		id: row.id,
-		timestamp: row.timestamp,
+		timestamp,
 		device_name: row.device_name,
-		app_name: typeof row.app_name === "string" ? row.app_name : null,
-		window_name: typeof row.window_name === "string" ? row.window_name : null,
-		browser_url: typeof row.browser_url === "string" ? row.browser_url : null,
+		app_name: appName,
+		window_name: windowName,
+		browser_url: browserUrl,
 		focused: typeof row.focused === "number" ? row.focused : null,
 		snapshot_path: snapshotPath,
-		content_hash: typeof row.content_hash === "number" ? row.content_hash : null,
-		full_text_redacted_at: typeof row.full_text_redacted_at === "number" ? row.full_text_redacted_at : null,
-		accessibility_redacted_at:
-			typeof row.accessibility_redacted_at === "number" ? row.accessibility_redacted_at : null,
-		accessibility_tree_redacted_at:
-			typeof row.accessibility_tree_redacted_at === "number" ? row.accessibility_tree_redacted_at : null,
-		window_name_redacted_at: typeof row.window_name_redacted_at === "number" ? row.window_name_redacted_at : null,
-		browser_url_redacted_at: typeof row.browser_url_redacted_at === "number" ? row.browser_url_redacted_at : null,
-		text_json_redacted_at: typeof row.text_json_redacted_at === "number" ? row.text_json_redacted_at : null,
-		image_redacted_at: typeof row.image_redacted_at === "number" ? row.image_redacted_at : null,
-		image_redaction_version: typeof row.image_redaction_version === "number" ? row.image_redaction_version : null,
+		full_text_redacted_at: optionalNumber(row.full_text_redacted_at),
+		accessibility_redacted_at: optionalNumber(row.accessibility_redacted_at),
+		accessibility_tree_redacted_at: optionalNumber(row.accessibility_tree_redacted_at),
+		window_name_redacted_at: optionalNumber(row.window_name_redacted_at),
+		browser_url_redacted_at: optionalNumber(row.browser_url_redacted_at),
+		text_json_redacted_at: optionalNumber(row.text_json_redacted_at),
+		image_redacted_at: optionalNumber(row.image_redacted_at),
 		has_full_text: hasFullText ? 1 : 0,
 		has_accessibility_text: hasAccessibilityText ? 1 : 0,
 		has_accessibility_tree: hasAccessibilityTree ? 1 : 0,
 		has_text_json: hasTextJson ? 1 : 0,
 	};
+}
+
+function optionalText(value: unknown): string | null {
+	return typeof value === "string" && value !== "" ? value : null;
+}
+
+function optionalNumber(value: unknown): number | null {
+	return typeof value === "number" ? value : null;
+}
+
+/**
+ * SQLite may store timestamps as "YYYY-MM-DD HH:MM:SS[.fff]" with no zone;
+ * Date.parse would read that as LOCAL time and skew every window. Screenpipe
+ * writes UTC, so a zoneless timestamp is normalized to an explicit-UTC ISO
+ * string. Returns undefined for unparseable input.
+ */
+function normalizeSqliteTimestamp(raw: string): string | undefined {
+	let candidate = raw.trim();
+	if (!candidate) return undefined;
+	if (candidate.includes(" ") && !candidate.includes("T")) candidate = candidate.replace(" ", "T");
+	if (!/(?:z|[+-]\d{2}:?\d{2})$/i.test(candidate)) candidate = `${candidate}Z`;
+	const parsed = Date.parse(candidate);
+	if (!Number.isFinite(parsed)) return undefined;
+	return new Date(parsed).toISOString();
 }
