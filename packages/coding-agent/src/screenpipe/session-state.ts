@@ -102,11 +102,11 @@ export function createScreenpipeSessionState(config: ScreenpipeSessionConfig): S
 			...(config.mediaRoot ? { mediaRoot: config.mediaRoot } : {}),
 		});
 		runner = new ScreenpipeBridgeRunner({ bridge, pollIntervalMs: config.pollIntervalMs, logger });
+		runner.start();
 	} catch (error) {
 		ledger.close();
 		throw error;
 	}
-	runner.start();
 	logger.info("screenpipe bridge started", {
 		sessionId: config.sessionId,
 		baseUrl: config.baseUrl,

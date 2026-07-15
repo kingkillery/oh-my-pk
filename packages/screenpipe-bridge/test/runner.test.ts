@@ -183,6 +183,44 @@ describe("ScreenpipeBridgeRunner", () => {
 		expect(infos[0]?.context?.emittedClipCount).toBe(2);
 	});
 
+	it("resets the failure streak on restart so a new lifecycle warns afresh", async () => {
+		const entries: LogEntry[] = [];
+		let call = 0;
+		let releaseFirstRun: () => void = () => {};
+		const firstRunDone = new Promise<void>(resolve => {
+			releaseFirstRun = resolve;
+		});
+		let releaseSecondRun: () => void = () => {};
+		const secondRunDone = new Promise<void>(resolve => {
+			releaseSecondRun = resolve;
+		});
+		const bridge: PollableBridge = {
+			async runOnce() {
+				call++;
+				if (call === 2) releaseFirstRun();
+				if (call === 4) releaseSecondRun();
+				throw new Error(`failure ${call}`);
+			},
+		};
+		const runner = new ScreenpipeBridgeRunner({
+			bridge,
+			pollIntervalMs: 1,
+			maximumBackoffMs: 2,
+			logger: collectingLogger(entries),
+		});
+		runner.start();
+		await firstRunDone;
+		await runner.stop();
+		runner.start();
+		await secondRunDone;
+		await runner.stop();
+
+		// One warning per lifecycle: the streak from before stop() must not
+		// swallow the restarted loop's first failure.
+		const warns = entries.filter(entry => entry.level === "warn");
+		expect(warns.length).toBeGreaterThanOrEqual(2);
+	});
+
 	it("can be restarted after stop", async () => {
 		const first = bridgeWithCallGate(async () => summary(), 1);
 		const runner = new ScreenpipeBridgeRunner({ bridge: first.bridge, pollIntervalMs: 1 });

@@ -66,6 +66,10 @@ export class ScreenpipeBridgeRunner {
 	start(): void {
 		if (!this.#stopped) return;
 		this.#stopped = false;
+		// A restart is a fresh lifecycle: without this reset, a streak carried
+		// over from before stop() would keep the interval backed off and
+		// suppress the new lifecycle's first-failure warning.
+		this.#consecutiveFailures = 0;
 		this.#schedule(0);
 	}
 

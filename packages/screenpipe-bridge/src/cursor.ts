@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -32,9 +33,17 @@ export function createFileCursorStore(captureRoot: string): BridgeCursorStore {
 		},
 		async write(lastFrameId: number): Promise<void> {
 			await fs.mkdir(path.dirname(cursorPath), { recursive: true });
-			const temporaryPath = `${cursorPath}.${process.pid}.tmp`;
-			await fs.writeFile(temporaryPath, JSON.stringify({ lastFrameId }));
-			await fs.rename(temporaryPath, cursorPath);
+			// Per-write random suffix: a PID alone collides when two stores in the
+			// same process (e.g. two sessions sharing one capture root) write
+			// concurrently — one writer would rename the other's half-written file.
+			const temporaryPath = `${cursorPath}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+			try {
+				await fs.writeFile(temporaryPath, JSON.stringify({ lastFrameId }));
+				await fs.rename(temporaryPath, cursorPath);
+			} catch (error) {
+				await fs.rm(temporaryPath, { force: true }).catch(() => {});
+				throw error;
+			}
 		},
 	};
 }
