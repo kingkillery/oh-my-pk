@@ -1,6 +1,6 @@
+import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Database } from "bun:sqlite";
 import { getAgentDir, toError } from "@pk-nerdsaver-ai/pi-utils";
 
 const LOCK_SCHEMA = `
@@ -93,8 +93,9 @@ class SqliteSessionWriterGuard implements SessionWriterGuardHandle {
  * handle owns a BEGIN IMMEDIATE transaction until release, so process death is
  * fenced by the operating system rather than by a renewable WAL lease.
  */
-export class SessionWriterGuard {
-	static acquire(options: AcquireSessionWriterGuardOptions): SessionWriterGuardHandle {
+// eslint-disable-next-line @typescript-eslint/no-namespace
+export namespace SessionWriterGuard {
+	export function acquire(options: AcquireSessionWriterGuardOptions): SessionWriterGuardHandle {
 		validateIdentity(options.sessionId, "sessionId");
 		validateIdentity(options.transcriptPath, "transcriptPath");
 		const transcriptPath = path.resolve(options.transcriptPath);
