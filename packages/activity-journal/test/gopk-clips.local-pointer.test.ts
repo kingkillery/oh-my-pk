@@ -35,16 +35,18 @@ function analysis(localPointer: string): GopkClipAnalysis {
 
 function ingest(localPointer: string) {
 	const ledger = new SqliteActivityLedger(":memory:");
-	const result = ingestGopkClip({
-		capture: { userId: "user-1", deviceId: "device-1", sessionId: "session-1" },
-		consent,
-		policy,
-		analysis: analysis(localPointer),
-		ingestedAt: "2026-07-13T14:06:00.000Z",
-		ledger,
-	});
-	ledger.close();
-	return result;
+	try {
+		return ingestGopkClip({
+			capture: { userId: "user-1", deviceId: "device-1", sessionId: "session-1" },
+			consent,
+			policy,
+			analysis: analysis(localPointer),
+			ingestedAt: "2026-07-13T14:06:00.000Z",
+			ledger,
+		});
+	} finally {
+		ledger.close();
+	}
 }
 
 describe("isLocalPointer via ingestGopkClip", () => {

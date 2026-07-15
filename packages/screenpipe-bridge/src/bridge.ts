@@ -119,7 +119,12 @@ export class ScreenpipeBridge {
 					earliestOpenFrameId = Math.min(earliestOpenFrameId, firstFrameIdOf(segment));
 				}
 			}
-			for (const segment of truncationHeld) {
+			// A held segment that reaches into another device's open frame range
+			// can't be closed off yet either — emitting it now would still get
+			// re-fetched (and re-emitted with an extended, overlapping clipId)
+			// once that other segment closes.
+			const progressableHeld = truncationHeld.filter(segment => lastFrameIdOf(segment) < earliestOpenFrameId);
+			for (const segment of progressableHeld) {
 				await emit(segment);
 				openSegmentCount--;
 			}

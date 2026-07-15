@@ -212,6 +212,43 @@ describe("ScreenpipeBridge", () => {
 		}
 	});
 
+	it("does not force-emit a truncation-held segment that reaches into another device's open frame range", async () => {
+		const captureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "screenpipe-bridge-e2e-"));
+		try {
+			const ledger = new SqliteActivityLedger(":memory:");
+			const sink = createGopkActivitySink({ ledger, consent, policy, capture, captureRoot });
+			const longAgo = Date.now() - 60 * 60_000;
+			// Device A's backlog (ids 1,2,4) is old and would be truncation-held on a
+			// full page; device B's frame (id 3) sits inside that id range but is
+			// recent (genuinely open). Force-emitting A's held segment anyway would
+			// be re-fetched and re-emitted with an extended, overlapping clip ID once
+			// B's segment closes.
+			const frames = [
+				frame({ id: 1, timestamp: new Date(longAgo).toISOString(), device_name: "device-a" }),
+				frame({ id: 2, timestamp: new Date(longAgo + 60_000).toISOString(), device_name: "device-a" }),
+				frame({ id: 3, timestamp: new Date().toISOString(), device_name: "device-b" }),
+				frame({ id: 4, timestamp: new Date(longAgo + 120_000).toISOString(), device_name: "device-a" }),
+				frame({ id: 5, timestamp: new Date(longAgo + 180_000).toISOString(), device_name: "device-a" }),
+			];
+			const bridge = new ScreenpipeBridge({
+				frameSource: fakeFrameSource(frames),
+				sink,
+				cursorStore: createFileCursorStore(captureRoot),
+				sessionId: "session-1",
+				captureRoot,
+				fetchLimit: 4,
+			});
+
+			const summary = await bridge.runOnce();
+
+			expect(summary).toMatchObject({ emittedClipCount: 0, cursorFrameId: 0 });
+			expect(ledger.list()).toEqual([]);
+			ledger.close();
+		} finally {
+			await fs.rm(captureRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects overlapping runOnce invocations", async () => {
 		const captureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "screenpipe-bridge-e2e-"));
 		try {

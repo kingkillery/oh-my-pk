@@ -71,7 +71,9 @@ export async function buildClipDerivative(
 
 	const manifestDir = path.join(path.resolve(options.captureRoot), "manifests");
 	await fs.mkdir(manifestDir, { recursive: true });
-	const manifestPath = path.join(manifestDir, `${sanitizeFileNameSegment(clipId)}.manifest.json`);
+	// Hashed rather than sanitized-and-truncated: distinct clipIds (e.g. a device
+	// name containing "/" vs "_") must never collide onto the same manifest file.
+	const manifestPath = path.join(manifestDir, `${sha256Hex(clipId)}.manifest.json`);
 	const manifestBody = JSON.stringify(
 		{
 			clipId,
@@ -109,10 +111,6 @@ function buildSanitizedDigest(segment: FrameSegment): string {
 	const { processName, browserOrigin } = segment.appIdentity;
 	const suffix = browserOrigin ? ` (${browserOrigin})` : "";
 	return `${processName} activity from ${segment.window.startedAt} to ${segment.window.endedAt}${suffix}`;
-}
-
-function sanitizeFileNameSegment(value: string): string {
-	return value.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
 async function hashContainedFile(filePath: string, mediaRoot: string): Promise<string | undefined> {
