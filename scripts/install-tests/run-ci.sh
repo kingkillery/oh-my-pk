@@ -170,9 +170,12 @@ mkdir -p "$TARBALL_APP_DIR"
       echo "Platform leaf package not installed: $leaf_dir"
       exit 1
    }
+   # The tarball-installed wire package must expose the same protocol version
+   # the workspace source defines — a hard-coded literal here just drifts.
    wire_proto="$(bun -e 'import { COLLAB_PROTO } from "@pk-nerdsaver-ai/pi-wire"; process.stdout.write(String(COLLAB_PROTO));')"
-   [ "$wire_proto" = "2" ] || {
-      echo "Unexpected @pk-nerdsaver-ai/pi-wire COLLAB_PROTO: $wire_proto"
+   expected_wire_proto="$(cd "$ROOT_DIR" && bun -e 'import { COLLAB_PROTO } from "@pk-nerdsaver-ai/pi-wire"; process.stdout.write(String(COLLAB_PROTO));')"
+   [ -n "$expected_wire_proto" ] && [ "$wire_proto" = "$expected_wire_proto" ] || {
+      echo "Unexpected @pk-nerdsaver-ai/pi-wire COLLAB_PROTO: $wire_proto (workspace defines: $expected_wire_proto)"
       exit 1
    }
    [ -f "node_modules/@pk-nerdsaver-ai/collab-web/dist/index.html" ] || {
