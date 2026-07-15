@@ -34,6 +34,10 @@
 	},
 	"scripts": {
 		"build": "bun scripts/build-binary.ts",
+		"gen:docs": "bun scripts/generate-docs-index.ts --generate",
+		"gen:docs:reset": "bun scripts/generate-docs-index.ts --reset",
+		"gen:mupdf": "bun scripts/embed-mupdf-wasm.ts",
+		"gen:mupdf:reset": "bun scripts/embed-mupdf-wasm.ts --reset",
 		"check": "biome check . && bun run check:types",
 		"check:types": "tsgo -p tsconfig.json --noEmit",
 		"lint": "biome lint .",
@@ -399,6 +403,14 @@
 		"./mapreduce/*": {
 			"types": "./src/mapreduce/*.ts",
 			"import": "./src/mapreduce/*.ts"
+		},
+		"./markit": {
+			"types": "./src/markit/index.ts",
+			"import": "./src/markit/index.ts"
+		},
+		"./markit/*": {
+			"types": "./src/markit/*.ts",
+			"import": "./src/markit/*.ts"
 		},
 		"./mcp": {
 			"types": "./src/mcp/index.ts",

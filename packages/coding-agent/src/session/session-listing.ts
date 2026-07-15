@@ -572,6 +572,22 @@ export function listSessions(sessionDir: string, storage: SessionStorage): Promi
 	return scanSessionDir(sessionDir, storage, true);
 }
 
+/**
+ * Like {@link listSessions}, but with no side effects: orphaned session
+ * backups are left alone instead of being recovered (a rename/write).
+ * Callers that scan session directories they don't own — `omp gc` sweeping
+ * every project's sessions — must not mutate a directory a live instance may
+ * be writing to.
+ */
+export async function listSessionsReadOnly(sessionDir: string, storage: SessionStorage): Promise<SessionInfo[]> {
+	try {
+		const files = storage.listFilesSync(sessionDir, "*.jsonl");
+		return await collectSessionsFromFiles(files, storage, true);
+	} catch {
+		return [];
+	}
+}
+
 /** List all sessions across all project directories (newest first). */
 export async function listAllSessions(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
 	const sessionsRoot = path.join(getDefaultAgentDir(), "sessions");
