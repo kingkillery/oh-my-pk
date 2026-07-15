@@ -12240,7 +12240,15 @@ export class AgentSession {
 			this.#syncAgentSessionId();
 			this.#rekeyHindsightMemoryForCurrentSessionId();
 			this.#rekeyMnemopiMemoryForCurrentSessionId();
-			this.#rekeyScreenpipeForCurrentSessionId();
+			// Screenpipe is deliberately NOT bound to the target here. Unlike the
+			// memory rekeys above — idempotent session-id swaps with no capture side
+			// effect — the bridge actively captures, and this switch can still roll
+			// back below. Binding now would let the target bridge's poll attribute
+			// journal rows/manifests to a session the switch never commits, which
+			// cannot be retracted. The previous session's bridge keeps running (any
+			// mid-switch capture correctly stays under the still-current session);
+			// the target is bound only once the switch commits, just before the
+			// success return, and the catch path re-binds to the restored session.
 
 			const sessionContext = this.buildDisplaySessionContext();
 			const didReloadConversationChange =
@@ -12347,6 +12355,10 @@ export class AgentSession {
 					error: String(error),
 				});
 			}
+			// The switch has committed — now (and only now) bind screenpipe capture to
+			// the target session, so no journal rows are ever attributed to a switch
+			// that rolled back above.
+			this.#rekeyScreenpipeForCurrentSessionId();
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
@@ -12354,6 +12366,9 @@ export class AgentSession {
 			this.#syncAgentSessionId(previousSessionState.sessionId);
 			this.#rekeyHindsightMemoryForCurrentSessionId();
 			this.#rekeyMnemopiMemoryForCurrentSessionId();
+			// Re-bind to the restored session. This is a no-op in the normal rollback
+			// case (the target was never bound above), but keeps binding deterministic
+			// if any future step binds the target before a later throw.
 			this.#rekeyScreenpipeForCurrentSessionId();
 			let restoreMcpError: unknown;
 			try {

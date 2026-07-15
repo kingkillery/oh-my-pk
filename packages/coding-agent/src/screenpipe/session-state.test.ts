@@ -332,4 +332,30 @@ describe("ScreenpipeSessionManager", () => {
 		expect(h.liveCount).toBe(0);
 		expect(h.createdCount).toBe(1);
 	});
+
+	// Models a rolled-back session switch: capture is bound to the target only on
+	// commit, so if the switch aborts (rebinding back) before the target ever polls,
+	// the journal gains zero rows under the abandoned target.
+	it("writes zero journal rows for a target that is rebound away before it captures", async () => {
+		const h = makeHarness(captureRoot, ledgerPath);
+		const mgr = new ScreenpipeSessionManager(h.factory);
+
+		await mgr.syncTo("previous");
+		h.pushFrames(1, 2);
+		await (mgr.activeState as TestState).runOnce();
+		expect(journalSessionIds(inspector)).toEqual(["previous"]);
+
+		// Bind toward the target, then roll straight back before any poll runs.
+		h.pushFrames(3, 4);
+		await mgr.syncTo("target");
+		await mgr.syncTo("previous");
+		await (mgr.activeState as TestState).runOnce();
+
+		// Nothing was ever attributed to the abandoned target.
+		expect(journalSessionIds(inspector).filter(s => s === "target")).toHaveLength(0);
+		expect(mgr.activeSessionId).toBe("previous");
+		expect(h.liveCount).toBe(1);
+
+		await mgr.dispose();
+	});
 });
