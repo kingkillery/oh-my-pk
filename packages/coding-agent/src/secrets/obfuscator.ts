@@ -384,6 +384,10 @@ export function obfuscateMessages(obfuscator: SecretObfuscator, messages: Messag
 	return changed ? result : messages;
 }
 
+/**
+ * Redact outbound provider context. Only conversation messages are rewritten;
+ * the static system prompt and tool schemas pass through unchanged.
+ */
 export function obfuscateProviderContext(obfuscator: SecretObfuscator | undefined, context: Context): Context {
 	if (!obfuscator?.hasSecrets()) return context;
 	const messages = obfuscateMessages(obfuscator, context.messages);
