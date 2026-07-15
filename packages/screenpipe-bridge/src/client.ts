@@ -1,3 +1,4 @@
+import { type BridgeLogger, consoleBridgeLogger } from "./logger";
 import type { ScreenpipeFrameRow } from "./types";
 
 export interface ScreenpipeClientOptions {
@@ -5,6 +6,7 @@ export interface ScreenpipeClientOptions {
 	readonly fetchImpl?: typeof fetch;
 	/** Abort a stalled /raw_sql request after this many milliseconds. Default 30s. */
 	readonly requestTimeoutMs?: number;
+	readonly logger?: BridgeLogger;
 }
 
 export interface FetchRedactedFramesOptions {
@@ -24,6 +26,7 @@ export class ScreenpipeClient {
 	#baseUrl: string;
 	#fetchImpl: typeof fetch;
 	#requestTimeoutMs: number;
+	#logger: BridgeLogger;
 
 	constructor(options: ScreenpipeClientOptions = {}) {
 		this.#baseUrl = (options.baseUrl ?? "http://127.0.0.1:3030").replace(/\/+$/, "");
@@ -31,6 +34,7 @@ export class ScreenpipeClient {
 		this.#requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
 		if (!Number.isSafeInteger(this.#requestTimeoutMs) || this.#requestTimeoutMs <= 0)
 			throw new Error("requestTimeoutMs must be a positive integer");
+		this.#logger = options.logger ?? consoleBridgeLogger;
 	}
 
 	async fetchRedactedFrames(options: FetchRedactedFramesOptions): Promise<readonly ScreenpipeFrameRow[]> {
@@ -55,9 +59,10 @@ export class ScreenpipeClient {
 		if (!Array.isArray(payload)) throw new Error("screenpipe /raw_sql returned a non-array payload");
 		const frames = payload.map(parseFrameRow).filter((row): row is ScreenpipeFrameRow => row !== undefined);
 		if (frames.length < payload.length) {
-			console.warn(
-				`screenpipe bridge dropped ${payload.length - frames.length} of ${payload.length} rows that failed redaction re-validation`,
-			);
+			this.#logger.warn("screenpipe bridge dropped rows that failed redaction re-validation", {
+				droppedRowCount: payload.length - frames.length,
+				fetchedRowCount: payload.length,
+			});
 		}
 		return frames;
 	}

@@ -121,7 +121,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Fusion",
 	],
 	context: ["General", "Light Context", "Compaction", "Rules (TTSR)", "Experimental"],
-	memory: ["General", "Auto-Learn", "Mnemopi", "Hindsight"],
+	memory: ["General", "Auto-Learn", "Mnemopi", "Hindsight", "Screenpipe"],
 	files: ["Editing", "Reading", "Read Summaries", "LSP"],
 	shell: ["Bash", "Eval & Python"],
 	tools: [
@@ -4285,6 +4285,54 @@ export const SETTINGS_SCHEMA = {
 	"delegate.legacyEndpointConfigPath": {
 		type: "string",
 		default: "~/.claude/custom-endpoint.json",
+	},
+
+	// Screenpipe activity bridge — local-only, opt-in. Polls a locally running
+	// screenpipe daemon for already-redacted frame metadata and records
+	// privacy-preserving activity clips in the local ledger. Nothing leaves the
+	// machine; requires the user to run screenpipe themselves.
+	"screenpipe.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "memory",
+			group: "Screenpipe",
+			label: "Screenpipe Activity Bridge",
+			description:
+				"Poll a locally running screenpipe daemon and record redacted activity clips in the local ledger (opt-in, local-only)",
+		},
+	},
+	"screenpipe.baseUrl": {
+		type: "string",
+		default: "http://127.0.0.1:3030",
+		ui: {
+			tab: "memory",
+			group: "Screenpipe",
+			label: "Screenpipe URL",
+			description: "Base URL of the local screenpipe daemon",
+		},
+	},
+	"screenpipe.pollIntervalMs": {
+		type: "number",
+		default: 60_000,
+		ui: {
+			tab: "memory",
+			group: "Screenpipe",
+			label: "Poll Interval (ms)",
+			description: "Delay between successful screenpipe polls",
+		},
+	},
+	// No default on purpose: keyframe hashing stays off unless the user
+	// explicitly points at screenpipe's media directory.
+	"screenpipe.mediaRoot": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "memory",
+			group: "Screenpipe",
+			label: "Screenpipe Media Root",
+			description: "Screenpipe media directory; when set, keyframe hashes are recorded for snapshots under it",
+		},
 	},
 
 	// Skills

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Added an opt-in, local-only screenpipe activity bridge (`screenpipe.enabled`, default off, with `screenpipe.baseUrl`, `screenpipe.pollIntervalMs`, and `screenpipe.mediaRoot` settings under the memory tab). When enabled, each session starts a background poller that reads already-redacted frame metadata from a locally running screenpipe daemon and records privacy-preserving activity clips in a local SQLite ledger under the agent dir; password-manager windows are always denied, nothing leaves the machine, and a broken or absent daemon never affects the session (backoff + single warning per outage). The poller is torn down in session dispose.
 - Added a Consurg Guard hook example that evaluates every scoped file or command tool call, including multi-path and workspace-root searches, and can fail closed when its guard is unavailable.
 - Added opt-in global image background packs from explicit outside-workspace manifests, with exact-model qualification, profitability gating, content/profile caching, non-authoritative provenance, and fail-closed warnings.
 - Added the default intent composer with enforceable Ask/Build/Plan work modes, context chips, an execution rail, and a configurable mode-cycle keybinding; the classic layout remains selectable.

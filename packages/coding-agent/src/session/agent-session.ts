@@ -261,6 +261,7 @@ import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" w
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry } from "../registry/agent-registry";
+import type { ScreenpipeSessionState } from "../screenpipe/session-state";
 import {
 	deobfuscateAssistantContent,
 	deobfuscateSessionContext,
@@ -1225,6 +1226,10 @@ export class AgentSession {
 	#fusionToolFailureStreak = 0;
 	#advisorRuntime?: AdvisorRuntime;
 	#advisorEnabled = false;
+	/** Screenpipe activity-bridge poller; built when `screenpipe.enabled` is on, torn down in dispose. */
+	#screenpipeState?: ScreenpipeSessionState;
+	/** Pending screenpipe startup; dispose awaits it so a slow start cannot leak the poller. */
+	#screenpipeStartPromise?: Promise<void>;
 	/** The advisor's own agent, retained so `/dump advisor` can serialize its transcript. Undefined when no advisor is active. */
 	#advisorAgent?: Agent;
 	#advisorReadOnlyTools?: AgentTool[];
@@ -1817,6 +1822,8 @@ export class AgentSession {
 		this.#advisorEnabled = this.settings.get("advisor.enabled") as boolean;
 		if (this.#advisorEnabled) this.#buildAdvisorRuntime();
 
+		if (this.settings.get("screenpipe.enabled") as boolean) this.#startScreenpipeBridge();
+
 		// Always subscribe to agent events for internal handling
 		// (session persistence, hooks, auto-compaction, retry logic)
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
@@ -1824,6 +1831,29 @@ export class AgentSession {
 		this.#unsubscribeAppendOnly = onAppendOnlyModeChanged(_value => this.#syncAppendOnlyContext(this.model));
 		if (config.clientBridge) this.setClientBridge(config.clientBridge);
 	}
+
+	// A broken bridge (unwritable agent dir, corrupt ledger) must never stop
+	// the session from starting — the bridge is a passive, opt-in observer.
+	// Loaded dynamically: the bridge stack lives in private workspace packages
+	// (devDependencies), so a static import would make every library consumer
+	// of this module resolve packages that are never published.
+	#startScreenpipeBridge(): void {
+		const mediaRoot = this.settings.get("screenpipe.mediaRoot") as string | undefined;
+		const config = {
+			sessionId: this.sessionId,
+			baseUrl: this.settings.get("screenpipe.baseUrl") as string,
+			pollIntervalMs: this.settings.get("screenpipe.pollIntervalMs") as number,
+			...(mediaRoot ? { mediaRoot } : {}),
+		};
+		this.#screenpipeStartPromise = import("../screenpipe/session-state")
+			.then(({ createScreenpipeSessionState }) => {
+				this.#screenpipeState = createScreenpipeSessionState(config);
+			})
+			.catch(error => {
+				logger.warn("Failed to start screenpipe activity bridge", { error: String(error) });
+			});
+	}
+
 	// -------------------------------------------------------------------------
 	// Advisor runtime lifecycle
 	// -------------------------------------------------------------------------
@@ -4412,6 +4442,21 @@ export class AgentSession {
 		hindsightState?.dispose();
 		const mnemopiState = setMnemopiSessionState(this, undefined);
 		await mnemopiState?.dispose();
+		// Stop the screenpipe poller (awaits any in-flight poll) and close its
+		// ledger. Startup is async, so wait for it first — otherwise a dispose
+		// racing a slow start would leak the freshly built poller. Best-effort:
+		// bridge teardown must never throw out of dispose.
+		await this.#screenpipeStartPromise;
+		this.#screenpipeStartPromise = undefined;
+		if (this.#screenpipeState) {
+			const screenpipeState = this.#screenpipeState;
+			this.#screenpipeState = undefined;
+			try {
+				await screenpipeState.dispose();
+			} catch (error) {
+				logger.warn("Failed to dispose screenpipe activity bridge", { error: String(error) });
+			}
+		}
 		// Tear down the embeddings subprocess AFTER mnemopi state.dispose:
 		// consolidate-on-dispose may still call `embed()` to store the final
 		// memories, and that round-trips through the worker we are about to

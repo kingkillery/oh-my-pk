@@ -139,6 +139,9 @@
         "zod": "catalog:",
       },
       "devDependencies": {
+        "@pk-nerdsaver-ai/pi-activity-journal": "workspace:*",
+        "@pk-nerdsaver-ai/pi-context-policy": "workspace:*",
+        "@pk-nerdsaver-ai/pi-screenpipe-bridge": "workspace:*",
         "@types/bun": "catalog:",
       },
       "optionalDependencies": {
