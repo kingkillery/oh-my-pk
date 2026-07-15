@@ -108,13 +108,15 @@ function parseFrameRow(value: unknown): ScreenpipeFrameRow | undefined {
 	const browserUrl = optionalText(row.browser_url);
 	const snapshotPath = optionalText(row.snapshot_path);
 
-	if (hasFullText && typeof row.full_text_redacted_at !== "number") return undefined;
-	if (hasAccessibilityText && typeof row.accessibility_redacted_at !== "number") return undefined;
-	if (hasAccessibilityTree && typeof row.accessibility_tree_redacted_at !== "number") return undefined;
-	if (hasTextJson && typeof row.text_json_redacted_at !== "number") return undefined;
-	if (windowName !== null && typeof row.window_name_redacted_at !== "number") return undefined;
-	if (browserUrl !== null && typeof row.browser_url_redacted_at !== "number") return undefined;
-	if (snapshotPath !== null && typeof row.image_redacted_at !== "number") return undefined;
+	// /raw_sql can serialize SQL NULL for INTEGER columns as 0, so a watermark
+	// only counts when it is a positive epoch — 0 must read as "never redacted".
+	if (hasFullText && !isWatermark(row.full_text_redacted_at)) return undefined;
+	if (hasAccessibilityText && !isWatermark(row.accessibility_redacted_at)) return undefined;
+	if (hasAccessibilityTree && !isWatermark(row.accessibility_tree_redacted_at)) return undefined;
+	if (hasTextJson && !isWatermark(row.text_json_redacted_at)) return undefined;
+	if (windowName !== null && !isWatermark(row.window_name_redacted_at)) return undefined;
+	if (browserUrl !== null && !isWatermark(row.browser_url_redacted_at)) return undefined;
+	if (snapshotPath !== null && !isWatermark(row.image_redacted_at)) return undefined;
 
 	return {
 		id: row.id,
@@ -145,6 +147,10 @@ function optionalText(value: unknown): string | null {
 
 function optionalNumber(value: unknown): number | null {
 	return typeof value === "number" ? value : null;
+}
+
+function isWatermark(value: unknown): boolean {
+	return typeof value === "number" && value > 0;
 }
 
 /**

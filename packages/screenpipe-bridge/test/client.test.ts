@@ -94,6 +94,15 @@ describe("ScreenpipeClient", () => {
 		expect(frames[0]).toMatchObject({ window_name: null, snapshot_path: null });
 	});
 
+	it("treats a zero watermark as never-redacted (raw_sql serializes SQL NULL integers as 0)", async () => {
+		const row = redactedRow({ full_text_redacted_at: 0 });
+		const fetchImpl = fakeFetch(() => new Response(JSON.stringify([row]), { status: 200 }));
+
+		const frames = await new ScreenpipeClient({ fetchImpl }).fetchRedactedFrames({ sinceFrameId: 0, limit: 10 });
+
+		expect(frames).toEqual([]);
+	});
+
 	it("drops a row whose full_text is marked present but has no redaction watermark", async () => {
 		const row = redactedRow({ full_text_redacted_at: null });
 		const fetchImpl = fakeFetch(() => new Response(JSON.stringify([row]), { status: 200 }));

@@ -82,13 +82,8 @@ export class ScreenpipeBridge {
 		// Cap the cursor just before the earliest open frame so those frames stay
 		// inside the next poll's fetch window until their segment closes.
 		let earliestOpenFrameId = Number.POSITIVE_INFINITY;
-		for (const segment of segments) {
-			const truncated = truncatedLastFrameIds?.get(segment.deviceName) === lastFrameIdOf(segment);
-			if (truncated || !isSegmentClosed(segment, now, idleThresholdMs)) {
-				openSegmentCount++;
-				earliestOpenFrameId = Math.min(earliestOpenFrameId, firstFrameIdOf(segment));
-				continue;
-			}
+		const truncationHeld: FrameSegment[] = [];
+		const emit = async (segment: FrameSegment) => {
 			const derivative = await buildClipDerivative(segment, {
 				sessionId,
 				captureRoot,
@@ -97,9 +92,40 @@ export class ScreenpipeBridge {
 			await sink(derivative);
 			emittedClipCount++;
 			cursorFrameId = Math.max(cursorFrameId, lastFrameIdOf(segment));
+		};
+		for (const segment of segments) {
+			const truncated = truncatedLastFrameIds?.get(segment.deviceName) === lastFrameIdOf(segment);
+			const timeClosed = isSegmentClosed(segment, now, idleThresholdMs);
+			if (truncated || !timeClosed) {
+				openSegmentCount++;
+				earliestOpenFrameId = Math.min(earliestOpenFrameId, firstFrameIdOf(segment));
+				if (truncated && timeClosed) truncationHeld.push(segment);
+				continue;
+			}
+			await emit(segment);
 		}
 
 		cursorFrameId = Math.min(cursorFrameId, earliestOpenFrameId - 1);
+		// Liveness: a backlog segment longer than one fetch page keeps every page
+		// full and would be truncation-held forever, freezing the cursor. When a
+		// full page yields no cursor progress, emit the time-closed held segments
+		// anyway — the split at the page boundary is artificial but produces
+		// disjoint clips, whereas holding produces none at all.
+		if (cursorFrameId <= lastFrameId && truncationHeld.length > 0) {
+			earliestOpenFrameId = Number.POSITIVE_INFINITY;
+			for (const segment of segments) {
+				if (truncationHeld.includes(segment)) continue;
+				if (!isSegmentClosed(segment, now, idleThresholdMs)) {
+					earliestOpenFrameId = Math.min(earliestOpenFrameId, firstFrameIdOf(segment));
+				}
+			}
+			for (const segment of truncationHeld) {
+				await emit(segment);
+				openSegmentCount--;
+			}
+			cursorFrameId = Math.min(cursorFrameId, earliestOpenFrameId - 1);
+		}
+
 		if (cursorFrameId > lastFrameId) await cursorStore.write(cursorFrameId);
 		else cursorFrameId = lastFrameId;
 		return { fetchedFrameCount: frames.length, emittedClipCount, openSegmentCount, cursorFrameId };

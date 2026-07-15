@@ -168,6 +168,50 @@ describe("ScreenpipeBridge", () => {
 		}
 	});
 
+	it("makes progress on a backlog segment longer than one fetch page", async () => {
+		const captureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "screenpipe-bridge-e2e-"));
+		try {
+			const ledger = new SqliteActivityLedger(":memory:");
+			const sink = createGopkActivitySink({ ledger, consent, policy, capture, captureRoot });
+			const longAgo = Date.now() - 60 * 60_000;
+			// One continuous 5-frame activity, fetch page of 2: every page comes back
+			// full and the segment is always truncation-held, so the bridge must
+			// force-emit page-sized chunks instead of stalling forever.
+			const frames = [1, 2, 3, 4, 5].map(id =>
+				frame({ id, timestamp: new Date(longAgo + id * 1_000).toISOString() }),
+			);
+			const cursorStore = createFileCursorStore(captureRoot);
+			const bridge = new ScreenpipeBridge({
+				frameSource: fakeFrameSource(frames),
+				sink,
+				cursorStore,
+				sessionId: "session-1",
+				captureRoot,
+				fetchLimit: 2,
+			});
+
+			const first = await bridge.runOnce();
+			expect(first).toMatchObject({ fetchedFrameCount: 2, emittedClipCount: 1, cursorFrameId: 2 });
+
+			const second = await bridge.runOnce();
+			expect(second).toMatchObject({ fetchedFrameCount: 2, emittedClipCount: 1, cursorFrameId: 4 });
+
+			// Final partial page closes normally by time.
+			const third = await bridge.runOnce();
+			expect(third).toMatchObject({ fetchedFrameCount: 1, emittedClipCount: 1, cursorFrameId: 5 });
+
+			// Chunks are disjoint — no overlapping evidence windows.
+			expect(ledger.list().map(record => record.sourceEventId)).toEqual([
+				"session-1:device-1:1-2",
+				"session-1:device-1:3-4",
+				"session-1:device-1:5-5",
+			]);
+			ledger.close();
+		} finally {
+			await fs.rm(captureRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects overlapping runOnce invocations", async () => {
 		const captureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "screenpipe-bridge-e2e-"));
 		try {
