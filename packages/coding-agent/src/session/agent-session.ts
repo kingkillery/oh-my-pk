@@ -261,7 +261,7 @@ import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" w
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry } from "../registry/agent-registry";
-import type { ScreenpipeSessionState } from "../screenpipe/session-state";
+import type { ScreenpipeSessionManager } from "../screenpipe/session-state";
 import {
 	deobfuscateAssistantContent,
 	deobfuscateSessionContext,
@@ -1226,10 +1226,12 @@ export class AgentSession {
 	#fusionToolFailureStreak = 0;
 	#advisorRuntime?: AdvisorRuntime;
 	#advisorEnabled = false;
-	/** Screenpipe activity-bridge poller; built when `screenpipe.enabled` is on, torn down in dispose. */
-	#screenpipeState?: ScreenpipeSessionState;
-	/** Pending screenpipe startup; dispose awaits it so a slow start cannot leak the poller. */
-	#screenpipeStartPromise?: Promise<void>;
+	/** Screenpipe activity-bridge manager; built when `screenpipe.enabled` is on, re-bound on
+	 *  every session transition, torn down in dispose. Undefined when the feature is off. */
+	#screenpipeManager?: ScreenpipeSessionManager;
+	/** Resolves once the (dynamically imported) manager has been constructed. Set only when the
+	 *  feature is enabled; dispose and session re-binds await it so a slow start cannot leak the poller. */
+	#screenpipeManagerReady?: Promise<void>;
 	/** The advisor's own agent, retained so `/dump advisor` can serialize its transcript. Undefined when no advisor is active. */
 	#advisorAgent?: Agent;
 	#advisorReadOnlyTools?: AgentTool[];
@@ -1840,18 +1842,33 @@ export class AgentSession {
 	#startScreenpipeBridge(): void {
 		const mediaRoot = this.settings.get("screenpipe.mediaRoot") as string | undefined;
 		const config = {
-			sessionId: this.sessionId,
 			baseUrl: this.settings.get("screenpipe.baseUrl") as string,
 			pollIntervalMs: this.settings.get("screenpipe.pollIntervalMs") as number,
 			...(mediaRoot ? { mediaRoot } : {}),
 		};
-		this.#screenpipeStartPromise = import("../screenpipe/session-state")
-			.then(({ createScreenpipeSessionState }) => {
-				this.#screenpipeState = createScreenpipeSessionState(config);
+		this.#screenpipeManagerReady = import("../screenpipe/session-state")
+			.then(({ createScreenpipeSessionManager }) => {
+				this.#screenpipeManager = createScreenpipeSessionManager(config);
+				// Bind to whatever session is current now — the id may have advanced
+				// while this dynamic import was in flight.
+				return this.#screenpipeManager.syncTo(this.sessionId);
 			})
 			.catch(error => {
 				logger.warn("Failed to start screenpipe activity bridge", { error: String(error) });
 			});
+	}
+
+	// Re-bind screenpipe capture to the current session id. Fire-and-forget: the
+	// manager serializes transitions and disposes the old bridge before the new
+	// one, so no post-transition activity is attributed to the prior session and
+	// only one poller is ever live. Guarded on `#screenpipeManagerReady` so it is
+	// a no-op when the feature is disabled, and chained after startup so a
+	// transition racing the manager's dynamic import still re-binds.
+	#rekeyScreenpipeForCurrentSessionId(): void {
+		const ready = this.#screenpipeManagerReady;
+		if (!ready) return;
+		const sessionId = this.sessionId;
+		void ready.then(() => this.#screenpipeManager?.syncTo(sessionId));
 	}
 
 	// -------------------------------------------------------------------------
@@ -4442,20 +4459,21 @@ export class AgentSession {
 		hindsightState?.dispose();
 		const mnemopiState = setMnemopiSessionState(this, undefined);
 		await mnemopiState?.dispose();
-		// Stop the screenpipe poller (awaits any in-flight poll) and close its
-		// ledger. Startup is async, so wait for it first — otherwise a dispose
-		// racing a slow start would leak the freshly built poller. Best-effort:
-		// bridge teardown must never throw out of dispose.
-		await this.#screenpipeStartPromise;
-		this.#screenpipeStartPromise = undefined;
-		if (this.#screenpipeState) {
-			const screenpipeState = this.#screenpipeState;
-			this.#screenpipeState = undefined;
+		// Tear down the screenpipe poller (stops any in-flight poll and closes its
+		// ledger). Startup is async, so wait for the manager to have been built
+		// first — otherwise a dispose racing a slow start would leak the freshly
+		// built poller. The manager itself serializes and awaits any in-flight
+		// session re-bind. Best-effort: teardown must never throw out of dispose.
+		if (this.#screenpipeManagerReady) {
+			const ready = this.#screenpipeManagerReady;
+			this.#screenpipeManagerReady = undefined;
 			try {
-				await screenpipeState.dispose();
+				await ready;
+				await this.#screenpipeManager?.dispose();
 			} catch (error) {
 				logger.warn("Failed to dispose screenpipe activity bridge", { error: String(error) });
 			}
+			this.#screenpipeManager = undefined;
 		}
 		// Tear down the embeddings subprocess AFTER mnemopi state.dispose:
 		// consolidate-on-dispose may still call `embed()` to store the final
@@ -4495,6 +4513,7 @@ export class AgentSession {
 		this.#syncAgentSessionId();
 		this.#rekeyHindsightMemoryForCurrentSessionId();
 		this.#rekeyMnemopiMemoryForCurrentSessionId();
+		this.#rekeyScreenpipeForCurrentSessionId();
 		this.agent.appendOnlyContext?.invalidateForModelChange();
 		return {
 			previousSessionId,
@@ -7324,6 +7343,7 @@ export class AgentSession {
 		this.#syncAgentSessionId();
 		this.#rekeyHindsightMemoryForCurrentSessionId();
 		this.#rekeyMnemopiMemoryForCurrentSessionId();
+		this.#rekeyScreenpipeForCurrentSessionId();
 		this.#resetHindsightConversationTrackingIfHindsight();
 		this.#resetMnemopiConversationTrackingIfMnemopi();
 		this.#pendingNextTurnMessages = [];
@@ -7480,6 +7500,7 @@ export class AgentSession {
 		this.#syncAgentSessionId();
 		this.#rekeyHindsightMemoryForCurrentSessionId();
 		this.#rekeyMnemopiMemoryForCurrentSessionId();
+		this.#rekeyScreenpipeForCurrentSessionId();
 		this.#resetMnemopiConversationTrackingIfMnemopi();
 
 		// Emit session_switch event with reason "fork" to hooks
@@ -8684,6 +8705,7 @@ export class AgentSession {
 			this.#syncAgentSessionId();
 			this.#rekeyHindsightMemoryForCurrentSessionId();
 			this.#rekeyMnemopiMemoryForCurrentSessionId();
+			this.#rekeyScreenpipeForCurrentSessionId();
 			this.#resetHindsightConversationTrackingIfHindsight();
 			this.#resetMnemopiConversationTrackingIfMnemopi();
 			this.#pendingNextTurnMessages = [];
@@ -12218,6 +12240,7 @@ export class AgentSession {
 			this.#syncAgentSessionId();
 			this.#rekeyHindsightMemoryForCurrentSessionId();
 			this.#rekeyMnemopiMemoryForCurrentSessionId();
+			this.#rekeyScreenpipeForCurrentSessionId();
 
 			const sessionContext = this.buildDisplaySessionContext();
 			const didReloadConversationChange =
@@ -12331,6 +12354,7 @@ export class AgentSession {
 			this.#syncAgentSessionId(previousSessionState.sessionId);
 			this.#rekeyHindsightMemoryForCurrentSessionId();
 			this.#rekeyMnemopiMemoryForCurrentSessionId();
+			this.#rekeyScreenpipeForCurrentSessionId();
 			let restoreMcpError: unknown;
 			try {
 				await this.#restoreMCPSelectionsForSessionContext(previousSessionContext, {
@@ -12431,6 +12455,7 @@ export class AgentSession {
 		this.#syncAgentSessionId();
 		this.#rekeyHindsightMemoryForCurrentSessionId();
 		this.#rekeyMnemopiMemoryForCurrentSessionId();
+		this.#rekeyScreenpipeForCurrentSessionId();
 		this.#resetHindsightConversationTrackingIfHindsight();
 		this.#resetMnemopiConversationTrackingIfMnemopi();
 
@@ -12526,6 +12551,7 @@ export class AgentSession {
 		this.#syncAgentSessionId();
 		this.#rekeyHindsightMemoryForCurrentSessionId();
 		this.#rekeyMnemopiMemoryForCurrentSessionId();
+		this.#rekeyScreenpipeForCurrentSessionId();
 		this.#resetHindsightConversationTrackingIfHindsight();
 		this.#resetMnemopiConversationTrackingIfMnemopi();
 
