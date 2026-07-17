@@ -200,6 +200,7 @@ import {
 	WriteTool,
 	warmupLspServers,
 } from "./tools";
+import { normalizeToolNames } from "./tools/builtin-names";
 import { ToolContextStore } from "./tools/context";
 import { getImageGenTools } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
@@ -843,6 +844,7 @@ export interface BuildSystemPromptOptions {
  * as separate entries so providers can cache prompt prefixes without concatenating blocks.
  */
 export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}): Promise<BuildSystemPromptResult> {
+	const providedTools = options.tools ? new Map(options.tools.map(tool => [tool.name, tool])) : undefined;
 	return await buildSystemPromptInternal({
 		cwd: options.cwd,
 		customPrompt: options.customPrompt,
@@ -850,6 +852,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		contextFiles: options.contextFiles,
 		appendSystemPrompt: options.appendPrompt,
 		inlineToolDescriptors: options.inlineToolDescriptors,
+		tools: providedTools ? buildSystemPromptToolMetadata(providedTools) : undefined,
+		toolNames: options.tools?.map(tool => tool.name),
 	});
 }
 
@@ -2069,9 +2073,35 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// Re-resolve the allowed set: extension factories above may have
 			// registered providers/models that weren't visible at startup.
 			const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
-			const defaultModel = pickDefaultAvailableModel(fallbackCandidates.filter(hasModelAuth));
-			if (defaultModel) {
-				model = defaultModel;
+			// Retry `modelRoles.default` against the post-extension set before the
+			// generic fallback: a role pointing at an extension-registered provider
+			// was invisible to the early defaultRoleSpec resolution (issue #3569).
+			if (!hasExplicitModel) {
+				const retriedRoleSpec = resolveModelRoleValue(settings.getModelRole("default"), fallbackCandidates, {
+					settings,
+					matchPreferences: modelMatchPreferences,
+					modelRegistry,
+				});
+				const roleModel = retriedRoleSpec.model;
+				if (roleModel && hasModelAuth(roleModel)) {
+					model = roleModel;
+					modelFallbackMessage = undefined;
+					thinkingLevel = retriedRoleSpec.explicitThinkingLevel
+						? retriedRoleSpec.thinkingLevel
+						: pickInitialThinkingLevel(roleModel);
+					autoThinking = thinkingLevel === AUTO_THINKING;
+					effectiveThinkingLevel = thinkingLevel === AUTO_THINKING ? undefined : thinkingLevel;
+					effectiveThinkingLevel = autoThinking
+						? resolveProvisionalAutoLevel(roleModel)
+						: resolveThinkingLevelForModel(roleModel, effectiveThinkingLevel);
+					preconnectModelHost(roleModel.baseUrl);
+				}
+			}
+			if (!model) {
+				const defaultModel = pickDefaultAvailableModel(fallbackCandidates.filter(hasModelAuth));
+				if (defaultModel) {
+					model = defaultModel;
+				}
 			}
 			if (model) {
 				if (modelFallbackMessage) {
@@ -2375,9 +2405,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		};
 
 		const toolNamesFromRegistry = Array.from(toolRegistry.keys());
-		const explicitlyRequestedToolNames = options.toolNames
-			? [...new Set(options.toolNames.map(name => name.toLowerCase()))]
-			: undefined;
+		const explicitlyRequestedToolNames = options.toolNames ? normalizeToolNames(options.toolNames) : undefined;
 		// When `requireYieldTool` is set, the subagent's prompts and idle-reminders demand a
 		// `yield` call to terminate. The tool registry already includes `yield` (see
 		// `createTools`), but an explicit `toolNames` list would otherwise drop it from the
@@ -2500,7 +2528,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			initialToolNames = filterInitialToolsForDiscoveryAll(initialToolNames, {
 				loadModeOf: name => toolRegistry.get(name)?.loadMode,
 				essentialNames: new Set(computeEssentialBuiltinNames(settings)),
-				explicitlyRequested: new Set(options.toolNames?.map(name => name.toLowerCase()) ?? []),
+				explicitlyRequested: new Set(options.toolNames ? normalizeToolNames(options.toolNames) : []),
 				// Back-compat: persisted activations live under selectedMCPToolNames today (built-in
 				// activation persistence is a follow-up). MCP names won't collide with built-in names.
 				restored: new Set(existingSession.selectedMCPToolNames),
