@@ -322,40 +322,35 @@ async function run(options: RunOptions): Promise<RunResult> {
 			const changelogPath = paths[i];
 			if (!changelogPath) continue;
 
-			try {
-				const absolutePath = path.join(repoRoot, changelogPath);
-				const content = await Bun.file(absolutePath).text();
-				const document = parseChangelog(content);
-				const section = unreleasedSection(document);
-				if (!section) continue;
+			const absolutePath = path.join(repoRoot, changelogPath);
+			const content = await Bun.file(absolutePath).text();
+			const document = parseChangelog(content);
+			const section = unreleasedSection(document);
+			if (!section) continue;
 
-				const originalCount = section.subsections.reduce((sum, sub) => sum + parseItems(sub.lines).length, 0);
-				if (originalCount === 0) continue;
+			const originalCount = section.subsections.reduce((sum, sub) => sum + parseItems(sub.lines).length, 0);
+			if (originalCount === 0) continue;
 
-				const unreleasedBody = renderChangelog({ prefixLines: [], sections: [section] })
-					.replace(/^## \[Unreleased\]\n?/, "")
-					.trim();
+			const unreleasedBody = renderChangelog({ prefixLines: [], sections: [section] })
+				.replace(/^## \[Unreleased\]\n?/, "")
+				.trim();
 
-				const rewritten = await requestRewrite(model, changelogPath, unreleasedBody);
-				applyRewrite(section, rewritten);
-				const next = renderChangelog(document);
-				if (next === content) continue;
+			const rewritten = await requestRewrite(model, changelogPath, unreleasedBody);
+			applyRewrite(section, rewritten);
+			const next = renderChangelog(document);
+			if (next === content) continue;
 
-				const rewrittenCount = rewritten.reduce((sum, sec) => sum + sec.items.length, 0);
-				if (options.write) {
-					await Bun.write(absolutePath, next);
-				}
-
-				results[i] = {
-					path: changelogPath,
-					originalCount,
-					rewrittenCount,
-					sections: rewritten,
-				};
-			} catch (error) {
-				// Bubble errors from workers
-				throw error;
+			const rewrittenCount = rewritten.reduce((sum, sec) => sum + sec.items.length, 0);
+			if (options.write) {
+				await Bun.write(absolutePath, next);
 			}
+
+			results[i] = {
+				path: changelogPath,
+				originalCount,
+				rewrittenCount,
+				sections: rewritten,
+			};
 		}
 	}
 

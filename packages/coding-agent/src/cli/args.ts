@@ -1,7 +1,7 @@
 /**
  * CLI argument parsing and help display
  */
-import { type Effort, THINKING_EFFORTS } from "@pk-nerdsaver-ai/pi-catalog/effort";
+import { THINKING_EFFORTS } from "@pk-nerdsaver-ai/pi-catalog/effort";
 import { APP_NAME, CONFIG_DIR_NAME, logger } from "@pk-nerdsaver-ai/pi-utils";
 import chalk from "chalk";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
