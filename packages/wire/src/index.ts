@@ -335,11 +335,19 @@ export type HostFrame =
 			t: "welcome";
 			proto: number;
 			header: SessionHeader;
-			entries: SessionEntry[];
+			/**
+			 * Number of transcript entries that follow in the `snapshot-chunk`
+			 * train. The welcome itself never carries the transcript inline — a
+			 * multi-MB single-frame welcome spent the guest's first-welcome
+			 * timeout on the default relay (#3144).
+			 */
+			entryCount: number;
 			state: SessionState;
 			agents: AgentSnapshot[];
 			readOnly?: boolean;
 	  }
+	/** Transcript snapshot train following a welcome; only the last chunk carries `final: true`. */
+	| { t: "snapshot-chunk"; entries: SessionEntry[]; final: boolean }
 	| { t: "entry"; entry: SessionEntry }
 	| { t: "event"; event: AgentEvent }
 	| { t: "state"; state: SessionState }

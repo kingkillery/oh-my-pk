@@ -172,6 +172,7 @@ import {
 } from "./loop-limit";
 import * as loopSynthesis from "./loop-synthesis";
 import { OAuthManualInputManager } from "./oauth-manual-input";
+import { countRunningSubagentBadgeAgents, getRunningSubagentBadgeRegistry } from "./running-subagent-badge";
 import type { ObservableSession } from "./session-observer-registry";
 import { SessionObserverRegistry } from "./session-observer-registry";
 import { runProviderSetupWizard } from "./setup-wizard/lazy";
@@ -4273,6 +4274,11 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleBtwCopyKey(): Promise<boolean> {
 		return this.#btwController.handleCopy();
+	}
+
+	syncRunningSubagentBadge(): void {
+		const registry = getRunningSubagentBadgeRegistry(this.collabGuest);
+		this.statusLine.setSubagentCount(countRunningSubagentBadgeAgents(registry));
 	}
 
 	async handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void> {
