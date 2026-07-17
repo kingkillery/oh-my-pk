@@ -2771,6 +2771,7 @@ export class AgentSession {
 			this.#planInternalAbortPending
 		) {
 			(event.message as AssistantMessage).errorMessage = SILENT_ABORT_MARKER;
+			(event.message as AssistantMessage).errorId = AIError.create(AIError.Flag.SilentAbort);
 			this.#planInternalAbortPending = false;
 		}
 
@@ -8040,10 +8041,10 @@ export class AgentSession {
 	}
 
 	/**
-	 * Set the thinking level. `auto` enables per-turn classification; the selector
-	 * itself is never written to the session log, but resolved concrete levels are
-	 * persisted when real user turns are classified so resumed sessions keep the
-	 * last resolved effort instead of reverting to pending auto.
+	 * Set the thinking level. `auto` enables per-turn classification; resolved
+	 * concrete levels are persisted alongside the `auto` selector when real user
+	 * turns are classified, so resumed sessions restore `auto` pending and the
+	 * next turn reclassifies.
 	 */
 	setThinkingLevel(level: ConfiguredThinkingLevel | undefined, persist: boolean = false): void {
 		if (level === AUTO_THINKING) {
@@ -8065,10 +8066,11 @@ export class AgentSession {
 			return;
 		}
 
+		const wasAuto = this.#autoThinking;
 		this.#autoThinking = false;
 		this.#autoResolvedLevel = undefined;
 		const effectiveLevel = resolveThinkingLevelForModel(this.model, level);
-		const isChanging = effectiveLevel !== this.#thinkingLevel;
+		const isChanging = wasAuto || effectiveLevel !== this.#thinkingLevel;
 
 		this.#thinkingLevel = effectiveLevel;
 		this.#applyThinkingLevelToAgent(effectiveLevel);
@@ -8163,7 +8165,7 @@ export class AgentSession {
 		this.#thinkingLevel = effort;
 		this.#applyThinkingLevelToAgent(effort);
 		if (shouldPersistResolution) {
-			this.sessionManager.appendThinkingLevelChange(effort);
+			this.sessionManager.appendThinkingLevelChange(effort, AUTO_THINKING);
 		}
 		this.#emit({
 			type: "thinking_level_changed",
@@ -12991,15 +12993,14 @@ export class AgentSession {
 				.some(entry => entry.type === "service_tier_change");
 			const defaultThinkingLevel = parseConfiguredThinkingLevel(this.settings.get("defaultThinkingLevel"));
 			const configuredServiceTier = this.settings.get("serviceTier");
-			// Session log entries store only concrete levels. When `auto` has resolved
-			// for a turn, the persisted context may already carry that concrete level
-			// even if the branch scan races a just-flushed thinking entry under isolated
-			// parallel test workers. Prefer the concrete context value in that case;
-			// otherwise keep the configured `auto` selector so fresh sessions still
-			// classify their first turn.
+			// Session log entries carry the resolved concrete level plus the configured
+			// selector when it differs (e.g. `auto`). Restore from the selector so an
+			// auto session resumes pending — the next user turn reclassifies — while a
+			// manual concrete pin stays pinned even when the global default is auto.
 			const restoredThinkingLevel: ConfiguredThinkingLevel | undefined =
 				hasThinkingEntry || (defaultThinkingLevel === AUTO_THINKING && sessionContext.thinkingLevel !== "off")
-					? (sessionContext.thinkingLevel as ThinkingLevel | undefined)
+					? (parseConfiguredThinkingLevel(sessionContext.configuredThinkingLevel) ??
+						(sessionContext.thinkingLevel as ThinkingLevel | undefined))
 					: defaultThinkingLevel;
 			if (restoredThinkingLevel === AUTO_THINKING) {
 				this.#autoThinking = true;
