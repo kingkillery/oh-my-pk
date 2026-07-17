@@ -967,6 +967,8 @@ interface RunRootCommandDependencies {
 	settings?: Settings;
 	runInteractiveMode?: RunInteractiveMode;
 	forceSetupWizard?: boolean;
+	/** Injectable `--resume` session picker so tests can drive cancel/select flows headlessly. */
+	selectSession?: typeof selectSession;
 }
 
 export async function runRootCommand(
@@ -1213,14 +1215,17 @@ export async function runRootCommand(
 				startInAllScope = true;
 			}
 			pauseStartupWatchdog();
-			const selected = await logger.time("selectSession", selectSession, folderSessions, {
+			const selected = await logger.time("selectSession", deps.selectSession ?? selectSession, folderSessions, {
 				allSessions: preloadedAllSessions,
 				startInAllScope,
 			});
 			resumeStartupWatchdog();
 			if (!selected) {
 				writeStartupNotice(parsedArgs, `${chalk.dim("No session selected")}\n`);
-				return;
+				// Exit instead of returning: startup services (watchdog timers,
+				// auth broker sockets) are already live, so a plain return leaves
+				// the process hanging with no UI attached.
+				process.exit(0);
 			}
 			// Resuming a session from another project: switch the process into that
 			// project's directory and refresh cwd-derived caches before the session is

@@ -287,9 +287,9 @@ export interface InteractiveModeContext {
 	/**
 	 * Recompute the status-line running-subagents badge from the active
 	 * registry (the collab guest mirror while joined, the global registry
-	 * otherwise). Optional: partial hosts/harnesses omit it.
+	 * otherwise).
 	 */
-	syncRunningSubagentBadge?(): void;
+	syncRunningSubagentBadge(): void;
 	rebuildChatFromMessages(): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(): Promise<void>;
