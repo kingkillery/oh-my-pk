@@ -2349,14 +2349,20 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				explicitThinkingLevel,
 				authFallbackUsed,
 				fallbackKind,
-			} = await awaitAbortable(
-				resolveModelOverrideWithAuthFallback(
-					modelPatterns,
-					options.parentActiveModelPattern,
-					modelRegistry,
-					settings,
-				),
-			);
+			} = typeof modelRegistry.getApiKey === "function"
+				? await awaitAbortable(
+						resolveModelOverrideWithAuthFallback(
+							modelPatterns,
+							options.parentActiveModelPattern,
+							modelRegistry,
+							settings,
+						),
+					)
+				: {
+						...resolveModelOverride(modelPatterns, modelRegistry, settings),
+						authFallbackUsed: false,
+						fallbackKind: undefined,
+					};
 			if (authFallbackUsed && model) {
 				if (fallbackKind === "priority-list") {
 					logger.warn(
