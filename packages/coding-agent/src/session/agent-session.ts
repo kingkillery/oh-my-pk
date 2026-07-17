@@ -53,6 +53,7 @@ import {
 	compact,
 	createCompactionSummaryMessage,
 	DEFAULT_SHAKE_CONFIG,
+	effectiveReserveTokens,
 	estimateTokens,
 	generateBranchSummary,
 	generateHandoff,
@@ -265,6 +266,7 @@ import planModeReferencePrompt from "../prompts/system/plan-mode-reference.md" w
 import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool-decision-reminder.md" with {
 	type: "text",
 };
+import sideChannelNoToolsPrompt from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
 import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
@@ -303,6 +305,7 @@ import {
 } from "../tool-discovery/tool-index";
 import { formatApprovalPrompt, resolveApproval, truncateForPrompt } from "../tools/approval";
 import { assertEditableFile } from "../tools/auto-generated-guard";
+import { normalizeToolNames } from "../tools/builtin-names";
 import type { CheckpointState } from "../tools/checkpoint";
 import { BUILTIN_TOOLS, HIDDEN_TOOLS, isAllowedByToolProfile } from "../tools/index";
 import { outputMeta, wrapToolWithMetaNotice } from "../tools/output-meta";
@@ -425,19 +428,28 @@ const RETRY_BACKOFF_MAX_DELAY_MS = 8_000;
 type CompactionCheckResult = Readonly<{
 	deferredHandoff: boolean;
 	continuationScheduled: boolean;
+	paused: boolean;
 }>;
 
 const COMPACTION_CHECK_NONE: CompactionCheckResult = {
 	deferredHandoff: false,
 	continuationScheduled: false,
+	paused: false,
 };
 const COMPACTION_CHECK_DEFERRED_HANDOFF: CompactionCheckResult = {
 	deferredHandoff: true,
 	continuationScheduled: true,
+	paused: false,
 };
 const COMPACTION_CHECK_CONTINUATION: CompactionCheckResult = {
 	deferredHandoff: false,
 	continuationScheduled: true,
+	paused: false,
+};
+const COMPACTION_CHECK_PAUSED: CompactionCheckResult = {
+	deferredHandoff: false,
+	continuationScheduled: false,
+	paused: true,
 };
 
 /**
@@ -461,14 +473,15 @@ export type AsyncJobSnapshotItem = Pick<AsyncJob, "id" | "type" | "status" | "la
 
 const RETRY_BACKOFF_JITTER_RATIO = 0.25;
 /**
- * Hysteresis band for the post-shake "did we actually create headroom?" check.
- * Shake counts as having resolved threshold pressure only when residual context
- * lands at or below `SHAKE_RECOVERY_BAND × threshold`. Re-checking against the
- * raw threshold lets shake keep reclaiming a trickle of the previous turn's
- * output and land just under the line every turn, sustaining the auto-continue
- * dead loop reported in #2275.
+ * Hysteresis band for the post-maintenance "did we actually create headroom?"
+ * checks. A shake or summary compaction counts as having resolved threshold
+ * pressure only when residual context lands at or below
+ * `COMPACTION_RECOVERY_BAND × threshold`. Re-checking against the raw threshold
+ * lets a pass keep reclaiming a trickle of the previous turn's output and land
+ * just under the line every turn, sustaining the auto-continue dead loop
+ * reported in #2275.
  */
-const SHAKE_RECOVERY_BAND = 0.8;
+const COMPACTION_RECOVERY_BAND = 0.8;
 
 function calculateRetryBackoffDelayMs(baseDelayMs: number, attempt: number): number {
 	const cappedDelayMs = Math.min(Math.max(0, baseDelayMs) * 2 ** Math.max(0, attempt - 1), RETRY_BACKOFF_MAX_DELAY_MS);
@@ -1393,6 +1406,15 @@ export class AgentSession {
 	#disconnectOwnedMcpManager: (() => Promise<void>) | undefined;
 	#requestedToolNames: ReadonlySet<string> | undefined;
 	#baseSystemPrompt: string[];
+	/**
+	 * First-turn memory block promoted into the stable prompt. Once a memory
+	 * backend injects recall via `beforeAgentStartPrompt`, later turns must keep
+	 * that segment byte-identical or the provider prompt-cache prefix (and any
+	 * append-only context) is invalidated. Cleared on every session-identity
+	 * transition (new/switch/branch/fork/handoff) alongside the backends'
+	 * conversation-tracking resets.
+	 */
+	#promotedMemoryPrompt: string | undefined;
 	/**
 	 * Signature of the (toolNames, tool descriptions) tuple passed to the most
 	 * recent successful `rebuildSystemPrompt` call. Used to skip redundant rebuilds
@@ -3158,8 +3180,9 @@ export class AgentSession {
 			// When compaction queued recovery, skip the rewind/todo/session_stop passes:
 			// any reminder or hook continuation we append here would race the handoff,
 			// retry, auto-continue prompt, or queued-message drain that already owns the
-			// next turn.
-			if (compactionResult.deferredHandoff || compactionResult.continuationScheduled) {
+			// next turn. A no-headroom pause blocks them too — a todo continuation would
+			// re-enter the same oversized context the pause just refused to re-drive.
+			if (compactionResult.deferredHandoff || compactionResult.continuationScheduled || compactionResult.paused) {
 				await emitAgentEndNotification();
 				return;
 			}
@@ -5238,7 +5261,7 @@ export class AgentSession {
 	): Promise<void> {
 		const previousSelectedMCPToolNames = options?.previousSelectedMCPToolNames ?? this.getSelectedMCPToolNames();
 		const ceilingActive = this.#activeToolCeiling !== undefined;
-		toolNames = [...new Set(toolNames.map(name => name.toLowerCase()))];
+		toolNames = normalizeToolNames(toolNames);
 		if (ceilingActive) {
 			toolNames = toolNames.filter(name => this.#activeToolCeiling?.has(name));
 		}
@@ -5415,19 +5438,24 @@ export class AgentSession {
 
 	async #buildSystemPromptForAgentStart(promptText: string): Promise<string[]> {
 		const backend = await resolveMemoryBackend(this.settings);
-		if (!backend.beforeAgentStartPrompt) return this.#baseSystemPrompt;
-
-		try {
-			const injected = await backend.beforeAgentStartPrompt(this, promptText);
-			if (!injected) return this.#baseSystemPrompt;
-			return [...this.#baseSystemPrompt, injected];
-		} catch (err) {
-			logger.debug("Memory backend beforeAgentStartPrompt failed", {
-				backend: backend.id,
-				error: String(err),
-			});
+		if (backend.beforeAgentStartPrompt) {
+			try {
+				const injected = await backend.beforeAgentStartPrompt(this, promptText);
+				if (injected) {
+					this.#promotedMemoryPrompt = injected;
+				}
+			} catch (err) {
+				logger.debug("Memory backend beforeAgentStartPrompt failed", {
+					backend: backend.id,
+					error: String(err),
+				});
+			}
+		}
+		const promoted = this.#promotedMemoryPrompt;
+		if (!promoted || this.#baseSystemPrompt.some(segment => segment.includes(promoted))) {
 			return this.#baseSystemPrompt;
 		}
+		return [...this.#baseSystemPrompt, promoted];
 	}
 
 	/**
@@ -7550,6 +7578,7 @@ export class AgentSession {
 		this.#rekeyScreenpipeForCurrentSessionId();
 		this.#resetHindsightConversationTrackingIfHindsight();
 		this.#resetMnemopiConversationTrackingIfMnemopi();
+		this.#promotedMemoryPrompt = undefined;
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 
@@ -7706,6 +7735,7 @@ export class AgentSession {
 		this.#rekeyMnemopiMemoryForCurrentSessionId();
 		this.#rekeyScreenpipeForCurrentSessionId();
 		this.#resetMnemopiConversationTrackingIfMnemopi();
+		this.#promotedMemoryPrompt = undefined;
 
 		// Emit session_switch event with reason "fork" to hooks
 		if (this.#extensionRunner) {
@@ -8319,10 +8349,12 @@ export class AgentSession {
 	 */
 	async #pruneStaleToolResults(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const {
+			enabled: compactionEnabled,
 			supersedeReads,
 			dropUseless,
-			maskConsumedObservations: maskEnabled,
+			maskConsumedObservations: maskConsumedSetting,
 		} = this.settings.getGroup("compaction");
+		const maskEnabled = compactionEnabled && maskConsumedSetting;
 		if (!supersedeReads && !dropUseless && !maskEnabled) return undefined;
 		const branchEntries = this.sessionManager.getBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
@@ -9012,6 +9044,7 @@ export class AgentSession {
 			this.#rekeyScreenpipeForCurrentSessionId();
 			this.#resetHindsightConversationTrackingIfHindsight();
 			this.#resetMnemopiConversationTrackingIfMnemopi();
+			this.#promotedMemoryPrompt = undefined;
 			this.#pendingNextTurnMessages = [];
 			this.#scheduledHiddenNextTurnGeneration = undefined;
 			this.#todoReminderCount = 0;
@@ -11067,8 +11100,16 @@ export class AgentSession {
 			await this.#applyFusionCompactionSwitch(summary);
 			await this.#emitSessionEvent({ type: "auto_compaction_end", action, result, aborted: false, willRetry });
 
+			// Progress guard: a "successful" pass whose residual context still has no
+			// headroom must not schedule the continuation/retry that re-enters
+			// #checkCompaction over the same oversized tail — that is the thrash loop.
+			// Only post-turn passes are guarded; mid-turn (forceInPlace), pre-prompt
+			// (autoContinue: false), and idle passes never own the next turn.
+			const guardHeadroom = options.autoContinue !== false && reason !== "idle" && !options.forceInPlace;
+			const noHeadroom = guardHeadroom && this.#compactionLeftNoHeadroom(willRetry);
+
 			let continuationScheduled = false;
-			if (!willRetry && reason !== "idle" && shouldAutoContinue) {
+			if (!willRetry && reason !== "idle" && shouldAutoContinue && !noHeadroom) {
 				this.#scheduleAutoContinuePrompt(generation);
 				continuationScheduled = true;
 			}
@@ -11090,8 +11131,10 @@ export class AgentSession {
 					}
 				}
 
-				this.#scheduleAgentContinue({ delayMs: 100, generation });
-				continuationScheduled = true;
+				if (!noHeadroom) {
+					this.#scheduleAgentContinue({ delayMs: 100, generation });
+					continuationScheduled = true;
+				}
 			} else if (this.agent.hasQueuedMessages()) {
 				// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 				// Kick the loop so queued messages are actually delivered.
@@ -11101,6 +11144,16 @@ export class AgentSession {
 					shouldContinue: () => this.agent.hasQueuedMessages(),
 				});
 				continuationScheduled = true;
+			}
+			if (noHeadroom) {
+				this.emitNotice(
+					"warning",
+					willRetry
+						? "Compaction freed too little context to make progress: the recovered prompt still does not fit the context window. Pausing instead of retrying — reduce context (e.g. /clear or /handoff) before continuing."
+						: "Compaction freed too little context to make progress: residual context is still above the recovery threshold. Pausing auto-continue — reduce context (e.g. /clear or /handoff) before continuing.",
+					"compaction",
+				);
+				return continuationScheduled ? COMPACTION_CHECK_CONTINUATION : COMPACTION_CHECK_PAUSED;
 			}
 			return continuationScheduled ? COMPACTION_CHECK_CONTINUATION : COMPACTION_CHECK_NONE;
 		} catch (error) {
@@ -11134,6 +11187,34 @@ export class AgentSession {
 			}
 		}
 		return COMPACTION_CHECK_NONE;
+	}
+
+	/**
+	 * Post-compaction headroom check for the context-full tail.
+	 *
+	 * For a retry recovery (overflow/incomplete) the rebuilt prompt only needs to
+	 * fit the usable window — the reserve is clamped so a model window smaller
+	 * than the configured absolute reserve keeps a positive budget. For a
+	 * threshold pass the residual must land at or below the
+	 * `COMPACTION_RECOVERY_BAND × threshold` hysteresis band, mirroring the
+	 * post-shake check, so the next turn cannot immediately re-trip compaction.
+	 */
+	#compactionLeftNoHeadroom(willRetry: boolean): boolean {
+		const contextWindow = this.model?.contextWindow ?? 0;
+		if (contextWindow <= 0) return false;
+		const residualTokens = this.getContextUsage({ contextWindow })?.tokens;
+		if (residualTokens === undefined) return false;
+		const compactionSettings = this.settings.getGroup("compaction");
+		if (willRetry) {
+			const reserveTokens = Math.min(
+				effectiveReserveTokens(contextWindow, compactionSettings),
+				Math.floor(contextWindow / 2),
+			);
+			return residualTokens > contextWindow - reserveTokens;
+		}
+		const thresholdTokens = resolveThresholdTokens(contextWindow, compactionSettings);
+		const recoveryBand = Math.floor(thresholdTokens * COMPACTION_RECOVERY_BAND);
+		return residualTokens > recoveryBand;
 	}
 
 	/**
@@ -11198,7 +11279,7 @@ export class AgentSession {
 				if (typeof triggerContextTokens === "number" && Number.isFinite(triggerContextTokens)) {
 					const correctedTokens = Math.max(0, triggerContextTokens - result.tokensFreed);
 					const thresholdTokens = resolveThresholdTokens(contextWindow, compactionSettings);
-					const recoveryBand = Math.floor(thresholdTokens * SHAKE_RECOVERY_BAND);
+					const recoveryBand = Math.floor(thresholdTokens * COMPACTION_RECOVERY_BAND);
 					stillOverThreshold = correctedTokens > recoveryBand;
 				} else {
 					const postShakeTokens = this.getContextUsage({ contextWindow })?.tokens ?? 0;
@@ -12446,7 +12527,10 @@ export class AgentSession {
 
 	/**
 	 * Run a single ephemeral side-channel turn against this session's current
-	 * model + system prompt + history.  No tools are used; the side request
+	 * model + system prompt + history.  The native tool catalog rides along so
+	 * the static prefix stays byte-identical to the main turn (prompt cache),
+	 * but tools never execute here: a hidden developer reminder disarms them
+	 * and any stray tool calls are discarded from the reply.  The side request
 	 * does not block on, or interfere with, any in-flight main turn.  The
 	 * session's history and persisted state are NOT modified by this call.
 	 *
@@ -12471,11 +12555,12 @@ export class AgentSession {
 		const context: Context = {
 			systemPrompt: this.systemPrompt,
 			messages: llmMessages,
-			// Empty tools array: with toolChoice="none" some encoders still serialize the
-			// recipient's tool catalog and the model leaks raw call markup
-			// (<function_calls>, DSML envelopes) into IRC replies. Stripping tools here
-			// removes the surface entirely.
-			tools: [],
+			// Forward the native tool catalog untouched: stripping it (or forcing
+			// toolChoice="none") rewrites the static prefix and busts the provider
+			// prompt cache shared with the main turn. The snapshot's developer
+			// reminder tells the model tools are unavailable, and any tool calls
+			// that slip through are discarded from the reply below.
+			tools: this.agent.state.tools,
 		};
 		const options = this.prepareSimpleStreamOptions(
 			{
@@ -12492,7 +12577,6 @@ export class AgentSession {
 				hideThinkingSummary: this.agent.hideThinkingSummary,
 				serviceTier: this.serviceTier,
 				signal: args.signal,
-				toolChoice: "none",
 			},
 			model.provider,
 		);
@@ -12515,9 +12599,12 @@ export class AgentSession {
 				continue;
 			}
 			if (event.type === "done") {
-				assistantMessage = this.#obfuscator?.hasSecrets()
+				const finalMessage = this.#obfuscator?.hasSecrets()
 					? { ...event.message, content: deobfuscateAssistantContent(this.#obfuscator, event.message.content) }
 					: event.message;
+				assistantMessage = finalMessage.content.some(block => block.type === "toolCall")
+					? { ...finalMessage, content: finalMessage.content.filter(block => block.type !== "toolCall") }
+					: finalMessage;
 				break;
 			}
 			if (event.type === "error") {
@@ -12541,8 +12628,9 @@ export class AgentSession {
 	/**
 	 * Build a message snapshot for an ephemeral side-channel turn.  Includes
 	 * the in-flight streaming assistant message (if any) so the model sees
-	 * the partial response in context, then appends the prompt as a virtual
-	 * user message.
+	 * the partial response in context, then appends a hidden developer
+	 * reminder (the tool catalog rides along for cache parity but must not be
+	 * used) and the prompt as a virtual user message.
 	 */
 	#buildEphemeralSnapshot(promptText: string): AgentMessage[] {
 		const messages = [...this.messages];
@@ -12574,6 +12662,14 @@ export class AgentSession {
 					messages.push(normalized);
 				}
 			}
+		}
+		if (this.agent.state.tools.length > 0) {
+			messages.push({
+				role: "developer",
+				content: [{ type: "text", text: sideChannelNoToolsPrompt }],
+				attribution: "agent",
+				timestamp: Date.now(),
+			});
 		}
 		messages.push({
 			role: "user",
@@ -12671,6 +12767,7 @@ export class AgentSession {
 		const previousSelectedMCPToolNames = new Set(this.#selectedMCPToolNames);
 		const previousTools = [...this.agent.state.tools];
 		const previousBaseSystemPrompt = this.#baseSystemPrompt;
+		const previousPromotedMemoryPrompt = this.#promotedMemoryPrompt;
 		const previousSystemPrompt = this.agent.state.systemPrompt;
 		const previousFreshProviderSessionId = this.#freshProviderSessionId;
 		const previousFallbackSelectedMCPToolNames = previousSessionFile
@@ -12794,6 +12891,7 @@ export class AgentSession {
 				await this.#resetFusionState();
 				this.#resetHindsightConversationTrackingIfHindsight();
 				this.#resetMnemopiConversationTrackingIfMnemopi();
+				this.#promotedMemoryPrompt = undefined;
 			}
 			this.#reconnectToAgent();
 			try {
@@ -12841,6 +12939,7 @@ export class AgentSession {
 				this.agent.setSystemPrompt(previousSystemPrompt);
 			}
 			this.#baseSystemPrompt = previousBaseSystemPrompt;
+			this.#promotedMemoryPrompt = previousPromotedMemoryPrompt;
 			this.agent.setSystemPrompt(previousSystemPrompt);
 			this.agent.replaceMessages(previousAgentMessages);
 			this.agent.replaceQueues(previousSteeringMessages, previousFollowUpMessages);
@@ -12922,6 +13021,7 @@ export class AgentSession {
 		this.#rekeyScreenpipeForCurrentSessionId();
 		this.#resetHindsightConversationTrackingIfHindsight();
 		this.#resetMnemopiConversationTrackingIfMnemopi();
+		this.#promotedMemoryPrompt = undefined;
 
 		// Reload messages from entries (works for both file and in-memory mode)
 		const sessionContext = this.buildDisplaySessionContext();
@@ -12945,6 +13045,25 @@ export class AgentSession {
 		}
 
 		return { selectedText, cancelled: false };
+	}
+
+	/**
+	 * Strip provider-replay side channels from a promoted /btw assistant message.
+	 * `providerPayload`, redacted thinking, and thinking signatures belong to the
+	 * ephemeral side request's provider session; replaying them from the branched
+	 * history would hand another provider turn an opaque state it never issued.
+	 */
+	#sanitizeBtwAssistantMessage(assistantMessage: AssistantMessage): AssistantMessage {
+		const content: AssistantMessage["content"] = [];
+		for (const part of assistantMessage.content) {
+			if (part.type === "thinking") {
+				content.push({ type: "thinking", thinking: part.thinking });
+				continue;
+			}
+			if (part.type === "redactedThinking") continue;
+			content.push(part);
+		}
+		return { ...assistantMessage, content, providerPayload: undefined };
 	}
 
 	async branchFromBtw(
@@ -13009,7 +13128,7 @@ export class AgentSession {
 			content: [{ type: "text", text: question }],
 			timestamp: Date.now(),
 		});
-		this.sessionManager.appendMessage(assistantMessage);
+		this.sessionManager.appendMessage(this.#sanitizeBtwAssistantMessage(assistantMessage));
 		this.#syncTodoPhasesFromBranch();
 		this.#freshProviderSessionId = undefined;
 		this.#syncAgentSessionId();
@@ -13018,6 +13137,7 @@ export class AgentSession {
 		this.#rekeyScreenpipeForCurrentSessionId();
 		this.#resetHindsightConversationTrackingIfHindsight();
 		this.#resetMnemopiConversationTrackingIfMnemopi();
+		this.#promotedMemoryPrompt = undefined;
 
 		const sessionContext = this.buildDisplaySessionContext();
 		await this.#restoreMCPSelectionsForSessionContext(sessionContext);
