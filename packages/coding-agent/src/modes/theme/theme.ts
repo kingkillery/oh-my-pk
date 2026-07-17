@@ -2819,6 +2819,15 @@ export function getSymbolTheme(): SymbolTheme {
 let cachedMarkdownTheme: MarkdownTheme | undefined;
 let cachedMarkdownThemeRef: Theme | undefined;
 
+/** Whether Markdown renders ```mermaid fences as ASCII diagrams. When off,
+ *  the resolver returns null and the fence falls back to a highlighted code
+ *  block. Read at call time, so toggling never invalidates the cached theme. */
+let markdownMermaidRenderingEnabled = true;
+
+export function setMarkdownMermaidRendering(enabled: boolean): void {
+	markdownMermaidRenderingEnabled = enabled;
+}
+
 export function getMarkdownTheme(): MarkdownTheme {
 	if (cachedMarkdownTheme !== undefined && cachedMarkdownThemeRef === theme) {
 		return cachedMarkdownTheme;
@@ -2852,7 +2861,9 @@ export function getMarkdownTheme(): MarkdownTheme {
 		strikethrough: (text: string) => chalk.strikethrough(text),
 		symbols: getSymbolTheme(),
 		resolveMermaidAscii: (source, maxWidth) =>
-			resolveMermaidAscii(source, { maxWidth, theme: mermaidTheme, colorMode: mermaidColorMode }),
+			markdownMermaidRenderingEnabled
+				? resolveMermaidAscii(source, { maxWidth, theme: mermaidTheme, colorMode: mermaidColorMode })
+				: null,
 		highlightCode: (code: string, lang?: string): string[] => {
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
 			const highlighted = highlightCached(code, validLang, theme);

@@ -68,8 +68,12 @@ function buildMatchKeys(keys: readonly KeyId[]): Set<string> {
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 const BRACKETED_IMAGE_PATH_REGEX = /\.(?:png|jpe?g|gif|webp)$/i;
-const BRACKETED_IMAGE_PATH_BOUNDARY_REGEX = /\.(?:png|jpe?g|gif|webp)(?=$|["']?\s)/gi;
+const BRACKETED_PATH_BOUNDARY_REGEX = /\.[a-z0-9]+(?=$|["']?\s)/gi;
 const SHELL_ESCAPED_PATH_CHAR_REGEX = /\\([\\\s'"()[\]{}&;<>|?*!$`])/g;
+/** Explicit-directory anchors: absolute, home-relative, or a Windows drive.
+ *  A bare filename is almost always a project-relative reference the user
+ *  wants as text, so it never counts as a pasted path. */
+const ABSOLUTE_PATH_PREFIX_REGEX = /^(?:\/|~\/|[A-Za-z]:[\\/])/;
 
 /** Max gap (ms) between two spaces for the later one to count as OS key auto-repeat rather than a
  *  deliberate press. OS auto-repeat is fast; a deliberate tap (even a fast one) is slower. */
@@ -115,53 +119,109 @@ function imagePathBoundaryEnd(payload: string, segmentStart: number, extensionEn
 	return undefined;
 }
 
-function normalizePastedImagePath(path: string): string {
+/** Decode a `file://` URL to its local filesystem path. macOS terminals
+ *  (Ghostty, iTerm2) sometimes forward the pasteboard's `public.file-url`
+ *  representation on Finder→Copy + Cmd+V; without decoding, image loading
+ *  would try to read a literal `file:///…` path and fail. Percent-escapes
+ *  are only decoded inside `file://` URLs — plain paths pass through. */
+function decodePastedFileUrl(path: string): string {
+	const match = path.match(/^file:\/\/(?:localhost)?(?=\/)/i);
+	if (!match) return path;
+	const rest = path.slice(match[0].length);
+	try {
+		return decodeURIComponent(rest);
+	} catch {
+		return rest;
+	}
+}
+
+function normalizePastedPath(path: string): string {
 	const trimmed = path.trim();
 	const first = trimmed[0];
 	const last = trimmed[trimmed.length - 1];
 	const unquoted =
 		trimmed.length > 1 && (first === '"' || first === "'") && last === first ? trimmed.slice(1, -1) : trimmed;
-	return unquoted.replace(SHELL_ESCAPED_PATH_CHAR_REGEX, "$1");
+	return decodePastedFileUrl(unquoted.replace(SHELL_ESCAPED_PATH_CHAR_REGEX, "$1"));
 }
 
-export function extractBracketedImagePastePaths(data: string): string[] | undefined {
-	if (!data.startsWith(BRACKETED_PASTE_START)) return undefined;
-	const endIndex = data.indexOf(BRACKETED_PASTE_END, BRACKETED_PASTE_START.length);
-	if (endIndex === -1 || endIndex + BRACKETED_PASTE_END.length !== data.length) return undefined;
-
-	const pasted = data.slice(BRACKETED_PASTE_START.length, endIndex).trim();
-	if (!pasted) return undefined;
-
+/**
+ * Extract explicitly-anchored file paths from pasted text: dot-extension
+ * terminated segments, each quoted/shell-escaped form normalized and required
+ * to carry an explicit directory anchor (see ABSOLUTE_PATH_PREFIX_REGEX).
+ * Returns undefined unless the entire text parses as one or more such paths —
+ * partial matches fall back to the normal text path.
+ */
+export function extractPastePathsFromText(pasted: string): string[] | undefined {
 	const paths: string[] = [];
 	let segmentStart = 0;
-	BRACKETED_IMAGE_PATH_BOUNDARY_REGEX.lastIndex = 0;
+	BRACKETED_PATH_BOUNDARY_REGEX.lastIndex = 0;
 	for (
-		let match = BRACKETED_IMAGE_PATH_BOUNDARY_REGEX.exec(pasted);
+		let match = BRACKETED_PATH_BOUNDARY_REGEX.exec(pasted);
 		match;
-		match = BRACKETED_IMAGE_PATH_BOUNDARY_REGEX.exec(pasted)
+		match = BRACKETED_PATH_BOUNDARY_REGEX.exec(pasted)
 	) {
 		const extensionEnd = match.index + match[0].length;
 		const boundaryEnd = imagePathBoundaryEnd(pasted, segmentStart, extensionEnd);
 		if (boundaryEnd === undefined) continue;
 
-		const path = normalizePastedImagePath(pasted.slice(segmentStart, boundaryEnd));
-		if (!path || !BRACKETED_IMAGE_PATH_REGEX.test(path)) return undefined;
+		const path = normalizePastedPath(pasted.slice(segmentStart, boundaryEnd));
+		if (!path || !ABSOLUTE_PATH_PREFIX_REGEX.test(path)) return undefined;
 		paths.push(path);
 
 		segmentStart = boundaryEnd;
 		while (segmentStart < pasted.length && isPastedPathSeparator(pasted[segmentStart])) {
 			segmentStart++;
 		}
-		BRACKETED_IMAGE_PATH_BOUNDARY_REGEX.lastIndex = segmentStart;
+		BRACKETED_PATH_BOUNDARY_REGEX.lastIndex = segmentStart;
 	}
 
 	if (paths.length === 0 || segmentStart !== pasted.length) return undefined;
 	return paths;
 }
 
+/** Extract explicitly-anchored file paths from a bracketed-paste envelope. */
+export function extractBracketedPastePaths(data: string): string[] | undefined {
+	if (!data.startsWith(BRACKETED_PASTE_START)) return undefined;
+	const endIndex = data.indexOf(BRACKETED_PASTE_END, BRACKETED_PASTE_START.length);
+	if (endIndex === -1 || endIndex + BRACKETED_PASTE_END.length !== data.length) return undefined;
+
+	const pasted = data.slice(BRACKETED_PASTE_START.length, endIndex).trim();
+	if (!pasted) return undefined;
+	return extractPastePathsFromText(pasted);
+}
+
+export function extractBracketedImagePastePaths(data: string): string[] | undefined {
+	const paths = extractBracketedPastePaths(data);
+	if (!paths || !paths.every(path => BRACKETED_IMAGE_PATH_REGEX.test(path))) return undefined;
+	return paths;
+}
+
 export function extractBracketedImagePastePath(data: string): string | undefined {
 	const paths = extractBracketedImagePastePaths(data);
 	return paths?.length === 1 ? paths[0] : undefined;
+}
+
+/**
+ * Extract a single image path from plain (non-bracketed) text, e.g. a
+ * clipboard read (issue #3506). Delegates to the pasted-path splitter first;
+ * when that mis-segments a single anchored path containing unescaped spaces
+ * (macOS screenshot names), a whole-text branch — gated on
+ * ABSOLUTE_PATH_PREFIX_REGEX so prose never triggers it — recovers the path.
+ */
+export function extractImagePathFromText(text: string): string | undefined {
+	const trimmed = text.trim();
+	if (!trimmed) return undefined;
+
+	const paths = extractPastePathsFromText(trimmed);
+	if (paths !== undefined) {
+		return paths.length === 1 && BRACKETED_IMAGE_PATH_REGEX.test(paths[0]) ? paths[0] : undefined;
+	}
+
+	const whole = normalizePastedPath(trimmed);
+	if (ABSOLUTE_PATH_PREFIX_REGEX.test(whole) && BRACKETED_IMAGE_PATH_REGEX.test(whole) && !whole.includes("\n")) {
+		return whole;
+	}
+	return undefined;
 }
 
 /**
