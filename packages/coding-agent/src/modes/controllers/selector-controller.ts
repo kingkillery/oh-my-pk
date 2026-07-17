@@ -107,12 +107,25 @@ export class SelectorController {
 	}
 
 	/**
+	 * Restore focus to whatever currently occupies the editor slot. Closing a
+	 * fullscreen overlay (settings, dashboards) while a hook selector /
+	 * approval prompt has replaced the editor must focus that prompt — not the
+	 * no-longer-mounted editor the prompt replaced (#3349). Falls back to the
+	 * editor when the slot is empty.
+	 */
+	focusActiveEditorArea(): void {
+		const children = this.ctx.editorContainer.children;
+		const active = children.length > 0 ? children[children.length - 1] : undefined;
+		this.ctx.ui.setFocus((active ?? this.ctx.editor) as Component);
+	}
+
+	/**
 	 * Shows a selector component in place of the editor.
 	 * @param create Factory that receives a `done` callback and returns the component and focus target
 	 */
 	showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
 		const done = () => {
-			this.ctx.remountEditorComposer();
+			this.ctx.remountEditorComposer?.();
 			this.ctx.ui.setFocus(this.ctx.editor);
 		};
 		const { component, focus } = create(done);
@@ -130,7 +143,9 @@ export class SelectorController {
 			let overlayHandle: OverlayHandle | undefined;
 			const done = () => {
 				overlayHandle?.hide();
-				this.ctx.ui.setFocus(this.ctx.editor);
+				// The overlay never touched the editor slot — a hook prompt may be
+				// occupying it, and it (not the editor) must get the focus back (#3349).
+				this.focusActiveEditorArea();
 				this.ctx.ui.requestRender();
 			};
 			const selector = new SettingsSelectorComponent(
@@ -1042,7 +1057,7 @@ export class SelectorController {
 					const codeInput = new Input();
 					codeInput.onSubmit = () => {
 						const code = codeInput.getValue();
-						this.ctx.remountEditorComposer();
+						this.ctx.remountEditorComposer?.();
 						this.ctx.ui.setFocus(this.ctx.editor);
 						resolve(code);
 					};
@@ -1292,7 +1307,7 @@ export class SelectorController {
 		// commits above it exactly once and the hub repaints in place.
 		const done = () => {
 			hub?.dispose();
-			this.ctx.remountEditorComposer();
+			this.ctx.remountEditorComposer?.();
 			this.ctx.ui.setFocus(this.ctx.editor);
 			this.ctx.ui.requestRender();
 		};

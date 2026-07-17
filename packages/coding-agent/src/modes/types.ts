@@ -282,7 +282,8 @@ export interface InteractiveModeContext {
 	extractAssistantText(message: AssistantMessage): string;
 	updateEditorTopBorder(): void;
 	updateEditorBorderColor(): void;
-	remountEditorComposer(): void;
+	/** Optional composer-layout hook: hosts without the intent composer (and partial test harnesses) omit it. */
+	remountEditorComposer?(): void;
 	rebuildChatFromMessages(): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(): Promise<void>;
