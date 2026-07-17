@@ -2223,10 +2223,12 @@ export class ReadTool implements AgentTool<typeof readSchema | typeof lightReadS
 					throw new ToolError(`Image file too large: ${sizeStr} exceeds ${maxStr} limit.`);
 				}
 				try {
+					// Direct file reads attach the original bytes and magic-detected
+					// mime; model-context normalization owns any resize/re-encode.
 					const imageInput = await loadImageInput({
 						path: readPath,
 						cwd: this.session.cwd,
-						autoResize: this.#autoResizeImages,
+						autoResize: false,
 						maxBytes: MAX_IMAGE_SIZE,
 						resolvedPath: absolutePath,
 						detectedMimeType: mimeType,

@@ -166,9 +166,20 @@ export class LocalAgentOwnerServer {
 		this.#sockets.clear();
 		const server = this.#server;
 		this.#server = undefined;
-		// `stop(true)` already aborts every active connection; a per-socket
-		// `terminate()` beforehand can wedge the stop promise on some Bun builds.
-		await server?.stop(true);
+		// Bun 1.3.x wedge: after any server-initiated `ws.close()`, the promise
+		// from `Server.stop()` (soft or force) never resolves — even with every
+		// client fully closed. `stop(true)` still tears the listener down
+		// synchronously, so bound the await instead of trusting it to settle.
+		const stopped = server?.stop(true);
+		if (stopped) {
+			await Promise.race([
+				stopped,
+				new Promise<void>(resolve => {
+					const grace = setTimeout(resolve, 1_000);
+					grace.unref?.();
+				}),
+			]);
+		}
 		fs.rmSync(this.#options.tokenFilePath, { force: true });
 		this.#token = "";
 	}
