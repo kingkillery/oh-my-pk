@@ -1729,9 +1729,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							logMCPLoadErrors(mcpResult.errors);
 							// `tools.discoveryMode: "auto"` was resolved against a registry that
 							// held only built-ins plus persisted placeholder names. Recompute with
-							// the real MCP tool count: a large toolset must flip discovery on
-							// BEFORE the refresh, or activateAll would dump every MCP tool into
-							// the active set with no search_tool_bm25 registered.
+							// the real MCP tool count. `isMCPDiscoveryEnabled()` is the only
+							// readiness signal consumers can poll, so every effect of the flip
+							// (search_tool_bm25 active, registry + discoverable set populated)
+							// must be final before it flips: a pre-flip refresh registers the
+							// tools without activating any (discovery selection resolves empty
+							// while the flag is off), and the post-flip refresh below applies
+							// selection defaults, persistence, and the prompt rebuild.
 							let discoveryEnabled = activation.mcpDiscoveryEnabled;
 							let activateAll = activation.activateAllMCPTools;
 							if (!discoveryEnabled) {
@@ -1745,7 +1749,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 									mcpDiscoveryEnabled = true;
 									discoveryEnabled = true;
 									activateAll = false;
-									liveSession.enableMCPDiscovery();
 									if (!toolRegistry.has("search_tool_bm25")) {
 										const searchTool: Tool | null = SearchToolBm25Tool.create(toolSession, {
 											toolProfile: options.toolProfile ?? toolSession.toolProfile,
@@ -1764,6 +1767,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 										...liveSession.getActiveToolNames(),
 										"search_tool_bm25",
 									]);
+									await liveSession.refreshMCPTools(mcpResult.tools, { activateAll: false });
+									liveSession.enableMCPDiscovery();
 								}
 							}
 							await liveSession.refreshMCPTools(mcpResult.tools, { activateAll });
