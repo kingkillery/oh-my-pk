@@ -51,13 +51,15 @@ import {
 	collectEntriesForBranchSummary,
 	collectShakeRegions,
 	compact,
+	compactionContextTokens,
 	createCompactionSummaryMessage,
 	DEFAULT_SHAKE_CONFIG,
 	effectiveReserveTokens,
 	estimateTokens,
 	generateBranchSummary,
-	generateHandoff,
+	generateHandoffFromContext,
 	prepareCompaction,
+	renderHandoffPrompt,
 	resolveThresholdTokens,
 	type SessionEntry,
 	type SessionMessageEntry,
@@ -5026,10 +5028,16 @@ export class AgentSession {
 			if (tool.loadMode !== "discoverable") continue;
 			if (activeNames.has(tool.name)) continue;
 			if (isMCPToolName(tool.name)) continue;
-			const source =
-				this.#toolSourceOf?.(tool.name) ??
-				(tool.name in BUILTIN_TOOLS ? "builtin" : tool.name in HIDDEN_TOOLS ? "hidden" : undefined);
-			// Hidden/internal tools stay out of the discovery index; unknown sources fail closed.
+			// With a registry classifier, unknown sources fail closed. Without one, a
+			// registry tool that explicitly declared `loadMode: "discoverable"` counts
+			// as built-in unless it is a known hidden/internal tool — declaring the
+			// load mode is the opt-in.
+			const source = this.#toolSourceOf
+				? this.#toolSourceOf(tool.name)
+				: tool.name in HIDDEN_TOOLS
+					? "hidden"
+					: "builtin";
+			// Hidden/internal tools stay out of the discovery index.
 			if (!source || source === "hidden") continue;
 			const collected = collectDiscoverableTools([tool], { source });
 			result.push(...collected);
@@ -6495,12 +6503,16 @@ export class AgentSession {
 				throw new AgentBusyError();
 			}
 			// Steer/follow-up the keyword notices BEFORE the queued user message so the
-			// model reads the steering notice ahead of the prompt it modifies.
+			// model reads the steering notice ahead of the prompt it modifies. The
+			// task-contract notice never rides the delivery queues: it is runtime-only
+			// executor context (dropped at the LLM boundary by convertToLlm), so it is
+			// appended straight to agent state where the completion gate and retry
+			// replay read it — a mid-flight dequeue then restores only the user's text.
 			for (const notice of keywordNotices) {
 				await this.sendCustomMessage(notice, { deliverAs: options.streamingBehavior });
 			}
 			if (taskContractNotice) {
-				await this.sendCustomMessage(taskContractNotice, { deliverAs: options.streamingBehavior });
+				await this.sendCustomMessage(taskContractNotice, { deliverAs: "nextTurn" });
 			}
 			if (options.streamingBehavior === "followUp") {
 				await this.#queueUserMessage(expandedText, options?.images, "followUp");
@@ -8592,6 +8604,7 @@ export class AgentSession {
 			const effectiveSettings = compactMode
 				? { ...compactionSettings, ...compactMode.overrides }
 				: compactionSettings;
+			let remoteOnly = false;
 			if (compactMode?.requiresRemote) {
 				const remoteReady =
 					Boolean(effectiveSettings.remoteEndpoint) || shouldUseOpenAiRemoteCompaction(this.model);
@@ -8601,6 +8614,10 @@ export class AgentSession {
 						`remote compaction is unavailable for ${this.model.id} (no remote endpoint configured) — using a local summary instead`,
 						"compaction",
 					);
+				} else if (!effectiveSettings.remoteEndpoint) {
+					// Provider-native remote compaction only: drop candidates that would
+					// silently run a local summary (e.g. a non-remote-capable compactionModel).
+					remoteOnly = true;
 				}
 			}
 			const pathEntries = this.sessionManager.getBranch();
@@ -8675,6 +8692,7 @@ export class AgentSession {
 							remoteInstructions: this.#obfuscateTextForProvider(this.#baseSystemPrompt.join("\n\n")),
 							convertToLlm: messages => this.#convertToLlmForSideRequest(messages),
 						},
+						remoteOnly,
 					);
 					summary = result.summary;
 					shortSummary = result.shortSummary;
@@ -9004,29 +9022,48 @@ export class AgentSession {
 				throw new Error(`No API key for ${model.provider}`);
 			}
 
-			const rawHandoffText = await generateHandoff(
-				this.agent.state.messages,
-				model,
-				this.#modelRegistry.resolver(model, this.sessionId),
+			const handoffRequestMessages: Message[] = [
+				...this.#convertToLlmForSideRequest(this.agent.state.messages),
 				{
-					systemPrompt: this.#obfuscateTextArrayForProvider(this.#baseSystemPrompt) ?? [...this.#baseSystemPrompt],
-					tools: obfuscateProviderTools(
-						this.#obfuscator,
-						this.#pruneToolDescriptions ? stripToolDescriptions(this.agent.state.tools) : this.agent.state.tools,
-					),
-					customInstructions: this.#obfuscateTextForProvider(customInstructions),
-					convertToLlm: messages => this.#convertToLlmForSideRequest(messages),
-					initiatorOverride: "agent",
-					metadata: this.agent.metadataForProvider(model.provider),
-					telemetry: resolveTelemetry(this.agent.telemetry, this.sessionId),
-					// Honor the user's /model thinking selection on the handoff
-					// path. Clamped per-model inside generateHandoff via
-					// resolveCompactionEffort so unsupported-effort models don't
-					// trip requireSupportedEffort.
-					thinkingLevel: this.thinkingLevel,
+					role: "user",
+					content: [
+						{ type: "text", text: renderHandoffPrompt(this.#obfuscateTextForProvider(customInstructions)) },
+					],
+					attribution: "agent",
+					timestamp: Date.now(),
 				},
-				handoffSignal,
-			);
+			];
+			const handoffContext: Context = {
+				systemPrompt: this.#obfuscateTextArrayForProvider(this.#baseSystemPrompt) ?? [...this.#baseSystemPrompt],
+				messages: handoffRequestMessages,
+				tools: obfuscateProviderTools(
+					this.#obfuscator,
+					this.#pruneToolDescriptions ? stripToolDescriptions(this.agent.state.tools) : this.agent.state.tools,
+				),
+			};
+			const rawHandoffText = await generateHandoffFromContext(handoffContext, model, {
+				// Mirror the live loop's cache routing: reuse the agent's provider
+				// prompt-cache key so the oneshot reads the cache the live turn
+				// populated, while a unique side lineage keeps append-only provider
+				// state from mixing with the main turn.
+				streamOptions: this.prepareSimpleStreamOptions(
+					{
+						apiKey: this.#modelRegistry.resolver(model, this.sessionId),
+						sessionId: `${this.sessionId}:side:${Snowflake.next()}`,
+						promptCacheKey: this.agent.promptCacheKey ?? this.sessionId,
+						initiatorOverride: "agent",
+						metadata: this.agent.metadataForProvider(model.provider),
+						signal: handoffSignal,
+					},
+					model.provider,
+				),
+				telemetry: resolveTelemetry(this.agent.telemetry, this.sessionId),
+				// Honor the user's /model thinking selection on the handoff
+				// path. Clamped per-model inside generateHandoffFromContext via
+				// resolveCompactionEffort so unsupported-effort models don't
+				// trip requireSupportedEffort.
+				thinkingLevel: this.thinkingLevel,
+			});
 			const handoffText = this.#deobfuscateFromProvider(rawHandoffText);
 
 			if (handoffSignal.aborted) {
@@ -9108,10 +9145,20 @@ export class AgentSession {
 
 	#estimatePrePromptContextTokens(messages: AgentMessage[], contextWindow: number): number {
 		const breakdown = this.getContextBreakdown({ contextWindow, pendingMessages: messages });
-		return (
+		const providerAnchoredTokens =
 			breakdown?.usedTokens ??
-			computeNonMessageTokens(this) + messages.reduce((sum, msg) => sum + estimateTokens(msg), 0)
+			computeNonMessageTokens(this) + messages.reduce((sum, msg) => sum + estimateTokens(msg), 0);
+		// Floor by the stored conversation: a before_provider_request compressor can
+		// deflate the provider-billed usage far below what the session actually
+		// carries, which would suppress compaction indefinitely. The floor counts
+		// only reliably-countable text (opaque reasoning payloads excluded — their
+		// local byte size diverges from provider billing) and no non-message tokens,
+		// so it can only raise a genuinely deflated estimate.
+		const storedConversationEstimate = [...this.messages, ...messages].reduce(
+			(sum, msg) => sum + estimateTokens(msg, { excludeEncryptedReasoning: true }),
+			0,
 		);
+		return compactionContextTokens(providerAnchoredTokens, storedConversationEstimate);
 	}
 
 	async #runPrePromptCompactionIfNeeded(messages: AgentMessage[]): Promise<void> {
@@ -9141,7 +9188,10 @@ export class AgentSession {
 			contextWindow,
 			model: `${model.provider}/${model.id}`,
 		});
-		await this.#runAutoCompaction("threshold", false, false, false, { autoContinue: false });
+		await this.#runAutoCompaction("threshold", false, false, false, {
+			autoContinue: false,
+			triggerContextTokens: contextTokens,
+		});
 	}
 
 	/**
@@ -10356,6 +10406,23 @@ export class AgentSession {
 		if (nextModel.api === "openai-responses") {
 			providerKeys.add(`openai-responses:${nextModel.provider}`);
 		}
+		if (currentModel.api === "openai-completions") {
+			const sameBackend =
+				nextModel.api === "openai-completions" &&
+				nextModel.provider === currentModel.provider &&
+				nextModel.baseUrl === currentModel.baseUrl;
+			if (!sameBackend) {
+				// Completions keys embed the base URL resolved at request time, which can
+				// diverge from the model's configured baseUrl — evict by provider prefix so
+				// resolved-URL entries and sibling models on the same backend all go.
+				const prefix = `openai-completions:${currentModel.provider}:`;
+				for (const providerKey of this.#providerSessionState.keys()) {
+					if (providerKey.startsWith(prefix)) {
+						providerKeys.add(providerKey);
+					}
+				}
+			}
+		}
 
 		for (const providerKey of providerKeys) {
 			const state = this.#providerSessionState.get(providerKey);
@@ -10597,6 +10664,7 @@ export class AgentSession {
 			candidates.push(model);
 		};
 
+		addCandidate(this.#resolveConfiguredCompactionModel(preferredModel ?? undefined, availableModels));
 		addCandidate(preferredModel ?? undefined);
 		for (const role of MODEL_ROLE_IDS) {
 			addCandidate(this.#resolveRoleModelFull(role, availableModels, preferredModel ?? undefined).model);
@@ -10612,6 +10680,25 @@ export class AgentSession {
 
 		return candidates;
 	}
+
+	/** Resolve the model's `compactionModel` selector (model id or provider/id) against the registry. */
+	#resolveConfiguredCompactionModel(currentModel: Model | undefined, availableModels: Model[]): Model | undefined {
+		const configuredTarget = currentModel?.compactionModel?.trim();
+		if (!configuredTarget || !currentModel) return undefined;
+
+		const parsed = parseModelString(configuredTarget, {
+			allowMaxAlias: true,
+			isLiteralModelId: (provider, id) =>
+				availableModels.some(model => model.provider === provider && model.id === id),
+		});
+		if (parsed) {
+			const explicitModel = availableModels.find(m => m.provider === parsed.provider && m.id === parsed.id);
+			if (explicitModel) return explicitModel;
+		}
+
+		return availableModels.find(m => m.provider === currentModel.provider && m.id === configuredTarget);
+	}
+
 	#isCompactionAuthFailure(error: unknown): boolean {
 		if (!(error instanceof Error)) return false;
 		// Real provider 401/403 — surfaced as `.status` by the compaction layer
@@ -10643,8 +10730,12 @@ export class AgentSession {
 		customInstructions: string | undefined,
 		signal: AbortSignal,
 		options?: SummaryOptions,
+		remoteOnly = false,
 	): Promise<CompactionResult> {
-		const candidates = this.#getCompactionModelCandidates(this.#modelRegistry.getAvailable());
+		const allCandidates = this.#getCompactionModelCandidates(this.#modelRegistry.getAvailable());
+		const candidates = remoteOnly
+			? allCandidates.filter(candidate => shouldUseOpenAiRemoteCompaction(candidate))
+			: allCandidates;
 		const telemetry = resolveTelemetry(this.agent.telemetry, this.sessionId);
 
 		for (const candidate of candidates) {
