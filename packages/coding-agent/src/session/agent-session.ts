@@ -74,7 +74,10 @@ import {
 	pruneToolOutputs,
 	readToolSupersedeKey,
 } from "@pk-nerdsaver-ai/pi-agent-core/compaction/pruning";
-import type { ProtectedToolMatcher } from "@pk-nerdsaver-ai/pi-agent-core/compaction/tool-protection";
+import type {
+	ProtectedToolContext,
+	ProtectedToolMatcher,
+} from "@pk-nerdsaver-ai/pi-agent-core/compaction/tool-protection";
 import type {
 	AssistantMessage,
 	AssistantMessageEvent,
@@ -468,6 +471,17 @@ const PRUNE_CACHE_WARM_SUFFIX_TOKENS = 8_000;
  * still-warm prefix is busted by the flush. 90 min leaves margin over the 1h TTL.
  */
 const PRUNE_IDLE_FLUSH_MS = 90 * 60_000;
+
+/**
+ * Prefix of the per-tool TTSR reminder folded into a matched tool's result (see
+ * `#ttsrAfterToolCall`). Results carrying it must survive the
+ * consumed-observation mask, or the in-band rule reminder is blanked away.
+ */
+const TTSR_TOOL_REMINDER_MARKER = '<system-reminder reason="rule_violation"';
+
+function isTtsrReminderToolResult({ toolResult }: ProtectedToolContext): boolean {
+	return toolResult.content.some(part => part.type === "text" && part.text.includes(TTSR_TOOL_REMINDER_MARKER));
+}
 export type CommandMetadataChangedListener = () => void | Promise<void>;
 export type AsyncJobSnapshotItem = Pick<AsyncJob, "id" | "type" | "status" | "label" | "startTime">;
 
@@ -1760,6 +1774,7 @@ export class AgentSession {
 					await this.#advisorRuntime.waitForCatchup(30000, threshold, signal);
 				}
 			}
+			await this.#maybeApplyRewindMidRun(messages, signal, context);
 			await this.#maybeCompactMidTurn(messages, signal, context);
 		});
 		this.yieldQueue = new YieldQueue({
@@ -2815,12 +2830,6 @@ export class AgentSession {
 		if (event.type === "tool_execution_end" && event.toolName === "yield" && !event.isError) {
 			this.#lastSuccessfulYieldToolCallId = event.toolCallId;
 		}
-		if (event.type === "turn_end" && this.#pendingRewindReport) {
-			const report = this.#pendingRewindReport;
-			this.#pendingRewindReport = undefined;
-			await this.#applyRewind(report);
-		}
-
 		// TTSR: Check for pattern matches on assistant text/thinking and tool argument deltas
 		if (event.type === "message_update" && this.#ttsrManager?.hasRules()) {
 			const assistantEvent = event.assistantMessageEvent;
@@ -8281,7 +8290,9 @@ export class AgentSession {
 		if (this.settings.get("compaction.maskConsumedObservations")) {
 			const maskResult = maskConsumedObservations(
 				branchEntries,
-				this.#withPlanProtection({ protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools] }).protectedTools,
+				this.#withPlanProtection({
+					protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools, isTtsrReminderToolResult],
+				}).protectedTools,
 				keepBoundaryId,
 			);
 			result.prunedCount += maskResult.prunedCount;
@@ -8316,7 +8327,9 @@ export class AgentSession {
 		if (this.settings.get("compaction.maskConsumedObservations")) {
 			maskResult = maskConsumedObservations(
 				branchEntries,
-				this.#withPlanProtection({ protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools] }).protectedTools,
+				this.#withPlanProtection({
+					protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools, isTtsrReminderToolResult],
+				}).protectedTools,
 				keepBoundaryId,
 				PRUNE_CACHE_WARM_SUFFIX_TOKENS,
 			);
@@ -8375,7 +8388,9 @@ export class AgentSession {
 		if (maskEnabled) {
 			maskResult = maskConsumedObservations(
 				branchEntries,
-				this.#withPlanProtection({ protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools] }).protectedTools,
+				this.#withPlanProtection({
+					protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools, isTtsrReminderToolResult],
+				}).protectedTools,
 				keepBoundaryId,
 			);
 		}
@@ -9598,9 +9613,6 @@ export class AgentSession {
 		if (!checkpointState) {
 			return;
 		}
-		const safeCount = Math.max(0, Math.min(checkpointState.checkpointMessageCount, this.agent.state.messages.length));
-		this.agent.replaceMessages(this.agent.state.messages.slice(0, safeCount));
-		this.#advisorRuntime?.reset();
 		try {
 			this.sessionManager.branchWithSummary(checkpointState.checkpointEntryId, report, {
 				startedAt: checkpointState.startedAt,
@@ -9612,18 +9624,45 @@ export class AgentSession {
 			this.sessionManager.branchWithSummary(null, report, { startedAt: checkpointState.startedAt });
 		}
 		const details = { startedAt: checkpointState.startedAt, rewoundAt: new Date().toISOString() };
-		this.agent.appendMessage({
-			role: "custom",
-			customType: "rewind-report",
-			content: report,
-			display: false,
-			details,
-			attribution: "agent",
-			timestamp: Date.now(),
-		});
 		this.sessionManager.appendCustomMessageEntry("rewind-report", report, false, details, "agent");
+		const sessionContext = this.buildDisplaySessionContext();
+		this.agent.replaceMessages(sessionContext.messages);
+		this.#advisorRuntime?.reset();
 		this.#checkpointState = undefined;
 		this.#pendingRewindReport = undefined;
+	}
+
+	/**
+	 * Apply a pending checkpoint rewind at the turn boundary, inside the live
+	 * run. Runs from the agent's `onTurnEnd` hook because the loop keeps its own
+	 * message array: `agent.replaceMessages` alone cannot reach it, so the
+	 * active history rebuilt through the branch_summary and rewind report must
+	 * be spliced into `loopMessages` before the post-rewind model call.
+	 */
+	async #maybeApplyRewindMidRun(
+		loopMessages: AgentMessage[],
+		signal: AbortSignal | undefined,
+		context: AgentTurnEndContext | undefined,
+	): Promise<void> {
+		if (!context || signal?.aborted) return;
+		const message = context.message;
+		if (message.role !== "assistant") return;
+		const assistant = message as AssistantMessage;
+		if (assistant.stopReason === "aborted" || assistant.stopReason === "error") return;
+		if (!this.#checkpointState) return;
+		const hasRewindResult = context.toolResults.some(
+			result => result.toolName === "rewind" && result.isError !== true,
+		);
+		if (!hasRewindResult && this.#pendingRewindReport === undefined) return;
+		if (!(await this.#waitForTurnPersistence(assistant, context.toolResults))) {
+			logger.warn("Rewind skipped: turn persistence did not settle");
+			return;
+		}
+		if (signal?.aborted) return;
+		const report = this.#pendingRewindReport;
+		if (report === undefined) return;
+		await this.#applyRewind(report);
+		loopMessages.splice(0, loopMessages.length, ...this.agent.state.messages);
 	}
 	async #enforcePlanModeToolDecision(): Promise<void> {
 		if (!this.#planModeState?.enabled) {
