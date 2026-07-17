@@ -117,6 +117,9 @@ const TINY_TITLE_PROGRESS_REVEAL_DELAY_MS = 1_000;
 // deliberate human double-tap is always tens of milliseconds apart.
 const LEFT_DOUBLE_TAP_MIN_GAP_MS = 40;
 const LEFT_DOUBLE_TAP_MAX_GAP_MS = 500;
+// Aborting an active stream takes a confirming second Esc within this window;
+// the arm is per-turn and clears on any agent_start/agent_end transition.
+const STREAMING_ESC_CONFIRM_WINDOW_MS = 2_000;
 
 export function shouldSkipHistory(text: string): boolean {
 	const trimmed = text.trim();
@@ -157,6 +160,11 @@ export class InputController {
 	// Sequential index for `local://attachment-N` references created by the large-paste local-file
 	// action. Seeded from 0 and bumped past any existing attachment files in #attachPasteAsFile.
 	#attachmentCounter = 0;
+	// First Esc while streaming arms a confirm window instead of aborting; the
+	// timestamp is the arm token and the subscription clears it at the next
+	// turn boundary so a stale arm can never fast-abort a fresh turn.
+	#streamingEscArmedAt: number | undefined;
+	#streamingEscUnsubscribe: (() => void) | undefined;
 	// Serializes editor submit handling. editor.onSubmit is dispatched
 	// fire-and-forget (tui editor.ts), so without this a fast second (empty)
 	// Enter runs a concurrent handler and races shared submit state — e.g. a
@@ -260,27 +268,29 @@ export class InputController {
 			// to clobber the single saved-handler slot (auto-compaction start
 			// → /compact → auto end → manual finally), leaving Esc wired to a
 			// stale no-op closure until restart.
-			const viewSession = this.ctx.viewSession;
-			let aborted = false;
-			if (viewSession.isCompacting) {
-				try {
-					viewSession.abortCompaction();
-				} catch {}
-				aborted = true;
+			if (!this.ctx.focusedAgentId) {
+				const viewSession = this.ctx.viewSession;
+				let aborted = false;
+				if (viewSession.isCompacting) {
+					try {
+						viewSession.abortCompaction();
+					} catch {}
+					aborted = true;
+				}
+				if (viewSession.isGeneratingHandoff) {
+					try {
+						viewSession.abortHandoff();
+					} catch {}
+					aborted = true;
+				}
+				if (viewSession.isRetrying) {
+					try {
+						viewSession.abortRetry();
+					} catch {}
+					aborted = true;
+				}
+				if (aborted) return;
 			}
-			if (viewSession.isGeneratingHandoff) {
-				try {
-					viewSession.abortHandoff();
-				} catch {}
-				aborted = true;
-			}
-			if (viewSession.isRetrying) {
-				try {
-					viewSession.abortRetry();
-				} catch {}
-				aborted = true;
-			}
-			if (aborted) return;
 
 			if (this.ctx.loopModeEnabled) {
 				this.ctx.pauseLoop();
@@ -336,7 +346,24 @@ export class InputController {
 				this.ctx.isPythonMode = false;
 				this.ctx.updateEditorBorderColor();
 			} else if (this.ctx.session.isStreaming) {
-				void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+				const now = Date.now();
+				if (
+					this.#streamingEscArmedAt !== undefined &&
+					now - this.#streamingEscArmedAt < STREAMING_ESC_CONFIRM_WINDOW_MS
+				) {
+					this.#clearStreamingEscArm();
+					void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+				} else {
+					this.#streamingEscArmedAt = now;
+					if (!this.#streamingEscUnsubscribe) {
+						this.#streamingEscUnsubscribe = this.ctx.session.subscribe(event => {
+							if (event.type === "agent_start" || event.type === "agent_end") {
+								this.#clearStreamingEscArm();
+							}
+						});
+					}
+					this.ctx.showStatus("Press Esc again within 2s to cancel streaming.");
+				}
 			} else if (this.ctx.editor.getText().trim()) {
 				// Esc with typed text clears the draft instead of (or before) any double-Esc action
 				this.ctx.editor.setText("");
@@ -508,6 +535,12 @@ export class InputController {
 				this.ctx.updateEditorBorderColor();
 			}
 		};
+	}
+
+	#clearStreamingEscArm(): void {
+		this.#streamingEscArmedAt = undefined;
+		this.#streamingEscUnsubscribe?.();
+		this.#streamingEscUnsubscribe = undefined;
 	}
 
 	#handleFocusedLeftTap(): void {
