@@ -163,10 +163,11 @@ export class LocalAgentOwnerServer {
 		this.#heartbeat = undefined;
 		this.#unsubscribeGateway?.();
 		this.#unsubscribeGateway = undefined;
-		for (const socket of this.#sockets) socket.terminate();
 		this.#sockets.clear();
 		const server = this.#server;
 		this.#server = undefined;
+		// `stop(true)` already aborts every active connection; a per-socket
+		// `terminate()` beforehand can wedge the stop promise on some Bun builds.
 		await server?.stop(true);
 		fs.rmSync(this.#options.tokenFilePath, { force: true });
 		this.#token = "";
