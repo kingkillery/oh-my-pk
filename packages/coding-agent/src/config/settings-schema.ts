@@ -34,6 +34,7 @@ import {
 } from "../tts/models";
 import { EDIT_MODES } from "../utils/edit-mode";
 import { SEARCH_PROVIDER_OPTIONS, SEARCH_PROVIDER_PREFERENCES, type SearchProviderId } from "../web/search/types";
+import { SERVICE_TIER_INHERIT_OPTIONS, SERVICE_TIER_INHERIT_SETTING_VALUES } from "./service-tier";
 
 /** Unified settings schema - single source of truth for all settings.
  *
@@ -1430,6 +1431,20 @@ export const SETTINGS_SCHEMA = {
 					description: "Anthropic fast mode on direct Claude requests; ignored elsewhere (incl. Bedrock/Vertex)",
 				},
 			],
+		},
+	},
+
+	serviceTierSubagent: {
+		type: "enum",
+		values: SERVICE_TIER_INHERIT_SETTING_VALUES,
+		default: "inherit",
+		ui: {
+			tab: "model",
+			group: "Sampling",
+			label: "Service Tier (Subagents)",
+			description:
+				"Processing priority hint stamped onto spawned subagents. Inherit follows the main agent's live effective tier (so /fast on|off carries over); the remaining values mirror Service Tier.",
+			options: SERVICE_TIER_INHERIT_OPTIONS,
 		},
 	},
 

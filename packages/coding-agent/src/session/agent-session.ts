@@ -5593,11 +5593,20 @@ export class AgentSession {
 	/**
 	 * Full-history transcript for TUI display: every path entry in
 	 * chronological order with compactions rendered inline at the point they
-	 * fired (instead of replacing prior history). Display-only — NEVER feed
-	 * the result to `agent.replaceMessages` or a provider.
+	 * fired (instead of replacing prior history). Pass
+	 * `collapseCompactedHistory: true` to render only the latest compacted
+	 * tail (the live TUI surface); export/resume callers keep the full inline
+	 * history. Display-only — NEVER feed the result to
+	 * `agent.replaceMessages` or a provider.
 	 */
-	buildTranscriptSessionContext(): SessionContext {
-		return deobfuscateSessionContext(this.sessionManager.buildSessionContext({ transcript: true }), this.#obfuscator);
+	buildTranscriptSessionContext(options?: { collapseCompactedHistory?: boolean }): SessionContext {
+		return deobfuscateSessionContext(
+			this.sessionManager.buildSessionContext({
+				transcript: true,
+				collapseCompactedHistory: options?.collapseCompactedHistory,
+			}),
+			this.#obfuscator,
+		);
 	}
 
 	#obfuscateTextArrayForProvider(value: readonly string[] | undefined): string[] | undefined {

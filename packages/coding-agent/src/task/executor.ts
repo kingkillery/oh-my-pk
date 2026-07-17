@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentTelemetryConfig, ThinkingLevel } from "@pk-nerdsaver-ai/pi-agent-core";
 import { recordHandoff, resolveTelemetry } from "@pk-nerdsaver-ai/pi-agent-core";
-import type { Api, Model, Usage } from "@pk-nerdsaver-ai/pi-ai";
+import type { Api, Model, ServiceTier, Usage } from "@pk-nerdsaver-ai/pi-ai";
 import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@pk-nerdsaver-ai/pi-utils";
 import type { Rule } from "../capability/rule";
 import { ModelRegistry } from "../config/model-registry";
@@ -19,6 +19,7 @@ import {
 	resolveModelOverrideWithAuthFallback,
 } from "../config/model-resolver";
 import type { PromptTemplate } from "../config/prompt-templates";
+import { resolveSubagentServiceTier } from "../config/service-tier";
 import { Settings } from "../config/settings";
 import { SETTINGS_SCHEMA, type SettingPath } from "../config/settings-schema";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
@@ -415,6 +416,14 @@ export interface ExecutorOptions {
 	 * short-lived programmatic helpers are disposed immediately.
 	 */
 	keepAlive?: boolean;
+	/**
+	 * The parent session's live effective service tier, consumed when
+	 * `serviceTierSubagent` is `"inherit"`: `null` means the parent explicitly
+	 * has no tier (e.g. `/fast off`), `undefined` means no live session is
+	 * available so inherit falls back to the parent's configured `serviceTier`
+	 * setting. See {@link resolveSubagentServiceTier}.
+	 */
+	parentServiceTier?: ServiceTier | null;
 	enableLsp?: boolean;
 	signal?: AbortSignal;
 	onProgress?: (progress: AgentProgress) => void;
@@ -865,6 +874,77 @@ export function createSubagentSettings(
 		"tools.approvalMode": "yolo",
 		...overrides,
 	});
+}
+
+/** Inputs for {@link finalizeSubagentLifecycle}. */
+export interface FinalizeSubagentLifecycleOptions {
+	id: string;
+	session: AgentSession;
+	/** The run was hard-aborted (caller signal / wall-clock / budget). */
+	aborted: boolean;
+	/** Keep the finished session alive on the idle-TTL lifecycle (see {@link ExecutorOptions.keepAlive}). */
+	keepAlive: boolean;
+	/** The run used an isolated worktree (merged + cleaned; the session is not resumable). */
+	isolated: boolean;
+	/** TTL before an adopted idle subagent is parked; <= 0 disables parking. */
+	agentIdleTtlMs: number;
+	/** Cold-revive factory for lifecycle adoption, or null when unavailable. */
+	reviveSession: (() => Promise<AgentSession>) | null;
+}
+
+/**
+ * Registry/lifecycle teardown for a finished subagent run: aborted runs tear
+ * down terminally, isolated runs park a detached (non-resumable) ref,
+ * keep-alive opt-outs dispose immediately, and everything else stays
+ * interrogable under the lifecycle manager's idle-TTL parking.
+ */
+export async function finalizeSubagentLifecycle(options: FinalizeSubagentLifecycleOptions): Promise<void> {
+	const { id, session, aborted, keepAlive, isolated, agentIdleTtlMs, reviveSession } = options;
+	const registry = AgentRegistry.global();
+	if (aborted) {
+		// Hard abort (caller signal / wall-clock / budget): terminal teardown.
+		registry.setStatus(id, "aborted");
+		try {
+			await untilAborted(AbortSignal.timeout(5000), () => session.dispose());
+		} catch {
+			// Ignore cleanup errors
+		}
+	} else if (isolated) {
+		// Isolated run: the worktree is merged + cleaned after the run, so
+		// the session is not resumable. Park the ref WITHOUT adopting — the
+		// transcript stays reachable (history://), but ensureLive will throw.
+		// Status must flip to "parked" before dispose so the sdk dispose
+		// wrapper skips unregister.
+		registry.setStatus(id, "parked");
+		try {
+			await untilAborted(AbortSignal.timeout(5000), () => session.dispose());
+		} catch {
+			// Ignore cleanup errors
+		}
+		registry.detachSession(id);
+	} else if (!keepAlive) {
+		// Keep-alive opt-out (eval `agent()` bridge): the helper is a
+		// short-lived programmatic spawn nobody interrogates afterwards,
+		// so tear the session down now instead of parking it on the
+		// idle-TTL lifecycle. The sdk dispose wrapper usually unregisters the
+		// ref (not parked); the explicit unregister below is idempotent and
+		// covers sessions without the wrapper.
+		registry.setStatus(id, "idle");
+		try {
+			await untilAborted(AbortSignal.timeout(5000), () => session.dispose());
+		} catch {
+			// Ignore cleanup errors
+		}
+		registry.unregister(id);
+	} else {
+		// Keep-alive: finished and failed subagents both stay interrogable.
+		// The lifecycle manager owns idle-TTL parking + revival from here on.
+		registry.setStatus(id, "idle");
+		AgentLifecycleManager.global().adopt(id, {
+			idleTtlMs: agentIdleTtlMs,
+			revive: reviveSession ?? undefined,
+		});
+	}
 }
 
 type AbortReason = "signal" | "terminate" | "timeout" | "budget";
@@ -2037,10 +2117,18 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	}
 
 	const settings = options.settings ?? Settings.isolated();
-	const subagentSettings = createSubagentSettings(
-		settings,
-		agent.readSummarize === false ? { "read.summarize.enabled": false } : undefined,
+	// Stamp the subagent's service tier: a concrete `serviceTierSubagent` wins,
+	// `"inherit"` follows the parent's live effective tier (options.parentServiceTier)
+	// or, absent a live session, the parent's configured `serviceTier` setting.
+	const subagentServiceTier = resolveSubagentServiceTier(
+		settings.get("serviceTierSubagent"),
+		settings.get("serviceTier"),
+		options.parentServiceTier,
 	);
+	const subagentSettings = createSubagentSettings(settings, {
+		serviceTier: subagentServiceTier,
+		...(agent.readSummarize === false ? { "read.summarize.enabled": false } : undefined),
+	});
 	const executionProfile = options.executionProfile ?? options.spawnPlan?.profile;
 	const toolPolicyActive =
 		options.executionProfile !== undefined ||
@@ -2618,48 +2706,15 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			const session = monitor.takeActiveSession();
 			if (session) {
 				monitor.captureSalvage(session);
-				const registry = AgentRegistry.global();
-				if (aborted) {
-					// Hard abort (caller signal / wall-clock / budget): terminal teardown.
-					registry.setStatus(id, "aborted");
-					try {
-						await untilAborted(AbortSignal.timeout(5000), () => session.dispose());
-					} catch {
-						// Ignore cleanup errors
-					}
-				} else if (worktree !== undefined) {
-					// Isolated run: the worktree is merged + cleaned after the run, so
-					// the session is not resumable. Park the ref WITHOUT adopting — the
-					// transcript stays reachable (history://), but ensureLive will throw.
-					// Status must flip to "parked" before dispose so the sdk dispose
-					// wrapper skips unregister.
-					registry.setStatus(id, "parked");
-					try {
-						await untilAborted(AbortSignal.timeout(5000), () => session.dispose());
-					} catch {
-						// Ignore cleanup errors
-					}
-					registry.detachSession(id);
-				} else if (options.keepAlive === false) {
-					// Keep-alive opt-out (eval `agent()` bridge): the helper is a
-					// short-lived programmatic spawn nobody interrogates afterwards,
-					// so tear the session down now instead of parking it on the
-					// idle-TTL lifecycle. Dispose unregisters the ref (not parked).
-					registry.setStatus(id, "idle");
-					try {
-						await untilAborted(AbortSignal.timeout(5000), () => session.dispose());
-					} catch {
-						// Ignore cleanup errors
-					}
-				} else {
-					// Keep-alive: finished and failed subagents both stay interrogable.
-					// The lifecycle manager owns idle-TTL parking + revival from here on.
-					registry.setStatus(id, "idle");
-					AgentLifecycleManager.global().adopt(id, {
-						idleTtlMs: agentIdleTtlMs,
-						revive: reviveSession ?? undefined,
-					});
-				}
+				await finalizeSubagentLifecycle({
+					id,
+					session,
+					aborted,
+					keepAlive: options.keepAlive !== false,
+					isolated: worktree !== undefined,
+					agentIdleTtlMs,
+					reviveSession,
+				});
 			}
 		}
 
