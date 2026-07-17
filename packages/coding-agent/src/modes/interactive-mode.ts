@@ -453,8 +453,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	initialChatRendered = false;
 	/** Components rendered for the pending optimistic user message, so a superseding authoritative message can replace them. */
 	#optimisticUserComponents: Component[] | undefined;
-	pendingImages: ImageContent[] = [];
-	pendingImageLinks: (string | undefined)[] = [];
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
 	pendingTools = new Map<string, ToolExecutionHandle>();
 	pendingBashComponents: BashExecutionComponent[] = [];
@@ -1143,7 +1141,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.#goalSuppressNextContinuation) return;
 		if (this.#pendingSubmittedInput) return;
 		if (this.editor.getText().trim().length > 0) return;
-		if ((this.pendingImages?.length ?? 0) > 0) return;
+		if ((this.editor.pendingImages?.length ?? 0) > 0) return;
 		const state = this.session.getGoalModeState();
 		if (!state?.enabled || state.goal.status !== "active") return;
 		const prompt = this.session.goalRuntime.buildContinuationPrompt();
@@ -1162,7 +1160,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (this.#isAutoSubmitBlocked()) return;
 			if (this.#pendingSubmittedInput) return;
 			if (this.editor.getText().trim().length > 0) return;
-			if ((this.pendingImages?.length ?? 0) > 0) return;
+			if ((this.editor.pendingImages?.length ?? 0) > 0) return;
 			const latestState = this.session.getGoalModeState();
 			if (!latestState?.enabled || latestState.goal.status !== "active") return;
 			this.#goalContinuationTurnInFlight = true;
@@ -1419,9 +1417,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#stopLoadingAnimation(true);
 		}
 		if (!submission.customType) {
-			this.pendingImages = submission.images ? [...submission.images] : [];
-			this.pendingImageLinks = submission.imageLinks ? [...submission.imageLinks] : [];
-			this.editor.imageLinks = this.pendingImageLinks;
+			this.editor.pendingImages = submission.images ? [...submission.images] : [];
+			this.editor.pendingImageLinks = submission.imageLinks ? [...submission.imageLinks] : [];
+			this.editor.imageLinks = this.editor.pendingImageLinks;
 			this.rebuildChatFromMessages();
 			this.editor.setText(submission.text);
 		}
@@ -1694,7 +1692,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const chipsRow = buildChipsRow(this.#collectComposerChips(), width);
 		const focused = this.focusedAgentId !== undefined;
 		const def = getComposerWorkModeDef(this.getComposerWorkMode());
-		const hasInput = this.editor.getText().trim().length > 0 || this.pendingImages.length > 0;
+		const hasInput = this.editor.getText().trim().length > 0 || this.editor.pendingImages.length > 0;
 		const viewSession = this.viewSession;
 		const streaming = this.collabGuest?.state?.isStreaming === true || viewSession.isStreaming;
 		const railRow = buildRailRow(
@@ -1728,7 +1726,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				});
 			}
 		}
-		const imageCount = this.pendingImages.length;
+		const imageCount = this.editor.pendingImages.length;
 		if (imageCount > 0)
 			chips.push({ label: imageCount === 1 ? "1 image" : `${imageCount} images`, kind: "attached" });
 		return chips;
@@ -4267,6 +4265,14 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleBtwBranchKey(): Promise<boolean> {
 		return this.#btwController.handleBranch();
+	}
+
+	canCopyBtw(): boolean {
+		return this.#btwController.canCopy();
+	}
+
+	handleBtwCopyKey(): Promise<boolean> {
+		return this.#btwController.handleCopy();
 	}
 
 	async handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void> {

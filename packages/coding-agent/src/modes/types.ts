@@ -156,8 +156,6 @@ export interface InteractiveModeContext {
 	readonly proseOnlyThinking: boolean;
 	/** Set once the initial transcript render has run; gates extension-triggered chat rebuilds (#1955). */
 	initialChatRendered: boolean;
-	pendingImages: ImageContent[];
-	pendingImageLinks: (string | undefined)[];
 	compactionQueuedMessages: CompactionQueuedMessage[];
 	pendingTools: Map<string, ToolExecutionHandle>;
 	pendingBashComponents: BashExecutionComponent[];
@@ -373,6 +371,8 @@ export interface InteractiveModeContext {
 	handleBtwEscape(): boolean;
 	handleBtwBranchKey(): Promise<boolean>;
 	canBranchBtw(): boolean;
+	handleBtwCopyKey(): Promise<boolean>;
+	canCopyBtw(): boolean;
 	handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void>;
 	handleOmfgCommand(complaint: string): Promise<void>;
 	hasActiveOmfg(): boolean;
@@ -385,13 +385,16 @@ export interface InteractiveModeContext {
 	openExternalEditor(): void;
 	registerExtensionShortcuts(): void;
 	handlePlanModeCommand(initialPrompt?: string): Promise<void>;
-	isIntentComposerEnabled(): boolean;
-	getComposerWorkMode(): ComposerWorkMode;
-	setComposerWorkMode(mode: ComposerWorkMode): Promise<void>;
-	waitForComposerTransition(): Promise<void>;
-	restoreComposerAskTools(): Promise<void>;
-	disableComposerPlanMode(): Promise<void>;
-	cycleComposerWorkMode(): Promise<void>;
+	// Intent-composer hooks are optional: hosts without the composer surface
+	// (and partial test harnesses) omit them, and callers degrade gracefully
+	// via optional chaining.
+	isIntentComposerEnabled?(): boolean;
+	getComposerWorkMode?(): ComposerWorkMode;
+	setComposerWorkMode?(mode: ComposerWorkMode): Promise<void>;
+	waitForComposerTransition?(): Promise<void>;
+	restoreComposerAskTools?(): Promise<void>;
+	disableComposerPlanMode?(): Promise<void>;
+	cycleComposerWorkMode?(): Promise<void>;
 	handleGoalModeCommand(rest?: string): Promise<void>;
 	handleGuidedGoalCommand(rest?: string): Promise<void>;
 	handleLoopCommand(args?: string): Promise<string | undefined>;

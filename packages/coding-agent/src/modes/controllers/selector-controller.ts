@@ -331,8 +331,8 @@ export class SelectorController {
 			case "composer.layout": {
 				const effectiveLayout = this.ctx.settings.get("composer.layout");
 				this.ctx.editor.placeholder = effectiveLayout === "intent" ? "Describe the outcome you want…" : undefined;
-				if (effectiveLayout !== "intent" && this.ctx.getComposerWorkMode() === "ask") {
-					void this.ctx.restoreComposerAskTools().catch(error => {
+				if (effectiveLayout !== "intent" && this.ctx.getComposerWorkMode?.() === "ask") {
+					void this.ctx.restoreComposerAskTools?.().catch(error => {
 						this.ctx.showError(
 							`Failed to exit Ask mode while changing composer layout: ${error instanceof Error ? error.message : String(error)}`,
 						);
@@ -345,10 +345,10 @@ export class SelectorController {
 			case "plan.enabled":
 				if (
 					value === false &&
-					(this.ctx.getComposerWorkMode() === "plan" || this.ctx.session.getPlanModeState?.())
+					(this.ctx.getComposerWorkMode?.() === "plan" || this.ctx.session.getPlanModeState?.())
 				) {
 					void this.ctx
-						.disableComposerPlanMode()
+						.disableComposerPlanMode?.()
 						.catch(error => this.ctx.showError(error instanceof Error ? error.message : String(error)));
 				}
 				this.ctx.updateEditorTopBorder();

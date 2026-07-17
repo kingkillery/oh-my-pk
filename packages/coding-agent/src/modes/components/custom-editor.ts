@@ -1,3 +1,4 @@
+import type { ImageContent } from "@pk-nerdsaver-ai/pi-ai";
 import {
 	addKeyAliases,
 	canonicalKeyId,
@@ -230,6 +231,11 @@ export function extractImagePathFromText(text: string): string | undefined {
 export class CustomEditor extends Editor {
 	imageLinks?: readonly (string | undefined)[];
 
+	/** Images attached to the composed draft, aligned with its `[Image #N]` markers. */
+	pendingImages: ImageContent[] = [];
+	/** Source hyperlink (file path / URL) per pending image, aligned by index. */
+	pendingImageLinks: (string | undefined)[] = [];
+
 	/** Treat image/paste markers as indivisible: a stray backspace deletes the whole token
 	 *  instead of corrupting `[Paste #1, +30 lines]` into plain text. */
 	override atomicTokenPattern = PLACEHOLDER_REGEX;
@@ -430,14 +436,17 @@ export class CustomEditor extends Editor {
 	}
 
 	/**
-	 * Discard the composed draft: empty the buffer and drop image-reference
-	 * hyperlinks, then let the host clear its pending-image state via
-	 * {@link onClearDraft}. Pass the draft's text to record it in prompt
-	 * history first (used when the draft is queued rather than submitted).
+	 * Discard the composed draft: empty the buffer, drop the pending images
+	 * and their image-reference hyperlinks, then let the host clear any extra
+	 * draft state via {@link onClearDraft}. Pass the draft's text to record it
+	 * in prompt history first (used when the draft is queued rather than
+	 * submitted).
 	 */
 	clearDraft(historyText?: string): void {
 		if (historyText) this.addToHistory(historyText);
 		this.setText("");
+		this.pendingImages = [];
+		this.pendingImageLinks = [];
 		this.imageLinks = undefined;
 		this.onClearDraft?.();
 	}
