@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { ThinkingLevel } from "@pk-nerdsaver-ai/pi-agent-core";
 import type { ImageContent } from "@pk-nerdsaver-ai/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@pk-nerdsaver-ai/pi-tui";
 import { $env, isEnoent, logger, sanitizeText } from "@pk-nerdsaver-ai/pi-utils";
@@ -1025,9 +1026,9 @@ export class InputController {
 	}
 
 	handleCtrlZ(): void {
-		// SIGTSTP is POSIX job-control: Windows has no equivalent and
-		// `process.kill(_, "SIGTSTP")` throws `TypeError: Unknown signal:
-		// SIGTSTP` there, taking the whole agent down via an uncaught
+		// Suspension is POSIX job-control: Windows has no equivalent and
+		// `process.kill(_, "SIGSTOP")` throws `TypeError: Unknown signal:
+		// SIGSTOP` there, taking the whole agent down via an uncaught
 		// exception (issue #2036). No-op on platforms that cannot suspend.
 		if (process.platform === "win32") {
 			this.ctx.showStatus("Suspend (Ctrl+Z) is not supported on this platform");
@@ -1049,9 +1050,9 @@ export class InputController {
 		this.ctx.ui.stop();
 
 		try {
-			// pid=0 → entire foreground process group; the shell receives
-			// SIGTSTP and parks the job.
-			process.kill(0, "SIGTSTP");
+			// pid=0 → entire foreground process group; the uncatchable SIGSTOP
+			// parks the job in the parent shell (#3461).
+			process.kill(0, "SIGSTOP");
 		} catch (err) {
 			// Either the runtime refused the signal or the kernel rejected
 			// it (some sandboxes block sending to pid=0). Tear the resume
@@ -1789,9 +1790,19 @@ export class InputController {
 	}
 
 	toggleThinkingBlockVisibility(): void {
+		// With thinking off there are no blocks to reveal: effective visibility is
+		// forced hidden regardless of the persisted preference, so a toggle would
+		// only corrupt the setting. Refuse and say why instead of silently no-op'ing.
+		const thinkingLevel = (this.ctx.viewSession ?? this.ctx.session).thinkingLevel;
+		if (thinkingLevel === ThinkingLevel.Off) {
+			this.ctx.showStatus("Thinking is off — enable thinking to show blocks");
+			return;
+		}
+
+		// Transcript-display preference only: the agent's hideThinkingSummary stream
+		// option is seeded from settings at session build and stays untouched here.
 		this.ctx.hideThinkingBlock = !this.ctx.hideThinkingBlock;
 		this.ctx.settings.set("hideThinkingBlock", this.ctx.hideThinkingBlock);
-		this.ctx.session.agent.hideThinkingSummary = this.ctx.hideThinkingBlock;
 
 		for (const child of this.ctx.chatContainer.children) {
 			if (child instanceof AssistantMessageComponent) {

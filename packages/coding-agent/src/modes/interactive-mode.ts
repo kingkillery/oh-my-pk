@@ -3385,17 +3385,27 @@ export class InteractiveMode implements InteractiveModeContext {
 				}
 				// Capture the operator's tier choice and hand it to #approvePlan, which
 				// applies it AFTER #exitPlanMode. #exitPlanMode normally restores
-				// #planModePreviousModelState (the model from before plan mode), so
-				// applying the slider choice any earlier would be silently reverted —
-				// the bug that made "continue with slow" keep executing on the default
-				// model. For compact-context approval, the plan model is kept through
-				// compaction, then a successful compaction transitions to the slider model
-				// (or restores the pre-plan model when no slider choice was made).
-				// `cycle.currentIndex` is exactly that restored model, so any chosen tier
-				// differing from it needs an explicit executionModel — this also covers
-				// leaving the slider on its `default` anchor while planning ran elsewhere.
+				// #planModePreviousModelState (the model + thinking from before plan
+				// mode), so applying the slider choice any earlier would be silently
+				// reverted — the bug that made "continue with slow" keep executing on
+				// the default model. For compact-context approval, the plan model is
+				// kept through compaction, then a successful compaction transitions to
+				// the slider model (or restores the pre-plan model when no slider
+				// choice was made). A tier is a choice only when it differs from that
+				// restore target in model OR thinking (a model-only check would treat
+				// "stay on default" as implicit and lose the tier's configured thinking
+				// override) — so sliding onto the tier the restore lands on anyway
+				// stays implicit, and a hidden slider never pins the lone tier.
+				const restoreState = this.#planModePreviousModelState;
+				const restoreModel = restoreState ? restoreState.model : this.session.model;
+				const restoreThinking = restoreState ? restoreState.thinkingLevel : this.session.thinkingLevel;
+				const selectedTier = slider ? cycle?.models[selectedTierIndex] : undefined;
 				const executionModel =
-					cycle && selectedTierIndex !== cycle.currentIndex ? cycle.models[selectedTierIndex] : undefined;
+					selectedTier &&
+					(!modelsAreEqual(selectedTier.model, restoreModel) ||
+						(selectedTier.explicitThinkingLevel && selectedTier.thinkingLevel !== restoreThinking))
+						? selectedTier
+						: undefined;
 				await this.#approvePlan(latestPlanContent, {
 					planFilePath,
 					title: details.title,
