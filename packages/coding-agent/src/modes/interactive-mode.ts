@@ -641,6 +641,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new StatusContainer();
 		this.todoContainer = new Container();
+		// The loader sits below the todo HUD, so the HUD must report its own
+		// live-region seam — otherwise its rows commit to scrollback as stale
+		// duplicates on short terminals. The whole block is live while populated.
+		(this.todoContainer as Container & NativeScrollbackLiveRegion).getNativeScrollbackLiveRegionStart = () =>
+			this.todoContainer.children.length > 0 ? 0 : undefined;
 		this.subagentContainer = new Container();
 		this.btwContainer = new Container();
 		this.omfgContainer = new Container();
@@ -1958,13 +1963,28 @@ export class InteractiveMode implements InteractiveModeContext {
 		return active ?? nonEmpty[nonEmpty.length - 1];
 	}
 
+	/** Stages rendered below the root header: the active stage plus up to four following ones. */
+	static readonly #TODO_HUD_MAX_STAGES = 5;
+
+	/** Stage header: roman-numbered name (multi-stage only) plus completed/total task progress. */
+	#formatTodoStageHeader(phase: TodoPhase, oneBasedIndex: number, multiStage: boolean, active: boolean): string {
+		const name = multiStage ? formatPhaseDisplayName(phase.name, oneBasedIndex) : phase.name;
+		const done = phase.tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
+		const header = `${name}  ${done}/${phase.tasks.length}`;
+		return active ? theme.fg("accent", header) : theme.fg("dim", header);
+	}
+
 	#renderTodoList(): void {
 		this.todoContainer.clear();
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
 		if (phases.length === 0) return;
 		const indent = "  ";
-		const hook = theme.tree.hook;
-		const lines = ["", indent + theme.bold(theme.fg("accent", "Todos"))];
+		const multiStage = phases.length > 1;
+		const activeIdx = Math.max(0, phases.indexOf(this.#getActivePhase(phases) ?? phases[0]));
+		// Root header carries the overall stage progression; a lone stage's
+		// redundant "1/1" is omitted.
+		const progression = multiStage ? theme.fg("dim", `  ${activeIdx + 1}/${phases.length}`) : "";
+		const lines = ["", indent + theme.bold(theme.fg("accent", "Todos")) + progression];
 
 		const activeDescs = this.#getActiveSubagentDescriptions();
 		// A pending todo "lights up" (accent + running glyph) when an in-flight
@@ -1972,32 +1992,36 @@ export class InteractiveMode implements InteractiveModeContext {
 		const isMatched = (todo: TodoItem): boolean =>
 			activeDescs.length > 0 && todoMatchesAnyDescription(todo.content, activeDescs);
 
-		if (!this.todoExpanded) {
-			const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
-			const activePhase = phases[activeIdx];
-			if (!activePhase) return;
-			const { visible, hiddenOpenCount } = selectStickyTodoWindow(activePhase.tasks, 5);
-
-			lines.push(
-				`${indent}${theme.fg("accent", `${hook} ${formatPhaseDisplayName(activePhase.name, activeIdx + 1)}`)}`,
-			);
-			visible.forEach((todo, index) => {
-				const prefix = `${indent}${index === 0 ? hook : " "} `;
-				lines.push(this.#formatTodoLine(todo, prefix, isMatched(todo)));
+		const pushTaskRows = (tasks: TodoItem[]): void => {
+			tasks.forEach((todo, index) => {
+				const connector = index === tasks.length - 1 ? theme.tree.last : theme.tree.branch;
+				lines.push(this.#formatTodoLine(todo, `${indent}${connector} `, isMatched(todo)));
 			});
-			if (hiddenOpenCount > 0) {
-				lines.push(theme.fg("muted", `${indent}  ${hook} +${hiddenOpenCount} more`));
-			}
+		};
+
+		if (!this.todoExpanded) {
+			// Active stage expands (open-task sticky window, completed rows slide
+			// out); the following stages collapse to header + progress, capped so
+			// the HUD stays shallow. No overflow rows — the header counts imply
+			// what is hidden.
+			const visiblePhases = phases.slice(activeIdx, activeIdx + InteractiveMode.#TODO_HUD_MAX_STAGES);
+			visiblePhases.forEach((phase, offset) => {
+				const phaseIndex = activeIdx + offset;
+				lines.push(`${indent}${this.#formatTodoStageHeader(phase, phaseIndex + 1, multiStage, offset === 0)}`);
+				if (offset === 0) {
+					const { visible } = selectStickyTodoWindow(phase.tasks, 5);
+					pushTaskRows(visible);
+				}
+			});
 			this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
 			return;
 		}
 
 		phases.forEach((phase, phaseIndex) => {
-			lines.push(`${indent}${theme.fg("accent", `${hook} ${formatPhaseDisplayName(phase.name, phaseIndex + 1)}`)}`);
-			phase.tasks.forEach((todo, index) => {
-				const prefix = `${indent}${index === 0 ? hook : " "} `;
-				lines.push(this.#formatTodoLine(todo, prefix, isMatched(todo)));
-			});
+			lines.push(
+				`${indent}${this.#formatTodoStageHeader(phase, phaseIndex + 1, multiStage, phaseIndex === activeIdx)}`,
+			);
+			pushTaskRows(phase.tasks);
 		});
 
 		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
