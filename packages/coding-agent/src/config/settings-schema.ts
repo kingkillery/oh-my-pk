@@ -105,8 +105,8 @@ export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${stri
  * Ungrouped settings render first, before any section heading.
  */
 export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
-	appearance: ["Theme", "Status Line", "Display", "Images"],
-	model: ["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Vision"],
+	appearance: ["Theme", "Composer", "Status Line", "Display", "Images"],
+	model: ["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Agent Model Profiles", "Vision"],
 	interaction: [
 		"Input",
 		"Approvals",
@@ -121,7 +121,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Mixture of Agents",
 		"Fusion",
 	],
-	context: ["General", "Light Context", "Compaction", "Rules (TTSR)", "Experimental"],
+	context: ["General", "Light Context", "Compaction", "Background Packs", "Rules (TTSR)", "Experimental"],
 	memory: ["General", "Auto-Learn", "Mnemopi", "Hindsight", "Screenpipe"],
 	files: ["Editing", "Reading", "Read Summaries", "LSP"],
 	shell: ["Bash", "Eval & Python"],
@@ -1017,7 +1017,17 @@ export const SETTINGS_SCHEMA = {
 
 	// Report busy/idle state via the terminal progress escape sequence
 	// (OSC 9;4) so terminals that support it show a task indicator. Opt-in.
-	"terminal.showProgress": { type: "boolean", default: false },
+	"terminal.showProgress": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Native Terminal Progress",
+			description:
+				"Report busy/idle state via the OSC 9;4 progress sequence so supporting terminals show a task indicator",
+		},
+	},
 
 	"images.autoResize": {
 		type: "boolean",

@@ -5,7 +5,7 @@ import { THINKING_EFFORTS } from "@pk-nerdsaver-ai/pi-catalog/effort";
 import { APP_NAME, CONFIG_DIR_NAME, logger } from "@pk-nerdsaver-ai/pi-utils";
 import chalk from "chalk";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
-import { BUILTIN_TOOL_NAMES } from "../tools/builtin-names";
+import { BUILTIN_TOOL_NAMES, normalizeToolNames } from "../tools/builtin-names";
 import {
 	OPTIONAL_FLAGS,
 	OPTIONAL_VALUE_FLAGS,
@@ -106,6 +106,7 @@ const PARSE_DEPS: ParseDeps = {
 	logger,
 	parseConfiguredThinkingLevel,
 	builtinToolNames: BUILTIN_TOOL_NAMES,
+	normalizeToolNames,
 	thinkingEfforts: THINKING_EFFORTS,
 };
 
