@@ -29,6 +29,7 @@ import {
 	type AgentMessage,
 	type AgentState,
 	type AgentTool,
+	type AgentTurnEndContext,
 	AppendOnlyContextManager,
 	type AsideMessage,
 	type CompactionSummaryMessage,
@@ -75,6 +76,7 @@ import {
 import type { ProtectedToolMatcher } from "@pk-nerdsaver-ai/pi-agent-core/compaction/tool-protection";
 import type {
 	AssistantMessage,
+	AssistantMessageEvent,
 	Context,
 	ImageContent,
 	Message,
@@ -90,6 +92,7 @@ import type {
 	TextContent,
 	ToolCall,
 	ToolChoice,
+	ToolResultMessage,
 	Usage,
 	UsageReport,
 } from "@pk-nerdsaver-ai/pi-ai";
@@ -105,7 +108,11 @@ import {
 import * as AIError from "@pk-nerdsaver-ai/pi-ai/error";
 import { isContextOverflow, isUsageLimit as isUsageLimitError } from "@pk-nerdsaver-ai/pi-ai/error";
 import { stripToolDescriptions } from "@pk-nerdsaver-ai/pi-ai/utils/schema";
-import { THINKING_LOOP_ERROR_MARKER } from "@pk-nerdsaver-ai/pi-ai/utils/thinking-loop";
+import {
+	GeminiHeaderRunDetector,
+	isGeminiThinkingModel,
+	THINKING_LOOP_ERROR_MARKER,
+} from "@pk-nerdsaver-ai/pi-ai/utils/thinking-loop";
 import { getSupportedEfforts } from "@pk-nerdsaver-ai/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@pk-nerdsaver-ai/pi-catalog/models";
 import { MacOSPowerAssertion } from "@pk-nerdsaver-ai/pi-natives";
@@ -1720,7 +1727,7 @@ export class AgentSession {
 				};
 		this.agent.setProviderResponseInterceptor(this.#onResponse);
 		this.agent.setRawSseEventInterceptor(this.#onSseEvent);
-		this.agent.setOnTurnEnd(async (messages, signal) => {
+		this.agent.setOnTurnEnd(async (messages, signal, context) => {
 			if (signal?.aborted) return;
 			this.#advisorPrimaryTurnsCompleted++;
 			if (this.#advisorRuntime && !this.#advisorRuntime.disposed) {
@@ -1731,6 +1738,7 @@ export class AgentSession {
 					await this.#advisorRuntime.waitForCatchup(30000, threshold, signal);
 				}
 			}
+			await this.#maybeCompactMidTurn(messages, signal, context);
 		});
 		this.yieldQueue = new YieldQueue({
 			isStreaming: () => this.isStreaming,
@@ -1795,6 +1803,7 @@ export class AgentSession {
 		this.#toolSourceOf = config.toolSourceOf;
 		this.#providerSessionId = config.providerSessionId;
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
+			this.#watchGeminiHeaderRunaway(assistantMessageEvent);
 			const event: AgentEvent = {
 				type: "message_update",
 				message,
@@ -2669,13 +2678,36 @@ export class AgentSession {
 	 * `#postPromptTasksPromise` is set the moment `#emit` invokes this handler, so
 	 * the recovery wait always sees the in-flight handler and blocks until it — and
 	 * everything it schedules — settles. */
+	/** Tail of the ordered message_end processing chain (see #handleAgentEvent). */
+	#queuedMessageEndEvents: Promise<void> = Promise.resolve();
+
 	#handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		if (event.type === "message_end") {
+			// Chain message_end processing so persistence lands in stream order even
+			// when an extension's message_end hook is still pending: without this, a
+			// fast toolResult hook could persist its message ahead of the turn's
+			// still-parked assistant, corrupting branch order (the assistant that
+			// carries a toolCall must precede its toolResult). Mid-turn compaction
+			// awaits this chain before snapshotting the branch.
+			const process = () => this.#processAgentEvent(event);
+			const queued = this.#queuedMessageEndEvents.then(process, process);
+			this.#queuedMessageEndEvents = queued.catch(() => {});
+			return queued;
+		}
 		if (event.type !== "agent_end") {
 			return this.#processAgentEvent(event);
 		}
 		const { promise, resolve } = Promise.withResolvers<void>();
 		this.#trackPostPromptTask(promise);
 		try {
+			// agent_end maintenance depends on message_end side effects (persistence,
+			// #lastAssistantMessage, progress-flag clears); drain the ordered chain so
+			// maintenance never races a still-running message_end handler.
+			let tail: Promise<void>;
+			do {
+				tail = this.#queuedMessageEndEvents;
+				await tail;
+			} while (tail !== this.#queuedMessageEndEvents);
 			await this.#processAgentEvent(event);
 		} finally {
 			resolve();
@@ -3019,10 +3051,58 @@ export class AgentSession {
 
 			if (this.#assistantEndedWithSuccessfulYield(msg)) {
 				this.#lastSuccessfulYieldToolCallId = undefined;
+				if (this.#isGoalModeActive()) {
+					// An active goal keeps running after a yield, so run threshold
+					// maintenance now — the next goal turn would otherwise start on an
+					// over-threshold context. No auto-continue: the yield settles this
+					// run; the goal runtime owns what happens next.
+					logger.debug("agent_end maintenance routing", {
+						route: "yield-active-goal-checkCompaction",
+						successfulYield: true,
+					});
+					const compactionTask = this.#checkCompaction(msg, true, false, false);
+					this.#trackPostPromptTask(compactionTask);
+					await compactionTask;
+				}
 				await emitAgentEndNotification();
 				return;
 			}
+			// A successful yield followed by a trailing empty `stop` is still a
+			// settled yield turn — the empty stop is a stray provider epilogue, not
+			// a stall to retry. Route it through the same active-goal threshold
+			// maintenance as a plain yield instead of the empty-stop handler.
+			const postYieldTrailingStop =
+				this.#lastSuccessfulYieldToolCallId !== undefined &&
+				msg.stopReason === "stop" &&
+				this.#isEmptyAssistantStop(msg) &&
+				event.messages.some(
+					message =>
+						message.role === "assistant" && this.#assistantEndedWithSuccessfulYield(message as AssistantMessage),
+				);
 			this.#lastSuccessfulYieldToolCallId = undefined;
+			if (postYieldTrailingStop) {
+				if (this.#isGoalModeActive()) {
+					logger.debug("agent_end maintenance routing", {
+						route: "post-yield-trailing-stop-active-goal-checkCompaction",
+						successfulYield: true,
+					});
+					const compactionTask = this.#checkCompaction(msg, true, false, false);
+					this.#trackPostPromptTask(compactionTask);
+					await compactionTask;
+					await emitAgentEndNotification();
+					return;
+				}
+				// Outside goal mode the yield already settled the run (the executor
+				// treats it as the terminal result): retrying the stray epilogue via
+				// the empty-stop path would resume an already-yielded child and
+				// produce post-yield tool calls (issue #3389). Suppress it entirely.
+				logger.debug("agent_end maintenance routing", {
+					route: "post-yield-trailing-stop-suppressed",
+					successfulYield: true,
+				});
+				await emitAgentEndNotification();
+				return;
+			}
 
 			if (await this.#handleEmptyAssistantStop(msg)) {
 				await emitAgentEndNotification();
@@ -3039,6 +3119,14 @@ export class AgentSession {
 					await emitAgentEndNotification();
 					return;
 				}
+			}
+
+			// Header-runaway interrupt: the stream interceptor aborted a
+			// planning-only reasoning turn; discard it and re-drive the turn with a
+			// hidden tool-call reminder instead of settling the abort.
+			if (await this.#handleGeminiToolCallReminderInterrupt(msg)) {
+				await emitAgentEndNotification();
+				return;
 			}
 
 			// A deliberate abort should settle the current turn, not trigger queued continuations.
@@ -7324,8 +7412,18 @@ export class AgentSession {
 	 * and surfaces verbatim on the aborted assistant message's `errorMessage`, so
 	 * the transcript can distinguish a deliberate user interrupt from an opaque
 	 * abort. Omit it for internal/lifecycle aborts.
+	 *
+	 * `preserveCompaction` is for the manual `/compact` startup abort: the caller
+	 * holds its own freshly installed `#compactionAbortController`, which this
+	 * abort must NOT cancel. The in-flight auto-compaction pass IS still
+	 * cancelled — synchronously, before this method's first await — so it cannot
+	 * race the manual run and double-rewrite session history.
 	 */
-	async abort(options?: { goalReason?: "interrupted" | "internal"; reason?: string }): Promise<void> {
+	async abort(options?: {
+		goalReason?: "interrupted" | "internal";
+		preserveCompaction?: boolean;
+		reason?: string;
+	}): Promise<void> {
 		const userInterrupt = options?.reason === USER_INTERRUPT_LABEL;
 		if (userInterrupt) this.#advisorAutoResumeSuppressed = true;
 		// Pull advisor concerns out of the steer/follow-up queues before any await so
@@ -7340,7 +7438,14 @@ export class AgentSession {
 			this.abortRetry();
 			this.#promptGeneration++;
 			this.#scheduledHiddenNextTurnGeneration = undefined;
-			this.abortCompaction();
+			if (options?.preserveCompaction) {
+				// Manual /compact startup: keep the caller's manual compaction
+				// controller alive, but raise the auto-compaction abort signal now so
+				// a parked auto pass observes it and unwinds without committing.
+				this.#autoCompactionAbortController?.abort();
+			} else {
+				this.abortCompaction();
+			}
 			this.abortHandoff();
 			this.abortBash();
 			this.abortEval();
@@ -8418,11 +8523,16 @@ export class AgentSession {
 			throw new Error(SNAPCOMPACT_RETIREMENT_ERROR);
 		}
 		this.#disconnectFromAgent();
-		await this.abort({ goalReason: "internal" });
+		// Install the manual controller BEFORE the startup abort so isCompacting is
+		// already true when the abort teardown yields to the event loop — a message
+		// typed the instant the loader appears must route into the compaction queue,
+		// not the core steering queue. The abort preserves this controller
+		// (preserveCompaction) while still cancelling any in-flight auto pass.
 		const compactionAbortController = new AbortController();
 		this.#compactionAbortController = compactionAbortController;
 
 		try {
+			await this.abort({ goalReason: "internal", preserveCompaction: true });
 			if (!this.model) {
 				throw new Error("No model selected");
 			}
@@ -8685,6 +8795,98 @@ export class AgentSession {
 	async runIdleCompaction(): Promise<void> {
 		if (this.isStreaming || this.isCompacting) return;
 		await this.#runAutoCompaction("idle", false, true);
+	}
+
+	/**
+	 * Mid-turn threshold compaction (`compaction.midTurnEnabled`): when a
+	 * tool-call turn finishes over the compaction threshold and the loop is about
+	 * to continue with another provider call, compact in place NOW instead of
+	 * waiting for agent_end — a long tool loop can otherwise overflow before the
+	 * run yields. Runs from the agent's awaited turn-end hook, so the pass
+	 * completes before the next request is built. Always takes the in-place
+	 * context-full path: a mid-run handoff would reset the session out from
+	 * under the live loop.
+	 *
+	 * The loop owns its context array (`agent.replaceMessages` only updates
+	 * post-run agent state), so after the branch rewrite the live `loopMessages`
+	 * array is spliced in place with the rebuilt session context.
+	 */
+	async #maybeCompactMidTurn(
+		loopMessages: AgentMessage[],
+		signal: AbortSignal | undefined,
+		context: AgentTurnEndContext | undefined,
+	): Promise<void> {
+		if (!context?.willContinue || signal?.aborted) return;
+		const message = context.message;
+		if (message.role !== "assistant") return;
+		const assistant = message as AssistantMessage;
+		if (assistant.stopReason === "aborted" || assistant.stopReason === "error") return;
+		const compactionSettings = this.settings.getGroup("compaction");
+		if (!compactionSettings.enabled || !compactionSettings.midTurnEnabled || compactionSettings.strategy === "off") {
+			return;
+		}
+		if (this.isCompacting || this.isGeneratingHandoff) return;
+		const contextWindow = this.model?.contextWindow ?? 0;
+		const contextTokens = calculateContextTokens(assistant.usage);
+		if (!shouldCompact(contextTokens, contextWindow, compactionSettings)) return;
+
+		// The turn's message_end events ride the agent event stream and may not
+		// have been dispatched — or may be parked on a pending extension hook —
+		// when the loop awaits this hook. Wait until the just-finished turn is
+		// persisted so the branch snapshot carries it exactly once (never lost,
+		// never duplicated by a late hook re-appending it after the rewrite).
+		if (!(await this.#waitForTurnPersistence(assistant, context.toolResults))) {
+			logger.warn("Mid-turn compaction skipped: turn persistence did not settle");
+			return;
+		}
+		if (signal?.aborted || this.isCompacting) return;
+
+		const before = getLatestCompactionEntry(this.sessionManager.getBranch());
+		await this.#runAutoCompaction("threshold", false, true, false, {
+			autoContinue: false,
+			forceInPlace: true,
+			triggerContextTokens: contextTokens,
+		});
+		const after = getLatestCompactionEntry(this.sessionManager.getBranch());
+		if (!after || after.id === before?.id) return;
+		const rebuilt = this.buildDisplaySessionContext().messages;
+		loopMessages.splice(0, loopMessages.length, ...rebuilt);
+	}
+
+	/**
+	 * Wait until the given turn (assistant message + its tool results) has been
+	 * persisted to the session branch. Alternates a macrotask yield — so the
+	 * agent's event-stream consumption catches up (same trick as
+	 * `syncContextBeforeModelCall`) — with a wait on the ordered message_end
+	 * processing chain, which blocks while an extension's message_end hook is
+	 * still pending. Bounded so a genuinely broken pipeline cannot spin forever.
+	 */
+	async #waitForTurnPersistence(assistant: AssistantMessage, toolResults: ToolResultMessage[]): Promise<boolean> {
+		for (let attempt = 0; attempt < 50; attempt++) {
+			if (this.#turnPersistedInBranch(assistant, toolResults)) return true;
+			await Bun.sleep(0);
+			await this.#queuedMessageEndEvents;
+		}
+		return this.#turnPersistedInBranch(assistant, toolResults);
+	}
+
+	#turnPersistedInBranch(assistant: AssistantMessage, toolResults: ToolResultMessage[]): boolean {
+		const branch = this.sessionManager.getBranch();
+		const assistantPersisted = branch.some(
+			entry =>
+				entry.type === "message" &&
+				entry.message.role === "assistant" &&
+				this.#isSameAssistantMessage(entry.message as AssistantMessage, assistant),
+		);
+		if (!assistantPersisted) return false;
+		return toolResults.every(result =>
+			branch.some(
+				entry =>
+					entry.type === "message" &&
+					entry.message.role === "toolResult" &&
+					(entry.message as ToolResultMessage).toolCallId === result.toolCallId,
+			),
+		);
 	}
 
 	/**
@@ -9019,12 +9221,21 @@ export class AgentSession {
 		// Skip if this was an error (non-overflow errors don't have usage data)
 		if (assistantMessage.stopReason === "error") return COMPACTION_CHECK_NONE;
 		const pruneResult = await this.#pruneToolOutputs();
-		let contextTokens = calculateContextTokens(assistantMessage.usage);
+		// The threshold GATE stays anchored to the provider-billed context tokens
+		// (#3174): the supersede/prune passes above return token *estimates*, and
+		// subtracting them from the billed number let tool-result-heavy sessions
+		// (goal mode especially) sit above the real threshold indefinitely while
+		// this check silently no-op'd every turn.
+		const contextTokens = calculateContextTokens(assistantMessage.usage);
+		// The shake trigger estimate DOES keep the prune savings: the pruned
+		// results are already gone from the next request, so shake's post-pass
+		// fallback correction must not re-count them as residual pressure.
+		let estimatedContextTokens = contextTokens;
 		if (supersedeResult) {
-			contextTokens = Math.max(0, contextTokens - supersedeResult.tokensSaved);
+			estimatedContextTokens = Math.max(0, estimatedContextTokens - supersedeResult.tokensSaved);
 		}
 		if (pruneResult) {
-			contextTokens = Math.max(0, contextTokens - pruneResult.tokensSaved);
+			estimatedContextTokens = Math.max(0, estimatedContextTokens - pruneResult.tokensSaved);
 		}
 		if (shouldCompact(contextTokens, contextWindow, compactionSettings)) {
 			// Try promotion first — if a larger model is available, switch instead of compacting
@@ -9032,12 +9243,27 @@ export class AgentSession {
 			if (!promoted) {
 				return await this.#runAutoCompaction("threshold", false, false, allowDefer, {
 					autoContinue,
-					triggerContextTokens: contextTokens,
+					triggerContextTokens: estimatedContextTokens,
 				});
 			}
 		}
 		return COMPACTION_CHECK_NONE;
 	}
+	/** True while an enabled goal is actively running (not exiting/completed). */
+	#isGoalModeActive(): boolean {
+		const state = this.#goalModeState;
+		if (!state?.enabled) return false;
+		return state.mode === "active" && state.goal.status === "active";
+	}
+
+	/** Cheap pre-check mirroring #checkCompaction's threshold gate (billed tokens). */
+	#isOverCompactionThreshold(assistantMessage: AssistantMessage): boolean {
+		const compactionSettings = this.settings.getGroup("compaction");
+		if (!compactionSettings.enabled || compactionSettings.strategy === "off") return false;
+		const contextWindow = this.model?.contextWindow ?? 0;
+		return shouldCompact(calculateContextTokens(assistantMessage.usage), contextWindow, compactionSettings);
+	}
+
 	#assistantEndedWithSuccessfulYield(assistantMessage: AssistantMessage): boolean {
 		const toolCallId = this.#lastSuccessfulYieldToolCallId;
 		if (!toolCallId) return false;
@@ -9123,6 +9349,17 @@ export class AgentSession {
 		if (!this.settings.get("features.unexpectedStopDetection")) {
 			return false;
 		}
+		if (this.#isGoalModeActive() && this.#isOverCompactionThreshold(assistantMessage)) {
+			// Active-goal turn already over the compaction threshold: threshold
+			// maintenance owns the continuation. A retry reminder here would start
+			// the next goal turn on an over-threshold context and strand the
+			// compaction pass behind it — defer to the agent_end #checkCompaction.
+			logger.debug("agent_end maintenance routing", {
+				route: "active-goal-over-threshold-checkCompaction",
+				successfulYield: false,
+			});
+			return false;
+		}
 		if (!isUnexpectedStopCandidate(assistantMessage)) {
 			this.#unexpectedStopRetryCount = 0;
 			return false;
@@ -9183,6 +9420,85 @@ export class AgentSession {
 			retryCount: this.#unexpectedStopRetryCount,
 			maxRetries: UNEXPECTED_STOP_MAX_RETRIES,
 		});
+	}
+
+	/** Counts consecutive Gemini thought-summary headers across the streaming reasoning channel. */
+	#geminiHeaderRunDetector = new GeminiHeaderRunDetector();
+	/** Set when the header guard aborted the stream; consumed by the agent_end handler. */
+	#pendingGeminiToolCallReminder: { headerCount: number } | undefined;
+
+	/**
+	 * Gemini header-runaway guard (`model.loopGuard.toolCallReminder`): Gemini
+	 * occasionally narrates a long chain of genuinely-distinct planning titles
+	 * without ever calling a tool, so the pi-ai similarity loop guard never
+	 * fires. Count reasoning-summary headers on the live stream and, at the
+	 * threshold, abort the turn — the agent_end handler then discards the
+	 * stalled reasoning-only turn and re-drives it with a hidden tool-call
+	 * reminder (see #handleGeminiToolCallReminderInterrupt).
+	 */
+	#watchGeminiHeaderRunaway(assistantMessageEvent: AssistantMessageEvent): void {
+		switch (assistantMessageEvent.type) {
+			case "start":
+			case "text_start":
+			case "toolcall_start":
+			case "thinking_start":
+				// Leaving the reasoning channel (or starting a fresh block/turn)
+				// resets the run — only an uninterrupted header chain counts.
+				this.#geminiHeaderRunDetector.reset();
+				return;
+			case "thinking_delta":
+				break;
+			default:
+				return;
+		}
+		if (this.#pendingGeminiToolCallReminder) return;
+		if (!this.settings.get("model.loopGuard.enabled") || !this.settings.get("model.loopGuard.toolCallReminder")) {
+			return;
+		}
+		const model = this.model;
+		if (!model || !isGeminiThinkingModel(model)) return;
+		if (!this.#geminiHeaderRunDetector.push(assistantMessageEvent.delta)) return;
+		const headerCount = this.#geminiHeaderRunDetector.count;
+		this.#pendingGeminiToolCallReminder = { headerCount };
+		this.emitNotice(
+			"warning",
+			`Interrupted a reasoning runaway (${headerCount} consecutive planning headers with no tool call); reminding the model to act.`,
+			"loop-guard",
+		);
+		this.agent.abort();
+	}
+
+	/**
+	 * Completes the header-runaway interrupt after the guard's abort settles:
+	 * drop the stalled reasoning-only turn from active context and session
+	 * history (replaying it would feed the next turn more loop fuel), inject a
+	 * hidden tool-call reminder (custom → developer on the wire), and re-drive
+	 * the turn. Returns true when the interrupt was handled.
+	 */
+	async #handleGeminiToolCallReminderInterrupt(assistantMessage: AssistantMessage): Promise<boolean> {
+		const pending = this.#pendingGeminiToolCallReminder;
+		if (!pending) return false;
+		this.#pendingGeminiToolCallReminder = undefined;
+		if (assistantMessage.stopReason !== "aborted" || this.#abortInProgress || this.#isDisposed) return false;
+		this.#removeEmptyStopFromActiveContext(assistantMessage);
+		this.agent.appendMessage({
+			role: "custom",
+			customType: "gemini-tool-call-reminder",
+			content: [{ type: "text", text: this.#geminiToolCallReminder(pending.headerCount) }],
+			display: false,
+			timestamp: Date.now(),
+		});
+		this.#scheduleAgentContinue({ generation: this.#promptGeneration });
+		return true;
+	}
+
+	#geminiToolCallReminder(headerCount: number): string {
+		return [
+			"<system-reminder>",
+			`Your last turn was interrupted after ${headerCount} consecutive planning headers with no tool call. The stalled reasoning was discarded.`,
+			"Stop planning. Take the next concrete step now by issuing a tool call, or reply with your final answer.",
+			"</system-reminder>",
+		].join("\n");
 	}
 
 	#removeEmptyStopFromActiveContext(assistantMessage: AssistantMessage): void {
@@ -10368,7 +10684,7 @@ export class AgentSession {
 		willRetry: boolean,
 		deferred = false,
 		allowDefer = true,
-		options: { autoContinue?: boolean; triggerContextTokens?: number } = {},
+		options: { autoContinue?: boolean; forceInPlace?: boolean; triggerContextTokens?: number } = {},
 	): Promise<CompactionCheckResult> {
 		const compactionSettings = this.settings.getGroup("compaction");
 		if (compactionSettings.strategy === "off") return COMPACTION_CHECK_NONE;
@@ -10377,8 +10693,10 @@ export class AgentSession {
 		const shouldAutoContinue = options.autoContinue !== false && compactionSettings.autoContinue !== false;
 		// Shake runs inline (cheap, no remote LLM). On overflow recovery, if shake
 		// reclaims nothing we fall through to the summary-compaction body below so
-		// the oversized input still gets resolved.
-		if (compactionSettings.strategy === "shake") {
+		// the oversized input still gets resolved. Mid-turn passes (forceInPlace)
+		// skip shake: the live loop context is rebuilt from the branch rewrite, so
+		// only a summary compaction actually shrinks the next request.
+		if (compactionSettings.strategy === "shake" && !options.forceInPlace) {
 			const outcome = await this.#runAutoShake(
 				reason,
 				willRetry,
@@ -10394,6 +10712,7 @@ export class AgentSession {
 		if (
 			!deferred &&
 			allowDefer &&
+			!options.forceInPlace &&
 			reason !== "overflow" &&
 			reason !== "incomplete" &&
 			reason !== "idle" &&
@@ -10410,8 +10729,11 @@ export class AgentSession {
 			return COMPACTION_CHECK_DEFERRED_HANDOFF;
 		}
 
-		let action: "context-full" | "handoff" =
-			compactionSettings.strategy === "handoff" && reason !== "overflow" ? "handoff" : "context-full";
+		// forceInPlace (mid-turn compaction) always summarizes in place: a mid-run
+		// handoff would reset the session out from under the live agent loop.
+		const handoffAllowed =
+			compactionSettings.strategy === "handoff" && reason !== "overflow" && !options.forceInPlace;
+		let action: "context-full" | "handoff" = handoffAllowed ? "handoff" : "context-full";
 		// Abort any older auto-compaction before installing this run's controller.
 		this.#autoCompactionAbortController?.abort();
 		const autoCompactionAbortController = new AbortController();
@@ -10424,7 +10746,7 @@ export class AgentSession {
 			// a message typed as the compaction loader appears must land in the compaction
 			// queue, not the core steering queue (which handoff's agent.reset() would wipe).
 			await this.#emitSessionEvent({ type: "auto_compaction_start", reason, action });
-			if (compactionSettings.strategy === "handoff" && reason !== "overflow") {
+			if (handoffAllowed) {
 				const handoffFocus = AUTO_HANDOFF_THRESHOLD_FOCUS;
 				const handoffResult = await this.handoff(handoffFocus, {
 					autoTriggered: true,
@@ -11194,11 +11516,11 @@ export class AgentSession {
 				? formatRetryFallbackBaseSelector(parseRetryFallbackSelector(currentPlainSelector) ?? parsedCurrent)
 				: undefined;
 
-		for (const role of Object.keys(this.#getRetryFallbackChains())) {
+		for (const role of this.#retryFallbackCandidateRoles()) {
 			const primarySelector = this.#getRetryFallbackPrimarySelector(role);
 			if (primarySelector?.raw === currentSelector) return role;
 		}
-		for (const role of Object.keys(this.#getRetryFallbackChains())) {
+		for (const role of this.#retryFallbackCandidateRoles()) {
 			const primarySelector = this.#getRetryFallbackPrimarySelector(role);
 			if (!primarySelector) continue;
 			if (currentPlainSelector && primarySelector.raw === currentPlainSelector) return role;
@@ -11209,12 +11531,33 @@ export class AgentSession {
 		return undefined;
 	}
 
+	/**
+	 * Roles a failing selector may resolve to for fallback purposes. Roles with
+	 * an explicit chain keep priority (original behavior); configured model roles
+	 * without one come after — they inherit the `default` chain in
+	 * {@link #getRetryFallbackEffectiveChain}, so a configured `task` role with
+	 * no task-specific chain still falls back through the default chain.
+	 */
+	#retryFallbackCandidateRoles(): string[] {
+		const roles = Object.keys(this.#getRetryFallbackChains());
+		const seen = new Set(roles);
+		for (const role of Object.keys(this.settings.getModelRoles())) {
+			if (!seen.has(role)) {
+				seen.add(role);
+				roles.push(role);
+			}
+		}
+		return roles;
+	}
+
 	#getRetryFallbackEffectiveChain(role: string): RetryFallbackSelector[] {
 		const primarySelector = this.#getRetryFallbackPrimarySelector(role);
 		if (!primarySelector) return [];
 		const chain = [primarySelector];
 		const seen = new Set<string>([primarySelector.raw]);
-		for (const selector of this.#getRetryFallbackChains()[role] ?? []) {
+		const configuredChains = this.#getRetryFallbackChains();
+		// A role without its own chain inherits the default chain.
+		for (const selector of configuredChains[role] ?? configuredChains.default ?? []) {
 			const parsed = parseRetryFallbackSelector(selector, this.#modelRegistry);
 			if (!parsed || seen.has(parsed.raw)) continue;
 			seen.add(parsed.raw);

@@ -72,6 +72,7 @@ import {
 	type AssignmentVerifierRunners,
 	verifyAssignment,
 } from "./assignment-verifier";
+import { Semaphore } from "./parallel";
 import {
 	type AssignmentFailureClass,
 	classifyRecoveryFailure,
@@ -192,6 +193,40 @@ function normalizeModelPatterns(value: string | string[] | undefined): string[] 
 		.split(",")
 		.map(entry => entry.trim())
 		.filter(Boolean);
+}
+
+/**
+ * Per-provider ceilings for concurrently RUNNING subagent sessions, keyed by
+ * resolved provider id. Most providers tolerate parallel task spawns fine, but
+ * ollama-cloud enforces a hard account-level concurrency cap, so spawns that
+ * resolve to it must queue at the spawn boundary instead of bursting into
+ * rate-limit backoff (issue #3464).
+ */
+const PROVIDER_SPAWN_CONCURRENCY_SETTINGS = {
+	"ollama-cloud": "providers.ollama-cloud.maxConcurrency",
+} as const;
+
+const providerSpawnSemaphores = new Map<string, Semaphore>();
+
+/**
+ * Resolve the spawn semaphore for a provider with a configured concurrency
+ * ceiling. The shared instance is resized in place (never replaced) on later
+ * setting changes so in-flight holders stay counted and a runtime limit change
+ * can never push concurrency past the cap.
+ */
+function getProviderSpawnSemaphore(provider: string, settings: Settings): Semaphore | undefined {
+	const settingPath =
+		PROVIDER_SPAWN_CONCURRENCY_SETTINGS[provider as keyof typeof PROVIDER_SPAWN_CONCURRENCY_SETTINGS];
+	if (!settingPath) return undefined;
+	const maxConcurrency = settings.get(settingPath);
+	const existing = providerSpawnSemaphores.get(provider);
+	if (existing) {
+		existing.resize(maxConcurrency);
+		return existing;
+	}
+	const semaphore = new Semaphore(maxConcurrency);
+	providerSpawnSemaphores.set(provider, semaphore);
+	return semaphore;
 }
 
 const SUBAGENT_RETRY_FALLBACK_ROLE_PREFIX = "subagent:";
@@ -2275,6 +2310,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		let error: string | undefined;
 		let aborted = false;
 		let abortReasonText: string | undefined;
+		let releaseProviderSpawnSlot: (() => void) | undefined;
 		// runSubagent defers abort classification to the finally block below; the
 		// helper still throws so control flow mirrors the prior inline implementation.
 		const { checkAbort, awaitAbortable } = createAbortHelpers(abortSignal, () => {});
@@ -2366,6 +2402,19 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				? resolvedThinkingLevel
 				: (thinkingLevel ?? resolvedThinkingLevel);
 			resolvedAt = performance.now();
+
+			// Providers with a hard account-level concurrency cap (ollama-cloud)
+			// bound concurrent subagent RUNS at the spawn boundary: queue here —
+			// before the session is even created — until a slot frees up, instead
+			// of bursting every parallel spawn into rate-limit backoff (#3464).
+			// acquire(abortSignal) also vacates the queue slot if this spawn is
+			// cancelled while waiting.
+			const providerSpawnSemaphore = model ? getProviderSpawnSemaphore(model.provider, settings) : undefined;
+			if (providerSpawnSemaphore) {
+				await providerSpawnSemaphore.acquire(abortSignal);
+				releaseProviderSpawnSlot = () => providerSpawnSemaphore.release();
+			}
+			checkAbort();
 
 			const effectiveCwd = worktree ?? cwd;
 			const sessionManager = sessionFile
@@ -2687,6 +2736,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				error = err instanceof Error ? err.stack || err.message : String(err);
 			}
 		} finally {
+			releaseProviderSpawnSlot?.();
+			releaseProviderSpawnSlot = undefined;
 			if (abortSignal.aborted) {
 				aborted = monitor.isAbortedRun();
 				if (aborted) {

@@ -1235,6 +1235,13 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Session-level Gemini header-runaway guard: interrupt a reasoning stream that
+	// keeps emitting distinct planning headers without ever calling a tool, then
+	// re-drive the turn with a hidden tool-call reminder. Requires
+	// model.loopGuard.enabled; the pi-ai similarity guard misses this shape
+	// because the titles are genuinely distinct.
+	"model.loopGuard.toolCallReminder": { type: "boolean", default: true },
+
 	inlineToolDescriptors: {
 		type: "enum",
 		values: ["auto", "on", "off"] as const,
@@ -2148,6 +2155,13 @@ export const SETTINGS_SCHEMA = {
 	"compaction.keepRecentTokens": { type: "number", default: 20000 },
 
 	"compaction.autoContinue": { type: "boolean", default: true },
+
+	// Mid-turn threshold compaction: when a tool-call turn finishes over the
+	// compaction threshold and the run is about to continue, compact in place
+	// between provider calls instead of waiting for the run to yield. Always
+	// uses the in-place context-full path (never handoff) so the live run is
+	// not reset mid-loop.
+	"compaction.midTurnEnabled": { type: "boolean", default: true },
 
 	"compaction.remoteEndpoint": { type: "string", default: undefined },
 
@@ -4578,6 +4592,12 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Ceiling on concurrently RUNNING ollama-cloud subagent sessions. Ollama
+	// Cloud enforces a hard account-level concurrency cap, so parallel task
+	// spawns that resolve to it must queue at the spawn boundary instead of
+	// bursting into rate-limit backoff (issue #3464). 0 = unlimited.
+	"providers.ollama-cloud.maxConcurrency": { type: "number", default: 0 },
+
 	// Provider selection
 	"providers.maxInFlightRequests": {
 		type: "record",
@@ -5235,6 +5255,7 @@ export interface CompactionSettings {
 	idleEnabled: boolean;
 	idleThresholdTokens: number;
 	idleTimeoutSeconds: number;
+	midTurnEnabled: boolean;
 	supersedeReads: boolean;
 	dropUseless: boolean;
 	maskConsumedObservations: boolean;
