@@ -718,8 +718,16 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		}
 
+		// Bind session-backed builtin status descriptions (e.g. `/fast` → "Fast: on")
+		// so the autocomplete picker shows live state instead of the static copy.
+		const builtinCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map(cmd => {
+			const getTuiAutocompleteDescription = cmd.getTuiAutocompleteDescription;
+			if (!getTuiAutocompleteDescription) return cmd;
+			return { ...cmd, getAutocompleteDescription: () => getTuiAutocompleteDescription({ ctx: this }) };
+		});
+
 		// Store pending commands for init() where file commands are loaded async
-		this.#pendingSlashCommands = [...BUILTIN_SLASH_COMMANDS, ...hookCommands, ...customCommands, ...skillCommandList];
+		this.#pendingSlashCommands = [...builtinCommands, ...hookCommands, ...customCommands, ...skillCommandList];
 
 		this.#uiHelpers = new UiHelpers(this);
 		this.#btwController = new BtwController(this);
@@ -1803,6 +1811,8 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	replaceOptimisticUserMessage(message: AgentMessage): void {
 		this.optimisticUserMessageSignature = undefined;
+		this.#pendingSubmissionDispose?.();
+		this.#pendingSubmissionDispose = undefined;
 		if (this.#optimisticUserComponents) {
 			for (const component of this.#optimisticUserComponents) {
 				this.chatContainer.removeChild(component);

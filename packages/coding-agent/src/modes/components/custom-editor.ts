@@ -7,6 +7,7 @@ import {
 	parseKey,
 	parseKittySequence,
 } from "@pk-nerdsaver-ai/pi-tui";
+import { BracketedPasteHandler } from "@pk-nerdsaver-ai/pi-tui/bracketed-paste";
 import type { AppKeybinding } from "../../config/keybindings";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { imageReferenceHyperlink, PLACEHOLDER_REGEX, renderPlaceholders } from "../image-references";
@@ -366,6 +367,14 @@ export class CustomEditor extends Editor {
 	/** Custom key handlers from extensions and non-built-in app actions. */
 	#customKeyHandlers = new Map<KeyId, () => void>();
 	#customMatchKeys = new Map<string, () => void>();
+	/** Assembles bracketed pastes (possibly split across stdin chunks) ahead of the
+	 *  base editor so the empty/image-path/text routing always sees the full payload. */
+	#pasteAssembler = new BracketedPasteHandler();
+	/** True while an empty-paste `onPasteImage` clipboard read is in flight; trailing
+	 *  input queues behind it so a follow-up Enter cannot submit pre-image. */
+	#pasteImageInFlight = false;
+	/** Input chunks received while the image read is in flight, dispatched on settle. */
+	#pendingPasteInput: string[] = [];
 	/** Spaces actually inserted in the current run; tracked back out when a hold is recognized. */
 	#spaceRunInserted = 0;
 	/** Consecutive "mechanical" deltas (fast + steady); a sustained run of these confirms a held bar. */
@@ -536,6 +545,11 @@ export class CustomEditor extends Editor {
 	}
 
 	handleInput(data: string): void {
+		if (this.#pasteImageInFlight) {
+			this.#pendingPasteInput.push(data);
+			return;
+		}
+
 		const kittyParsed = parseKittySequence(data);
 		if (kittyParsed && (kittyParsed.modifier & 64) !== 0 && this.onCapsLock) {
 			// Caps Lock is modifier bit 64
@@ -543,13 +557,11 @@ export class CustomEditor extends Editor {
 			return;
 		}
 
-		const pastedImagePaths = extractBracketedImagePastePaths(data);
-		if (pastedImagePaths && this.onPasteImagePath) {
-			void (async () => {
-				for (const path of pastedImagePaths) {
-					await this.onPasteImagePath?.(path);
-				}
-			})();
+		const paste = this.#pasteAssembler.process(data);
+		if (paste.handled) {
+			if (paste.pasteContent !== undefined) {
+				this.#routeAssembledPaste(paste.pasteContent, paste.remaining);
+			}
 			return;
 		}
 
@@ -708,5 +720,46 @@ export class CustomEditor extends Editor {
 
 		// Pass to parent for normal handling
 		super.handleInput(data);
+	}
+
+	/** Route a fully-assembled bracketed paste. A strictly-empty payload is the macOS
+	 *  image-only clipboard Cmd+V shape (#3601) and goes to the smart clipboard reader;
+	 *  a payload of explicit image-file paths attaches via {@link onPasteImagePath}
+	 *  (#3506); everything else — including whitespace-only pastes — stays a text paste. */
+	#routeAssembledPaste(payload: string, remaining: string): void {
+		if (payload.length === 0) {
+			if (this.onPasteImage) {
+				this.#pasteImageInFlight = true;
+				if (remaining.length > 0) this.#pendingPasteInput.unshift(remaining);
+				Promise.resolve(this.onPasteImage()).then(
+					() => this.#onPasteImageSettled(),
+					() => this.#onPasteImageSettled(),
+				);
+			} else if (remaining.length > 0) {
+				this.handleInput(remaining);
+			}
+			return;
+		}
+		const paths = extractPastePathsFromText(payload.trim());
+		if (paths?.every(path => BRACKETED_IMAGE_PATH_REGEX.test(path)) && this.onPasteImagePath) {
+			void (async () => {
+				for (const path of paths) {
+					await this.onPasteImagePath?.(path);
+				}
+			})();
+		} else {
+			this.pasteText(payload);
+		}
+		if (remaining.length > 0) this.handleInput(remaining);
+	}
+
+	/** Drain input queued behind the in-flight image read, in arrival order. Stops if a
+	 *  drained chunk starts another empty-paste read; that read's settle resumes the drain. */
+	#onPasteImageSettled(): void {
+		this.#pasteImageInFlight = false;
+		while (this.#pendingPasteInput.length > 0 && !this.#pasteImageInFlight) {
+			const chunk = this.#pendingPasteInput.shift();
+			if (chunk !== undefined) this.handleInput(chunk);
+		}
 	}
 }

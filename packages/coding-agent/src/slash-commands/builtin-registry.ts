@@ -593,6 +593,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		description: "Toggle priority service tier (OpenAI service_tier=priority, Anthropic speed=fast)",
 		acpDescription: "Toggle fast mode",
 		acpInputHint: "[on|off|status]",
+		getTuiAutocompleteDescription: runtime => `Fast: ${formatFastModeStatus(runtime.ctx.session)}`,
 		subcommands: [
 			{ name: "on", description: "Enable fast mode" },
 			{ name: "off", description: "Disable fast mode" },
@@ -2884,6 +2885,7 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
 		subcommands: command.subcommands,
 		inlineHint: command.inlineHint,
 		persistInHistory: command.persistInHistory,
+		getTuiAutocompleteDescription: command.getTuiAutocompleteDescription,
 	}),
 );
 
