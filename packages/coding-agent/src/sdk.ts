@@ -2224,7 +2224,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			emitEvent: event => cursorEventEmitter?.(event),
 		});
 
-		const inlineToolDescriptors = settings.get("inlineToolDescriptors");
+		const inlineToolDescriptorsSetting = settings.get("inlineToolDescriptors");
+		// "auto" inlines only for owned (non-native) tool dialects, which require
+		// the descriptor catalog in-prompt; native tool calling keeps the compact
+		// name list and provider-side schemas.
+		const resolveInlineToolDescriptors = (nativeTools: boolean): boolean =>
+			inlineToolDescriptorsSetting === "on" || (inlineToolDescriptorsSetting === "auto" && !nativeTools);
 		const eagerTasks = settings.get("task.eager") !== "default";
 		const eagerTasksAlways = settings.get("task.eager") === "always";
 		const intentField = $flag("PI_INTENT_TRACING", settings.get("tools.intentTracing")) ? INTENT_FIELD : undefined;
@@ -2316,7 +2321,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				alwaysApplyRules,
 				resolvedAppendSystemPrompt: appendPrompt,
 				skillsSettings: settings.getGroup("skills"),
-				inlineToolDescriptors,
+				inlineToolDescriptors: resolveInlineToolDescriptors(nativeTools),
 				nativeTools,
 				intentField,
 				mcpDiscoveryMode: hasDiscoverableTools,
@@ -2743,7 +2748,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				return result;
 			},
 			intentTracing: !!intentField,
-			pruneToolDescriptions: inlineToolDescriptors,
+			pruneToolDescriptions: resolveInlineToolDescriptors(
+				resolveDialect(settings.get("tools.format"), model) === undefined,
+			),
 			dialect: resolveDialect(settings.get("tools.format"), model),
 			abortOnFabricatedToolResult: settings.get("tools.abortOnFabricatedResult"),
 			getToolChoice: () => session?.nextToolChoiceDirective(),
@@ -2824,7 +2831,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		session = new AgentSession({
 			advisorWatchdogPrompt,
 			agent,
-			pruneToolDescriptions: inlineToolDescriptors,
+			pruneToolDescriptions: resolveInlineToolDescriptors(
+				resolveDialect(settings.get("tools.format"), model) === undefined,
+			),
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
 			sessionManager,
 			settings,

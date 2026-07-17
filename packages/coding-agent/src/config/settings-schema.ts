@@ -1236,14 +1236,20 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	inlineToolDescriptors: {
-		type: "boolean",
-		default: false,
+		type: "enum",
+		values: ["auto", "on", "off"] as const,
+		default: "auto",
 		ui: {
 			tab: "model",
 			group: "Prompt",
 			label: "Inline Tool Descriptors",
 			description:
-				"Render full tool descriptors in the system prompt and strip top-level/nested descriptions from provider tool schemas so descriptor text is sent once",
+				"Render full tool descriptors in the system prompt and strip top-level/nested descriptions from provider tool schemas so descriptor text is sent once. Auto inlines only for owned (non-native) tool dialects, which need the catalog in-prompt.",
+			options: [
+				{ value: "auto", label: "Auto", description: "Inline only when an owned tool dialect is active" },
+				{ value: "on", label: "On", description: "Always inline descriptors and strip wire schemas" },
+				{ value: "off", label: "Off", description: "Never inline; provider tool schemas carry descriptions" },
+			],
 		},
 	},
 
