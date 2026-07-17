@@ -345,6 +345,21 @@ export const SETTINGS_SCHEMA = {
 	// ────────────────────────────────────────────────────────────────────────
 	setupVersion: { type: "number", default: 0 },
 
+	// `omp gc` — session-store garbage collection. Only applied when the user
+	// runs the gc CLI; the booleans pick which categories run by default and
+	// the numbers set retention (days before cold sessions archive, and how
+	// many newest sessions to always keep globally / per project directory).
+	"gc.blobs": { type: "boolean", default: true },
+	"gc.archive": { type: "boolean", default: true },
+	"gc.wal": { type: "boolean", default: true },
+	"gc.coldArchiveAfterDays": { type: "number", default: 30 },
+	"gc.retainNewestGlobal": { type: "number", default: 500 },
+	"gc.retainNewestPerCwd": { type: "number", default: 50 },
+
+	// Text verbosity request parameter for OpenAI responses-family APIs
+	// ("low" | "medium" | "high"); unset sends no verbosity parameter.
+	textVerbosity: { type: "string", default: undefined },
+
 	// Auth broker — credentials proxied through a remote `omp auth-broker serve`
 	// host. Hidden from the UI; populate via env vars or hand-edited config.yml.
 	// Env (`OMP_AUTH_BROKER_URL` / `OMP_AUTH_BROKER_TOKEN`) takes precedence so
@@ -998,6 +1013,10 @@ export const SETTINGS_SCHEMA = {
 			condition: "hasImageProtocol",
 		},
 	},
+
+	// Report busy/idle state via the terminal progress escape sequence
+	// (OSC 9;4) so terminals that support it show a task indicator. Opt-in.
+	"terminal.showProgress": { type: "boolean", default: false },
 
 	"images.autoResize": {
 		type: "boolean",
@@ -1846,6 +1865,14 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Where /share uploads the sealed blob: the share server ("blob", default)
+	// or a secret GitHub gist ("gist", needs an authenticated `gh`).
+	"share.store": {
+		type: "enum",
+		values: ["blob", "gist"] as const,
+		default: "blob",
+	},
+
 	"share.redactSecrets": {
 		type: "boolean",
 		default: true,
@@ -2473,6 +2500,18 @@ export const SETTINGS_SCHEMA = {
 			group: "Mnemopi",
 			label: "Mnemopi Enhanced Recall",
 			description: "Enable the tiered query result cache for repeated and similar recall queries",
+			condition: "mnemopiActive",
+		},
+	},
+
+	"mnemopi.proactiveLinking": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "memory",
+			group: "Mnemopi",
+			label: "Mnemopi Proactive Linking",
+			description: "Proactively link related memories to each other when retaining new ones",
 			condition: "mnemopiActive",
 		},
 	},
@@ -3208,6 +3247,33 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"eval.rb": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "shell",
+			group: "Eval & Python",
+			label: "Ruby Eval Backend",
+			description: "Allow the eval tool to dispatch Ruby cells to a local Ruby interpreter (opt-in)",
+		},
+	},
+
+	"eval.jl": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "shell",
+			group: "Eval & Python",
+			label: "Julia Eval Backend",
+			description: "Allow the eval tool to dispatch Julia cells to a local Julia interpreter (opt-in)",
+		},
+	},
+
+	// Interpreter binary overrides for the opt-in Ruby/Julia eval backends;
+	// unset means resolve from PATH.
+	"ruby.interpreter": { type: "string", default: undefined },
+	"julia.interpreter": { type: "string", default: undefined },
+
 	// Python kernel knobs (consumed by the eval py backend and the /python slash command)
 	"python.kernelMode": {
 		type: "enum",
@@ -3405,6 +3471,33 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
+
+	"glob.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Glob",
+			description: "Enable the glob tool for filename pattern search",
+		},
+	},
+
+	"grep.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Grep",
+			description: "Enable the grep tool for content search",
+		},
+	},
+
+	// Default context lines the grep tool includes around matches when the
+	// caller doesn't pass contextBefore/contextAfter explicitly. 0 = none.
+	"grep.contextBefore": { type: "number", default: 0 },
+	"grep.contextAfter": { type: "number", default: 0 },
 
 	"astGrep.enabled": {
 		type: "boolean",
@@ -4476,6 +4569,13 @@ export const SETTINGS_SCHEMA = {
 			description: "Providers that web_search should never use, even as fallbacks",
 		},
 	},
+	// Per-provider cap on concurrent in-flight requests, e.g. { "anthropic": 2 }.
+	// Empty means no client-side cap. Values are validated positive numbers.
+	"providers.maxInFlightRequests": {
+		type: "record",
+		default: {} as Record<string, number>,
+	},
+
 	"providers.antigravityEndpoint": {
 		type: "enum",
 		values: ["auto", "production", "sandbox"] as const,
@@ -4882,6 +4982,10 @@ export const SETTINGS_SCHEMA = {
 			description: "Enable the Exa researcher tool for AI-powered deep research",
 		},
 	},
+
+	// Minimum delay between Exa search requests (client-side throttle for the
+	// shared API key). 0 disables the throttle.
+	"exa.searchDelayMs": { type: "number", default: 0 },
 
 	"exa.enableWebsets": {
 		type: "boolean",
