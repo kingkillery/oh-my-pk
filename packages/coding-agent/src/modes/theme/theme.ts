@@ -221,6 +221,8 @@ export type SymbolKey =
 	// Tool identity icons
 	| "tool.write"
 	| "tool.edit"
+	| "tool.delete"
+	| "tool.move"
 	| "tool.bash"
 	| "tool.ssh"
 	| "tool.lsp"
@@ -421,6 +423,8 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	// Tool identity icons (per-tool signature glyph on the success header)
 	"tool.write": "✎",
 	"tool.edit": "✎",
+	"tool.delete": "🗑",
+	"tool.move": "➜",
 	"tool.bash": "❯",
 	"tool.ssh": "⇄",
 	"tool.lsp": "💡",
@@ -725,6 +729,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	// Tool identity icons (per-tool signature glyph on the success header)
 	"tool.write": "\uEA7F",
 	"tool.edit": "\uEA73",
+	"tool.delete": "\uEA81",
+	"tool.move": "\uEA9C",
 	"tool.bash": "\uEBCA",
 	"tool.ssh": "\uEB3A",
 	"tool.lsp": "\uEA61",
@@ -922,6 +928,8 @@ const ASCII_SYMBOLS: SymbolMap = {
 	// Tool identity icons (per-tool signature glyph on the success header)
 	"tool.write": "+f",
 	"tool.edit": "~",
+	"tool.delete": "-f",
+	"tool.move": "mv",
 	"tool.bash": "$",
 	"tool.ssh": "ssh",
 	"tool.lsp": "lsp",
@@ -1886,6 +1894,14 @@ export class Theme {
 		const normalized = lang.toLowerCase();
 		const key = langMap[normalized];
 		return key ? this.#symbols[key] : this.#symbols["lang.default"];
+	}
+
+	/**
+	 * Get a language icon with its standard styling applied — the muted
+	 * foreground every renderer wraps {@link getLangIcon} in.
+	 */
+	getLangIconStyled(lang: string | undefined): string {
+		return this.fg("muted", this.getLangIcon(lang));
 	}
 }
 

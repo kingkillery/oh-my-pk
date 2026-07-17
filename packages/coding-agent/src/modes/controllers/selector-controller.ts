@@ -85,6 +85,28 @@ export class SelectorController {
 		);
 	}
 	/**
+	 * Provider/source ids for the settings runtime context — the same set the
+	 * /model selector tabs over: providers of every registry-available model
+	 * plus the discoverable (dynamic-listing) providers. Registry load errors
+	 * degrade to the discoverable list so settings still open.
+	 */
+	#availableProviderIds(): string[] {
+		const registry = this.ctx.session.modelRegistry;
+		const providerSet = new Set<string>();
+		try {
+			for (const model of registry.getAvailable()) {
+				providerSet.add(model.provider);
+			}
+		} catch {
+			// Registry failed to load — the settings UI still works with the rest.
+		}
+		for (const provider of registry.getDiscoverableProviders()) {
+			providerSet.add(provider);
+		}
+		return [...providerSet].sort((a, b) => a.localeCompare(b));
+	}
+
+	/**
 	 * Shows a selector component in place of the editor.
 	 * @param create Factory that receives a `done` callback and returns the component and focus target
 	 */
@@ -116,6 +138,7 @@ export class SelectorController {
 					availableThinkingLevels: [...this.ctx.session.getAvailableThinkingLevels()],
 					thinkingLevel: this.ctx.session.thinkingLevel,
 					availableThemes,
+					providers: this.#availableProviderIds(),
 					cwd: getProjectDir(),
 					model: this.ctx.session.model,
 					imageBudget: this.ctx.ui.imageBudget,
@@ -842,13 +865,13 @@ export class SelectorController {
 			this.ctx.sessionManager.getCwd(),
 			this.ctx.sessionManager.getSessionDir(),
 		);
-		// Current folder has no sessions: preload the global list so the picker
-		// can open straight into all-projects scope instead of dead-ending.
+		// Current folder has no sessions: preload the global list so the first
+		// Tab toggle into all-projects is instant. The picker still opens
+		// folder-scoped with the "Press Tab to view all" hint — auto-opening in
+		// all-projects scope silently surfaced other projects' history (#3099).
 		let allSessions: SessionInfo[] | undefined;
-		let startInAllScope = false;
 		if (sessions.length === 0) {
 			allSessions = await SessionManager.listAll();
-			startInAllScope = allSessions.length > 0;
 		}
 		const historyStorage = this.ctx.historyStorage;
 		const historyMatcher = historyStorage ? (query: string) => historyStorage.matchingSessionIds(query) : undefined;
@@ -884,7 +907,6 @@ export class SelectorController {
 					historyMatcher,
 					loadAllSessions: () => SessionManager.listAll(),
 					allSessions,
-					startInAllScope,
 					getTerminalRows: () => this.ctx.ui.terminal.rows,
 				},
 			);

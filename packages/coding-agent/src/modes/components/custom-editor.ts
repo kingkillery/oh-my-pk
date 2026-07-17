@@ -255,6 +255,9 @@ export class CustomEditor extends Editor {
 	}
 	onEscape?: () => void;
 	onClear?: () => void;
+	/** Host hook invoked by {@link clearDraft} so composer-owned draft state
+	 *  (pending images and their hyperlinks) is dropped with the buffer. */
+	onClearDraft?: () => void;
 	onExit?: () => void;
 	onDisplayReset?: () => void;
 	onCycleThinkingLevel?: () => void;
@@ -364,6 +367,19 @@ export class CustomEditor extends Editor {
 	clearCustomKeyHandlers(): void {
 		this.#customKeyHandlers.clear();
 		this.#rebuildCustomMatchKeys();
+	}
+
+	/**
+	 * Discard the composed draft: empty the buffer and drop image-reference
+	 * hyperlinks, then let the host clear its pending-image state via
+	 * {@link onClearDraft}. Pass the draft's text to record it in prompt
+	 * history first (used when the draft is queued rather than submitted).
+	 */
+	clearDraft(historyText?: string): void {
+		if (historyText) this.addToHistory(historyText);
+		this.setText("");
+		this.imageLinks = undefined;
+		this.onClearDraft?.();
 	}
 
 	#spaceHoldGestureEnabled(): boolean {

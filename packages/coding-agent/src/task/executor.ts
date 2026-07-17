@@ -408,6 +408,13 @@ export interface ExecutorOptions {
 	 * watchdog is already suspended for the call's duration.
 	 */
 	maxRuntimeMs?: number;
+	/**
+	 * Keep the finished subagent session alive (registry-interrogable, parked
+	 * on the idle-TTL lifecycle) after a non-aborted, non-isolated run.
+	 * Defaults to true; the eval `agent()` bridge passes `false` so its
+	 * short-lived programmatic helpers are disposed immediately.
+	 */
+	keepAlive?: boolean;
 	enableLsp?: boolean;
 	signal?: AbortSignal;
 	onProgress?: (progress: AgentProgress) => void;
@@ -2633,6 +2640,17 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						// Ignore cleanup errors
 					}
 					registry.detachSession(id);
+				} else if (options.keepAlive === false) {
+					// Keep-alive opt-out (eval `agent()` bridge): the helper is a
+					// short-lived programmatic spawn nobody interrogates afterwards,
+					// so tear the session down now instead of parking it on the
+					// idle-TTL lifecycle. Dispose unregisters the ref (not parked).
+					registry.setStatus(id, "idle");
+					try {
+						await untilAborted(AbortSignal.timeout(5000), () => session.dispose());
+					} catch {
+						// Ignore cleanup errors
+					}
 				} else {
 					// Keep-alive: finished and failed subagents both stay interrogable.
 					// The lifecycle manager owns idle-TTL parking + revival from here on.

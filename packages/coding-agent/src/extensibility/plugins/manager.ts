@@ -357,6 +357,7 @@ export class PluginManager {
 				manifest: { version: "0.0.0-dryrun" },
 				enabledFeatures: spec.features === "*" ? null : (spec.features as string[] | null),
 				enabled: true,
+				scope: "user",
 			};
 		}
 		const pkgJsonPath = getPluginsPackageJson();
@@ -496,6 +497,7 @@ export class PluginManager {
 				manifest,
 				enabledFeatures,
 				enabled: true,
+				scope: "user",
 			};
 
 			await this.#validateInstalledExtensions(installedPlugin);
@@ -602,6 +604,7 @@ export class PluginManager {
 				manifest,
 				enabledFeatures: projectFeatures ?? runtimeState.enabledFeatures,
 				enabled: runtimeState.enabled && !isDisabledInProject,
+				scope: "user",
 			});
 		}
 
@@ -666,6 +669,7 @@ export class PluginManager {
 			manifest,
 			enabledFeatures: null,
 			enabled: true,
+			scope: "user",
 		};
 	}
 

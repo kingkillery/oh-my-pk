@@ -526,6 +526,8 @@ export interface AgentSessionConfig {
 	builtInToolNames?: Iterable<string>;
 	/** Stream function for the advisor's own agent; defaults to the standard stream. */
 	advisorStreamFn?: StreamFn;
+	/** Provider-context transform applied to the advisor's requests (parity with the primary agent). */
+	transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
 	/** Current session pre-LLM message transform pipeline */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	/** Provider payload hook used by the active session request path */
@@ -1252,6 +1254,7 @@ export class AgentSession {
 	#builtInToolNames: ReadonlySet<string> = new Set();
 	/** Custom stream function for the advisor agent, when the host injects one. */
 	#advisorStreamFn?: StreamFn;
+	#transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
 	/** The advisor's own agent, retained so `/dump advisor` can serialize its transcript. Undefined when no advisor is active. */
 	#advisorAgent?: Agent;
 	#advisorReadOnlyTools?: AgentTool[];
@@ -1685,6 +1688,7 @@ export class AgentSession {
 		this.#toolRegistry = config.toolRegistry ?? new Map();
 		this.#builtInToolNames = new Set(config.builtInToolNames ?? []);
 		this.#advisorStreamFn = config.advisorStreamFn;
+		this.#transformProviderContext = config.transformProviderContext;
 		this.#requestedToolNames = config.requestedToolNames;
 		this.#moaLaneLabels = config.moa?.laneLabels ?? [];
 		this.#transformContext = config.transformContext ?? (messages => messages);
@@ -2101,6 +2105,7 @@ export class AgentSession {
 			onPayload: this.#onPayload,
 			onResponse: this.#onResponse,
 			onSseEvent: this.#onSseEvent,
+			transformProviderContext: this.#transformProviderContext,
 			intentTracing: false,
 			telemetry: advisorTelemetry,
 		});

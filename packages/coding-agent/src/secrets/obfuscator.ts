@@ -192,6 +192,17 @@ export class SecretObfuscator {
 		if (!this.#hasAny || !text.includes("#")) return text;
 		return text.replace(PLACEHOLDER_RE, match => this.#deobfuscateMap.get(match) ?? match);
 	}
+
+	/**
+	 * Deep-walk arbitrary JSON-shaped data and {@link deobfuscate} every string
+	 * value (same traversal as {@link deobfuscateToolArguments}). Non-string
+	 * leaves pass through untouched; the input is returned as-is when nothing
+	 * changes.
+	 */
+	deobfuscateObject<T>(value: T): T {
+		if (!this.#hasAny) return value;
+		return mapJsonStrings(value as JsonValue, s => this.deobfuscate(s)) as T;
+	}
 	/** Find the obfuscate index for a known secret value. */
 	#findObfuscateIndex(secret: string): number | undefined {
 		const plainIndex = this.#plainMappings.get(secret);

@@ -159,6 +159,10 @@ const RPC_BACKGROUND_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 
 function applyDefaultSettingOverrides(settingPaths: SettingPath[], targetSettings: Settings): void {
 	for (const settingPath of settingPaths) {
+		// #3207: the schema default only fills holes — explicitly configured
+		// values (caller, project, --config overlay, or global) must survive
+		// protocol-host startup.
+		if (targetSettings.isConfigured(settingPath)) continue;
 		targetSettings.override(settingPath, getDefault(settingPath));
 	}
 }

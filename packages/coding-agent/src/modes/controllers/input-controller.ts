@@ -219,6 +219,12 @@ export class InputController {
 				return { consume: true };
 			});
 		}
+		this.ctx.editor.onClearDraft = () => {
+			// The pending-image buffer and its hyperlinks live on the mode
+			// context; drop them together with the editor's draft text.
+			this.ctx.pendingImages = [];
+			this.ctx.pendingImageLinks = [];
+		};
 		this.ctx.editor.onEscape = () => {
 			// Active context maintenance owns Esc: auto/manual compaction,
 			// handoff generation, and auto-retry backoff all advertise

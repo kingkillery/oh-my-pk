@@ -825,7 +825,22 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		handle: async (_command, runtime) => {
 			const text = runtime.session.formatSessionAsText();
-			await runtime.output(text || "No messages to dump yet.");
+			if (!text) {
+				await runtime.output("No messages to dump yet.");
+				return commandConsumed();
+			}
+			// Best-effort LLM request JSON sidecar; the transcript is still
+			// useful without it, so failures just omit the pointer.
+			let sidecarPath: string | undefined;
+			try {
+				sidecarPath = await runtime.session.dumpLlmRequestToTmpDir();
+			} catch {
+				sidecarPath = undefined;
+			}
+			const output = sidecarPath
+				? `${text}\n\n---\nLLM request JSON: ${sidecarPath}\nThis file persists on disk and may contain raw context/secrets — treat accordingly.`
+				: text;
+			await runtime.output(output);
 			return commandConsumed();
 		},
 		handleTui: (_command, runtime) => {

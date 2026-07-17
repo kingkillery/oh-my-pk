@@ -33,7 +33,7 @@ import {
 	Snowflake,
 } from "@pk-nerdsaver-ai/pi-utils";
 import { INTENT_FIELD } from "@pk-nerdsaver-ai/pi-wire";
-import { ADVISOR_READONLY_TOOL_NAMES, discoverWatchdogFiles } from "./advisor";
+import { ADVISOR_READONLY_TOOL_NAMES, discoverWatchdogFiles, formatActiveRepoWatchdogPrompt } from "./advisor";
 import { type AsyncJob, AsyncJobManager } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
 import { loadCapability } from "./capability";
@@ -65,6 +65,7 @@ import { CursorExecHandlers } from "./cursor";
 import type { AgentExecutionProfile } from "./orchestration/agent-execution-profile";
 import type { CollaborationPolicy } from "./orchestration/collaboration-policy";
 import type { ResolvedToolProfile, ToolSource } from "./tools/tool-profiles";
+import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import "./discovery";
 import { initializeWithSettings } from "./discovery";
 import { disposeAllKernelSessions, disposeKernelSessionsByOwner } from "./eval/py/executor";
@@ -2805,8 +2806,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			.map(wrapToolWithMetaNotice);
 
 		let advisorWatchdogPrompt: string | undefined;
-		if (watchdogFiles && watchdogFiles.length > 0) {
-			advisorWatchdogPrompt = watchdogFiles.join("\n\n");
+		const advisorWatchdogBlocks = [...(watchdogFiles ?? [])];
+		// Built-in active-repo watchdog: when the cwd sits outside git with exactly
+		// one direct child repo, the advisor gets the same "check under <repo>/"
+		// guardrail the primary system prompt renders — appended after user
+		// watchdog files so user rules stay first.
+		const advisorActiveRepoContext = await resolveActiveRepoContext(cwd);
+		if (advisorActiveRepoContext) {
+			advisorWatchdogBlocks.push(formatActiveRepoWatchdogPrompt(advisorActiveRepoContext));
+		}
+		if (advisorWatchdogBlocks.length > 0) {
+			advisorWatchdogPrompt = advisorWatchdogBlocks.join("\n\n");
 		}
 		// Owned only when this session created the manager; subagents receive a
 		// parent's manager via `options.mcpManager` and MUST NOT disconnect it.

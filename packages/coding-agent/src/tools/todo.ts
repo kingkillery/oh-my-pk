@@ -17,6 +17,7 @@ import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
 import { framedBlock, renderStatusLine, renderTreeList } from "../tui";
+import { resolveToCwd } from "./path-utils";
 import { formatErrorDetail, PREVIEW_LIMITS } from "./render-utils";
 
 // =============================================================================
@@ -143,8 +144,10 @@ export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
 
 /**
  * Resolve the target path for `/todo export|import [path]`: strips surrounding
- * quotes, defaults to `todos.md`, appends `todos.md` to directory-style args,
- * and resolves relative paths against the session cwd.
+ * quotes, defaults to `TODO.md`, appends `TODO.md` to directory-style args,
+ * and resolves relative paths against the session cwd. Internal-scheme paths
+ * (`artifact://`, `local://`, ...) are rejected — they are protocol handles,
+ * not filesystem targets.
  *
  * (Restores an export whose callers landed in ee661cb41 without a definition.)
  */
@@ -156,11 +159,11 @@ export function resolveTodoMarkdownPath(rawArgs: string, cwd: string): string {
 	) {
 		target = target.slice(1, -1).trim();
 	}
-	if (!target) target = "todos.md";
+	if (!target) target = "TODO.md";
 	if (target.endsWith("/") || target.endsWith(nodePath.sep)) {
-		target = nodePath.join(target, "todos.md");
+		target = nodePath.join(target, "TODO.md");
 	}
-	return nodePath.isAbsolute(target) ? target : nodePath.resolve(cwd, target);
+	return resolveToCwd(target, cwd);
 }
 
 export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {

@@ -135,6 +135,8 @@ export async function getEnabledPlugins(cwd: string, opts: { home?: string } = {
 			manifest,
 			enabledFeatures,
 			enabled: true,
+			// All installs/links live under the per-user plugins root.
+			scope: "user",
 		});
 	}
 
