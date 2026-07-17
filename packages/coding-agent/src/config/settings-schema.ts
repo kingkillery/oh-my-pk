@@ -4606,13 +4606,6 @@ export const SETTINGS_SCHEMA = {
 			description: "Providers that web_search should never use, even as fallbacks",
 		},
 	},
-	// Per-provider cap on concurrent in-flight requests, e.g. { "anthropic": 2 }.
-	// Empty means no client-side cap. Values are validated positive numbers.
-	"providers.maxInFlightRequests": {
-		type: "record",
-		default: {} as Record<string, number>,
-	},
-
 	"providers.antigravityEndpoint": {
 		type: "enum",
 		values: ["auto", "production", "sandbox"] as const,
