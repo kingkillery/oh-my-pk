@@ -63,8 +63,11 @@ import type {
 	ToolChoice,
 } from "./types";
 import { AssistantMessageEventStream } from "./utils/event-stream";
+import { resolveProviderMaxInFlightRequests, streamWithProviderSlot } from "./utils/provider-inflight";
 import { withRequestDebugFetch } from "./utils/request-debug";
 import { withGeminiThinkingLoopGuard } from "./utils/thinking-loop";
+
+export { __providerInFlightForTesting, configureProviderMaxInFlightRequests } from "./utils/provider-inflight";
 
 function isGoogleVertexAuthenticatedModel(model: Model<Api>): boolean {
 	return (
@@ -383,6 +386,24 @@ export function streamSimple<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+	// Per-provider in-flight limit (per-request option or the process-global
+	// configuration): gate the entire dispatch — including auth-retry key
+	// resolution — behind a cross-process slot. Unlimited providers keep the
+	// direct path and its stream object untouched.
+	const limit = resolveProviderMaxInFlightRequests(model.provider, options?.maxInFlightRequests);
+	if (limit === undefined) {
+		return streamSimpleUnlimited(model, context, options);
+	}
+	return streamWithProviderSlot(model.provider, limit, options?.signal, () =>
+		streamSimpleUnlimited(model, context, options),
+	);
+}
+
+function streamSimpleUnlimited<TApi extends Api>(
+	model: Model<TApi>,
+	context: Context,
+	options?: SimpleStreamOptions,
+): AssistantMessageEventStream {
 	const requestOptions = withRequestDebugFetch(options);
 	const apiKeyResolver = isApiKeyResolver(requestOptions?.apiKey) ? requestOptions.apiKey : undefined;
 	if (apiKeyResolver) {
@@ -402,7 +423,9 @@ export function streamSimple<TApi extends Api>(
 			};
 
 			try {
-				const inner = streamSimple(model, context, { ...requestOptions, apiKey });
+				// Recurse into the unlimited entry point: the public wrapper already
+				// holds the provider slot for this request (when one applies).
+				const inner = streamSimpleUnlimited(model, context, { ...requestOptions, apiKey });
 				for await (const event of inner) {
 					if (!emittedReplayUnsafeEvent && event.type === "start") {
 						bufferedEvents.push(event);
