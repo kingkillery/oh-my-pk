@@ -81,11 +81,45 @@ function detectLiveReflowingMarkdown(text: string): boolean {
 /**
  * Frames for the streaming "thinking" pulse rendered in place of a hidden
  * thinking block while the model is still producing it. A single fixed-width
- * glyph that rises ▁▃▄▃ so the indicator animates without shifting the line.
+ * glyph: an expanding/shrinking ✻ pulse so the indicator animates without
+ * shifting the line.
  * Advanced every {@link THINKING_DOTS_FRAME_MS}.
  */
-const THINKING_DOTS_FRAMES = ["▁", "▃", "▄", "▃"] as const;
+const THINKING_DOTS_FRAMES = ["✻", "✢", "·", "✢"] as const;
 const THINKING_DOTS_FRAME_MS = 320;
+
+/** Ceiling for the displayed thinking token speed; provider usage arrives in bursts. */
+const THINKING_SPEED_MAX_TOKS_PER_SEC = 200;
+
+// Module-wide window: successive components in one turn share the baseline, and
+// a new turn (or test) resets it explicitly.
+let thinkingSpeedSample: { time: number; tokens: number } | undefined;
+let thinkingSpeedRate: number | undefined;
+
+/** Reset the thinking token-speed window (new turn / tests). */
+export function resetThinkingSpeedTracker(): void {
+	thinkingSpeedSample = undefined;
+	thinkingSpeedRate = undefined;
+}
+
+/**
+ * Slide the speed window with the latest provider output-token total. The
+ * first sample only seeds the baseline (no rate yet); each later sample
+ * derives tokens-per-second over the elapsed window, clamped to the ceiling.
+ */
+function trackThinkingSpeed(tokens: number): number | undefined {
+	const now = performance.now();
+	if (thinkingSpeedSample === undefined) {
+		thinkingSpeedSample = { time: now, tokens };
+		return undefined;
+	}
+	const deltaMs = now - thinkingSpeedSample.time;
+	if (deltaMs <= 0) return thinkingSpeedRate;
+	const rate = ((tokens - thinkingSpeedSample.tokens) / deltaMs) * 1000;
+	thinkingSpeedSample = { time: now, tokens };
+	thinkingSpeedRate = Math.min(THINKING_SPEED_MAX_TOKS_PER_SEC, Math.max(0, rate));
+	return thinkingSpeedRate;
+}
 
 /**
  * Component that renders a complete assistant message
@@ -135,6 +169,12 @@ export class AssistantMessageComponent extends Container {
 	/** Live "thinking" pulse shown in place of a hidden thinking block while it
 	 *  streams; undefined when not animating. Driven by {@link #thinkingDotsTimer}. */
 	#thinkingDots: Text | undefined;
+	/** Latest provider output-token total while the thinking pulse is live. */
+	#thinkingTokens: number | undefined;
+	/** Windowed token speed derived from provider usage (see trackThinkingSpeed). */
+	#thinkingRate: number | undefined;
+	/** Whether THIS block has fed the session gauge before — its first feed only seeds. */
+	#thinkingFedTracker = false;
 	#thinkingDotsTimer: NodeJS.Timeout | undefined;
 	#thinkingDotsFrame = 0;
 
@@ -225,8 +265,14 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	#thinkingDotsLabel(): string {
-		const glyph = THINKING_DOTS_FRAMES[this.#thinkingDotsFrame % THINKING_DOTS_FRAMES.length] ?? "…";
-		return theme.fg("thinkingText", glyph);
+		const glyph = THINKING_DOTS_FRAMES[this.#thinkingDotsFrame % THINKING_DOTS_FRAMES.length] ?? "✻";
+		// Layout: "<glyph> <total> · <rate> toks/s"; totals/rate appear once provider usage lands.
+		let label: string = glyph;
+		if (this.#thinkingTokens !== undefined) {
+			label += ` ${this.#thinkingTokens}`;
+			if (this.#thinkingRate !== undefined) label += ` · ${this.#thinkingRate.toFixed(1)} toks/s`;
+		}
+		return theme.fg("thinkingText", label);
 	}
 
 	#startThinkingAnimation(): void {
@@ -519,6 +565,28 @@ export class AssistantMessageComponent extends Container {
 		this.#hasLiveReflowingMarkdown = message.content.some(
 			content => content.type === "text" && detectLiveReflowingMarkdown(content.text),
 		);
+
+		// Windowed thinking token speed from provider usage: update ahead of the
+		// fast-path return so the live pulse label tracks every stream tick.
+		if (this.#shouldAnimateThinking(message)) {
+			const output = message.usage?.output ?? 0;
+			if (output > 0) {
+				const rate = trackThinkingSpeed(output);
+				// A fresh block must not borrow the session gauge's prior-turn rate —
+				// only its own positive-delta observation lights the badge — and a
+				// zero rate (streaming lull) drops the badge rather than lingering
+				// on "0.0 toks/s"; only the bare pulse remains.
+				if (this.#thinkingFedTracker && rate !== undefined && rate > 0) {
+					this.#thinkingTokens = output;
+					this.#thinkingRate = rate;
+				} else {
+					this.#thinkingTokens = undefined;
+					this.#thinkingRate = undefined;
+				}
+				this.#thinkingFedTracker = true;
+				this.#thinkingDots?.setText(this.#thinkingDotsLabel());
+			}
+		}
 
 		// Fast path: reuse Markdown children when shape is stable during streaming
 		if (this.#tryFastPathUpdate(message)) return;
