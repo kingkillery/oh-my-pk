@@ -157,14 +157,17 @@ export function resolveServiceTier(
 
 /**
  * True when the (possibly scoped) tier should be sent as OpenAI's
- * `service_tier` request field for the given provider. Non-OpenAI
- * providers, unsupported tiers (`"auto"`, `"default"`), and scope
- * mismatches all return false.
+ * `service_tier` request field for the given provider. Fireworks realizes
+ * only the Priority serving path; other non-OpenAI providers, unsupported
+ * tiers (`"auto"`, `"default"`), and scope mismatches all return false.
  */
 export function shouldSendServiceTier(
 	serviceTier: ServiceTier | null | undefined,
 	provider: Provider | undefined,
 ): boolean {
+	if (provider === "fireworks") {
+		return resolveServiceTier(serviceTier, provider) === "priority";
+	}
 	if (provider !== "openai" && provider !== "openai-codex") return false;
 	const resolved = resolveServiceTier(serviceTier, provider);
 	return resolved === "flex" || resolved === "scale" || resolved === "priority";
