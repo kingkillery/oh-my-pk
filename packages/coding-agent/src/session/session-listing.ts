@@ -662,12 +662,22 @@ function sessionMatchesResumeArg(session: SessionInfo, sessionArg: string): bool
 	return fileSessionId.startsWith(normalizedArg);
 }
 
+export interface ResolveResumableSessionOptions {
+	/**
+	 * Also match across every cwd bucket when the scoped lookup misses, even
+	 * with an explicit sessionDir (which otherwise stays strictly scoped).
+	 */
+	allowGlobalFallback?: boolean;
+	storage?: SessionStorage;
+}
+
 export async function resolveResumableSession(
 	sessionArg: string,
 	cwd: string,
 	sessionDir?: string,
-	storage: SessionStorage = new FileSessionStorage(),
+	options: ResolveResumableSessionOptions = {},
 ): Promise<ResolvedSessionMatch | undefined> {
+	const storage = options.storage ?? new FileSessionStorage();
 	const localSessionDir = sessionDir ?? computeDefaultSessionDir(cwd, storage);
 	const localSessions = await listSessions(localSessionDir, storage);
 	const localMatch = localSessions.find(session => sessionMatchesResumeArg(session, sessionArg));
@@ -675,7 +685,7 @@ export async function resolveResumableSession(
 		return { session: localMatch, scope: "local" };
 	}
 
-	if (sessionDir) {
+	if (sessionDir && !options.allowGlobalFallback) {
 		return undefined;
 	}
 
