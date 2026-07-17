@@ -13,7 +13,7 @@ import type { AssistantThinkingRenderer } from "../../extensibility/extensions/t
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { resolveAbortLabel, shouldRenderAbortReason } from "../../session/messages";
 import { getPreviewLines, resolveImageOptions, TRUNCATE_LENGTHS } from "../../tools/render-utils";
-import { canonicalizeMessage } from "../../utils/thinking-display";
+import { canonicalizeMessage, formatThinkingForDisplay } from "../../utils/thinking-display";
 import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cache-invalidation-marker";
 
 /**
@@ -144,6 +144,7 @@ export class AssistantMessageComponent extends Container {
 		private readonly onImageUpdate?: () => void,
 		private readonly thinkingRenderers: readonly AssistantThinkingRenderer[] = [],
 		private readonly imageBudget?: ImageBudget,
+		private readonly proseOnlyThinking = false,
 	) {
 		super();
 		this.#transcriptBlockFinalized = message !== undefined;
@@ -215,6 +216,12 @@ export class AssistantMessageComponent extends Container {
 			else if (content.type === "thinking" && canonicalizeMessage(content.thinking)) tail = "thinking";
 		}
 		return tail === "thinking";
+	}
+
+	/** Thinking text as displayed: canonicalized, with code fences elided in prose-only mode. */
+	#displayThinking(raw: string): string {
+		const canon = canonicalizeMessage(raw);
+		return canon ? formatThinkingForDisplay(canon, this.proseOnlyThinking) : canon;
 	}
 
 	#thinkingDotsLabel(): string {
@@ -436,11 +443,11 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "toolCall") return false;
 		}
 		if (this.#toolImagesByCallId.size > 0) return false;
-		if (message.stopReason === "aborted" && shouldRenderAbortReason(message.errorMessage)) return false;
+		if (message.stopReason === "aborted" && shouldRenderAbortReason(message)) return false;
 		if (message.stopReason === "error" && !this.#errorPinned) return false;
 		if (
 			message.errorMessage &&
-			shouldRenderAbortReason(message.errorMessage) &&
+			shouldRenderAbortReason(message) &&
 			message.stopReason !== "aborted" &&
 			message.stopReason !== "error"
 		)
@@ -451,7 +458,7 @@ export class AssistantMessageComponent extends Container {
 			for (const item of this.#fastPathItems) {
 				if (item.blockType === "thinking") {
 					const content = message.content[item.contentIndex];
-					if (content?.type === "thinking" && canonicalizeMessage(content.thinking) !== item.lastText)
+					if (content?.type === "thinking" && this.#displayThinking(content.thinking) !== item.lastText)
 						return false;
 				}
 			}
@@ -485,7 +492,7 @@ export class AssistantMessageComponent extends Container {
 			if (item.blockType === "text" && content.type === "text") {
 				newText = content.text.trim();
 			} else if (item.blockType === "thinking" && content.type === "thinking") {
-				newText = canonicalizeMessage(content.thinking);
+				newText = this.#displayThinking(content.thinking);
 			} else {
 				this.#fastPathKey = undefined;
 				this.#fastPathItems = undefined;
@@ -544,7 +551,7 @@ export class AssistantMessageComponent extends Container {
 				this.#contentContainer.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
 			} else if (content.type === "thinking" && canonicalizeMessage(content.thinking)) {
-				const thinkingText = canonicalizeMessage(content.thinking);
+				const thinkingText = this.#displayThinking(content.thinking);
 				if (this.hideThinkingBlock) {
 					thinkingIndex += 1;
 					continue;
@@ -589,8 +596,8 @@ export class AssistantMessageComponent extends Container {
 		// But only if there are no tool calls (tool execution components will show the error)
 		const hasToolCalls = message.content.some(c => c.type === "toolCall");
 		if (!hasToolCalls) {
-			if (message.stopReason === "aborted" && shouldRenderAbortReason(message.errorMessage)) {
-				const abortMessage = resolveAbortLabel(message.errorMessage);
+			if (message.stopReason === "aborted" && shouldRenderAbortReason(message)) {
+				const abortMessage = resolveAbortLabel(message);
 				if (hasVisibleContent) {
 					this.#contentContainer.addChild(new Spacer(1));
 				} else {
@@ -603,7 +610,7 @@ export class AssistantMessageComponent extends Container {
 		}
 		if (
 			message.errorMessage &&
-			shouldRenderAbortReason(message.errorMessage) &&
+			shouldRenderAbortReason(message) &&
 			message.stopReason !== "aborted" &&
 			message.stopReason !== "error"
 		) {

@@ -150,6 +150,12 @@ export interface InteractiveModeContext {
 	loopLimit?: LoopLimitRuntime;
 	planModePlanFilePath?: string;
 	hideThinkingBlock: boolean;
+	/** Thinking-block visibility actually applied when rendering assistant messages. */
+	readonly effectiveHideThinkingBlock: boolean;
+	/** Render thinking blocks prose-only (code fences elided; see utils/thinking-display). */
+	readonly proseOnlyThinking: boolean;
+	/** Set once the initial transcript render has run; gates extension-triggered chat rebuilds (#1955). */
+	initialChatRendered: boolean;
 	pendingImages: ImageContent[];
 	pendingImageLinks: (string | undefined)[];
 	compactionQueuedMessages: CompactionQueuedMessage[];
@@ -173,6 +179,10 @@ export interface InteractiveModeContext {
 	unsubscribe?: () => void;
 	onInputCallback?: (input: SubmittedUserInput) => void;
 	optimisticUserMessageSignature: string | undefined;
+	/** Drop the optimistic-user-message latch once the authoritative message event confirmed it. */
+	clearOptimisticUserMessage(): void;
+	/** Replace the rendered optimistic user message with the authoritative message that superseded it. */
+	replaceOptimisticUserMessage(message: AgentMessage): void;
 	locallySubmittedUserSignatures: Set<string>;
 	lastSigintTime: number;
 	lastEscapeTime: number;

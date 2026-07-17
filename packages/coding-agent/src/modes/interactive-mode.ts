@@ -449,6 +449,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
 	todoPhases: TodoPhase[] = [];
 	hideThinkingBlock = false;
+	proseOnlyThinking = false;
+	initialChatRendered = false;
+	/** Components rendered for the pending optimistic user message, so a superseding authoritative message can replace them. */
+	#optimisticUserComponents: Component[] | undefined;
 	pendingImages: ImageContent[] = [];
 	pendingImageLinks: (string | undefined)[] = [];
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
@@ -684,6 +688,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#mountComposer(this.editor);
 
 		this.hideThinkingBlock = settings.get("hideThinkingBlock");
+		this.proseOnlyThinking = settings.get("thinking.proseOnly");
 
 		const hookCommands: SlashCommand[] = (
 			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
@@ -1370,7 +1375,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			const imageCount = submission.images?.length ?? 0;
 			this.optimisticUserMessageSignature = `${submission.text}\u0000${imageCount}`;
 			this.#pendingSubmissionDispose = this.recordLocalSubmission(submission.text, imageCount);
-			this.addMessageToChat(
+			this.#optimisticUserComponents = this.addMessageToChat(
 				{
 					role: "user",
 					content: [{ type: "text", text: submission.text }, ...(submission.images ?? [])],
@@ -1771,7 +1776,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.optimisticUserMessageSignature) return;
 		const submission = this.#pendingSubmittedInput;
 		if (!submission || submission.cancelled || submission.customType) return;
-		this.addMessageToChat(
+		this.#optimisticUserComponents = this.addMessageToChat(
 			{
 				role: "user",
 				content: [{ type: "text", text: submission.text }, ...(submission.images ?? [])],
@@ -1780,6 +1785,27 @@ export class InteractiveMode implements InteractiveModeContext {
 			},
 			{ imageLinks: submission.imageLinks },
 		);
+	}
+
+	/** Thinking-block visibility actually applied when rendering assistant messages. */
+	get effectiveHideThinkingBlock(): boolean {
+		return this.hideThinkingBlock;
+	}
+
+	clearOptimisticUserMessage(): void {
+		this.optimisticUserMessageSignature = undefined;
+		this.#optimisticUserComponents = undefined;
+	}
+
+	replaceOptimisticUserMessage(message: AgentMessage): void {
+		this.optimisticUserMessageSignature = undefined;
+		if (this.#optimisticUserComponents) {
+			for (const component of this.#optimisticUserComponents) {
+				this.chatContainer.removeChild(component);
+			}
+			this.#optimisticUserComponents = undefined;
+		}
+		this.addMessageToChat(message);
 	}
 
 	#formatTodoLine(todo: TodoItem, prefix: string, matched: boolean): string {
@@ -2275,7 +2301,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		const planFilePath = options?.planFilePath ?? (await this.#getPlanFilePath());
 		const previousTools = this.session.getActiveToolNames();
 		const hasResolveTool = this.session.getToolByName("resolve") !== undefined;
-		const planTools = hasResolveTool ? [...previousTools, "resolve"] : previousTools;
+		// Plan-mode authoring needs `write`/`edit` even when tool discovery hid
+		// them from the initial active set (issue #3165). Only genuine builtins
+		// are force-activated — a same-named custom tool never auto-activates.
+		const planAuthoringTools = ["write", "edit"].filter(
+			name => this.session.getToolByName(name) !== undefined && this.session.isBuiltInTool(name),
+		);
+		const planTools = [...previousTools, ...(hasResolveTool ? ["resolve"] : []), ...planAuthoringTools];
 		const uniquePlanTools = [...new Set(planTools)];
 
 		this.#planModePreviousTools = previousTools;

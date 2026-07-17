@@ -34,6 +34,7 @@ import {
 	type CompactionSummaryMessage,
 	countTokens,
 	resolveTelemetry,
+	type StreamFn,
 	ThinkingLevel,
 	type ToolChoiceDirective,
 } from "@pk-nerdsaver-ai/pi-agent-core";
@@ -101,6 +102,7 @@ import {
 	resolveServiceTier,
 	streamSimple,
 } from "@pk-nerdsaver-ai/pi-ai";
+import * as AIError from "@pk-nerdsaver-ai/pi-ai/error";
 import { isContextOverflow, isUsageLimit as isUsageLimitError } from "@pk-nerdsaver-ai/pi-ai/error";
 import { stripToolDescriptions } from "@pk-nerdsaver-ai/pi-ai/utils/schema";
 import { THINKING_LOOP_ERROR_MARKER } from "@pk-nerdsaver-ai/pi-ai/utils/thinking-loop";
@@ -350,7 +352,7 @@ import { formatSessionDumpText } from "./session-dump-format";
 import type { BranchSummaryEntry, CompactionEntry, NewSessionOptions } from "./session-entries";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
 import { formatSessionHistoryMarkdown } from "./session-history-format";
-import type { SessionManager } from "./session-manager";
+import { cleanupEmptyMoveSession, type SessionManager } from "./session-manager";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { classifyUnexpectedStop, isUnexpectedStopCandidate } from "./unexpected-stop-classifier";
@@ -380,7 +382,14 @@ export type AgentSessionEvent =
 			/** True when compaction was skipped for a benign reason (no model, no candidates, nothing to compact). */
 			skipped?: boolean;
 	  }
-	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
+	| {
+			type: "auto_retry_start";
+			attempt: number;
+			maxAttempts: number;
+			delayMs: number;
+			errorMessage: string;
+			errorId?: number;
+	  }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "retry_fallback_applied"; from: string; to: string; role: string }
 	| { type: "retry_fallback_succeeded"; model: string; role: string }
@@ -512,6 +521,11 @@ export interface AgentSessionConfig {
 	modelRegistry: ModelRegistry;
 	/** Tool registry for LSP and settings */
 	toolRegistry?: Map<string, AgentTool>;
+	/** Names of the built-in tools in the registry (provenance, not the active set); lets
+	 *  mode transitions force-activate genuine builtins hidden by tool discovery (#3165). */
+	builtInToolNames?: Iterable<string>;
+	/** Stream function for the advisor's own agent; defaults to the standard stream. */
+	advisorStreamFn?: StreamFn;
 	/** Current session pre-LLM message transform pipeline */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	/** Provider payload hook used by the active session request path */
@@ -1232,6 +1246,12 @@ export class AgentSession {
 	/** Resolves once the (dynamically imported) manager has been constructed. Set only when the
 	 *  feature is enabled; dispose and session re-binds await it so a slow start cannot leak the poller. */
 	#screenpipeManagerReady?: Promise<void>;
+	/** Session file minted empty by /move; cleaned up at dispose if it never gained real messages. */
+	#movedFromEmptySessionFile?: string;
+	/** Provenance set of built-in tool names in the registry (see AgentSessionConfig.builtInToolNames). */
+	#builtInToolNames: ReadonlySet<string> = new Set();
+	/** Custom stream function for the advisor agent, when the host injects one. */
+	#advisorStreamFn?: StreamFn;
 	/** The advisor's own agent, retained so `/dump advisor` can serialize its transcript. Undefined when no advisor is active. */
 	#advisorAgent?: Agent;
 	#advisorReadOnlyTools?: AgentTool[];
@@ -1663,6 +1683,8 @@ export class AgentSession {
 		this.#pruneToolDescriptions = config.pruneToolDescriptions === true;
 		this.#validateRetryFallbackChains();
 		this.#toolRegistry = config.toolRegistry ?? new Map();
+		this.#builtInToolNames = new Set(config.builtInToolNames ?? []);
+		this.#advisorStreamFn = config.advisorStreamFn;
 		this.#requestedToolNames = config.requestedToolNames;
 		this.#moaLaneLabels = config.moa?.laneLabels ?? [];
 		this.#transformContext = config.transformContext ?? (messages => messages);
@@ -2068,6 +2090,17 @@ export class AgentSession {
 			appendOnlyContext,
 			sessionId: advisorSessionId,
 			getApiKey: requestModel => this.#modelRegistry.resolver(requestModel, advisorSessionId),
+			// Provider-options parity with the primary agent (issue #3639): the
+			// SDK's stream wrapper, the session's provider hooks (already wrapped
+			// to feed the RawSseDebugBuffer), and the shared transport/fast-mode
+			// state map all reach advisor requests too. The cache key pins
+			// consecutive advisor turns to the advisor's own cache shard.
+			streamFn: this.#advisorStreamFn,
+			promptCacheKey: advisorSessionId,
+			providerSessionState: this.agent.providerSessionState,
+			onPayload: this.#onPayload,
+			onResponse: this.#onResponse,
+			onSseEvent: this.#onSseEvent,
 			intentTracing: false,
 			telemetry: advisorTelemetry,
 		});
@@ -4480,6 +4513,17 @@ export class AgentSession {
 		// memories, and that round-trips through the worker we are about to
 		// hard-kill (issue #3031).
 		await shutdownMnemopiEmbedClient();
+		// Drop a /move-minted session file that never gained real messages.
+		// Best-effort: guarded inside cleanupEmptyMoveSession (owning marker +
+		// still-current + still-empty), and never throws out of dispose.
+		if (this.#movedFromEmptySessionFile) {
+			try {
+				await cleanupEmptyMoveSession(this.sessionManager, this.#movedFromEmptySessionFile);
+			} catch (error) {
+				logger.warn("Failed to clean up empty move session", { error: String(error) });
+			}
+			this.#movedFromEmptySessionFile = undefined;
+		}
 		this.#disconnectFromAgent();
 		if (this.#unsubscribeAppendOnly) {
 			this.#unsubscribeAppendOnly();
@@ -4520,6 +4564,42 @@ export class AgentSession {
 			sessionId: this.sessionId,
 			closedProviderSessions,
 		};
+	}
+
+	/**
+	 * Record that the current session file was minted empty by /move (see
+	 * {@link SessionManager.createEmptySessionFile}). If it never gains a real
+	 * user/assistant message, dispose deletes it via
+	 * {@link cleanupEmptyMoveSession} so abandoned move targets don't litter
+	 * the session directory.
+	 */
+	markMovedFromEmptySessionFile(sessionFile: string): void {
+		this.#movedFromEmptySessionFile = sessionFile;
+	}
+
+	/**
+	 * Serialize the current LLM request — model, system prompt, messages, and
+	 * tool definitions exactly as the agent state holds them — to a JSON file
+	 * in the OS tmp dir and return its path. Debug sidecar for /copy; the file
+	 * persists on disk and may contain raw context/secrets.
+	 */
+	async dumpLlmRequestToTmpDir(): Promise<string> {
+		const state = this.agent.state;
+		const request = {
+			sessionId: this.sessionId,
+			timestamp: new Date().toISOString(),
+			model: state.model ? { provider: state.model.provider, id: state.model.id, api: state.model.api } : undefined,
+			systemPrompt: state.systemPrompt,
+			messages: state.messages,
+			tools: state.tools.map(tool => ({
+				name: tool.name,
+				description: tool.description,
+				parameters: tool.parameters,
+			})),
+		};
+		const filePath = path.join(os.tmpdir(), `omp-llm-request-${this.sessionId}-${Date.now()}.json`);
+		await fs.promises.writeFile(filePath, JSON.stringify(request, null, "\t"), { flag: "wx" });
+		return filePath;
 	}
 
 	// =========================================================================
@@ -5764,6 +5844,11 @@ export class AgentSession {
 
 	getPlanReferencePath(): string {
 		return this.#planReferencePath;
+	}
+
+	/** Whether `name` is a genuine built-in registry tool (provenance, not the active set). */
+	isBuiltInTool(name: string): boolean {
+		return this.#builtInToolNames.has(name);
 	}
 
 	get clientBridge(): ClientBridge | undefined {
@@ -7802,6 +7887,9 @@ export class AgentSession {
 				this.settings.set("defaultThinkingLevel", AUTO_THINKING);
 			}
 			if (!wasAuto || this.#thinkingLevel !== provisional) {
+				// Persist the configured selector alongside the resolved level so a
+				// resumed session restores "auto" rather than pinning the snapshot.
+				this.sessionManager.appendThinkingLevelChange(provisional, AUTO_THINKING);
 				this.#emit({ type: "thinking_level_changed", thinkingLevel: provisional, configured: AUTO_THINKING });
 			}
 			return;
@@ -10922,6 +11010,9 @@ export class AgentSession {
 		if (this.#isMalformedFunctionCallError(message)) return true;
 		if (this.#hasReplayUnsafeToolOutput(message)) return false;
 		if (message.errorMessage.includes(THINKING_LOOP_ERROR_MARKER)) return true;
+		// Thinking-loop detection also arrives as a classified errorId with no
+		// transient wording in the message — retry on the flag itself.
+		if (AIError.is(message.errorId, AIError.Flag.ThinkingLoop)) return true;
 		if (this.#isStaleOpenAIResponsesReplayError(message)) return true;
 
 		const err = message.errorMessage;
@@ -11447,6 +11538,7 @@ export class AgentSession {
 			maxAttempts: retrySettings.maxRetries,
 			delayMs,
 			errorMessage,
+			errorId: message.errorId,
 		});
 
 		// Remove error message from agent state (keep in session for history)

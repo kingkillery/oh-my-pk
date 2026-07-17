@@ -1201,6 +1201,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"thinking.proseOnly": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Prose-Only Thinking",
+			description: "Render thinking blocks with code fences elided, keeping only the prose",
+		},
+	},
+
 	"model.loopGuard.enabled": {
 		type: "boolean",
 		default: true,

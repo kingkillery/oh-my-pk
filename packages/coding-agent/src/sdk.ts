@@ -2844,6 +2844,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				: undefined,
 			modelRegistry,
 			toolRegistry,
+			builtInToolNames,
 			transformContext,
 			onPayload,
 			onResponse,
