@@ -627,7 +627,34 @@ export class InputController {
 
 			// Empty submit while streaming with queued messages: abort the active
 			// turn and let the post-unwind drain deliver the agent-core queue.
+			// An image-only draft (pasted screenshot, no caption) is real input,
+			// not an abort request — queue it as a steer instead.
 			if (!text && this.ctx.session.isStreaming) {
+				if (this.ctx.editor.pendingImages.length > 0) {
+					const images = [...this.ctx.editor.pendingImages];
+					const imageLinks =
+						this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
+					this.ctx.editor.setText("");
+					this.ctx.editor.imageLinks = undefined;
+					this.ctx.editor.pendingImages = [];
+					this.ctx.editor.pendingImageLinks = [];
+					try {
+						await this.ctx.withLocalSubmission(
+							text,
+							() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+							{ imageCount: images.length },
+						);
+					} catch (error) {
+						this.ctx.editor.setText(text);
+						this.ctx.editor.pendingImages = images;
+						this.ctx.editor.pendingImageLinks = imageLinks ?? images.map(() => undefined);
+						this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
+						this.ctx.showError(error instanceof Error ? error.message : String(error));
+					}
+					this.ctx.updatePendingMessagesDisplay();
+					this.ctx.ui.requestRender();
+					return;
+				}
 				if (this.ctx.session.queuedMessageCount > 0) {
 					const aborting = this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 					await aborting;

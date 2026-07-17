@@ -91,6 +91,16 @@ const THINKING_DOTS_FRAME_MS = 320;
 /** Ceiling for the displayed thinking token speed; provider usage arrives in bursts. */
 const THINKING_SPEED_MAX_TOKS_PER_SEC = 200;
 
+/**
+ * Visibility source for a thinking block. Reveal-controller display blocks carry
+ * the already-formatted text (e.g. an ascii ellipsis standing in for pure-code
+ * thinking) plus the original in `rawThinking` — canonicalizing the formatted
+ * stand-in alone would wrongly hide it.
+ */
+function thinkingSource(content: { thinking: string }): string {
+	return (content as { rawThinking?: string }).rawThinking ?? content.thinking;
+}
+
 // Module-wide window: successive components in one turn share the baseline, and
 // a new turn (or test) resets it explicitly.
 let thinkingSpeedSample: { time: number; tokens: number } | undefined;
@@ -253,14 +263,16 @@ export class AssistantMessageComponent extends Container {
 		for (const content of message.content) {
 			if (content.type === "toolCall") return false;
 			if (content.type === "text" && canonicalizeMessage(content.text)) tail = "text";
-			else if (content.type === "thinking" && canonicalizeMessage(content.thinking)) tail = "thinking";
+			else if (content.type === "thinking" && canonicalizeMessage(thinkingSource(content))) tail = "thinking";
 		}
 		return tail === "thinking";
 	}
 
-	/** Thinking text as displayed: canonicalized, with code fences elided in prose-only mode. */
-	#displayThinking(raw: string): string {
-		const canon = canonicalizeMessage(raw);
+	/** Thinking text as displayed: canonicalized, with code fences elided in prose-only mode.
+	 *  Reveal-controller display blocks (marked by `rawThinking`) are already formatted. */
+	#displayThinking(content: { thinking: string }): string {
+		if ((content as { rawThinking?: string }).rawThinking !== undefined) return content.thinking;
+		const canon = canonicalizeMessage(content.thinking);
 		return canon ? formatThinkingForDisplay(canon, this.proseOnlyThinking) : canon;
 	}
 
@@ -470,7 +482,7 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "text") {
 				parts.push(canonicalizeMessage(content.text) ? "T1" : "T0");
 			} else if (content.type === "thinking") {
-				const canon = canonicalizeMessage(content.thinking);
+				const canon = canonicalizeMessage(thinkingSource(content));
 				if (!canon) parts.push("K0");
 				else if (this.hideThinkingBlock) parts.push("KH");
 				else parts.push("KV");
@@ -504,8 +516,7 @@ export class AssistantMessageComponent extends Container {
 			for (const item of this.#fastPathItems) {
 				if (item.blockType === "thinking") {
 					const content = message.content[item.contentIndex];
-					if (content?.type === "thinking" && this.#displayThinking(content.thinking) !== item.lastText)
-						return false;
+					if (content?.type === "thinking" && this.#displayThinking(content) !== item.lastText) return false;
 				}
 			}
 		}
@@ -538,7 +549,7 @@ export class AssistantMessageComponent extends Container {
 			if (item.blockType === "text" && content.type === "text") {
 				newText = content.text.trim();
 			} else if (item.blockType === "thinking" && content.type === "thinking") {
-				newText = this.#displayThinking(content.thinking);
+				newText = this.#displayThinking(content);
 			} else {
 				this.#fastPathKey = undefined;
 				this.#fastPathItems = undefined;
@@ -604,7 +615,7 @@ export class AssistantMessageComponent extends Container {
 		const hasVisibleContent = message.content.some(
 			c =>
 				(c.type === "text" && canonicalizeMessage(c.text)) ||
-				(!this.hideThinkingBlock && c.type === "thinking" && canonicalizeMessage(c.thinking)),
+				(!this.hideThinkingBlock && c.type === "thinking" && canonicalizeMessage(thinkingSource(c))),
 		);
 
 		// Render content in order
@@ -618,8 +629,8 @@ export class AssistantMessageComponent extends Container {
 				md.transientRenderCache = this.#lastUpdateTransient;
 				this.#contentContainer.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
-			} else if (content.type === "thinking" && canonicalizeMessage(content.thinking)) {
-				const thinkingText = this.#displayThinking(content.thinking);
+			} else if (content.type === "thinking" && canonicalizeMessage(thinkingSource(content))) {
+				const thinkingText = this.#displayThinking(content);
 				if (this.hideThinkingBlock) {
 					thinkingIndex += 1;
 					continue;
@@ -631,7 +642,7 @@ export class AssistantMessageComponent extends Container {
 					.some(
 						c =>
 							(c.type === "text" && canonicalizeMessage(c.text)) ||
-							(c.type === "thinking" && canonicalizeMessage(c.thinking)),
+							(c.type === "thinking" && canonicalizeMessage(thinkingSource(c))),
 					);
 
 				// Thinking traces in thinkingText color, italic
