@@ -6,6 +6,7 @@ import { $env, isEnoent, logger, sanitizeText } from "@pk-nerdsaver-ai/pi-utils"
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
+import { extractImagePathFromText } from "../../modes/components/custom-editor";
 import { renderSegmentTrack } from "../../modes/components/segment-track";
 import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-title-download-progress";
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
@@ -21,7 +22,12 @@ import { isLowSignalTitleInput } from "../../tiny/text";
 import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
-import { copyToClipboard, readImageFromClipboard, readTextFromClipboard } from "../../utils/clipboard";
+import {
+	copyToClipboard,
+	readImageFromClipboard,
+	readMacFileUrlsFromClipboard,
+	readTextFromClipboard,
+} from "../../utils/clipboard";
 import { EnhancedPasteController } from "../../utils/enhanced-paste";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
@@ -131,7 +137,13 @@ export class InputController {
 		private clipboard: {
 			readImage: typeof readImageFromClipboard;
 			readText: typeof readTextFromClipboard;
-		} = { readImage: readImageFromClipboard, readText: readTextFromClipboard },
+			/** Darwin-only AppleScript bridge for `public.file-url` pasteboard items (#3506). */
+			readMacFileUrls?: typeof readMacFileUrlsFromClipboard;
+		} = {
+			readImage: readImageFromClipboard,
+			readText: readTextFromClipboard,
+			readMacFileUrls: readMacFileUrlsFromClipboard,
+		},
 	) {}
 
 	#enhancedPaste?: EnhancedPasteController;
@@ -1461,6 +1473,27 @@ export class InputController {
 		try {
 			const image = await this.clipboard.readImage();
 			if (!image) {
+				// macOS Finder `Cmd+C` puts only a `public.file-url` pasteboard
+				// item: arboard reports ContentNotAvailable and `pbpaste` (the
+				// Darwin readText backing) surfaces nothing. The AppleScript
+				// bridge reaches the file-URL representation — attach every
+				// image-shaped entry instead of bailing or pasting text (#3506).
+				if (this.clipboard.readMacFileUrls) {
+					try {
+						const urls = await this.clipboard.readMacFileUrls();
+						const imagePaths = urls
+							.map(url => extractImagePathFromText(url))
+							.filter((imagePath): imagePath is string => imagePath !== undefined);
+						if (imagePaths.length > 0) {
+							for (const imagePath of imagePaths) {
+								await this.handleImagePathPaste(imagePath);
+							}
+							return true;
+						}
+					} catch {
+						// Bridge unavailable — fall through to the text paths.
+					}
+				}
 				// Smart paste (#1628): no image on the clipboard — fall back to
 				// pasting its text so the same chord covers both payload kinds.
 				// Hosts that pre-empt the terminal's own paste (VS Code's
@@ -1470,6 +1503,14 @@ export class InputController {
 				if (!text) {
 					this.ctx.showStatus("Clipboard is empty");
 					return false;
+				}
+				// Clipboard text that IS an explicit image file path (Finder copy,
+				// `file://` URL, macOS screenshot name with unescaped spaces) must
+				// attach the image, never land in the editor as literal text (#3506).
+				const imagePath = extractImagePathFromText(text);
+				if (imagePath !== undefined) {
+					await this.handleImagePathPaste(imagePath);
+					return true;
 				}
 				// Route to the focused component when it accepts pastes (modal
 				// Input prompts), matching the enhanced-paste text path (#2127).
