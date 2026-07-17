@@ -463,9 +463,15 @@ export class SessionManager {
 		if (this.#writerGuard && !this.#writerGuard.released) {
 			throw new Error("Cannot change writable sessions before releasing the prior writer guard");
 		}
+		// Share ownership the process already holds: reopening a live session in
+		// the same process (reload-style tests, hub rename/archive maintenance,
+		// collab replication loading a peer's file) is legitimate — the guard
+		// exists to fence *other* processes, and the underlying lock stays held
+		// until every in-process handle releases.
 		this.#writerGuard = SessionWriterGuard.acquire({
 			sessionId: this.#sessionId,
 			transcriptPath: this.#sessionFile,
+			sameProcessOwner: "share",
 		});
 	}
 
