@@ -261,7 +261,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		if (names.length === 2) return "Execute Python or JavaScript code in an in-process eval backend";
 		return `Execute ${names.slice(0, -1).join(", ")}, or ${names[names.length - 1]} code in a persistent eval backend`;
 	}
-	readonly loadMode = "discoverable";
+	readonly loadMode = "essential";
 	readonly label = "Eval";
 	get description(): string {
 		if (!this.session) return getEvalToolDescription();
