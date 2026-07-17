@@ -68,6 +68,14 @@ const RESERVED_TOP_LEVEL_WORDS = new Map<string, string>([
 		"extensions",
 		`\`${APP_NAME} extensions\` is not a management command. Use \`${APP_NAME} plugin list\` / \`${APP_NAME} plugin install\`, or run \`${APP_NAME} launch extensions\` if you meant to send "extensions" as a prompt.`,
 	],
+	[
+		"list",
+		`\`omp list\` is not a top-level command. Use \`omp plugin list\` to list installed plugins, or run \`omp launch list\` if you meant to send "list" as a prompt.`,
+	],
+	[
+		"remove",
+		`\`omp remove\` is not a top-level command. Use \`omp plugin uninstall\` to remove a plugin, or run \`omp launch remove\` if you meant to send "remove" as a prompt.`,
+	],
 ]);
 
 export function reservedTopLevelWordMessage(first: string | undefined, argc = 1): string | undefined {
