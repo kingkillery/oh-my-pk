@@ -1747,7 +1747,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 									activateAll = false;
 									liveSession.enableMCPDiscovery();
 									if (!toolRegistry.has("search_tool_bm25")) {
-										const searchTool: Tool | null = SearchToolBm25Tool.createIf(toolSession, {
+										const searchTool: Tool | null = SearchToolBm25Tool.create(toolSession, {
 											toolProfile: options.toolProfile ?? toolSession.toolProfile,
 										});
 										if (searchTool) {
@@ -1969,7 +1969,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				const semanticSpawnDiagnostics = validateSpawnSelectorsSemantic({
 					selectors: [...requiredSelectors],
 					resolveStatus: selector => {
-						const resolved = resolveModelRoleValue(selector, modelRegistry.getAvailable() as Model[], {
+						const resolved = resolveModelRoleValue(selector, modelRegistry.getAll() as Model[], {
 							settings,
 							matchPreferences: getModelMatchPreferences(settings),
 							modelRegistry,
@@ -1986,11 +1986,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						};
 					},
 				});
-				if (semanticSpawnDiagnostics.length > 0) {
-					const message = semanticSpawnDiagnostics
+				// Missing credentials are not a startup failure: the selector names a
+				// real model, so the session proceeds and the default-model fallback
+				// (with its allow-list filters) decides what actually runs.
+				const fatalSpawnDiagnostics = semanticSpawnDiagnostics.filter(
+					diagnostic => diagnostic.code !== "unauthenticated-selector",
+				);
+				if (fatalSpawnDiagnostics.length > 0) {
+					const message = fatalSpawnDiagnostics
 						.map(diagnostic => `- [${diagnostic.code}] ${diagnostic.selector ?? ""} ${diagnostic.message}`.trim())
 						.join("\n");
 					throw new Error(`Spawn selector semantic validation failed:\n${message}`);
+				}
+				for (const diagnostic of semanticSpawnDiagnostics) {
+					logger.warn("Spawn selector resolved without configured auth", { selector: diagnostic.selector });
 				}
 			}
 		}
@@ -2193,7 +2202,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			countToolsForAutoDiscovery(toolRegistry.keys()),
 		);
 		if (effectiveDiscoveryMode !== "off" && !toolRegistry.has("search_tool_bm25")) {
-			const searchTool: Tool | null = SearchToolBm25Tool.createIf(toolSession, {
+			const searchTool: Tool | null = SearchToolBm25Tool.create(toolSession, {
 				toolProfile: options.toolProfile ?? toolSession.toolProfile,
 			});
 			if (searchTool) {

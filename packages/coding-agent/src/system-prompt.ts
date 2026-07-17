@@ -699,8 +699,11 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	// Request-only skill discovery: never inject skill descriptions into the system
 	// prompt. Keep context space for the active task; the model searches descriptions
 	// on demand via `read skill://?q=<keywords>` and then reads the chosen skill.
-	const skillsLazy = visibleSkills.length > 0;
-	const filteredSkills: typeof visibleSkills = [];
+	// A custom base prompt replaces the built-in discovery guidance, so its skills
+	// render inline instead of deferring to the lazy notice.
+	const inlineSkills = Boolean(resolvedCustomPrompt);
+	const skillsLazy = !inlineSkills && visibleSkills.length > 0;
+	const filteredSkills: typeof visibleSkills = inlineSkills ? visibleSkills : [];
 
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [
 		resolvedCustomPrompt,
