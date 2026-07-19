@@ -3201,10 +3201,9 @@ export function convertAnthropicMessages(
 								thinking: block.thinking.toWellFormed(),
 								signature: "",
 							});
-<<<<<<< HEAD
 						} else if (
-							preferredDialect(model.id) === "anthropic" &&
-							preferredDialect(msg.model) === "anthropic"
+							(preferredDialect(model.id) === "anthropic" && preferredDialect(msg.model) === "anthropic") ||
+							(isSameModel && block.thinkingSignature === undefined)
 						) {
 							// Claude reasons via a native structured block and has no inline
 							// thinking-text idiom, so a wholly-unsigned Claude turn replayed
@@ -3213,13 +3212,10 @@ export function convertAnthropicMessages(
 							// re-wrapping would hand the model its own tags back as content.
 							// Cross-model demotion below keeps the target-idiom wrapper, and
 							// mixed signed+unsigned turns are handled in the branch above.
-=======
-						} else if (isSameModel && block.thinkingSignature === undefined) {
 							// Same-model replay of thinking this provider itself finalized
-							// unsigned (literal thinking-tag unwrap): the model emitted the
-							// reasoning as tagged text, so replay the plain text instead of
-							// re-wrapping it in the demotion envelope.
->>>>>>> origin/main
+							// unsigned (literal thinking-tag unwrap) is covered too: the model
+							// emitted the reasoning as tagged text, so replay the plain text
+							// instead of re-wrapping it in the demotion envelope.
 							blocks.push({
 								type: "text",
 								text: block.thinking.toWellFormed(),

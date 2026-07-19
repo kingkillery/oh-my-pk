@@ -13,10 +13,7 @@ import { $env, $pickenv, extractHttpStatusFromError } from "@pk-nerdsaver-ai/pi-
 import { getCustomApi } from "./api-registry";
 import { AUTH_RETRY_STEPS, isApiKeyResolver, resolveRetryKey } from "./auth-retry";
 import * as AIError from "./error";
-<<<<<<< HEAD
-=======
 import { isUsageLimitOutcome } from "./error/rate-limit";
->>>>>>> origin/main
 import { ProviderHttpError } from "./errors";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
@@ -74,13 +71,9 @@ import type {
 import { AssistantMessageEventStream } from "./utils/event-stream";
 import { resolveProviderMaxInFlightRequests, streamWithProviderSlot } from "./utils/provider-inflight";
 import { withRequestDebugFetch } from "./utils/request-debug";
-<<<<<<< HEAD
-import { isLoopGuardedModel, withGeminiThinkingLoopGuard } from "./utils/thinking-loop";
-=======
-import { THINKING_LOOP_ERROR_MARKER, withGeminiThinkingLoopGuard } from "./utils/thinking-loop";
+import { isLoopGuardedModel, THINKING_LOOP_ERROR_MARKER, withGeminiThinkingLoopGuard } from "./utils/thinking-loop";
 
 export { __providerInFlightForTesting, configureProviderMaxInFlightRequests } from "./utils/provider-inflight";
->>>>>>> origin/main
 
 function isGoogleVertexAuthenticatedModel(model: Model<Api>): boolean {
 	return (

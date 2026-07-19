@@ -93,10 +93,6 @@ const ALL = [
 	xaiOauthProvider,
 	gitlabDuoProvider,
 	gitLabDuoWorkflowProvider,
-<<<<<<< HEAD
-	devinProvider,
-=======
->>>>>>> origin/main
 	alibabaCodingPlanProvider,
 	aimlApiProvider,
 	zhipuCodingPlanProvider,
