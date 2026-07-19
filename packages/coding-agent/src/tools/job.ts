@@ -119,6 +119,8 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		const ownerFilter = ownerId ? { ownerId } : undefined;
 
 		// `list` is a read-only snapshot mode. Replaces the legacy `jobs://` URL.
+		// It never acknowledges deliveries: a snapshot is not a wait, so pending
+		// completions must still reach their owner sessions.
 		if (params.list) {
 			if (params.cancel?.length || params.poll?.length) {
 				throw new ToolError("`list` cannot be combined with `poll` or `cancel`.");
@@ -321,9 +323,12 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		});
 		const jobResults = this.#snapshotJobs(uniqueJobs);
 
+<<<<<<< HEAD
 		// The read-only `list` snapshot must not acknowledge (and thereby suppress)
 		// a delivery that merely completed between enqueue and snapshot — only the
 		// poll/wait path, where the agent actually consumes results, acknowledges.
+=======
+>>>>>>> origin/main
 		if (options?.acknowledge !== false) {
 			manager.acknowledgeDeliveries(jobResults.filter(j => j.status !== "running").map(j => j.id));
 		}

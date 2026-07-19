@@ -126,8 +126,12 @@ describe("assignment-contract lossless V2", () => {
 		const parsed = parseAssignmentContract(JSON.parse(JSON.stringify(contract)));
 
 		expect(parsed.ok).toBe(true);
+<<<<<<< HEAD
 		if (!parsed.ok) return;
 		if (parsed.contract.version !== ASSIGNMENT_CONTRACT_V2_VERSION) throw new Error("expected a V2 contract");
+=======
+		if (!parsed.ok || parsed.contract.version !== ASSIGNMENT_CONTRACT_V2_VERSION) return;
+>>>>>>> origin/main
 		expect(parsed.contract).toEqual(contract);
 		expect(Object.isFrozen(parsed.contract.evidencePolicy)).toBe(true);
 		expect(Object.isFrozen(parsed.contract.priorBlockedRoutes)).toBe(true);
@@ -183,7 +187,9 @@ describe("assignment-contract lossless V2", () => {
 	});
 
 	it("round trips traceable V2 result claims and evidence", () => {
-		const input = v2ResultEnvelope();
+		// The envelope helper is deliberately loose (Record) so rejection tests can
+		// corrupt fields; view it through the V2 shape for the equality assertions.
+		const input = v2ResultEnvelope() as Partial<AssignmentResultV2>;
 		const parsed = parseAssignmentResult(JSON.parse(JSON.stringify(input)));
 
 		expect(parsed.ok).toBe(true);

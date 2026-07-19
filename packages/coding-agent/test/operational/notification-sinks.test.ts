@@ -35,7 +35,7 @@ describe("notification sinks", () => {
 	});
 
 	it("appends JSONL records to a file sink", async () => {
-		tempDir = await TempDir.create("notify-file-");
+		tempDir = await TempDir.create("@notify-file-");
 		const filePath = path.join(tempDir.path(), "out", "notify.jsonl");
 		const sink = createFileNotificationSink({ filePath });
 		await sink.notify(sampleNotification("a"));
@@ -68,7 +68,7 @@ describe("notification sinks", () => {
 		expect(calls[0]?.url).toBe("https://example.test/hook");
 		expect(calls[0]?.init.method).toBe("POST");
 		expect(
-			String(calls[0]?.init.headers && (calls[0]?.init.headers as Record<string, string>)["content-type"]),
+			String(calls[0]?.init.headers && (calls[0]!.init.headers as Record<string, string>)["content-type"]),
 		).toContain("application/json");
 	});
 

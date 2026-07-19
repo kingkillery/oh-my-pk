@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { getOAuthProviders } from "@pk-nerdsaver-ai/pi-ai/oauth";
 import * as requestDebug from "@pk-nerdsaver-ai/pi-ai/utils/request-debug";
 import { type AutocompleteItem, Markdown, Spacer } from "@pk-nerdsaver-ai/pi-tui";
-import { $which, APP_NAME, setProjectDir } from "@pk-nerdsaver-ai/pi-utils";
+import { $which, APP_NAME, getProjectDir, setProjectDir } from "@pk-nerdsaver-ai/pi-utils";
 import { COLLAB_GUEST_ALLOWED_COMMANDS, CollabGuestLink } from "../collab/guest";
 import { CollabHost } from "../collab/host";
 import { writeCollabLinkFile } from "../collab/link-file";
@@ -26,11 +26,16 @@ import {
 	getPluginsCacheDir,
 	MarketplaceManager,
 } from "../extensibility/plugins/marketplace";
+import { renderHelp } from "../help/recommendations";
+import { IrcIpc } from "../irc/ipc";
 import { resolveMemoryBackend } from "../memory-backend";
 import { getMarkdownTheme, theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession, FreshSessionResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
+import { HubError, HubService, parseHubLink } from "../session/hub-service";
+import { resolveResumableSession } from "../session/session-listing";
+import { SessionManager } from "../session/session-manager";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { clearSpeechHardStop, enableSpeechHardStop, isSpeechHardStopped } from "../tts/speech-hard-stop";
 import { vocalizer } from "../tts/vocalizer";
@@ -326,6 +331,57 @@ function parseShakeMode(args: string): ShakeMode | { error: string } {
 	return { error: `Unknown /shake mode "${verb}". Use elide or images.` };
 }
 
+function resolveMoveCompletionBase(base: string, cwd: string): string {
+	if (!base) return cwd;
+	if (base === "~" || base === "~/") return os.homedir();
+	if (base.startsWith("~/")) return path.join(os.homedir(), base.slice(2));
+	if (path.isAbsolute(base)) return base;
+	return path.resolve(cwd, base);
+}
+
+async function listMoveDirectoryCompletions(
+	dir: string,
+	displayPrefix: string,
+	query: string,
+): Promise<AutocompleteItem[] | null> {
+	let names: string[];
+	try {
+		names = await fs.readdir(dir);
+	} catch {
+		return null;
+	}
+	const includeHidden = query.startsWith(".");
+	const lower = query.toLowerCase();
+	const items: AutocompleteItem[] = [];
+	for (const name of names.sort((a, b) => a.localeCompare(b))) {
+		if (!includeHidden && name.startsWith(".")) continue;
+		if (query && !name.toLowerCase().startsWith(lower)) continue;
+		try {
+			if (!(await fs.stat(path.join(dir, name))).isDirectory()) continue;
+		} catch {
+			continue;
+		}
+		items.push({ value: `${displayPrefix}${name}/`, label: `${name}/` });
+	}
+	return items.length > 0 ? items : null;
+}
+
+/** Directory completions for `/move <path>`: `~`, absolute, and cwd-relative prefixes. */
+function completeMoveDirectories(argumentPrefix: string): Promise<AutocompleteItem[] | null> {
+	const cwd = getProjectDir();
+	const normalized = argumentPrefix.replace(/\\/g, "/");
+	const slashIdx = normalized.lastIndexOf("/");
+	const base = slashIdx === -1 ? "" : normalized.slice(0, slashIdx + 1);
+	const query = slashIdx === -1 ? normalized : normalized.slice(slashIdx + 1);
+	// A bare navigation token (".", "..", "~") means "list that directory's
+	// children", not "filter the current listing by it".
+	if (query === "." || query === ".." || query === "~") {
+		const asBase = `${normalized}/`;
+		return listMoveDirectoryCompletions(resolveMoveCompletionBase(asBase, cwd), asBase, "");
+	}
+	return listMoveDirectoryCompletions(resolveMoveCompletionBase(base, cwd), base, query);
+}
+
 const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "pk-speak",
@@ -399,6 +455,20 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		description: "Open settings menu",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.showSettingsSelector();
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "help",
+		description: "Recommend built-in features and show related documentation",
+		inlineHint: "[question]",
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			await runtime.output(renderHelp(command.args));
+			return commandConsumed();
+		},
+		handleTui: (command, runtime) => {
+			runtime.ctx.showStatus(renderHelp(command.args));
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -574,6 +644,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		description: "Toggle priority service tier (OpenAI service_tier=priority, Anthropic speed=fast)",
 		acpDescription: "Toggle fast mode",
 		acpInputHint: "[on|off|status]",
+		getTuiAutocompleteDescription: runtime => `Fast: ${formatFastModeStatus(runtime.ctx.session)}`,
 		subcommands: [
 			{ name: "on", description: "Enable fast mode" },
 			{ name: "off", description: "Disable fast mode" },
@@ -811,16 +882,30 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				await runtime.output("No messages to dump yet.");
 				return commandConsumed();
 			}
+<<<<<<< HEAD
+=======
+			// Best-effort LLM request JSON sidecar; the transcript is still
+			// useful without it, so failures just omit the pointer.
+>>>>>>> origin/main
 			let sidecarPath: string | undefined;
 			try {
 				sidecarPath = await runtime.session.dumpLlmRequestToTmpDir();
 			} catch {
+<<<<<<< HEAD
 				// Best-effort: proceed without the sidecar.
 			}
 			const doc = sidecarPath
 				? `${text}\n\n---\nLLM request JSON: ${sidecarPath}\nThis file persists on disk and may contain raw context/secrets — treat accordingly.`
 				: text;
 			await runtime.output(doc);
+=======
+				sidecarPath = undefined;
+			}
+			const output = sidecarPath
+				? `${text}\n\n---\nLLM request JSON: ${sidecarPath}\nThis file persists on disk and may contain raw context/secrets — treat accordingly.`
+				: text;
+			await runtime.output(output);
+>>>>>>> origin/main
 			return commandConsumed();
 		},
 		handleTui: (_command, runtime) => {
@@ -850,6 +935,130 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (_command, runtime) => {
 			await runtime.ctx.handleShareCommand();
 			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "hub",
+		description: "Cloud-durable encrypted session handoff between your devices",
+		inlineHint:
+			"[provision [name] | login | publish | new | list | resume <link> | devices <hubId> | revoke [hubId]]",
+		allowArgs: true,
+		persistInHistory: false,
+		handle: async (command, runtime) => {
+			const { verb, rest } = parseSubcommand(command.args.trim());
+			const hub = new HubService({
+				baseUrl: runtime.settings.get("hub.relayUrl"),
+				token: runtime.settings.get("hub.token") || undefined,
+				deviceId: runtime.settings.get("hub.deviceId") || undefined,
+			});
+			try {
+				if (verb === "provision") {
+					const adminToken = Bun.env.OMP_HUB_ADMIN_TOKEN;
+					if (!adminToken)
+						return usage("Set OMP_HUB_ADMIN_TOKEN, then run /hub provision [device group name].", runtime);
+					const result = await hub.provision(adminToken, rest || os.userInfo().username);
+					runtime.settings.set("hub.token", result.token);
+					await runtime.output(
+						`Hub access provisioned for ${result.displayName}. Copy hub.token to each device you want to hand off between.`,
+					);
+					return commandConsumed();
+				}
+				if (verb === "login") {
+					const token = Bun.env.OMP_HUB_TOKEN;
+					if (!token)
+						return usage(
+							"Set OMP_HUB_TOKEN locally, then run /hub login. Do not paste tokens into session history.",
+							runtime,
+						);
+					runtime.settings.set("hub.token", token);
+					await runtime.output("Hub access token saved for this device.");
+					return commandConsumed();
+				}
+				if (verb === "publish" || verb === "new") {
+					const activeId = runtime.settings.get("hub.activeId");
+					const activeKey = runtime.settings.get("hub.activeKey");
+					const target =
+						rest.length > 0
+							? parseHubLink(rest)
+							: verb === "publish" && activeId && activeKey
+								? { hubId: activeId, keyText: activeKey }
+								: undefined;
+					const result = await hub.publish(runtime.sessionManager, {
+						hubId: target?.hubId,
+						keyText: target?.keyText,
+					});
+					runtime.settings.set("hub.deviceId", result.deviceId);
+					runtime.settings.set("hub.activeId", result.hubId);
+					runtime.settings.set("hub.activeKey", result.keyText);
+					await runtime.output(
+						[
+							`Hub link: ${result.url}`,
+							`Saved ${result.devices} device snapshot(s). Paste the full link into /hub resume on the next device.`,
+						].join("\n"),
+					);
+					return commandConsumed();
+				}
+				if (verb === "list") {
+					const entries = await hub.list();
+					if (entries.length === 0) {
+						await runtime.output("No hub sessions are available to this account.");
+						return commandConsumed();
+					}
+					await runtime.output(
+						entries
+							.map(
+								entry =>
+									`${entry.hubId}  ${entry.title}  ${entry.devices} devices  ${entry.entryCount} entries`,
+							)
+							.join("\n"),
+					);
+					return commandConsumed();
+				}
+				if (verb === "resume") {
+					if (!rest) return usage("Usage: /hub resume <full hub link>", runtime);
+					const link = parseHubLink(rest);
+					const result = await hub.resume(link);
+					const imported = await SessionManager.forkFromSnapshot(result.snapshot, runtime.cwd);
+					const sessionPath = imported.getSessionFile();
+					if (!sessionPath) throw new HubError("hub import did not create a local session file");
+					await imported.close();
+					if (!(await runtime.session.switchSession(sessionPath))) return commandConsumed();
+					if (result.snapshot.leafId === null) runtime.sessionManager.resetLeaf();
+					else runtime.sessionManager.branch(result.snapshot.leafId);
+					runtime.settings.set("hub.activeId", link.hubId);
+					runtime.settings.set("hub.activeKey", link.keyText);
+					await runtime.output(
+						`Resumed ${result.entryCount} hub entries from ${result.devices.length} device(s) into a local session fork.`,
+					);
+					return commandConsumed();
+				}
+				if (verb === "devices") {
+					const hubId = rest.startsWith("http") ? parseHubLink(rest).hubId : rest;
+					if (!hubId) return usage("Usage: /hub devices <hubId or hub link>", runtime);
+					const devices = await hub.devices(hubId);
+					await runtime.output(
+						devices.length > 0
+							? devices
+									.map(device => `${device.deviceId}  ${device.displayName}  ${device.entryCount} entries`)
+									.join("\n")
+							: "(no device snapshots yet)",
+					);
+					return commandConsumed();
+				}
+				if (verb === "revoke") {
+					const hubId = rest.startsWith("http")
+						? parseHubLink(rest).hubId
+						: rest || runtime.settings.get("hub.activeId");
+					if (!hubId) return usage("Usage: /hub revoke <hubId or hub link>", runtime);
+					await hub.revoke(hubId);
+					await runtime.output(`Removed this device's snapshot from hub ${hubId}.`);
+					return commandConsumed();
+				}
+				return usage("Usage: /hub [provision|login|publish|new|list|resume|devices|revoke] [args]", runtime);
+			} catch (err) {
+				const message = err instanceof HubError ? err.message : `hub error: ${errorMessage(err)}`;
+				return usage(message, runtime);
+			}
 		},
 	},
 	{
@@ -1626,7 +1835,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		subcommands: COMPACT_MODES.map(mode => ({
 			name: mode.name,
 			description: mode.description,
-			usage: mode.rejectsFocus ? undefined : "[focus]",
+			usage: "[focus]",
 		})),
 		acpInputHint: `[${COMPACT_MODES.map(mode => mode.name).join("|")}] [focus]`,
 		allowArgs: true,
@@ -1736,9 +1945,28 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "resume",
 		description: "Resume a different session",
-		handleTui: (_command, runtime) => {
-			runtime.ctx.showSessionSelector();
+		inlineHint: "[session-id]",
+		allowArgs: true,
+		handleTui: async (command, runtime) => {
+			const sessionArg = command.text.slice(`/${command.name}`.length).trim();
 			runtime.ctx.editor.setText("");
+			if (!sessionArg) {
+				runtime.ctx.showSessionSelector();
+				return;
+			}
+			// Direct resume by id/filename prefix: the active session directory is
+			// checked first, then every cwd bucket (matching `omp --resume <id>`).
+			const match = await resolveResumableSession(
+				sessionArg,
+				runtime.ctx.sessionManager.getCwd(),
+				runtime.ctx.sessionManager.getSessionDir(),
+				{ allowGlobalFallback: true },
+			);
+			if (!match) {
+				runtime.ctx.showError(`Session "${sessionArg}" not found`);
+				return;
+			}
+			await runtime.ctx.handleResumeSession(match.session.path);
 		},
 	},
 	{
@@ -1937,6 +2165,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Move the current session file",
 		inlineHint: "<path>",
 		allowArgs: true,
+		getArgumentCompletions: completeMoveDirectories,
 		handle: async (command, runtime) => {
 			if (runtime.session.isStreaming) return usage("Cannot move while streaming.", runtime);
 			if (!command.args) return usage("Usage: /move <path>", runtime);
@@ -1963,14 +2192,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
-			const targetPath = command.args;
-			if (!targetPath) {
-				runtime.ctx.showError("Usage: /move <path>");
-				runtime.ctx.editor.setText("");
-				return;
-			}
 			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleMoveCommand(targetPath);
+			await runtime.ctx.handleMoveCommand(command.args.trim() || undefined);
 		},
 	},
 	{
@@ -2601,6 +2824,36 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "irc",
+		description: "Enable, disable, or inspect local IRC discovery",
+		subcommands: [
+			{ name: "on", description: "Enable IRC" },
+			{ name: "off", description: "Disable IRC" },
+			{ name: "status", description: "Show IRC status" },
+		],
+		inlineHint: "[on|off|status]",
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const action = command.args.trim().toLowerCase() || "status";
+			const ipc = IrcIpc.global();
+			if (action === "on") {
+				await ipc.setEnabled(true);
+				await runtime.output("IRC enabled.");
+				return commandConsumed();
+			}
+			if (action === "off") {
+				await ipc.setEnabled(false);
+				await runtime.output("IRC disabled for this process.");
+				return commandConsumed();
+			}
+			if (action === "status") {
+				await runtime.output(ipc.enabled ? "IRC is on." : "IRC is off.");
+				return commandConsumed();
+			}
+			return usage("Usage: /irc [on|off|status]", runtime);
+		},
+	},
+	{
 		name: "quit",
 		description: "Quit the application",
 		handleTui: shutdownHandlerTui,
@@ -2689,6 +2942,9 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
 		description: command.description,
 		subcommands: command.subcommands,
 		inlineHint: command.inlineHint,
+		persistInHistory: command.persistInHistory,
+		getTuiAutocompleteDescription: command.getTuiAutocompleteDescription,
+		getArgumentCompletions: command.getArgumentCompletions,
 	}),
 );
 
@@ -2698,14 +2954,14 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
  */
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<
 	BuiltinSlashCommand & {
-		getArgumentCompletions?: (prefix: string) => AutocompleteItem[] | null;
+		getArgumentCompletions?: (prefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
 		getInlineHint?: (argumentText: string) => string | null;
 	}
 > = BUILTIN_SLASH_COMMAND_DEFS.map(cmd => {
 	if (cmd.subcommands) {
 		return {
 			...cmd,
-			getArgumentCompletions: buildArgumentCompletions(cmd.subcommands),
+			getArgumentCompletions: cmd.getArgumentCompletions ?? buildArgumentCompletions(cmd.subcommands),
 			getInlineHint: buildSubcommandInlineHint(cmd.subcommands),
 		};
 	}
@@ -2724,6 +2980,12 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<
  * ACP dispatcher requires `handle` and skips TUI-only entries.
  */
 export const BUILTIN_SLASH_COMMANDS_INTERNAL: ReadonlyArray<SlashCommandSpec> = BUILTIN_SLASH_COMMAND_REGISTRY;
+/** Whether editor prompt history may persist this builtin invocation. */
+export function shouldPersistBuiltinSlashCommand(text: string): boolean {
+	const parsed = parseSlashCommand(text);
+	if (!parsed) return true;
+	return BUILTIN_SLASH_COMMAND_LOOKUP.get(parsed.name)?.persistInHistory !== false;
+}
 
 /**
  * Execute a builtin slash command in the interactive TUI.

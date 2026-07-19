@@ -21,6 +21,7 @@ const DIALECT_DEFINITIONS: Record<Dialect, DialectDefinition> = {
 	deepseek: deepseekDefinition,
 	minimax: minimaxDefinition,
 	harmony: harmonyDefinition,
+	pi: piDefinition,
 	qwen3: qwen3Definition,
 	gemini: geminiDefinition,
 	gemma: gemmaDefinition,

@@ -8,6 +8,7 @@ import type {
 	ChatTargetIdentity,
 	MessagingServiceOptions,
 	PrepareDraftInput,
+	PreparedDispatch,
 	SendApproval,
 	SendApprovalRequest,
 	SendOutcome,
@@ -143,7 +144,11 @@ export class MessagingService {
 		if (!approvalMatches(approval, approvalRequest, this.#clock.now()))
 			return { status: "not_sent", reason: "approval_mismatch" };
 
+<<<<<<< HEAD
 		let prepared: Awaited<ReturnType<MessagingIxClient["prepareDispatch"]>>;
+=======
+		let prepared: PreparedDispatch;
+>>>>>>> origin/main
 		try {
 			prepared = await this.#ix.prepareDispatch(adapter, draft, signal);
 		} catch (error) {

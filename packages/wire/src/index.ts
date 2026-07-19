@@ -335,8 +335,18 @@ export type HostFrame =
 			t: "welcome";
 			proto: number;
 			header: SessionHeader;
+<<<<<<< HEAD
 			/** proto v1 only: the full transcript. proto v2 omits this and streams it via `snapshot-chunk`. */
 			entries?: SessionEntry[];
+=======
+			/**
+			 * Number of transcript entries that follow in the `snapshot-chunk`
+			 * train. The welcome itself never carries the transcript inline — a
+			 * multi-MB single-frame welcome spent the guest's first-welcome
+			 * timeout on the default relay (#3144).
+			 */
+			entryCount: number;
+>>>>>>> origin/main
 			state: SessionState;
 			agents: AgentSnapshot[];
 			readOnly?: boolean;
@@ -347,7 +357,11 @@ export type HostFrame =
 			 */
 			entryCount?: number;
 	  }
+<<<<<<< HEAD
 	/** proto v2: a fragment of the transcript snapshot streamed after `welcome`. */
+=======
+	/** Transcript snapshot train following a welcome; only the last chunk carries `final: true`. */
+>>>>>>> origin/main
 	| { t: "snapshot-chunk"; entries: SessionEntry[]; final: boolean }
 	| { t: "entry"; entry: SessionEntry }
 	| { t: "event"; event: AgentEvent }
@@ -396,11 +410,11 @@ export const ROOM_KEY_BYTES = 32;
  */
 export const WRITE_TOKEN_BYTES = 16;
 
-/** Default public relay; bare `<roomId>.<key>` links resolve against it. */
-export const DEFAULT_RELAY_URL = "wss://my.omp.sh";
+/** Default owned relay; bare `<roomId>.<key>` links resolve against it. */
+export const DEFAULT_RELAY_URL = "wss://collab.pkking.computer";
 
-/** Default share viewer/upload base; `/share` links resolve against `<base>/<id>#<key>`. */
-export const DEFAULT_SHARE_URL = "https://my.omp.sh/s";
+/** Default owned share viewer/upload base; `/share` links resolve against `<base>/<id>#<key>`. */
+export const DEFAULT_SHARE_URL = "https://collab.pkking.computer/s";
 
 export interface ParsedCollabLink {
 	/** wss://host[:port]/r/<roomId> — no query, no fragment. */
@@ -418,5 +432,10 @@ export interface ParsedCollabLink {
 /** Relay → host control message. */
 export type RelayControlToHost = { t: "peer-joined" | "peer-left"; peer: number };
 /** Relay → guest control message. */
-export type RelayControlToGuest = { t: "room-closed" };
+export type RelayControlToGuest =
+	| { t: "room-closed" }
+	/** Host socket dropped; the relay holds the room open for `graceMs` awaiting its return. */
+	| { t: "host-away"; graceMs: number }
+	/** The host reconnected within the grace window; the session resumes. */
+	| { t: "host-back" };
 export type RelayControlMessage = RelayControlToHost | RelayControlToGuest;

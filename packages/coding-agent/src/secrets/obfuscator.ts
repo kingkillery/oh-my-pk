@@ -192,12 +192,24 @@ export class SecretObfuscator {
 		if (!this.#hasAny || !text.includes("#")) return text;
 		return text.replace(PLACEHOLDER_RE, match => this.#deobfuscateMap.get(match) ?? match);
 	}
+<<<<<<< HEAD
 	/**
 	 * Recursively restore placeholders in every string within an arbitrary JSON
 	 * object (same JSON-walk exception documented for tool-call arguments).
 	 */
 	deobfuscateObject<T>(value: T): T {
 		if (!this.hasSecrets()) return value;
+=======
+
+	/**
+	 * Deep-walk arbitrary JSON-shaped data and {@link deobfuscate} every string
+	 * value (same traversal as {@link deobfuscateToolArguments}). Non-string
+	 * leaves pass through untouched; the input is returned as-is when nothing
+	 * changes.
+	 */
+	deobfuscateObject<T>(value: T): T {
+		if (!this.#hasAny) return value;
+>>>>>>> origin/main
 		return mapJsonStrings(value as JsonValue, s => this.deobfuscate(s)) as T;
 	}
 	/** Find the obfuscate index for a known secret value. */

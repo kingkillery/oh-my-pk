@@ -1711,6 +1711,7 @@ const streamAnthropicOnce = (
 				firstEventTimeoutMs !== undefined && firstEventTimeoutMs > 0 ? firstEventTimeoutMs : undefined;
 			const blocks = output.content as Block[];
 			const finalizeStreamBlock = (block: Block, contentIndex: number): void => {
+				delete (block as { [kStreamingBlockIndex]?: number })[kStreamingBlockIndex];
 				if (block.type === "text") {
 					stream.push({ type: "text_end", contentIndex, content: block.text, partial: output });
 				} else if (block.type === "thinking") {
@@ -1746,7 +1747,8 @@ const streamAnthropicOnce = (
 							};
 						}
 					}
-					clearStreamingPartialJson(block);
+					delete (block as { [kStreamingPartialJson]?: string })[kStreamingPartialJson];
+					delete (block as { [kStreamingLastParseLen]?: number })[kStreamingLastParseLen];
 					stream.push({ type: "toolcall_end", contentIndex, toolCall: block, partial: output });
 				}
 			};
@@ -3161,6 +3163,7 @@ export function convertAnthropicMessages(
 			params.push({ role: "user", content });
 		} else if (msg.role === "assistant") {
 			const blocks: ContentBlockParam[] = [];
+			const isSameModel = msg.provider === model.provider && msg.api === model.api && msg.model === model.id;
 			const hasSignedThinking = msg.content.some(
 				block =>
 					block.type === "thinking" && !!block.thinkingSignature && block.thinkingSignature.trim().length > 0,
@@ -3198,6 +3201,7 @@ export function convertAnthropicMessages(
 								thinking: block.thinking.toWellFormed(),
 								signature: "",
 							});
+<<<<<<< HEAD
 						} else if (
 							preferredDialect(model.id) === "anthropic" &&
 							preferredDialect(msg.model) === "anthropic"
@@ -3209,6 +3213,13 @@ export function convertAnthropicMessages(
 							// re-wrapping would hand the model its own tags back as content.
 							// Cross-model demotion below keeps the target-idiom wrapper, and
 							// mixed signed+unsigned turns are handled in the branch above.
+=======
+						} else if (isSameModel && block.thinkingSignature === undefined) {
+							// Same-model replay of thinking this provider itself finalized
+							// unsigned (literal thinking-tag unwrap): the model emitted the
+							// reasoning as tagged text, so replay the plain text instead of
+							// re-wrapping it in the demotion envelope.
+>>>>>>> origin/main
 							blocks.push({
 								type: "text",
 								text: block.thinking.toWellFormed(),

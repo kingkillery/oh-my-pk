@@ -26,6 +26,7 @@ import type { LspStartupServerInfo } from "../tools";
 import type { EventBus } from "../utils/event-bus";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
+import type { ComposerWorkMode } from "./components/composer";
 import type { CustomEditor } from "./components/custom-editor";
 import type { EvalExecutionComponent } from "./components/eval-execution";
 import type { HookEditorComponent } from "./components/hook-editor";
@@ -141,6 +142,7 @@ export interface InteractiveModeContext {
 	toolOutputExpanded: boolean;
 	todoExpanded: boolean;
 	planModeEnabled: boolean;
+	askModeEnabled: boolean;
 	goalModeEnabled: boolean;
 	goalModePaused: boolean;
 	loopModeEnabled: boolean;
@@ -148,6 +150,7 @@ export interface InteractiveModeContext {
 	loopLimit?: LoopLimitRuntime;
 	planModePlanFilePath?: string;
 	hideThinkingBlock: boolean;
+<<<<<<< HEAD
 	/** Effective thinking-block visibility applied to rendered/streamed assistant turns (derived from `hideThinkingBlock`). */
 	readonly effectiveHideThinkingBlock: boolean;
 	/** When true, thinking content is rendered as prose only (no structured/tool detail). */
@@ -156,6 +159,14 @@ export interface InteractiveModeContext {
 	initialChatRendered: boolean;
 	pendingImages: ImageContent[];
 	pendingImageLinks: (string | undefined)[];
+=======
+	/** Thinking-block visibility actually applied when rendering assistant messages. */
+	readonly effectiveHideThinkingBlock: boolean;
+	/** Render thinking blocks prose-only (code fences elided; see utils/thinking-display). */
+	readonly proseOnlyThinking: boolean;
+	/** Set once the initial transcript render has run; gates extension-triggered chat rebuilds (#1955). */
+	initialChatRendered: boolean;
+>>>>>>> origin/main
 	compactionQueuedMessages: CompactionQueuedMessage[];
 	pendingTools: Map<string, ToolExecutionHandle>;
 	pendingBashComponents: BashExecutionComponent[];
@@ -177,9 +188,15 @@ export interface InteractiveModeContext {
 	unsubscribe?: () => void;
 	onInputCallback?: (input: SubmittedUserInput) => void;
 	optimisticUserMessageSignature: string | undefined;
+<<<<<<< HEAD
 	/** Clear the optimistic user-message signature once the real message_start lands for it. */
 	clearOptimisticUserMessage(): void;
 	/** Replace a displayed optimistic user message with the authoritative one from `message_start`. */
+=======
+	/** Drop the optimistic-user-message latch once the authoritative message event confirmed it. */
+	clearOptimisticUserMessage(): void;
+	/** Replace the rendered optimistic user message with the authoritative message that superseded it. */
+>>>>>>> origin/main
 	replaceOptimisticUserMessage(message: AgentMessage): void;
 	locallySubmittedUserSignatures: Set<string>;
 	lastSigintTime: number;
@@ -282,6 +299,14 @@ export interface InteractiveModeContext {
 	extractAssistantText(message: AssistantMessage): string;
 	updateEditorTopBorder(): void;
 	updateEditorBorderColor(): void;
+	/** Optional composer-layout hook: hosts without the intent composer (and partial test harnesses) omit it. */
+	remountEditorComposer?(): void;
+	/**
+	 * Recompute the status-line running-subagents badge from the active
+	 * registry (the collab guest mirror while joined, the global registry
+	 * otherwise).
+	 */
+	syncRunningSubagentBadge(): void;
 	rebuildChatFromMessages(): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(): Promise<void>;
@@ -313,7 +338,7 @@ export interface InteractiveModeContext {
 	handleCompactCommand(customInstructions?: string, mode?: CompactMode): Promise<CompactionOutcome>;
 	handleHandoffCommand(customInstructions?: string): Promise<void>;
 	handleShakeCommand(mode: ShakeMode): Promise<void>;
-	handleMoveCommand(targetPath: string): Promise<void>;
+	handleMoveCommand(targetPath?: string): Promise<void>;
 	handleRenameCommand(title: string): Promise<void>;
 	handleMemoryCommand(text: string): Promise<void>;
 	handleSTTToggle(): Promise<void>;
@@ -370,6 +395,8 @@ export interface InteractiveModeContext {
 	handleBtwEscape(): boolean;
 	handleBtwBranchKey(): Promise<boolean>;
 	canBranchBtw(): boolean;
+	handleBtwCopyKey(): Promise<boolean>;
+	canCopyBtw(): boolean;
 	handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void>;
 	handleOmfgCommand(complaint: string): Promise<void>;
 	hasActiveOmfg(): boolean;
@@ -382,6 +409,16 @@ export interface InteractiveModeContext {
 	openExternalEditor(): void;
 	registerExtensionShortcuts(): void;
 	handlePlanModeCommand(initialPrompt?: string): Promise<void>;
+	// Intent-composer hooks are optional: hosts without the composer surface
+	// (and partial test harnesses) omit them, and callers degrade gracefully
+	// via optional chaining.
+	isIntentComposerEnabled?(): boolean;
+	getComposerWorkMode?(): ComposerWorkMode;
+	setComposerWorkMode?(mode: ComposerWorkMode): Promise<void>;
+	waitForComposerTransition?(): Promise<void>;
+	restoreComposerAskTools?(): Promise<void>;
+	disableComposerPlanMode?(): Promise<void>;
+	cycleComposerWorkMode?(): Promise<void>;
 	handleGoalModeCommand(rest?: string): Promise<void>;
 	handleGuidedGoalCommand(rest?: string): Promise<void>;
 	handleLoopCommand(args?: string): Promise<string | undefined>;

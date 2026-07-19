@@ -534,12 +534,23 @@ export class ContextOracle {
 	}
 
 	async #fileStamp(absolute: string): Promise<string> {
+<<<<<<< HEAD
 		// Fold a content hash into the stamp: mtime + size alone collide when a
 		// same-size rewrite lands within the filesystem's mtime resolution window,
 		// which would leave the shared summary cache serving stale content.
 		const [stat, content] = await Promise.all([fs.stat(absolute), fs.readFile(absolute)]);
 		const hash = createHash("sha1").update(content).digest("hex");
 		return `${absolute}:${stat.mtimeMs}:${stat.size}:${hash}`;
+=======
+		// mtime+size alone misses same-length rewrites within the filesystem's
+		// timestamp granularity (two writes in the same millisecond), serving a
+		// stale summary from the shared cache. A content digest closes that hole;
+		// the summary path reads the file anyway, so the extra read is cheap
+		// relative to the LSP/summary work a miss triggers.
+		const [stat, content] = await Promise.all([fs.stat(absolute), fs.readFile(absolute)]);
+		const digest = createHash("sha1").update(content).digest("hex");
+		return `${absolute}:${stat.mtimeMs}:${stat.size}:${digest}`;
+>>>>>>> origin/main
 	}
 
 	#resolve(filePath: string): string {

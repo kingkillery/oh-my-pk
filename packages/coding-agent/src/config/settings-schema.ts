@@ -1,6 +1,5 @@
 import { THINKING_EFFORTS } from "@pk-nerdsaver-ai/pi-ai";
 import { DEFAULT_SHARE_URL } from "@pk-nerdsaver-ai/pi-wire";
-import { SHAPE_VARIANT_NAMES } from "@pk-nerdsaver-ai/snapcompact";
 import { DEFAULT_RELAY_URL } from "../collab/protocol";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS, STT_MODEL_VALUES } from "../stt/models";
 import { AUTO_THINKING, getConfiguredThinkingLevelMetadata, getThinkingLevelMetadata } from "../thinking";
@@ -35,6 +34,7 @@ import {
 } from "../tts/models";
 import { EDIT_MODES } from "../utils/edit-mode";
 import { SEARCH_PROVIDER_OPTIONS, SEARCH_PROVIDER_PREFERENCES, type SearchProviderId } from "../web/search/types";
+import { SERVICE_TIER_INHERIT_OPTIONS, SERVICE_TIER_INHERIT_SETTING_VALUES } from "./service-tier";
 
 /** Unified settings schema - single source of truth for all settings.
  *
@@ -105,8 +105,13 @@ export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${stri
  * Ungrouped settings render first, before any section heading.
  */
 export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
+<<<<<<< HEAD
 	appearance: ["Theme", "Status Line", "Display", "Images"],
 	model: ["Thinking", "Sampling", "Prompt", "Agent Model Profiles", "Retry & Fallback", "Advisor", "Vision"],
+=======
+	appearance: ["Theme", "Composer", "Status Line", "Display", "Images"],
+	model: ["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Agent Model Profiles", "Vision"],
+>>>>>>> origin/main
 	interaction: [
 		"Input",
 		"Approvals",
@@ -121,8 +126,8 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Mixture of Agents",
 		"Fusion",
 	],
-	context: ["General", "Light Context", "Compaction", "Rules (TTSR)", "Experimental"],
-	memory: ["General", "Auto-Learn", "Mnemopi", "Hindsight"],
+	context: ["General", "Light Context", "Compaction", "Background Packs", "Rules (TTSR)", "Experimental"],
+	memory: ["General", "Auto-Learn", "Mnemopi", "Hindsight", "Screenpipe"],
 	files: ["Editing", "Reading", "Read Summaries", "LSP"],
 	shell: ["Bash", "Eval & Python"],
 	tools: [
@@ -346,6 +351,21 @@ export const SETTINGS_SCHEMA = {
 	// ────────────────────────────────────────────────────────────────────────
 	setupVersion: { type: "number", default: 0 },
 
+	// `omp gc` — session-store garbage collection. Only applied when the user
+	// runs the gc CLI; the booleans pick which categories run by default and
+	// the numbers set retention (days before cold sessions archive, and how
+	// many newest sessions to always keep globally / per project directory).
+	"gc.blobs": { type: "boolean", default: true },
+	"gc.archive": { type: "boolean", default: true },
+	"gc.wal": { type: "boolean", default: true },
+	"gc.coldArchiveAfterDays": { type: "number", default: 30 },
+	"gc.retainNewestGlobal": { type: "number", default: 500 },
+	"gc.retainNewestPerCwd": { type: "number", default: 50 },
+
+	// Text verbosity request parameter for OpenAI responses-family APIs
+	// ("low" | "medium" | "high"); unset sends no verbosity parameter.
+	textVerbosity: { type: "string", default: undefined },
+
 	// Auth broker — credentials proxied through a remote `omp auth-broker serve`
 	// host. Hidden from the UI; populate via env vars or hand-edited config.yml.
 	// Env (`OMP_AUTH_BROKER_URL` / `OMP_AUTH_BROKER_TOKEN`) takes precedence so
@@ -566,6 +586,28 @@ export const SETTINGS_SCHEMA = {
 			group: "Theme",
 			label: "Color-Blind Mode",
 			description: "Use blue instead of green for diff additions",
+		},
+	},
+
+	// Composer
+	"composer.layout": {
+		type: "enum",
+		values: ["intent", "classic"] as const,
+		default: "intent",
+		ui: {
+			tab: "appearance",
+			group: "Composer",
+			label: "Composer Layout",
+			description:
+				"Intent-first layout puts the work-mode bar above the editor, context chips and the execution rail inside the frame, and moves the status line beneath the composer. Classic keeps the status line embedded in the editor's top border.",
+			options: [
+				{
+					value: "intent",
+					label: "Intent",
+					description: "Mode bar, context chips, execution rail, diagnostics below",
+				},
+				{ value: "classic", label: "Classic", description: "Status line embedded in the editor top border" },
+			],
 		},
 	},
 
@@ -978,6 +1020,11 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+<<<<<<< HEAD
+=======
+	// Report busy/idle state via the terminal progress escape sequence
+	// (OSC 9;4) so terminals that support it show a task indicator. Opt-in.
+>>>>>>> origin/main
 	"terminal.showProgress": {
 		type: "boolean",
 		default: false,
@@ -985,7 +1032,12 @@ export const SETTINGS_SCHEMA = {
 			tab: "appearance",
 			group: "Display",
 			label: "Native Terminal Progress",
+<<<<<<< HEAD
 			description: "Emit an OSC terminal progress indicator while the agent is working",
+=======
+			description:
+				"Report busy/idle state via the OSC 9;4 progress sequence so supporting terminals show a task indicator",
+>>>>>>> origin/main
 		},
 	},
 
@@ -1172,6 +1224,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"thinking.proseOnly": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Prose-Only Thinking",
+			description: "Render thinking blocks with code fences elided, keeping only the prose",
+		},
+	},
+
 	"model.loopGuard.enabled": {
 		type: "boolean",
 		default: true,
@@ -1194,15 +1257,28 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Session-level Gemini header-runaway guard: interrupt a reasoning stream that
+	// keeps emitting distinct planning headers without ever calling a tool, then
+	// re-drive the turn with a hidden tool-call reminder. Requires
+	// model.loopGuard.enabled; the pi-ai similarity guard misses this shape
+	// because the titles are genuinely distinct.
+	"model.loopGuard.toolCallReminder": { type: "boolean", default: true },
+
 	inlineToolDescriptors: {
-		type: "boolean",
-		default: false,
+		type: "enum",
+		values: ["auto", "on", "off"] as const,
+		default: "auto",
 		ui: {
 			tab: "model",
 			group: "Prompt",
 			label: "Inline Tool Descriptors",
 			description:
-				"Render full tool descriptors in the system prompt and strip top-level/nested descriptions from provider tool schemas so descriptor text is sent once",
+				"Render full tool descriptors in the system prompt and strip top-level/nested descriptions from provider tool schemas so descriptor text is sent once. Auto inlines only for owned (non-native) tool dialects, which need the catalog in-prompt.",
+			options: [
+				{ value: "auto", label: "Auto", description: "Inline only when an owned tool dialect is active" },
+				{ value: "on", label: "On", description: "Always inline descriptors and strip wire schemas" },
+				{ value: "off", label: "Off", description: "Never inline; provider tool schemas carry descriptions" },
+			],
 		},
 	},
 
@@ -1402,6 +1478,20 @@ export const SETTINGS_SCHEMA = {
 					description: "Anthropic fast mode on direct Claude requests; ignored elsewhere (incl. Bedrock/Vertex)",
 				},
 			],
+		},
+	},
+
+	serviceTierSubagent: {
+		type: "enum",
+		values: SERVICE_TIER_INHERIT_SETTING_VALUES,
+		default: "inherit",
+		ui: {
+			tab: "model",
+			group: "Sampling",
+			label: "Service Tier (Subagents)",
+			description:
+				"Processing priority hint stamped onto spawned subagents. Inherit follows the main agent's live effective tier (so /fast on|off carries over); the remaining values mirror Service Tier.",
+			options: SERVICE_TIER_INHERIT_OPTIONS,
 		},
 	},
 
@@ -1848,6 +1938,14 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Where /share uploads the sealed blob: the share server ("blob", default)
+	// or a secret GitHub gist ("gist", needs an authenticated `gh`).
+	"share.store": {
+		type: "enum",
+		values: ["blob", "gist"] as const,
+		default: "blob",
+	},
+
 	"share.redactSecrets": {
 		type: "boolean",
 		default: true,
@@ -1859,6 +1957,7 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+<<<<<<< HEAD
 	"share.store": {
 		type: "enum",
 		values: ["blob", "gist"] as const,
@@ -1872,6 +1971,46 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+=======
+	// Hub
+	"hub.relayUrl": {
+		type: "string",
+		default: "https://collab.pkking.computer/h",
+		ui: {
+			tab: "interaction",
+			group: "Collab",
+			label: "Hub Relay URL",
+			description: "Cloud-durable hub base used by /hub publish/resume (HTTPS endpoint that accepts sealed blobs)",
+		},
+	},
+
+	"hub.token": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "interaction",
+			group: "Collab",
+			label: "Hub Access Token",
+			description:
+				"Account access token for /hub. Provision once, then install it on every device you want to hand off between.",
+			sensitive: true,
+		},
+	},
+
+	"hub.deviceId": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "interaction",
+			group: "Collab",
+			label: "Hub Device ID",
+			description: "Stable per-install identifier allocated on first /hub publish.",
+		},
+	},
+
+	"hub.activeId": { type: "string", default: "" },
+	"hub.activeKey": { type: "string", default: "" },
+>>>>>>> origin/main
 	// Speech-to-text
 	"stt.enabled": {
 		type: "boolean",
@@ -1964,14 +2103,14 @@ export const SETTINGS_SCHEMA = {
 
 	"compaction.strategy": {
 		type: "enum",
-		values: ["context-full", "handoff", "shake", "snapcompact", "off"] as const,
+		values: ["context-full", "handoff", "shake", "off"] as const,
 		default: "context-full",
 		ui: {
 			tab: "context",
 			group: "Compaction",
 			label: "Compaction Strategy",
 			description:
-				"Choose in-place context-full maintenance, auto-handoff, surgical shake (drop heavy content), snapcompact (archive history as dense images), or disable auto maintenance (off)",
+				"Choose in-place context-full maintenance, auto-handoff, surgical shake (drop heavy content), or disable auto maintenance (off)",
 			options: [
 				{
 					value: "context-full",
@@ -1983,11 +2122,6 @@ export const SETTINGS_SCHEMA = {
 					value: "shake",
 					label: "Shake",
 					description: "Drop heavy content (tool results + large blocks) in place; recover via artifact",
-				},
-				{
-					value: "snapcompact",
-					label: "Snapcompact",
-					description: "Archive history onto dense bitmap images the model reads back; no LLM call",
 				},
 				{
 					value: "off",
@@ -2071,6 +2205,13 @@ export const SETTINGS_SCHEMA = {
 	"compaction.keepRecentTokens": { type: "number", default: 20000 },
 
 	"compaction.autoContinue": { type: "boolean", default: true },
+
+	// Mid-turn threshold compaction: when a tool-call turn finishes over the
+	// compaction threshold and the run is about to continue, compact in place
+	// between provider calls instead of waiting for the run to yield. Always
+	// uses the in-place context-full path (never handoff) so the live run is
+	// not reset mid-loop.
+	"compaction.midTurnEnabled": { type: "boolean", default: true },
 
 	"compaction.remoteEndpoint": { type: "string", default: undefined },
 
@@ -2162,43 +2303,23 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Experimental: snapcompact inline imaging (transient, per-request; never persisted)
-	"snapcompact.systemPrompt": {
-		type: "enum",
-		values: ["none", "agents-md", "all"] as const,
-		default: "none",
-		ui: {
-			tab: "context",
-			group: "Experimental",
-			label: "Snapcompact System Prompt",
-			description:
-				"Experimental: render selected system prompt text as dense PNG image(s) and attach to the first user message (vision models only). Saves tokens; loses prompt caching for imaged text.",
-			options: [
-				{ value: "none", label: "None", description: "Keep the system prompt as text." },
-				{
-					value: "agents-md",
-					label: "AGENTS.md",
-					description: "Only move loaded context-file instructions to images, when that saves tokens.",
-				},
-				{
-					value: "all",
-					label: "All",
-					description: "Move the full system prompt to images, when that saves tokens.",
-				},
-			],
-		},
-	},
-
-	"snapcompact.toolResults": {
+	// Optional user-level general background packs. Runtime reads these from
+	// persisted global settings only; project config and overrides are ignored.
+	"backgroundPacks.enabled": {
 		type: "boolean",
 		default: false,
 		ui: {
 			tab: "context",
-			group: "Experimental",
-			label: "Snapcompact Tool Results",
+			group: "Background Packs",
+			label: "Image Background Packs",
 			description:
-				"Experimental: render large historical tool results as dense PNG image(s) instead of text (vision models only). Saves tokens on accumulated read/search output.",
+				"Attach qualified, non-authoritative image background packs from explicit user-level manifests. Active instructions and conversation context always remain native text.",
 		},
+	},
+
+	"backgroundPacks.manifests": {
+		type: "array",
+		default: [] as string[],
 	},
 
 	"tools.format": {
@@ -2245,109 +2366,6 @@ export const SETTINGS_SCHEMA = {
 				{ value: "gemini", label: "Gemini", description: "Use the Gemini owned dialect." },
 				{ value: "gemma", label: "Gemma", description: "Use the Gemma owned dialect." },
 				{ value: "minimax", label: "MiniMax", description: "Use the MiniMax owned dialect." },
-			],
-		},
-	},
-
-	"snapcompact.shape": {
-		type: "enum",
-		values: ["auto", ...SHAPE_VARIANT_NAMES] as const,
-		default: "auto",
-		ui: {
-			tab: "context",
-			group: "Experimental",
-			label: "Snapcompact Shape",
-			description:
-				"Frame shape snapcompact prints text with (compaction archive and inline imaging). Auto picks a shape tuned for the current model.",
-			options: [
-				{
-					value: "auto",
-					label: "Auto",
-					description: "Picks a shape tuned for the current model, falling back to its provider family.",
-				},
-				{
-					value: "8x8r-bw",
-					label: "8x8 repeated, black",
-					description:
-						"unscii square cell, black ink, every line printed twice with the copy on a pale highlight band.",
-				},
-				{
-					value: "8x8r-sent",
-					label: "8x8 repeated, sentence hues",
-					description: "Repeated grid with ink cycling six hues at sentence boundaries.",
-				},
-				{
-					value: "8x8u-bw",
-					label: "8x8, black",
-					description: "Plain unscii square cell, single-printed lines, black ink.",
-				},
-				{
-					value: "8x8u-sent",
-					label: "8x8, sentence hues",
-					description: "Plain unscii square cell with sentence-hue ink.",
-				},
-				{
-					value: "6x6u-bw",
-					label: "6x6 dense, black",
-					description: "unscii squeezed to 6x6 — densest readable cell, fewest frames — in black ink.",
-				},
-				{
-					value: "6x6u-sent",
-					label: "6x6 dense, sentence hues",
-					description: "Densest cell with sentence-hue ink.",
-				},
-				{
-					value: "5x8-bw",
-					label: "5x8 legacy, black",
-					description: "Original X.org 5x8 glyphs on the 2576px frame, black ink.",
-				},
-				{
-					value: "5x8-sent",
-					label: "5x8 legacy, sentence hues",
-					description: "The original snapcompact shape (pre-shape-table sessions rendered this).",
-				},
-				{
-					value: "6x12-dim",
-					label: "6x12, dimmed stopwords",
-					description: "X.org 6x12 glyphs, black ink, function words dimmed gray.",
-				},
-				{
-					value: "8x13-bw",
-					label: "8x13, black",
-					description: "X.org 8x13 glyphs, black ink.",
-				},
-				{
-					value: "8on16-bw",
-					label: "8x13 on 16px pitch, black",
-					description: "8x13 glyphs on an 8x16 cell (extra leading), black ink.",
-				},
-				{
-					value: "8on22-bw",
-					label: "8x13 on 22px pitch (leading), black",
-					description:
-						"8x13 glyphs on an 8x22 cell — extra line spacing so rows don't crowd. Default for OpenAI/Google.",
-				},
-				{
-					value: "11on16-bw",
-					label: "8x13 on 11px advance (tracking), black",
-					description:
-						"8x13 glyphs on an 11x16 cell — extra letter spacing so characters don't merge. Default for Anthropic.",
-				},
-				{
-					value: "doc-8on16-bw",
-					label: "Doc 8on16, black",
-					description: "Two word-wrapped newspaper columns of 8x13 glyphs on a 16px pitch, black ink.",
-				},
-				{
-					value: "doc-8on16-sent",
-					label: "Doc 8on16, sentence hues",
-					description: "Two-column doc layout with sentence-hue ink.",
-				},
-				{
-					value: "doc-8on16-sent-dim",
-					label: "Doc 8on16, sentence hues + dimmed stopwords",
-					description: "Two-column doc layout, sentence-hue ink, function words dimmed gray.",
-				},
 			],
 		},
 	},
@@ -2581,6 +2599,10 @@ export const SETTINGS_SCHEMA = {
 			condition: "mnemopiActive",
 		},
 	},
+<<<<<<< HEAD
+=======
+
+>>>>>>> origin/main
 	"mnemopi.proactiveLinking": {
 		type: "boolean",
 		default: false,
@@ -2588,7 +2610,11 @@ export const SETTINGS_SCHEMA = {
 			tab: "memory",
 			group: "Mnemopi",
 			label: "Mnemopi Proactive Linking",
+<<<<<<< HEAD
 			description: "Proactively link related memories as new turns are retained",
+=======
+			description: "Proactively link related memories to each other when retaining new ones",
+>>>>>>> origin/main
 			condition: "mnemopiActive",
 		},
 	},
@@ -3340,7 +3366,11 @@ export const SETTINGS_SCHEMA = {
 			tab: "shell",
 			group: "Eval & Python",
 			label: "Ruby Eval Backend",
+<<<<<<< HEAD
 			description: "Allow the eval tool to dispatch Ruby cells to a Ruby kernel (opt-in)",
+=======
+			description: "Allow the eval tool to dispatch Ruby cells to a local Ruby interpreter (opt-in)",
+>>>>>>> origin/main
 		},
 	},
 
@@ -3351,10 +3381,22 @@ export const SETTINGS_SCHEMA = {
 			tab: "shell",
 			group: "Eval & Python",
 			label: "Julia Eval Backend",
+<<<<<<< HEAD
 			description: "Allow the eval tool to dispatch Julia cells to a Julia kernel (opt-in)",
 		},
 	},
 
+=======
+			description: "Allow the eval tool to dispatch Julia cells to a local Julia interpreter (opt-in)",
+		},
+	},
+
+	// Interpreter binary overrides for the opt-in Ruby/Julia eval backends;
+	// unset means resolve from PATH.
+	"ruby.interpreter": { type: "string", default: undefined },
+	"julia.interpreter": { type: "string", default: undefined },
+
+>>>>>>> origin/main
 	// Python kernel knobs (consumed by the eval py backend and the /python slash command)
 	"python.kernelMode": {
 		type: "enum",
@@ -3574,6 +3616,33 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
+
+	"glob.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Glob",
+			description: "Enable the glob tool for filename pattern search",
+		},
+	},
+
+	"grep.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Grep",
+			description: "Enable the grep tool for content search",
+		},
+	},
+
+	// Default context lines the grep tool includes around matches when the
+	// caller doesn't pass contextBefore/contextAfter explicitly. 0 = none.
+	"grep.contextBefore": { type: "number", default: 0 },
+	"grep.contextAfter": { type: "number", default: 0 },
 
 	"astGrep.enabled": {
 		type: "boolean",
@@ -4173,6 +4242,19 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 	},
 
+	// Git worktrees
+	"worktree.base": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tasks",
+			group: "Isolation",
+			label: "Worktree Base Directory",
+			description:
+				"Directory where agent-managed git worktrees are created (absolute or ~-relative). Defaults to ~/.omp/wt; the OMP_WORKTREE_DIR env var takes precedence.",
+		},
+	},
+
 	// Delegation
 	"task.isolation.mode": {
 		type: "enum",
@@ -4499,6 +4581,54 @@ export const SETTINGS_SCHEMA = {
 		default: "~/.claude/custom-endpoint.json",
 	},
 
+	// Screenpipe activity bridge — local-only, opt-in. Polls a locally running
+	// screenpipe daemon for already-redacted frame metadata and records
+	// privacy-preserving activity clips in the local ledger. Nothing leaves the
+	// machine; requires the user to run screenpipe themselves.
+	"screenpipe.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "memory",
+			group: "Screenpipe",
+			label: "Screenpipe Activity Bridge",
+			description:
+				"Poll a locally running screenpipe daemon and record redacted activity clips in the local ledger (opt-in, local-only)",
+		},
+	},
+	"screenpipe.baseUrl": {
+		type: "string",
+		default: "http://127.0.0.1:3030",
+		ui: {
+			tab: "memory",
+			group: "Screenpipe",
+			label: "Screenpipe URL",
+			description: "Base URL of the local screenpipe daemon",
+		},
+	},
+	"screenpipe.pollIntervalMs": {
+		type: "number",
+		default: 60_000,
+		ui: {
+			tab: "memory",
+			group: "Screenpipe",
+			label: "Poll Interval (ms)",
+			description: "Delay between successful screenpipe polls",
+		},
+	},
+	// No default on purpose: keyframe hashing stays off unless the user
+	// explicitly points at screenpipe's media directory.
+	"screenpipe.mediaRoot": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "memory",
+			group: "Screenpipe",
+			label: "Screenpipe Media Root",
+			description: "Screenpipe media directory; when set, keyframe hashes are recorded for snapshots under it",
+		},
+	},
+
 	// Skills
 	"skills.enabled": { type: "boolean", default: true },
 	"skills.projectOnly": { type: "boolean", default: false },
@@ -4616,6 +4746,12 @@ export const SETTINGS_SCHEMA = {
 			description: "Obfuscate secrets before sending to AI providers",
 		},
 	},
+
+	// Ceiling on concurrently RUNNING ollama-cloud subagent sessions. Ollama
+	// Cloud enforces a hard account-level concurrency cap, so parallel task
+	// spawns that resolve to it must queue at the spawn boundary instead of
+	// bursting into rate-limit backoff (issue #3464). 0 = unlimited.
+	"providers.ollama-cloud.maxConcurrency": { type: "number", default: 0 },
 
 	// Provider selection
 	"providers.maxInFlightRequests": {
@@ -5070,6 +5206,10 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Minimum delay between Exa search requests (client-side throttle for the
+	// shared API key). 0 disables the throttle.
+	"exa.searchDelayMs": { type: "number", default: 0 },
+
 	"exa.enableWebsets": {
 		type: "boolean",
 		default: false,
@@ -5270,7 +5410,7 @@ export type Personality = SettingValue<"personality">;
 
 export interface CompactionSettings {
 	enabled: boolean;
-	strategy: "context-full" | "handoff" | "shake" | "snapcompact" | "off";
+	strategy: "context-full" | "handoff" | "shake" | "off";
 	thresholdPercent: number;
 	thresholdTokens: number;
 	reserveTokens: number;
@@ -5282,6 +5422,7 @@ export interface CompactionSettings {
 	idleEnabled: boolean;
 	idleThresholdTokens: number;
 	idleTimeoutSeconds: number;
+	midTurnEnabled: boolean;
 	supersedeReads: boolean;
 	dropUseless: boolean;
 	maskConsumedObservations: boolean;

@@ -48,6 +48,7 @@ import { parallelProvider } from "./parallel";
 import { perplexityProvider } from "./perplexity";
 import { qianfanProvider } from "./qianfan";
 import { qwenPortalProvider } from "./qwen-portal";
+import { sakanaProvider } from "./sakana";
 import { syntheticProvider } from "./synthetic";
 import { tavilyProvider } from "./tavily";
 import { togetherProvider } from "./together";
@@ -85,13 +86,17 @@ const ALL = [
 	githubCopilotProvider,
 	cursorProvider,
 	clineProvider,
+	devinProvider,
 	googleAntigravityProvider,
 	googleGeminiCliProvider,
 	openaiCodexDeviceProvider,
 	xaiOauthProvider,
 	gitlabDuoProvider,
 	gitLabDuoWorkflowProvider,
+<<<<<<< HEAD
 	devinProvider,
+=======
+>>>>>>> origin/main
 	alibabaCodingPlanProvider,
 	aimlApiProvider,
 	zhipuCodingPlanProvider,
@@ -107,6 +112,7 @@ const ALL = [
 	waferPassProvider,
 	deepseekProvider,
 	moonshotProvider,
+	sakanaProvider,
 	cerebrasProvider,
 	fireworksProvider,
 	togetherProvider,
@@ -121,6 +127,7 @@ const ALL = [
 	coreWeaveProvider,
 	vercelAiGatewayProvider,
 	cloudflareAiGatewayProvider,
+	coreWeaveProvider,
 	litellmProvider,
 	kiloProvider,
 	zenmuxProvider,
@@ -134,6 +141,7 @@ const ALL = [
 	lmStudioProvider,
 	llamaCppProvider,
 	vllmProvider,
+	llamaCppProvider,
 	openaiProvider,
 	googleProvider,
 	googleVertexProvider,

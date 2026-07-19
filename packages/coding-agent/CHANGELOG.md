@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- Added an opt-in, local-only screenpipe activity bridge (`screenpipe.enabled`, default off, with `screenpipe.baseUrl`, `screenpipe.pollIntervalMs`, and `screenpipe.mediaRoot` settings under the memory tab). When enabled, each session starts a background poller that reads already-redacted frame metadata from a locally running screenpipe daemon and records privacy-preserving activity clips in a local SQLite ledger under the agent dir; password-manager windows are always denied, nothing leaves the machine, and a broken or absent daemon never affects the session (backoff + single warning per outage). Capture ownership follows the active session across every transition (`newSession`, `switchSession`, `fork`, `branch`, `freshSession`, handoff): a `ScreenpipeSessionManager` disposes the prior session's bridge before binding the new one, so no post-transition activity, cursor progress, or manifest is ever attributed to the previous session and exactly one poller is ever live. The poller is torn down in session dispose.
+- Added a Consurg Guard hook example that evaluates every scoped file or command tool call, including multi-path and workspace-root searches, and can fail closed when its guard is unavailable.
+- Added opt-in global image background packs from explicit outside-workspace manifests, with exact-model qualification, profitability gating, content/profile caching, non-authoritative provenance, and fail-closed warnings.
+- Added the default intent composer with enforceable Ask/Build/Plan work modes, context chips, an execution rail, and a configurable mode-cycle keybinding; the classic layout remains selectable.
+- Added offline `/help [question]` recommendations that match natural-language questions to built-in oh-my-pk features, explain when to use them, and link to local documentation.
+- Added same-CWD cross-process IRC discovery and authenticated loopback delivery, with `--no-irc` and `/irc on|off|status` controls.
+- Session skill routing for environments-cloud (pkscloudenvs): `loadSkills()` auto-includes `C:\dev\desktop-infra\environments-cloud\.agents\skills` (or `OMPK_ENVIRONMENTS_CLOUD_ROOT` / `PKS_ENVIRONMENTS_CLOUD_ROOT`) when present on disk, so mesh-orchestrator / colab-warmup resolve without a guessed path.
 - Added a transport-neutral agent gateway and durable `omp runtime` shell with unified SQLite state, searchable task episodes, crash-recoverable leases/checkpoints, UTC cron scheduling, headless OMP execution, file/webhook notifications, privacy-bounded trajectory and correction events, and safer validated auto-learned skills.
 - Integrated deterministic small-model orchestration profiles through task/Fusion/tool/IRC/extension/SDK seams: allocation-free `SpawnPlan` preallocation, typed `task_spawn_policy` extension hook with default-off llm-router registration, source-aware tool ceilings, assignment-contract verification with fail-closed Yield, request-fallback-then-fresh-child recovery, persisted collaboration/tool-policy revive, and startup structural/semantic selector validation.
 - Added a `route-predictor` model role (`pi/route-predictor`) that defaults to local-fast 9router lanes (`9router/local-fast` → `free-fast` → `cheap-fast` → `minimax-m3-rr` → `pi/smol`) and is retargetable via `modelRoles.route-predictor`. The `NineRouterController` gained a matching `route-predictor` slot so 9router stays the execution router while the predictor only selects the lane. Pairs with the `llm-router-agent` package's trace capture (tool/model/context JSONL) and `train-route-predictor` learned-policy trainer.
@@ -11,6 +18,7 @@
 - Added a write-scope spawn contract for exclusive, isolated-patch, and proposal-only lanes with mergeOwner validation.
 - Added a criterion-level adjudication module with pass/fail/blocked/unproven judgments consumed by the root completion gate.
 - Added ephemeral root task-contract compilation with deterministic clarification scoring, executor/advisor digest injection, retry-safe recovery context, and session-bound cleanup; evidence-backed completion enforcement remains deferred to M2.
+- Added `/hub` for encrypted, cloud-durable session handoff: provision account access from a local admin secret, publish a replication snapshot from one device, and resume its full JSONL history as a local fork on another device using the complete hub link. Trusted extensions can invoke owner-local builtins through `ctx.executeBuiltinCommand()` so remote control surfaces reuse the live session owner instead of spawning a competing writer.
 
 
 - Added `agent.profile` and `agent.profiles` settings for named, swappable role-based model bundles that retarget every role-resolving agent slot at once (explicit `modelRoles` still wins per-role).
@@ -24,6 +32,7 @@
 - Added prompt-btw subagent handoff mode to `/btw`: invoking "use promptbtw for subagent handoff: <raw task>" returns a structured SUBAGENT HANDOFF PROMPT instead of an answer.
 
 ### Changed
+- Changed the default collaboration relay and encrypted share endpoints to `collab.pkking.computer`.
 
 - Changed blind/staged-independent context to mechanically clamp child collaboration to report-only, denying discovery, messaging, wake, and busy replies.
 - Changed the completion gate to distinguish failed from unproven criteria and require full criterion evidence coverage.
@@ -37,6 +46,16 @@
 - Trimmed a second pass of tool-prompt prose across `read`/`bash`/`apply-patch`/`patch`/`todo`/`ast-grep`/`github`, dropping schema-inferable and duplicate content while preserving RFC-2119 keywords and Handlebars structure.
 
 ### Fixed
+- Fixed internal-URL autocomplete dropping the active project cwd and AST tools failing to resolve session-loaded `skill://` paths.
+- Fixed active Consurg scopes allowing unscoped `context_oracle` `ask`, `symbol`, and `editImpact` reads to bypass repository-root authorization; empty optional scope fields no longer hide a valid explicit path.
+- Fixed memory startup failing with `ENAMETOOLONG` for deep project paths on Windows: the memories root embedded the full cwd as one directory name, so long cwds pushed artifact paths past the ~260-char limit `Bun.write` enforces. The encoded component is now capped at 64 chars — short cwds keep the legacy verbatim encoding, long ones keep the distinguishing tail plus a stable hash of the full cwd.
+- Fixed `providers.maxInFlightRequests` missing from the settings schema while the settings selector, config CLI, and the per-request stream wrapper still read it — `settings.get` threw on every stream call that did not supply an explicit override, and `omp config set/get` rejected the key as unknown.
+- Fixed test temp directories leaking into the repository: all `TempDir.create`/`createSync` prefixes in tests now use the `@` OS-temp prefix, so fixture directories (`omp-config-cli-*`, `omp-operational-*`, `fusion-test-*`, executor/CLI sinks) no longer accumulate under `packages/coding-agent` when cleanup is skipped or fails.
+- Fixed subagent (`task`) dispatch only falling back to the parent session's active model when the resolved model has no working credentials, instead of first walking the rest of `modelRoles.task`'s own priority list. A comma-separated `modelRoles.task` value (e.g. `provider/most-intelligent, provider/fallback-1, provider/fallback-2`, up to 3 entries, position 1 = most intelligent) now tries each candidate in order for both catalog existence and credentials before ever considering the parent's model, and the remaining untried entries still seed the runtime retry-on-failure chain.
+- Fixed the double-tap `←` gesture staying inert when only background sessions exist: the Agent Hub's emptiness check ran before the async background-session disk scan finished, so `←←` never opened the backgrounds view unless a live subagent happened to be registered.
+- Fixed encrypted `/share` links on the owned relay by serving the standalone client-side decryption viewer, enforcing read-time expiry, and making the viewer generator Windows-safe.
+- Fixed `irc wait` (and `send await:true`) hanging forever on Windows: the wait timeout timer was unref'd, and on Bun/Windows an unref'd timer whose promise is the only pending work never fires. The same hang made `test/tools/irc.test.ts` unrunnable on Windows.
+- Fixed broadcast fan-out relaying sibling legs to the main UI even when the broadcast already reached the main agent directly, duplicating the identical body once per sibling (`suppressRelay` was adopted on the bus during the upstream sync but never set by the fork's diverged send path).
 - Fixed AssignmentContractV2 evidencePolicy, priorBlockedRoutes, and resultRequirements to survive digest, parse, and transport after they were silently dropped with an unchanged digest.
 - Fixed Fusion sidekick observability: `/fusion status` now reports live Sidekick registry state (idle/running/parked/unavailable) and marks Fusion as degraded when the sidekick is missing; spawn now waits for AgentRegistry registration before retaining a sidekick id so failed starts no longer latch a phantom Sidekick.
 - Fixed `/remote` in ACP/text mode: it is now consumed with an explicit interactive-TUI requirement instead of being forwarded to the model as ordinary prompt text.
@@ -44,6 +63,10 @@
 - Fixed auto-learn thresholding so only successful tool calls count toward `autolearn.minToolCalls`; failed calls no longer trigger a capture nudge.
 
 - Serialized editor submit handling so a fast double-Enter can't race concurrent submit handlers: a second empty Enter previously read `queuedMessageCount` before a steer finished registering it and no-op'd instead of flushing.
+
+### Removed
+
+- Removed unsafe experimental coding-agent imaging of system prompts, conversation history, and tool results; stale Snapcompact compaction settings now migrate to native-text `context-full`.
 
 ## [16.2.5] - 2026-07-02
 

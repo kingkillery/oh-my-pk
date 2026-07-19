@@ -221,6 +221,8 @@ export type SymbolKey =
 	// Tool identity icons
 	| "tool.write"
 	| "tool.edit"
+	| "tool.delete"
+	| "tool.move"
 	| "tool.bash"
 	| "tool.ssh"
 	| "tool.lsp"
@@ -423,6 +425,8 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	// Tool identity icons (per-tool signature glyph on the success header)
 	"tool.write": "✎",
 	"tool.edit": "✎",
+	"tool.delete": "🗑",
+	"tool.move": "➜",
 	"tool.bash": "❯",
 	"tool.ssh": "⇄",
 	"tool.lsp": "💡",
@@ -729,6 +733,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	// Tool identity icons (per-tool signature glyph on the success header)
 	"tool.write": "\uEA7F",
 	"tool.edit": "\uEA73",
+	"tool.delete": "\uEA81",
+	"tool.move": "\uEA9C",
 	"tool.bash": "\uEBCA",
 	"tool.ssh": "\uEB3A",
 	"tool.lsp": "\uEA61",
@@ -928,6 +934,8 @@ const ASCII_SYMBOLS: SymbolMap = {
 	// Tool identity icons (per-tool signature glyph on the success header)
 	"tool.write": "+f",
 	"tool.edit": "~",
+	"tool.delete": "-f",
+	"tool.move": "mv",
 	"tool.bash": "$",
 	"tool.ssh": "ssh",
 	"tool.lsp": "lsp",
@@ -1896,10 +1904,19 @@ export class Theme {
 		return key ? this.#symbols[key] : this.#symbols["lang.default"];
 	}
 
+<<<<<<< HEAD
 	/** Language icon with a subtle neutral color applied, for inline headers/badges. */
 	getLangIconStyled(lang: string | undefined): string {
 		const icon = this.getLangIcon(lang);
 		return icon ? this.fg("dim", icon) : icon;
+=======
+	/**
+	 * Get a language icon with its standard styling applied — the muted
+	 * foreground every renderer wraps {@link getLangIcon} in.
+	 */
+	getLangIconStyled(lang: string | undefined): string {
+		return this.fg("muted", this.getLangIcon(lang));
+>>>>>>> origin/main
 	}
 }
 
@@ -2817,6 +2834,15 @@ export function getSymbolTheme(): SymbolTheme {
 let cachedMarkdownTheme: MarkdownTheme | undefined;
 let cachedMarkdownThemeRef: Theme | undefined;
 
+/** Whether Markdown renders ```mermaid fences as ASCII diagrams. When off,
+ *  the resolver returns null and the fence falls back to a highlighted code
+ *  block. Read at call time, so toggling never invalidates the cached theme. */
+let markdownMermaidRenderingEnabled = true;
+
+export function setMarkdownMermaidRendering(enabled: boolean): void {
+	markdownMermaidRenderingEnabled = enabled;
+}
+
 export function getMarkdownTheme(): MarkdownTheme {
 	if (cachedMarkdownTheme !== undefined && cachedMarkdownThemeRef === theme) {
 		return cachedMarkdownTheme;
@@ -2850,7 +2876,9 @@ export function getMarkdownTheme(): MarkdownTheme {
 		strikethrough: (text: string) => chalk.strikethrough(text),
 		symbols: getSymbolTheme(),
 		resolveMermaidAscii: (source, maxWidth) =>
-			resolveMermaidAscii(source, { maxWidth, theme: mermaidTheme, colorMode: mermaidColorMode }),
+			markdownMermaidRenderingEnabled
+				? resolveMermaidAscii(source, { maxWidth, theme: mermaidTheme, colorMode: mermaidColorMode })
+				: null,
 		highlightCode: (code: string, lang?: string): string[] => {
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
 			const highlighted = highlightCached(code, validLang, theme);

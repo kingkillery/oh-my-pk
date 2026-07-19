@@ -1443,6 +1443,18 @@ export interface ShellRunResult {
 }
 
 /**
+ * Runtime override for Hangul Compatibility Jamo (U+3131..=U+318E) cell width.
+ *   0 = unset → platform default (macOS: narrow 1 cell; otherwise UAX#11)
+ *   1 = force narrow (1 cell)
+ *   2 = force wide (2 cells)
+ *   3 = force Unicode width (no correction)
+ * The actual width is decided by the *client* terminal, not the host OS, so it
+ * is resolved at runtime from the terminal identity (see packages/tui
+ * terminal.ts) and pushed here.
+ */
+export declare function setHangulCompatJamoWidthOverride(value: number): void
+
+/**
  * Visible slice of a line after ANSI-aware column selection
  * (`sliceWithWidth`).
  */

@@ -6,6 +6,7 @@ import {
 	type ToolCallState,
 	type UsageState,
 } from "@pk-nerdsaver-ai/pi-ai/providers/cursor";
+<<<<<<< HEAD
 import type {
 	AssistantMessage,
 	AssistantMessageEvent,
@@ -13,6 +14,9 @@ import type {
 	ThinkingContent,
 } from "@pk-nerdsaver-ai/pi-ai/types";
 import { getStreamingPartialJson, kStreamingBlockIndex } from "@pk-nerdsaver-ai/pi-ai/utils/block-symbols";
+=======
+import type { AssistantMessage, AssistantMessageEvent } from "@pk-nerdsaver-ai/pi-ai/types";
+>>>>>>> origin/main
 import { AssistantMessageEventStream } from "@pk-nerdsaver-ai/pi-ai/utils/event-stream";
 
 interface Harness {
@@ -49,8 +53,13 @@ function newHarness(): Harness {
 		origPush(event);
 	};
 
+<<<<<<< HEAD
 	let textBlock: (TextContent & { [kStreamingBlockIndex]: number }) | null = null;
 	let thinkingBlock: (ThinkingContent & { [kStreamingBlockIndex]: number }) | null = null;
+=======
+	let textBlock: BlockState["currentTextBlock"] = null;
+	let thinkingBlock: BlockState["currentThinkingBlock"] = null;
+>>>>>>> origin/main
 	let toolCall: ToolCallState | null = null;
 	const state: BlockState = {
 		get currentTextBlock() {

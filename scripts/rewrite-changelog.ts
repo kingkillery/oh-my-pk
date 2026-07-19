@@ -327,6 +327,7 @@ async function run(options: RunOptions): Promise<RunResult> {
 			const section = unreleasedSection(document);
 			if (!section) continue;
 
+<<<<<<< HEAD
 			const originalCount = section.subsections.reduce((sum, sub) => sum + parseItems(sub.lines).length, 0);
 			if (originalCount === 0) continue;
 
@@ -339,6 +340,26 @@ async function run(options: RunOptions): Promise<RunResult> {
 			const next = renderChangelog(document);
 			if (next === content) continue;
 
+=======
+			const absolutePath = path.join(repoRoot, changelogPath);
+			const content = await Bun.file(absolutePath).text();
+			const document = parseChangelog(content);
+			const section = unreleasedSection(document);
+			if (!section) continue;
+
+			const originalCount = section.subsections.reduce((sum, sub) => sum + parseItems(sub.lines).length, 0);
+			if (originalCount === 0) continue;
+
+			const unreleasedBody = renderChangelog({ prefixLines: [], sections: [section] })
+				.replace(/^## \[Unreleased\]\n?/, "")
+				.trim();
+
+			const rewritten = await requestRewrite(model, changelogPath, unreleasedBody);
+			applyRewrite(section, rewritten);
+			const next = renderChangelog(document);
+			if (next === content) continue;
+
+>>>>>>> origin/main
 			const rewrittenCount = rewritten.reduce((sum, sec) => sum + sec.items.length, 0);
 			if (options.write) {
 				await Bun.write(absolutePath, next);

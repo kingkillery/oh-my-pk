@@ -228,6 +228,26 @@ export interface OpenAICompat {
 	requiresReasoningContentForAllAssistantTurns?: boolean;
 	/** Whether the provider accepts a synthetic placeholder (e.g. ".") for missing reasoning_content on tool-call turns. Default: true. Set to false for providers like DeepSeek that validate the exact reasoning_content value. */
 	allowsSyntheticReasoningContentForToolCalls?: boolean;
+	/**
+	 * Replay prior assistant turns' thinking as `reasoning_content` even when no
+	 * `requires*ReasoningContent*` flag demands it. Local llama.cpp-style servers
+	 * re-tokenize the entire chat-template prompt each request; Qwen3 /
+	 * DeepSeek-R1 / GLM templates reconstruct the prior turn's `<think>` block
+	 * from `reasoning_content`, so dropping the field forces full prompt
+	 * re-processing (#3528). Chat-completions only. Default: auto-detected
+	 * (local inference providers and loopback/RFC1918 baseUrls).
+	 */
+	replayReasoningContent?: boolean;
+	/**
+	 * Send the Qwen3.6+ `preserve_thinking` chat-template knob so older assistant
+	 * turns keep rendering `<think>...</think>` instead of being stripped past
+	 * `last_query_index`, keeping llama.cpp prefix-KV caches byte-identical
+	 * across turns (#3541). Routed like `enable_thinking` (top-level for the
+	 * `qwen` dialect, `chat_template_kwargs` for `qwen-chat-template`). Non-Qwen
+	 * templates ignore it. Default: auto-detected (Qwen thinking dialects on
+	 * local backends).
+	 */
+	qwenPreserveThinking?: boolean;
 	/** Whether assistant tool-call messages must include non-empty content. Default: false. */
 	requiresAssistantContentForToolCalls?: boolean;
 	/** Whether the provider supports the `tool_choice` parameter. Default: true. */
@@ -238,6 +258,13 @@ export interface OpenAICompat {
 	 * to provider-default auto selection. Default: true.
 	 */
 	supportsForcedToolChoice?: boolean;
+	/**
+	 * Whether a named forced `tool_choice` (`{ type: "function", function: { name } }`)
+	 * is accepted. When false, request builders downgrade named choices to
+	 * `"required"` so the turn still forces a tool call. Default: auto-detected
+	 * (llama.cpp rejects named tool_choice).
+	 */
+	supportsNamedToolChoice?: boolean;
 	/**
 	 * Drop reasoning fields (`reasoning_effort`, OpenRouter `reasoning`) for
 	 * the request when `tool_choice` forces a tool call. Mirrors the Anthropic
@@ -435,16 +462,22 @@ export interface ResolvedOpenAISharedCompat {
 	disableReasoningOnToolChoice: boolean;
 	supportsToolChoice: boolean;
 	supportsForcedToolChoice: boolean;
+<<<<<<< HEAD
 	/** Whether the endpoint honors a named/function `tool_choice` (some OpenAI-compat hosts only support `auto`/`none`). */
 	supportsNamedToolChoice?: boolean;
 	/** Replay prior assistant reasoning content back into the request (needed by some chat-template renderers, e.g. Qwen proxies). */
 	replayReasoningContent?: boolean;
 	/** Preserve Qwen `<think>` blocks in history instead of stripping them when reasoning is disabled. */
 	qwenPreserveThinking?: boolean;
+=======
+	supportsNamedToolChoice: boolean;
+>>>>>>> origin/main
 	reasoningContentField?: OpenAICompat["reasoningContentField"];
 	requiresReasoningContentForToolCalls: boolean;
 	requiresReasoningContentForAllAssistantTurns: boolean;
 	allowsSyntheticReasoningContentForToolCalls: boolean;
+	replayReasoningContent: boolean;
+	qwenPreserveThinking: boolean;
 	requiresThinkingAsText: boolean;
 	requiresMistralToolIds: boolean;
 	requiresToolResultName: boolean;
@@ -490,12 +523,15 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "disableReasoningOnToolChoice"
 			| "supportsToolChoice"
 			| "supportsForcedToolChoice"
+			| "supportsNamedToolChoice"
 			| "reasoningContentField"
 			| "replayReasoningContent"
 			| "qwenPreserveThinking"
 			| "requiresReasoningContentForToolCalls"
 			| "requiresReasoningContentForAllAssistantTurns"
 			| "allowsSyntheticReasoningContentForToolCalls"
+			| "replayReasoningContent"
+			| "qwenPreserveThinking"
 			| "requiresThinkingAsText"
 			| "requiresMistralToolIds"
 			| "requiresToolResultName"
@@ -548,6 +584,7 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	supportsImageDetailOriginal: boolean;
 	requiresJuiceZeroHack: boolean;
 	supportsObfuscationOptOut: boolean;
+<<<<<<< HEAD
 	/** Abort the stream if no bytes arrive within this many milliseconds (unset = no idle timeout). */
 	streamIdleTimeoutMs?: number;
 }
@@ -560,6 +597,10 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 export interface ResolvedDevinCompat {
 	/** When true, never fabricate an effort ladder from identity; only explicit routed thinking metadata counts. */
 	trustExplicitThinkingOnly?: boolean;
+=======
+	/** See {@link OpenAICompat.streamIdleTimeoutMs}. `0` disables the stream idle watchdog. */
+	streamIdleTimeoutMs?: number;
+>>>>>>> origin/main
 }
 
 /**
@@ -568,6 +609,20 @@ export interface ResolvedDevinCompat {
  * model object, so its resolved compat must satisfy both handlers.
  */
 export type ResolvedOpenRouterCompat = ResolvedOpenAICompat & ResolvedOpenAIResponsesCompat;
+
+/** Compatibility settings for the devin-agent (Codeium Cascade) API. */
+export interface DevinCompat {
+	/**
+	 * Cascade has no wire reasoning/effort field — effort is selected by routing
+	 * to a sibling model id (the `thinking.effortRouting` baked by
+	 * variant-collapse), so the thinking deriver must trust explicit routed
+	 * metadata only and never fabricate an effort ladder from identity.
+	 */
+	trustExplicitThinkingOnly?: boolean;
+}
+
+/** Fully-resolved devin-agent compat view (same contract as `ResolvedOpenAICompat`). */
+export type ResolvedDevinCompat = Required<DevinCompat>;
 
 /** Fully-resolved anthropic-messages compat view (same contract as `ResolvedOpenAICompat`). */
 export type ResolvedAnthropicCompat = Required<AnthropicCompat> & {
@@ -590,7 +645,9 @@ export type CompatConfigOf<TApi extends Api> = TApi extends
 	? OpenAICompat
 	: TApi extends "anthropic-messages"
 		? AnthropicCompat
-		: undefined;
+		: TApi extends "devin-agent"
+			? DevinCompat
+			: undefined;
 
 /** Resolved compat for a given API: complete record, materialized once by `buildModel`. */
 export type CompatOf<TApi extends Api> = TApi extends "openrouter"
@@ -604,6 +661,29 @@ export type CompatOf<TApi extends Api> = TApi extends "openrouter"
 				: TApi extends "devin-agent"
 					? ResolvedDevinCompat
 					: undefined;
+<<<<<<< HEAD
+=======
+
+/**
+ * Remote (server-side) context-compaction routing for a model. Authored by
+ * bundled catalogs and models-config providers/model definitions; read by the
+ * agent's remote-compaction path (e.g. OpenAI `POST /responses/compact`).
+ * Provider-level config merges under model-level config (model wins).
+ */
+export interface RemoteCompactionConfig<TApi extends Api = Api> {
+	/**
+	 * Explicitly enable/disable remote compaction for this model. `undefined`
+	 * falls back to provider defaults (first-party OpenAI/Codex opt in).
+	 */
+	enabled?: boolean;
+	/** API surface handling the compaction request. Defaults to the model's own `api`. */
+	api?: TApi;
+	/** Explicit compaction endpoint URL. Defaults to a `/responses/compact` path derived from the model's baseUrl. */
+	endpoint?: string;
+	/** Model id to compact with. Defaults to the model's `requestModelId ?? id`. */
+	model?: string;
+}
+>>>>>>> origin/main
 
 // Model interface for the unified model system
 export interface Model<TApi extends Api = Api> {
@@ -677,8 +757,19 @@ export interface Model<TApi extends Api = Api> {
 	preferWebsockets?: boolean;
 	/** Preferred model to switch to when context promotion is triggered (model id or provider/id). */
 	contextPromotionTarget?: string;
+	/** Preferred model (model id or provider/id) to run compaction/summarization with, instead of this model itself. */
+	compactionModel?: string;
+	/** Remote (server-side) compaction routing; see {@link RemoteCompactionConfig}. */
+	remoteCompaction?: RemoteCompactionConfig<Api>;
 	/** Provider-assigned priority value (lower = higher priority). */
 	priority?: number;
+	/**
+	 * GitLab Duo Agent Platform only: the root namespace GID/id the model list
+	 * was resolved against. Stamped by credentialed runtime discovery so request
+	 * paths can distinguish namespace-scoped rows; the bundled namespace-free
+	 * fallback model never carries it.
+	 */
+	gitlabDuoWorkflowRootNamespaceId?: string;
 	/** Canonical thinking capability metadata for this model. */
 	thinking?: ThinkingConfig;
 	/**

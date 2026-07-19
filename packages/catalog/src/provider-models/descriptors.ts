@@ -15,6 +15,7 @@ import {
 	cerebrasModelManagerOptions,
 	clineModelManagerOptions,
 	cloudflareAiGatewayModelManagerOptions,
+	coreWeaveModelManagerOptions,
 	deepseekModelManagerOptions,
 	firepassModelManagerOptions,
 	fireworksModelManagerOptions,
@@ -36,6 +37,7 @@ import {
 	openrouterModelManagerOptions,
 	qianfanModelManagerOptions,
 	qwenPortalModelManagerOptions,
+	sakanaModelManagerOptions,
 	syntheticModelManagerOptions,
 	togetherModelManagerOptions,
 	umansModelManagerOptions,
@@ -49,7 +51,16 @@ import {
 	zenmuxModelManagerOptions,
 	zhipuCodingPlanModelManagerOptions,
 } from "./openai-compat";
+<<<<<<< HEAD
 import { cursorModelManagerOptions, gitLabDuoWorkflowModelManagerOptions, zaiModelManagerOptions } from "./special";
+=======
+import {
+	cursorModelManagerOptions,
+	devinModelManagerOptions,
+	gitLabDuoWorkflowModelManagerOptions,
+	zaiModelManagerOptions,
+} from "./special";
+>>>>>>> origin/main
 
 export const CATALOG_PROVIDERS = [
 	{
@@ -104,6 +115,13 @@ export const CATALOG_PROVIDERS = [
 		catalogDiscovery: { label: "Cloudflare AI Gateway" },
 	},
 	{
+		id: "coreweave",
+		defaultModel: "openai/gpt-oss-120b",
+		envVars: ["COREWEAVE_API_KEY", "WANDB_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => coreWeaveModelManagerOptions(config),
+		catalogDiscovery: { label: "CoreWeave Serverless Inference" },
+	},
+	{
 		id: "cursor",
 		defaultModel: "claude-4.6-opus-high",
 		envVars: ["CURSOR_ACCESS_TOKEN"],
@@ -116,6 +134,14 @@ export const CATALOG_PROVIDERS = [
 		envVars: ["DEEPSEEK_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => deepseekModelManagerOptions(config),
 		catalogDiscovery: { label: "DeepSeek" },
+	},
+	{
+		id: "devin",
+		defaultModel: "swe-1-6",
+		envVars: ["DEVIN_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => devinModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Devin", oauthProvider: "devin" },
 	},
 	{
 		id: "firepass",
@@ -142,6 +168,16 @@ export const CATALOG_PROVIDERS = [
 		envVars: ["GITLAB_TOKEN"],
 	},
 	{
+<<<<<<< HEAD
+=======
+		// GitLab Duo Agent Platform (Duo Workflow). Deliberately carries NO
+		// `catalogDiscovery`: discovery is credential- and namespace-scoped
+		// (`aiChatAvailableModels(rootNamespaceId:)`), so running it during
+		// catalog generation would bundle one private namespace's pinned/
+		// selectable models as authoritative for every fresh install. Only the
+		// descriptor's namespace-free static fallback is bundled; live models
+		// are discovered at runtime per credential/workspace.
+>>>>>>> origin/main
 		id: "gitlab-duo-agent",
 		defaultModel: "claude_sonnet_4_6_vertex",
 		envVars: ["GITLAB_TOKEN"],
@@ -239,6 +275,12 @@ export const CATALOG_PROVIDERS = [
 	{
 		id: "moonshot",
 		defaultModel: "kimi-k2.7-code",
+<<<<<<< HEAD
+=======
+		// KIMI_API_KEY is the documented key name on the Kimi (China) platform;
+		// accept it as a fallback alias for MOONSHOT_API_KEY. Order = the
+		// `getEnvApiKey` resolution order (#2883).
+>>>>>>> origin/main
 		envVars: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => moonshotModelManagerOptions(config),
 		catalogDiscovery: { label: "Moonshot" },
@@ -318,6 +360,14 @@ export const CATALOG_PROVIDERS = [
 			label: "Qwen Portal",
 			oauthProvider: "qwen-portal",
 		},
+	},
+	{
+		id: "sakana",
+		defaultModel: "fugu",
+		envVars: ["SAKANA_API_KEY", "FUGU_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => sakanaModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Sakana AI" },
 	},
 	{
 		id: "synthetic",

@@ -3,8 +3,8 @@
   "name": "@pk-nerdsaver-ai/collab-web",
   "version": "15.11.7",
   "private": true,
-  "description": "Browser guest client and local relay tools for omp collab live sessions",
-  "homepage": "https://omp.sh",
+  "description": "Browser guest client and local relay tools for OMP collaboration",
+  "homepage": "https://collab.pkking.computer",
   "author": "Can Boluk",
   "license": "MIT",
   "repository": {
@@ -28,6 +28,7 @@
     "relay": "bun scripts/local-relay.ts",
     "build": "rm -rf dist && bun build ./index.html --outdir=dist --minify --entry-naming=[hash].[ext] --chunk-naming=[hash].[ext] --asset-naming=[hash].[ext] && mv dist/*.html dist/index.html && cp -R public/. dist/",
     "gen:tool-views": "bun scripts/build-tool-views.ts",
+    "build:tool-views": "bun scripts/build-tool-views.ts",
     "prepack": "bun run build",
     "test": "bun test --parallel",
     "check": "biome check . && bun run check:types",

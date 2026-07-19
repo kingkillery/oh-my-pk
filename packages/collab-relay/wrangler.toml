@@ -1,0 +1,47 @@
+name = "ompk-collab"
+main = "src/index.ts"
+compatibility_date = "2026-07-13"
+
+[[routes]]
+pattern = "collab.pkking.computer"
+custom_domain = true
+
+# run_worker_first = true routes every request (including asset hits) through
+# the worker so HTML responses get the client CSP and security headers stamped
+# by src/asset-service.ts; assets previously bypassed the worker entirely.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "none"
+run_worker_first = true
+
+[[durable_objects.bindings]]
+name = "COLLAB_ROOMS"
+class_name = "CollabRoom"
+
+[[durable_objects.bindings]]
+name = "SHARE_UPLOADS"
+class_name = "ShareUploadRateLimit"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = [ "CollabRoom" ]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = [ "ShareUploadRateLimit" ]
+
+[[r2_buckets]]
+binding = "SHARES"
+bucket_name = "ompk-collab-shares"
+
+[[r2_buckets]]
+binding = "HUB_BLOBS"
+bucket_name = "ompk-hub-blobs"
+
+[[kv_namespaces]]
+binding = "HUB_TOKENS"
+id = "b4d7210bd6d94d3f972b09c2de85d68e"
+
+[triggers]
+crons = [ "0 * * * *" ]
