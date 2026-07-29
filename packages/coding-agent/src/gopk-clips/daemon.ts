@@ -18,81 +18,44 @@
  * `activity` tool); they never drain the queue. Do not reintroduce a second
  * caller of `createGopkClipsHost`.
  *
- * Nothing autostarts this yet — that gap is tracked separately. If it is not
- * running, the sampler keeps writing handoffs and the ledger stops growing.
+ * Autostart: an `AgentSession` with `gopkClips.enabled` ensures this daemon
+ * is running (see ./ensure-daemon.ts) by re-entering the CLI with the hidden
+ * `__omp_gopk_ingest` selector, which lands in {@link runIngestDaemon}. The
+ * pid lock below makes that idempotent: concurrent ensures collapse to one
+ * surviving daemon.
  *
  * Single instance per ledger via an `ingest.pid` lock next to the capture
- * root; graceful shutdown on SIGINT/SIGTERM. Paths come from the shared
- * gopk-clips config.json when present, else the agent-dir default.
+ * root (see ./ingest-lock.ts); graceful shutdown on SIGINT/SIGTERM. Paths
+ * come from the shared gopk-clips config.json when present, else the
+ * agent-dir default.
  *
  * Usage: bun packages/coding-agent/src/gopk-clips/daemon.ts [--stop] [--once]
  *   --stop  terminate a running daemon via its pid file
  *   --once  run a single poll+cleanup pass and exit (smoke test)
  */
 import * as fs from "node:fs";
-import * as path from "node:path";
 // Subpath import keeps the compiled gopk-ingest.exe free of the pi_natives
 // native addon (which the pi-utils barrel eagerly loads). See session-state.ts.
 import * as logger from "@pk-nerdsaver-ai/pi-utils/logger";
+import { claimIngestPidLock, ingestPidFilePath, readAliveIngestPid } from "./ingest-lock";
 import { resolveGopkClipsPaths } from "./paths";
 import { createGopkClipsHost, type GopkClipsHostState } from "./session-state";
 
 const POLL_INTERVAL_MS = 15_000;
 const CLEANUP_INTERVAL_MS = 600_000;
 
-function pidFilePath(captureRoot: string): string {
-	return path.join(captureRoot, "ingest.pid");
-}
-
-/**
- * On Windows, confirm the pid is a bun process (our daemon runs as `bun run`),
- * so a recycled pid from a stale lock after a reboot is not mistaken for a
- * live daemon and doesn't block restart. On other platforms, existence stands.
- */
-function isOurProcess(pid: number): boolean {
-	if (process.platform !== "win32") return true;
-	try {
-		const result = Bun.spawnSync(["tasklist", "/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], {
-			stdout: "pipe",
-			stderr: "ignore",
-		});
-		// bun.exe (dev) or gopk-ingest.exe / gopk-clips.exe (compiled).
-		const image = result.stdout.toString().toLowerCase();
-		return image.includes("bun.exe") || image.includes("gopk");
-	} catch {
-		return true;
-	}
-}
-
-/** The pid recorded in the lock when that process is still alive AND ours, else undefined. */
-function readAlivePid(pidPath: string): number | undefined {
-	let pid: number;
-	try {
-		pid = Number(fs.readFileSync(pidPath, "utf8").trim());
-	} catch {
-		return undefined;
-	}
-	if (!Number.isInteger(pid) || pid <= 0) return undefined;
-	try {
-		process.kill(pid, 0);
-	} catch {
-		return undefined;
-	}
-	return isOurProcess(pid) ? pid : undefined;
-}
-
-async function main(): Promise<void> {
-	const argv = process.argv.slice(2);
+/** Process entry for the daemon: direct `bun daemon.ts`, the compiled gopk-ingest.exe, or the CLI's `__omp_gopk_ingest` re-entry. */
+export async function runIngestDaemon(argv: string[]): Promise<void> {
 	const stop = argv.includes("--stop");
 	const once = argv.includes("--once");
 	// Absolute and `~`-expanded, so the pid lock below can never land somewhere
 	// other than the capture root the host itself resolves.
 	const { captureRoot, ledgerPath } = resolveGopkClipsPaths();
 	fs.mkdirSync(captureRoot, { recursive: true });
-	const pidPath = pidFilePath(captureRoot);
+	const pidPath = ingestPidFilePath(captureRoot);
 
 	if (stop) {
-		const running = readAlivePid(pidPath);
+		const running = readAliveIngestPid(pidPath);
 		if (running === undefined) {
 			console.log("ingest daemon: not running");
 			return;
@@ -102,13 +65,22 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	if (!once) {
-		const running = readAlivePid(pidPath);
-		if (running !== undefined) {
-			console.log(`ingest daemon: already running (pid ${running}); exiting`);
-			return;
-		}
+	// Claim the singleton lock before opening the ledger writer, so a lost
+	// race never even constructs a second host. `--once` runs unlocked, as a
+	// deliberate smoke path; WAL + busy_timeout absorb the brief overlap.
+	if (!once && !claimIngestPidLock(pidPath, process.pid)) {
+		const running = readAliveIngestPid(pidPath);
+		console.log(`ingest daemon: already running${running === undefined ? "" : ` (pid ${running})`}; exiting`);
+		return;
 	}
+
+	const cleanupPid = (): void => {
+		try {
+			if (fs.readFileSync(pidPath, "utf8").trim() === String(process.pid)) fs.unlinkSync(pidPath);
+		} catch {
+			// already gone
+		}
+	};
 
 	let host: GopkClipsHostState;
 	try {
@@ -119,6 +91,7 @@ async function main(): Promise<void> {
 			cleanupIntervalMs: CLEANUP_INTERVAL_MS,
 		});
 	} catch (error) {
+		if (!once) cleanupPid();
 		logger.warn("ingest daemon: failed to start", { error: String(error) });
 		process.exitCode = 1;
 		return;
@@ -132,14 +105,6 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	fs.writeFileSync(pidPath, String(process.pid));
-	const cleanupPid = (): void => {
-		try {
-			if (fs.readFileSync(pidPath, "utf8").trim() === String(process.pid)) fs.unlinkSync(pidPath);
-		} catch {
-			// already gone
-		}
-	};
 	let shuttingDown = false;
 	const shutdown = (): void => {
 		if (shuttingDown) return;
@@ -159,4 +124,13 @@ async function main(): Promise<void> {
 	await new Promise<void>(() => {});
 }
 
-await main();
+// Floating call instead of top-level await: the CLI imports this module for
+// its `__omp_gopk_ingest` dispatch, and TLA anywhere in that graph breaks
+// `--bytecode` (CJS-lowered) compiled builds. Guarded so the import itself
+// never launches a daemon.
+if (import.meta.main) {
+	runIngestDaemon(process.argv.slice(2)).catch((err: unknown) => {
+		console.error(err);
+		process.exit(1);
+	});
+}

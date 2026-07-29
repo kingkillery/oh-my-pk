@@ -99,6 +99,10 @@ const JS_EVAL_WORKER_ARG = "__omp_worker_js_eval";
 const STT_WORKER_ARG = "__omp_worker_stt";
 const TTS_WORKER_ARG = "__omp_worker_tts";
 const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
+// Detached-process selector (not a worker thread): the gopk-clips launcher
+// spawns `<self> __omp_gopk_ingest` to run the ingest daemon. Literal must
+// match GOPK_INGEST_CLI_ARG in gopk-clips/ensure-daemon.ts.
+const GOPK_INGEST_ARG = "__omp_gopk_ingest";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === TINY_WORKER_ARG) {
@@ -290,6 +294,15 @@ export async function runCli(argv: string[]): Promise<void> {
 	// poison `workerHostEntry()` for the whole test process, forcing eval/stats/
 	// browser workers onto the same-realm inline fallback.
 	if (import.meta.main) declareWorkerHostEntry();
+
+	// Detached ingest-daemon re-entry (see gopk-clips/ensure-daemon.ts): a
+	// session that finds no live daemon spawns `<self> __omp_gopk_ingest`.
+	// Lazy import keeps the daemon graph out of normal CLI startup.
+	if (resolvedArgv[0] === GOPK_INGEST_ARG) {
+		const { runIngestDaemon } = await import("./gopk-clips/daemon");
+		await runIngestDaemon(resolvedArgv.slice(1));
+		return;
+	}
 
 	if (resolvedArgv[0] === "--smoke-test") {
 		await runSmokeTest();

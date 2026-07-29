@@ -4596,13 +4596,15 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	// Activity Memory — local-only, opt-in, READ-ONLY from this agent's side.
-	// Recording and ingestion belong entirely to the separate always-on
-	// Activity Memory app and its `gopk-ingest` daemon, which is the sole
-	// writer of the local ledger. This setting gates the `activity` tool, which
-	// only queries that ledger. Capture root, poll interval, and retention
-	// interval are the daemon's own configuration and are deliberately not
-	// settings here — it reads them from its config.json, so exposing them
-	// would have been a knob that changed nothing.
+	// Recording belongs to the separate always-on Activity Memory app; the
+	// `gopk-ingest` daemon is the sole writer of the local ledger. This
+	// setting gates the `activity` tool, which only queries that ledger, and
+	// makes session startup ensure the singleton ingest daemon is running
+	// (see src/gopk-clips/ensure-daemon.ts) so the ledger actually grows.
+	// Capture root, poll interval, and retention interval are the daemon's
+	// own configuration and are deliberately not settings here — it reads
+	// them from its config.json, so exposing them would have been a knob
+	// that changed nothing.
 	"gopkClips.enabled": {
 		type: "boolean",
 		default: false,
