@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { Effort, type FetchImpl, type Model, type OpenAICompat, type ThinkingConfig } from "@pk-nerdsaver-ai/pi-ai";
 import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 import { writeModelCache } from "@pk-nerdsaver-ai/pi-catalog/model-cache";
+import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
 import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
@@ -415,15 +416,24 @@ describe("ModelRegistry", () => {
 		});
 
 		test("collapses anthropic latest aliases into the best upstream claude family id", () => {
-			const opusVariants = canonical.getCanonicalVariants("claude-opus-4-8");
-			const haikuVariants = canonical.getCanonicalVariants("claude-haiku-4-5");
-			expect(opusVariants.some(variant => variant.selector === "demo/anthropic/claude-opus-latest")).toBe(true);
-			expect(haikuVariants.some(variant => variant.selector === "demo/anthropic/claude-haiku-latest")).toBe(true);
-			expect(
-				canonical
-					.getCanonicalVariants("claude-haiku-4-5-20251001-thinking")
-					.some(variant => variant.selector === "demo/anthropic/claude-haiku-latest"),
-			).toBe(false);
+			// Which version is "best" moves with the bundled catalog, so assert the
+			// shape of the target id instead of pinning a release.
+			for (const family of ["opus", "haiku"] as const) {
+				const alias = canonical.find("demo", `anthropic/claude-${family}-latest`);
+				if (!alias) {
+					throw new Error(`claude-${family}-latest fixture model was not registered`);
+				}
+				// A bare, undated family id — never the alias itself, a dated release,
+				// or a `-thinking` twin.
+				const canonicalId = canonical.getCanonicalId(alias) ?? "";
+				expect(canonicalId).toMatch(new RegExp(`^claude-${family}-\\d+(-\\d+)?$`));
+				expect(getBundledModel("anthropic", canonicalId)).toBeDefined();
+				expect(
+					canonical
+						.getCanonicalVariants(canonicalId)
+						.some(variant => variant.selector === `demo/anthropic/claude-${family}-latest`),
+				).toBe(true);
+			}
 		});
 
 		test("collapses wrapped gemini tool and tuning variants under the base preview id", () => {

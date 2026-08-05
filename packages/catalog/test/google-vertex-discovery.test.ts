@@ -1,5 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { resolveProviderModels } from "@pk-nerdsaver-ai/pi-catalog/model-manager";
+import { getBundledModels } from "@pk-nerdsaver-ai/pi-catalog/models";
 import { googleVertexModelManagerOptions } from "@pk-nerdsaver-ai/pi-catalog/provider-models/google";
 import {
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
@@ -44,6 +48,12 @@ const googleVertexModelsDevPayload = {
 } satisfies Record<string, unknown>;
 
 describe("google-vertex model catalog", () => {
+	let cacheDir: string | undefined;
+	afterEach(() => {
+		if (cacheDir) fs.rmSync(cacheDir, { recursive: true, force: true });
+		cacheDir = undefined;
+	});
+
 	it("maps the models.dev Vertex catalog instead of the project discovery endpoint", () => {
 		const models = mapModelsDevToModels(googleVertexModelsDevPayload, MODELS_DEV_PROVIDER_DESCRIPTORS).filter(
 			model => model.provider === "google-vertex",
@@ -76,19 +86,32 @@ describe("google-vertex model catalog", () => {
 	});
 
 	it("uses the bundled Vertex catalog without ADC project discovery", async () => {
+		let fetches = 0;
 		const options = googleVertexModelManagerOptions({
 			project: "vertex-project",
 			location: "global",
-			fetch: async () => new Response("unexpected", { status: 500 }),
+			fetch: async () => {
+				fetches += 1;
+				return new Response("unexpected", { status: 500 });
+			},
 		});
 
 		expect(options.fetchDynamicModels).toBeUndefined();
 		expect(options.staticModels).toBeUndefined();
 
-		const result = await resolveProviderModels(options, "offline");
+		// Isolate the cache DB: the default path is the developer's own catalog
+		// cache, which would otherwise decide what this resolves to.
+		cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "vertex-catalog-"));
+		const result = await resolveProviderModels(
+			{ ...options, cacheDbPath: path.join(cacheDir, "models.sqlite") },
+			"offline",
+		);
+
+		// The bundled slice verbatim — no project endpoint call, nothing dropped.
+		const bundled = getBundledModels("google-vertex");
+		expect(bundled.length).toBeGreaterThan(0);
+		expect(result.models.map(model => model.id).sort()).toEqual(bundled.map(model => model.id).sort());
 		expect(result.stale).toBe(false);
-		expect(result.models.some(model => model.id === "deepseek-ai/deepseek-v3.2-maas")).toBe(true);
-		expect(result.models.some(model => model.id === "gemini-3.5-flash")).toBe(true);
-		expect(result.models.some(model => model.id === "gemini-1.5-pro")).toBe(false);
+		expect(fetches).toBe(0);
 	});
 });
