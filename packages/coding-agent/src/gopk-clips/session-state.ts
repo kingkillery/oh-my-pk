@@ -10,10 +10,10 @@
  * Handoff contract: the daemon atomically drops `<name>.json` files (tmp-write
  * + rename) under `<captureRoot>/journal-handoff`. This host owns files from
  * the moment they appear — a file is deleted after its derivative has been
- * handed to the sink, and renamed to `<name>.json.rejected` when it cannot be
- * parsed or fails shape validation, so nothing disappears silently. Replays
- * after a crash between ingest and delete are safe: the ledger dedupes by
- * clip identity.
+ * handed to the sink. Malformed files are deleted and replaced by a scrubbed
+ * `<name>.json.rejected` diagnostic marker, so untrusted content is never
+ * retained while operators can still see that a rejection occurred. Replays
+ * after a crash between ingest and delete remain safe because the ledger deduplicates by clip identity.
  *
  * Unlike the screenpipe bridge, this host is not re-bound on agent session
  * transitions — each derivative carries the *capture* session id it was
@@ -44,8 +44,11 @@ import type { ConsentRecord } from "@pk-nerdsaver-ai/pi-context-policy";
 // keeps this module — and the standalone ingester built from it — self-contained.
 import { getInstallId } from "@pk-nerdsaver-ai/pi-utils/dirs";
 import * as logger from "@pk-nerdsaver-ai/pi-utils/logger";
-import { resolveGopkClipsPaths } from "./paths";
+import { type GopkClipsCapturePolicy, resolveGopkClipsPaths } from "./paths";
 import { DENIED_APPLICATION_IDS, MAXIMUM_RAW_CLIP_RETENTION_MS } from "./policy-constants";
+
+/** Reads the current shared capture consent for one queued derivative. */
+export type GopkClipsCapturePolicyProvider = () => GopkClipsCapturePolicy;
 
 export interface GopkClipsHostConfig {
 	/**
@@ -56,6 +59,8 @@ export interface GopkClipsHostConfig {
 	 * `<agentDir>/gopk-clips/capture`).
 	 */
 	readonly captureRoot?: string;
+	/** Called immediately before each valid queued derivative enters the ingestion sink. */
+	readonly capturePolicyProvider: GopkClipsCapturePolicyProvider;
 	readonly pollIntervalMs: number;
 	readonly cleanupIntervalMs: number;
 	/** Test seam; unset defers to {@link resolveGopkClipsPaths}. */
@@ -97,41 +102,48 @@ export function createGopkClipsHost(
 	fs.mkdirSync(handoffDir, { recursive: true });
 	fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
 
-	const consent: ConsentRecord = {
-		userId: installId,
-		deviceId: installId,
-		identityVerified: true,
-		enabled: true,
-		scope: "device",
-		remoteStorageEnabled: false,
-		policyVersion: "context-retention/v1",
-	};
-	const policy: GopkClipIngestionPolicy = {
-		enabled: true,
-		allowedApplicationIds: [],
-		deniedApplicationIds: [...DENIED_APPLICATION_IDS],
-		maximumRawClipRetentionMs: MAXIMUM_RAW_CLIP_RETENTION_MS,
-	};
-
 	const ledger = new SqliteActivityLedger(ledgerPath);
-	// Sinks are keyed by the derivative's own capture session id: the sink
-	// rejects any derivative whose session does not match its bound capture
-	// session, and one daemon run may span several capture sessions.
-	const sinks = new Map<string, GopkActivitySink>();
-	const sinkFor = (sessionId: string): GopkActivitySink => {
-		let sink = sinks.get(sessionId);
-		if (!sink) {
-			sink = createGopkActivitySink({
-				ledger,
-				consent,
-				policy,
-				capture: { userId: installId, deviceId: installId, sessionId },
-				captureRoot,
-				logger: hostLogger,
+
+	const sinkFor = (sessionId: string, capturePolicy: GopkClipsCapturePolicy): GopkActivitySink => {
+		// The policy package currently names its local-persistence contract v1.
+		// Rebuild both adapter records from the live shared policy for every
+		// queued derivative so a sink can never retain revoked consent.
+		const consent: ConsentRecord = {
+			userId: installId,
+			deviceId: installId,
+			identityVerified: true,
+			enabled: capturePolicy.enabled,
+			scope: "device",
+			remoteStorageEnabled: false,
+			policyVersion: "context-retention/v1",
+		};
+		const policy: GopkClipIngestionPolicy = {
+			enabled: capturePolicy.enabled,
+			ocrEnabled: capturePolicy.ocrEnabled,
+			allowedApplicationIds: [],
+			deniedApplicationIds: [...DENIED_APPLICATION_IDS],
+			maximumRawClipRetentionMs: MAXIMUM_RAW_CLIP_RETENTION_MS,
+		};
+		return createGopkActivitySink({
+			ledger,
+			consent,
+			policy,
+			capture: { userId: installId, deviceId: installId, sessionId },
+			captureRoot,
+			logger: hostLogger,
+		});
+	};
+	const currentCapturePolicy = (): GopkClipsCapturePolicy => {
+		try {
+			const capturePolicy = config.capturePolicyProvider();
+			if (capturePolicy?.enabled !== true) return { enabled: false, ocrEnabled: false };
+			return { enabled: true, ocrEnabled: capturePolicy.ocrEnabled === true };
+		} catch (error) {
+			hostLogger.warn("gopk-clips host could not read current capture policy; ingestion disabled", {
+				error: String(error),
 			});
-			sinks.set(sessionId, sink);
+			return { enabled: false, ocrEnabled: false };
 		}
-		return sink;
 	};
 
 	let stopped = false;
@@ -163,13 +175,16 @@ export function createGopkClipsHost(
 				continue;
 			}
 			try {
-				// The sink re-validates timestamps, attestation, and path
-				// containment; a derivative it *rejects* is logged (and its raw
-				// clip deleted) inside it and still returns normally, so the
-				// handoff file is consumed — replaying it could never succeed.
-				// A derivative it *throws* on (I/O fault, ledger contention)
-				// leaves the file in place for the next poll to retry.
-				await sinkFor(derivative.sessionId)(derivative);
+				// Resolve consent only after parsing the queue item, immediately
+				// before constructing its one-use sink. Missing, malformed, or
+				// unreadable shared policy therefore fails this derivative closed.
+				const capturePolicy = currentCapturePolicy();
+				// The sink re-validates timestamps, attestation, path containment,
+				// and re-redacts OCR to its 280-character cap. A derivative it
+				// rejects is logged (and its raw clip deleted) inside it and still
+				// returns normally, so the handoff is consumed; a thrown I/O or
+				// ledger failure leaves the file for the next poll to retry.
+				await sinkFor(derivative.sessionId, capturePolicy)(derivative);
 				await fsp.unlink(filePath);
 			} catch (error) {
 				hostLogger.warn("gopk-clips host failed to ingest derivative", {
@@ -205,8 +220,8 @@ export function createGopkClipsHost(
 	const guardedPoll = guard(pollOnce);
 	const guardedCleanup = guard(cleanupOnce);
 
-	// setTimeout chains (not setInterval) so passes never overlap, however slow
-	// a pass runs; `inFlight` lets dispose await whichever pass is running.
+	// Scheduled and explicit passes share `inFlight`, so queue consumers never
+	// overlap however slow a pass runs; dispose awaits whichever pass is last.
 	const schedulePoll = (): void => {
 		if (stopped) return;
 		pollTimer = setTimeout(() => {
@@ -235,8 +250,14 @@ export function createGopkClipsHost(
 
 	let disposed: Promise<void> | undefined;
 	return {
-		pollOnce,
-		cleanupOnce,
+		pollOnce(): Promise<void> {
+			inFlight = inFlight.then(guardedPoll);
+			return inFlight;
+		},
+		cleanupOnce(): Promise<void> {
+			inFlight = inFlight.then(guardedCleanup);
+			return inFlight;
+		},
 		dispose(): Promise<void> {
 			disposed ??= (async () => {
 				stopped = true;
@@ -252,10 +273,19 @@ export function createGopkClipsHost(
 
 async function quarantine(filePath: string, hostLogger: GopkClipsHostLogger): Promise<void> {
 	try {
-		await fsp.rename(filePath, `${filePath}${REJECTED_SUFFIX}`);
-		hostLogger.warn("gopk-clips host quarantined malformed handoff file", { file: path.basename(filePath) });
+		await fsp.rm(filePath, { force: true });
+		await fsp.writeFile(
+			`${filePath}${REJECTED_SUFFIX}`,
+			JSON.stringify({ rejectedAt: new Date().toISOString(), reason: "invalid handoff" }),
+			{ flag: "wx" },
+		);
+		hostLogger.warn("gopk-clips host discarded malformed handoff and wrote a scrubbed diagnostic", {
+			file: path.basename(filePath),
+		});
 	} catch (error) {
-		hostLogger.warn("gopk-clips host could not quarantine handoff file", {
+		// The raw handoff is removed before this path; diagnostic failure cannot
+		// preserve user content.
+		hostLogger.warn("gopk-clips host could not write rejected-handoff diagnostic", {
 			file: path.basename(filePath),
 			error: String(error),
 		});
@@ -299,9 +329,15 @@ export function parseDerivative(raw: string): GopkCapturedDerivative | undefined
 		if (typeof rawClip !== "object" || rawClip === null) return undefined;
 		if (!isNonEmptyString(rawClip.localPointer) || !isNonEmptyString(rawClip.expiresAt)) return undefined;
 	}
-	return value as GopkCapturedDerivative;
+	const derivative = { ...record };
+	if (!isValidOcrSnippet(derivative.ocrSnippet)) delete derivative.ocrSnippet;
+	return derivative as unknown as GopkCapturedDerivative;
 }
 
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0;
+}
+
+function isValidOcrSnippet(value: unknown): value is string | undefined {
+	return value === undefined || (typeof value === "string" && value.length > 0 && value.length <= 280);
 }

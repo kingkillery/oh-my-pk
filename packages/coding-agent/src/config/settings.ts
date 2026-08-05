@@ -28,13 +28,14 @@ import {
 import { JSONC, YAML } from "bun";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
 import type { ModelRole } from "../config/model-roles";
-import { loadCapability } from "../discovery";
+import { loadCapability, setSettings as setCapabilitySettings } from "../discovery";
 import { isLightTheme, setAutoThemeMapping, setColorBlindMode, setSymbolPreset } from "../modes/theme/theme";
 import { composeAgentPolicyFields } from "../orchestration/agent-execution-profile";
 import { AgentStorage } from "../session/agent-storage";
 import { normalizeToolName } from "../tools/builtin-names";
 import { type EditMode, normalizeEditMode } from "../utils/edit-mode";
 import { withFileLock } from "./file-lock";
+import { runSettingsResetHooks } from "./reset-hooks";
 import {
 	type AgentPolicySettings,
 	type BashInterceptorRule,
@@ -341,15 +342,13 @@ export class Settings {
 
 		return promise.then(
 			instance => {
-				globalInstance = instance;
-				clearBoundSettingsMethods();
+				setGlobalInstance(instance);
 				globalInstancePromise = Promise.resolve(instance);
 				return instance;
 			},
 			error => {
-				globalInstance = null;
+				setGlobalInstance(null);
 				globalInstancePromise = null;
-				clearBoundSettingsMethods();
 				throw error;
 			},
 		);
@@ -1540,6 +1539,17 @@ function clearBoundSettingsMethods(): void {
 	boundSettingsMethods = new Map<PropertyKey, unknown>();
 }
 
+/**
+ * Swap the active singleton. Capability loading reads `disabledExtensions` off
+ * the bound instance, so it is rebound here rather than held until the next
+ * `initializeWithSettings()` — a discarded instance must stop filtering loads.
+ */
+function setGlobalInstance(instance: Settings | null): void {
+	globalInstance = instance;
+	clearBoundSettingsMethods();
+	setCapabilitySettings(instance);
+}
+
 export function isSettingsInitialized(): boolean {
 	return globalInstance !== null;
 }
@@ -1549,9 +1559,11 @@ export function isSettingsInitialized(): boolean {
  * @internal
  */
 export function resetSettingsForTest(): void {
-	globalInstance = null;
+	setGlobalInstance(null);
 	globalInstancePromise = null;
-	clearBoundSettingsMethods();
+	// Modules that pinned their own reference to the discarded instance must drop
+	// it too — see config/reset-hooks.ts.
+	runSettingsResetHooks();
 }
 
 /**

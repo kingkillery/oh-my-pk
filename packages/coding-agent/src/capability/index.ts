@@ -10,6 +10,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getProjectDir, logger } from "@pk-nerdsaver-ai/pi-utils";
 
+import { registerSettingsResetHook } from "../config/reset-hooks";
 import type { Settings } from "../config/settings";
 import { clearCache as clearFsCache, findRepoRoot, cacheStats as fsCacheStats, invalidate as invalidateFs } from "./fs";
 import type {
@@ -41,6 +42,28 @@ const disabledProviders = new Set<string>();
 
 /** Settings manager for persistence (if set) */
 let settings: Settings | null = null;
+
+/**
+ * Drop the pinned `Settings` reference whenever the settings singleton is reset.
+ *
+ * Without this, `initializeWithSettings` pins an object that outlives
+ * `resetSettingsForTest()`: every later `loadCapability()` in the process keeps
+ * reading `disabledExtensions` off the discarded instance. Because test buckets
+ * share one process, a single test that disabled an extension suppressed it for
+ * every subsequent file in the run.
+ *
+ * Registered lazily on first `initializeWithSettings` so importing this module
+ * has no side effect, and idempotent via the hook set.
+ */
+let capabilityResetHookRegistered = false;
+function registerCapabilitySettingsReset(): void {
+	if (capabilityResetHookRegistered) return;
+	capabilityResetHookRegistered = true;
+	registerSettingsResetHook(() => {
+		settings = null;
+		disabledProviders.clear();
+	});
+}
 
 // =============================================================================
 // Registration API
@@ -96,6 +119,16 @@ export function registerProvider<T>(capabilityId: string, provider: Provider<T>)
 // =============================================================================
 
 /**
+ * Whether an item is suppressed by a `disabledExtensions` entry, matching both
+ * its current ID and any legacy forms its capability still honors.
+ */
+export function isExtensionDisabled(source: SourceMeta, disabledIds: ReadonlySet<string>): boolean {
+	if (disabledIds.size === 0) return false;
+	if (source.extensionId !== undefined && disabledIds.has(source.extensionId)) return true;
+	return source.legacyExtensionIds?.some(id => disabledIds.has(id)) ?? false;
+}
+
+/**
  * Async loading logic shared by loadCapability().
  */
 async function loadImpl<T>(
@@ -149,9 +182,17 @@ async function loadImpl<T>(
 				continue;
 			}
 
-			const extensionId = capability.toExtensionId?.(itemWithSource);
-			if (extensionId && disabledExtensionIds.has(extensionId)) {
-				continue;
+			const extensionId = capability.toExtensionId?.(itemWithSource, ctx);
+			if (extensionId) {
+				itemWithSource._source.extensionId = extensionId;
+				// Entries persisted under an older ID format must keep disabling.
+				const legacyIds = capability.toLegacyExtensionIds?.(itemWithSource, ctx);
+				if (legacyIds && legacyIds.length > 0) {
+					itemWithSource._source.legacyExtensionIds = legacyIds;
+				}
+				if (isExtensionDisabled(itemWithSource._source, disabledExtensionIds)) {
+					continue;
+				}
 			}
 
 			itemWithSource._source.providerName = provider.displayName;
@@ -245,10 +286,20 @@ export async function loadCapability<T>(capabilityId: string, options: LoadOptio
 // =============================================================================
 
 /**
+ * Bind the settings instance capability loads read `disabledExtensions` from.
+ * The global settings singleton keeps this in sync as it is (re)initialized and
+ * discarded, so a replaced instance cannot keep filtering later loads.
+ */
+export function setSettings(activeSettings: Settings | null): void {
+	settings = activeSettings;
+}
+
+/**
  * Initialize capability system with settings manager for persistence.
  * Call this once on startup to enable persistent provider state.
  */
 export function initializeWithSettings(activeSettings: Settings): void {
+	registerCapabilitySettingsReset();
 	settings = activeSettings;
 	// Load disabled providers from settings
 	const disabled = settings.get("disabledProviders");

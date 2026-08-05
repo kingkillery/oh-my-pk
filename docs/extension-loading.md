@@ -30,15 +30,15 @@ Extension loading builds a list of module entry files, imports each module with 
 
 Native `extension-module` discovery comes from:
 
-- Project directory: `<cwd>/.omp/extensions`
-- User directory: `~/.omp/agent/extensions`
-- Native legacy/settings JSON entries: `<cwd>/.omp/settings.json#extensions` and `~/.omp/agent/settings.json#extensions`
+- Project directory: `<cwd>/.ompk/extensions`
+- User directory: `~/.ompk/agent/extensions`
+- Native legacy/settings JSON entries: `<cwd>/.ompk/settings.json#extensions` and `~/.ompk/agent/settings.json#extensions`
 
-The project root is the native provider's `.omp` directory (`SOURCE_PATHS.native.projectDir`), cwd-only; it does not walk ancestors. The user root is the active profile's agent directory via `getAgentDir()`, so under `oh-my-pk --profile <name>` it becomes `~/.omp/profiles/<name>/agent/extensions` (and it honors `PI_CODING_AGENT_DIR`). See [Profiles](./config-usage.md#profiles).
+The project root is the native provider's `.ompk` directory (`SOURCE_PATHS.native.projectDir`), cwd-only; it does not walk ancestors. The user root is the active profile's agent directory via `getAgentDir()`, so under `oh-my-pk --profile <name>` it becomes `~/.ompk/profiles/<name>/agent/extensions` (and it honors `PI_CODING_AGENT_DIR`). See [Profiles](./config-usage.md#profiles).
 
 Notes:
 
-- Native auto-discovery is currently `.omp` based.
+- Native auto-discovery is currently `.ompk` based.
 - Legacy `.pi` is still accepted in package manifests (`pi.extensions`) and project override lookup, but `.pi/extensions` is not a native root here.
 
 ### 2) Discovered JS/TS hook factories
@@ -64,18 +64,18 @@ Configured path sources in the main session startup path (`sdk.ts`):
 
 Settings files:
 
-- User: `~/.omp/agent/config.yml` (or custom agent dir via `PI_CODING_AGENT_DIR`)
-- Project/native settings capability: `<cwd>/.omp/config.yml` and `<cwd>/.omp/settings.json`
+- User: `~/.ompk/agent/config.yml` (or custom agent dir via `PI_CODING_AGENT_DIR`)
+- Project/native settings capability: `<cwd>/.ompk/config.yml` and `<cwd>/.ompk/settings.json`
 
 Native extension-module discovery also reads legacy JSON extension lists from:
 
-- `~/.omp/agent/settings.json`
-- `<cwd>/.omp/settings.json`
+- `~/.ompk/agent/settings.json`
+- `<cwd>/.ompk/settings.json`
 
 Examples:
 
 ```yaml
-# ~/.omp/agent/config.yml
+# ~/.ompk/agent/config.yml
 extensions:
   - ~/my-exts/safety.ts
   - ./local/ext-pack
@@ -83,7 +83,7 @@ extensions:
 
 ```json
 {
-  "extensions": ["./.omp/extensions/my-extra"]
+  "extensions": ["./.ompk/extensions/my-extra"]
 }
 ```
 
@@ -118,6 +118,25 @@ Example:
 disabledExtensions:
   - extension-module:foo
 ```
+
+### Disable specific context files
+
+Context files are scoped by location, not by file name, so disabling one `AGENTS.md`
+leaves same-named files elsewhere active:
+
+- `context-file:<level>:./<path relative to the repo root>` inside a git repo
+- `context-file:<level>:~/<path relative to home>` outside a repo but under home
+- `context-file:<level>:<absolute path>` otherwise
+
+```yaml
+disabledExtensions:
+  - context-file:project:./packages/app/AGENTS.md
+  - context-file:user:~/.claude/CLAUDE.md
+```
+
+Bare-basename ids (`context-file:project:AGENTS.md`) are the superseded form. They
+still disable matching files for back-compat, but they match by file name, so they
+suppress every same-named context file at that level. Prefer the path-scoped ids.
 
 ---
 
@@ -230,7 +249,7 @@ When events run through `ExtensionRunner`, handler exceptions are caught and emi
 ### User-level
 
 ```text
-~/.omp/agent/
+~/.ompk/agent/
   config.yml
   extensions/
     guardrails.ts
@@ -242,7 +261,7 @@ When events run through `ExtensionRunner`, handler exceptions are caught and emi
 
 ```text
 <repo>/
-  .omp/
+  .ompk/
     settings.json
     extensions/
       checks/

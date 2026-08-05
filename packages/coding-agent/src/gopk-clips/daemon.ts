@@ -34,7 +34,7 @@ import * as path from "node:path";
 // Subpath import keeps the compiled gopk-ingest.exe free of the pi_natives
 // native addon (which the pi-utils barrel eagerly loads). See session-state.ts.
 import * as logger from "@pk-nerdsaver-ai/pi-utils/logger";
-import { resolveGopkClipsPaths } from "./paths";
+import { resolveGopkClipsPaths, resolveSharedGopkClipsCapturePolicy } from "./paths";
 import { createGopkClipsHost, type GopkClipsHostState } from "./session-state";
 
 const POLL_INTERVAL_MS = 15_000;
@@ -115,6 +115,7 @@ async function main(): Promise<void> {
 		host = createGopkClipsHost({
 			captureRoot,
 			ledgerPath,
+			capturePolicyProvider: resolveSharedGopkClipsCapturePolicy,
 			pollIntervalMs: POLL_INTERVAL_MS,
 			cleanupIntervalMs: CLEANUP_INTERVAL_MS,
 		});
