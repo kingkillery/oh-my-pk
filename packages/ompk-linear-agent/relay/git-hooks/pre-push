@@ -1,11 +1,14 @@
 #!/bin/sh
 # ompk fence guard: blocks pushes from runners whose queue lease is no
 # longer current (superseded attempt, resolved reconcile, terminal job).
+# In broker mode (OMPK_BROKER_URL set), also enforces push-to-ompk/*-only
+# branch naming so a compromised container cannot push to main or other
+# protected refs.
 #
 # Installed for relay-spawned children via a GIT_CONFIG_* core.hooksPath
 # override; the fence triple arrives in the environment. Outside a relay
 # run (no OMPK_FENCE_URL) the guard is a no-op so the hooks directory is
-# safe to reuse.
+# safe to reference from .gitconfig in development.
 #
 # Fail-closed on network errors: a partitioned runner cannot verify its
 # lease, and a partitioned runner is exactly the double-writer this guard
@@ -18,6 +21,26 @@ if [ -z "$OMPK_FENCE_JOB" ] || [ -z "$OMPK_FENCE_ATTEMPT" ] || [ -z "$OMPK_FENCE
 	exit 1
 fi
 
+# Broker mode: enforce push-to-ompk/*-only branch naming.
+# Reads refspecs from stdin (git pre-push protocol):
+#   <local-ref> <local-sha1> <remote-ref> <remote-sha1>
+# Each remote-ref must be under refs/heads/ompk/. This runs before any
+# network connection, so a rejected push never reaches the remote.
+if [ -n "$OMPK_BROKER_URL" ]; then
+	while IFS=' ' read -r _local_ref _local_sha remote_ref _remote_sha; do
+		[ -z "$remote_ref" ] && continue
+		case "$remote_ref" in
+			refs/heads/ompk/*)
+				;;
+			*)
+				echo "ompk fence guard: push to '${remote_ref}' rejected: only refs/heads/ompk/* is permitted in container mode" >&2
+				exit 1
+				;;
+		esac
+	done
+fi
+
+# Fence check: validate the queue lease is still current with the Worker.
 body="{\"jobId\":\"$OMPK_FENCE_JOB\",\"attemptId\":\"$OMPK_FENCE_ATTEMPT\",\"leaseToken\":\"$OMPK_FENCE_TOKEN\"}"
 
 if curl -fsS --max-time 10 -X POST -H "Content-Type: application/json" \
