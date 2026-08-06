@@ -22,17 +22,16 @@
  * Container isolation
  * -------------------
  * When OMPK_RELAY_CONTAINER_IMAGE is set, each job phase runs inside a
- * per-phase podman container. The agent phase uses a Git credential broker
- * (loopback HTTP server, one per job) so the GitHub installation token never
- * enters the container environment or logs. The broker also enforces
- * push-to-ompk/*-branches-only; the pre-push hook reads OMPK_BROKER_URL and
- * validates remote refs before any push is allowed.
- *
- * NOTE: Per-job podman network + CONNECT proxy (egress allow-listing by phase)
- * are tracked in issue #41 as a follow-up. Currently containers run with
- * --network=host; the broker limits token exposure but outbound egress is still
- * unrestricted. The acceptance criterion "agent phase cannot reach arbitrary
- * hosts" requires the follow-up proxy implementation.
+ * per-phase podman container backed by a per-job isolated podman network.
+ * A stage-scoped CONNECT proxy enforces egress policy:
+ *   setup phase  → package registries + github.com
+ *   agent phase  → Anthropic API only; GitHub access is mediated by the broker
+ * The agent phase uses a Git credential broker (loopback HTTP server, one per
+ * job) so the GitHub installation token never enters the container environment
+ * or logs. The broker also enforces push-to-ompk/*-branches-only; the
+ * pre-push hook calls OMPK_BROKER_URL and validates remote refs before any
+ * push is allowed. Fence checks and git operations are routed through the
+ * broker so the container needs no direct Worker or github.com connectivity.
  *
  * Just-in-time publish token
  * --------------------------
@@ -63,9 +62,133 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
+import { createConnection, createServer, type AddressInfo } from "node:net";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// ─── Stage-scoped egress policy ───────────────────────────────────────────────
+
+/**
+ * CONNECT proxy allowlist for the repo setup phase.
+ * Grants outbound access to package registries and GitHub (for dependency
+ * sources), but nothing else. All entries are "host:port" strings.
+ */
+export const SETUP_ALLOWED_HOSTS: ReadonlySet<string> = new Set([
+	"github.com:443",
+	"api.github.com:443",
+	"codeload.github.com:443",
+	"objects.githubusercontent.com:443",
+	"raw.githubusercontent.com:443",
+	// npm / yarn / pnpm
+	"registry.npmjs.org:443",
+	"registry.npmjs.org:80",
+	"registry.yarnpkg.com:443",
+	// PyPI
+	"pypi.org:443",
+	"files.pythonhosted.org:443",
+	// Rust / crates.io
+	"crates.io:443",
+	"static.crates.io:443",
+]);
+
+/**
+ * CONNECT proxy allowlist for the agent execution phase.
+ * Only the Anthropic API is reachable directly; GitHub access is mediated
+ * exclusively through the per-job credential broker (/gh/ proxy routes),
+ * so the real installation token never enters the container environment.
+ */
+export const AGENT_ALLOWED_HOSTS: ReadonlySet<string> = new Set([
+	"api.anthropic.com:443",
+]);
+
+/** Handle returned by startEgressProxy. */
+export interface EgressProxyHandle {
+	/** Port the proxy is listening on. */
+	readonly port: number;
+	/** Stop the proxy server and release the port. */
+	stop(): void;
+}
+
+/**
+ * Start a per-job HTTP CONNECT proxy on a random port.
+ *
+ * Only CONNECT-method tunnels are handled; plain HTTP forwarding is
+ * intentionally unsupported (the container should use NO_PROXY for any
+ * HTTP-only traffic to the gateway/broker).
+ *
+ * Phase controls the allowlist:
+ *   setup  → SETUP_ALLOWED_HOSTS  (registries + github.com)
+ *   agent  → AGENT_ALLOWED_HOSTS  (Anthropic API only; git goes via broker)
+ *
+ * Blocked destinations receive 403; unreachable allowed destinations 502.
+ * Fail-closed: malformed CONNECT requests get 400 and the socket is destroyed.
+ *
+ * @param phase       "setup" or "agent"
+ * @param bindAddress Address to listen on; defaults to "0.0.0.0" so the
+ *                    proxy is reachable from inside a per-job podman network
+ *                    via the bridge gateway address.
+ */
+export function startEgressProxy(
+	phase: "setup" | "agent",
+	bindAddress = "0.0.0.0",
+): Promise<EgressProxyHandle> {
+	const allowed = phase === "setup" ? SETUP_ALLOWED_HOSTS : AGENT_ALLOWED_HOSTS;
+	return new Promise<EgressProxyHandle>((resolve, reject) => {
+		const server = createServer(clientSocket => {
+			let buf = "";
+			clientSocket.on("error", () => {});
+			clientSocket.on("data", function onData(chunk: Buffer) {
+				buf += chunk.toString("binary");
+				const headEnd = buf.indexOf("\r\n\r\n");
+				if (headEnd === -1) return;
+				clientSocket.removeListener("data", onData);
+
+				const firstLine = buf.slice(0, buf.indexOf("\r\n"));
+				const m = /^CONNECT ([^\s:]+):(\d+) HTTP\/1\.[01]$/.exec(firstLine);
+				if (!m) {
+					clientSocket.write("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+					clientSocket.destroy();
+					return;
+				}
+				const host = m[1]!;
+				const port = parseInt(m[2]!, 10);
+				const target = `${host}:${port}`;
+
+				if (!allowed.has(target)) {
+					const msg = `CONNECT to ${target} denied by ompk egress policy (${phase} phase)`;
+					clientSocket.write(
+						`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: ${msg.length}\r\n\r\n${msg}`,
+					);
+					clientSocket.destroy();
+					return;
+				}
+
+				const upstream = createConnection({ host, port }, () => {
+					clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+					// Flush any bytes already received after the CONNECT headers.
+					const tail = buf.slice(headEnd + 4);
+					if (tail.length > 0) upstream.write(Buffer.from(tail, "binary"));
+					upstream.pipe(clientSocket);
+					clientSocket.pipe(upstream);
+				});
+				upstream.on("error", () => {
+					if (!clientSocket.destroyed) {
+						clientSocket.write("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+						clientSocket.destroy();
+					}
+				});
+				clientSocket.on("error", () => upstream.destroy());
+			});
+		});
+
+		server.on("error", reject);
+		server.listen(0, bindAddress, () => {
+			const { port } = server.address() as AddressInfo;
+			resolve({ port, stop: () => server.close() });
+		});
+	});
+}
 
 const WORKER_URL = process.env.WORKER_URL ?? "https://ompk-linear-agent.pkkidking.workers.dev";
 const RELAY_TOKEN = process.env.RELAY_TOKEN;
@@ -479,6 +602,25 @@ export interface ContainerRunOptions {
 	home?: string;
 	gitHooksDir?: string;
 	name?: string;
+	/**
+	 * Per-job podman network name. When set, containers join this network
+	 * instead of the host network. Callers must create the network before
+	 * launching containers and remove it in the job's finally block.
+	 * Defaults to "host" (bare host network, the previous behaviour).
+	 */
+	network?: string;
+	/**
+	 * HTTP_PROXY / HTTPS_PROXY value injected into the container environment
+	 * so all internet-bound traffic is routed through the stage-scoped egress
+	 * proxy. When absent no proxy vars are injected.
+	 */
+	egressProxyUrl?: string;
+	/**
+	 * NO_PROXY value injected into the container environment. Typically the
+	 * podman network gateway address so the credential broker is reachable
+	 * without being routed through the CONNECT proxy.
+	 */
+	noProxyHosts?: string;
 }
 
 function appendContainerEnv(args: string[], env: NodeJS.ProcessEnv): void {
@@ -503,10 +645,11 @@ function buildContainerBaseArgs(
 		"/workspace",
 		"--tmpfs",
 		`${home}:rw,mode=700`,
-		// TODO(#41 follow-up): Replace --network=host with a per-job podman
-		// network routed through the CONNECT proxy so the agent phase can only
-		// reach the Anthropic API and the local credential broker.
-		"--network=host",
+		// Use the per-job isolated network when provided; fall back to host
+		// network for backwards compat (bare mode / no podman network).
+		`--network=${options.network ?? "host"}`,
+		// Suppress podman's automatic HTTP_PROXY injection; we inject our own
+		// stage-scoped proxy URL via the container environment explicitly.
 		"--http-proxy=false",
 		"--memory",
 		options.memory ?? CONTAINER_MEMORY,
@@ -530,10 +673,15 @@ export function deriveContainerName(jobId: string, attemptId: string, phase: "se
 /**
  * Build a podman-compatible container argv for the untrusted agent phase.
  *
- * Security: GH_TOKEN is never placed in the container env. When a broker URL
- * is provided, the container's git credential helper is pointed at the local
- * broker instead, which issues JIT tokens without the container ever seeing
- * the underlying installation token.
+ * Security invariants:
+ *   - GH_TOKEN never enters the container env. Git credentials are brokered.
+ *   - When a broker URL is provided, OMPK_FENCE_URL is redirected to the
+ *     broker's /fence-check endpoint so fence validation does not require
+ *     direct Worker connectivity from the container.
+ *   - The insteadOf rewrite redirects all github.com git traffic through the
+ *     broker's /gh/ proxy so the agent phase needs no direct github.com access.
+ *   - When options.egressProxyUrl is set, HTTP_PROXY / HTTPS_PROXY / NO_PROXY
+ *     are injected so all internet traffic flows through the stage-scoped proxy.
  */
 export function buildContainerArgs(
 	job: Pick<Job, "model" | "prompt" | "source">,
@@ -560,15 +708,35 @@ export function buildContainerArgs(
 	}
 
 	if (job.source === "github" && brokerUrl) {
-		// Broker mode: the credential helper inside the container calls the
-		// local broker instead of the Worker directly. The real token stays on
-		// the host. GH_TOKEN is never set in the container env.
+		// Broker mode: route all github.com git traffic and fence checks through
+		// the per-job credential broker so the agent container needs no direct
+		// connectivity to github.com or the Cloudflare Worker.
+		//
+		// git config layout (index 0 is always core.hooksPath):
+		//   1: credential.helper → ompk-git-credential (fetches JIT token from broker)
+		//   2: url.${brokerUrl}/gh/.insteadOf → https://github.com/
+		//      Rewrites all github.com HTTPS URLs to the broker's /gh/ HTTP proxy
+		//      so git never makes a direct TLS connection to github.com.
 		containerEnv.OMPK_BROKER_URL = brokerUrl;
-		containerEnv.GIT_CONFIG_COUNT = "2";
+		// Route fence checks through the broker so the container doesn't need
+		// direct connectivity to the Cloudflare Worker.
+		containerEnv.OMPK_FENCE_URL = `${brokerUrl}/fence-check`;
+		containerEnv.GIT_CONFIG_COUNT = "3";
 		containerEnv.GIT_CONFIG_KEY_1 = "credential.helper";
 		containerEnv.GIT_CONFIG_VALUE_1 = `${CONTAINER_GIT_HOOKS_DIR}/ompk-git-credential`;
+		containerEnv.GIT_CONFIG_KEY_2 = `url.${brokerUrl}/gh/.insteadOf`;
+		containerEnv.GIT_CONFIG_VALUE_2 = "https://github.com/";
 	} else {
 		containerEnv.GIT_CONFIG_COUNT = "1";
+	}
+
+	// Inject the stage-scoped egress proxy when the container runs on an
+	// isolated per-job network. NO_PROXY must exclude the gateway/broker so
+	// HTTP calls to the broker bypass the CONNECT proxy.
+	if (options.egressProxyUrl) {
+		containerEnv.HTTP_PROXY = options.egressProxyUrl;
+		containerEnv.HTTPS_PROXY = options.egressProxyUrl;
+		if (options.noProxyHosts) containerEnv.NO_PROXY = options.noProxyHosts;
 	}
 
 	return [
@@ -577,6 +745,7 @@ export function buildContainerArgs(
 		...buildOmpArgs(job.model, job.prompt),
 	];
 }
+
 
 /** Environment for the repo-declared setup hook: system basics, never tokens. */
 export function buildSetupHookEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -598,6 +767,13 @@ function buildContainerSetupArgs(
 		PATH: options.path ?? CONTAINER_PATH,
 		HOME: options.home ?? CONTAINER_HOME,
 	};
+	// Inject the stage-scoped egress proxy when running on a per-job network.
+	// egressProxyUrl takes precedence over whatever HTTP_PROXY is in env.
+	if (options.egressProxyUrl) {
+		containerEnv.HTTP_PROXY = options.egressProxyUrl;
+		containerEnv.HTTPS_PROXY = options.egressProxyUrl;
+		if (options.noProxyHosts) containerEnv.NO_PROXY = options.noProxyHosts;
+	}
 	// Setup hooks run without git-hooks (no fence guard needed; no pushes).
 	return [...buildContainerBaseArgs(workspace, containerEnv, options, false), "bash", ".ompk/setup.sh"];
 }
@@ -804,50 +980,216 @@ async function stopNamedContainer(name: string, runtimeChild: ChildProcess | und
 	throw lastError instanceof Error ? lastError : new Error("container cleanup failed");
 }
 
+// ─── Per-job podman network ───────────────────────────────────────────────────
+
+export interface JobNetworkHandle {
+	/** The podman network name (ompk-<safe-job-attempt>). */
+	name: string;
+	/** The gateway IP of the network (host side); bind the proxy and broker here. */
+	gatewayIp: string;
+	/** Remove the network. Call in the job's finally block. */
+	remove: () => Promise<void>;
+}
+
+/**
+ * Create a per-job isolated podman network and return its gateway IP.
+ *
+ * The `--internal` flag prevents outbound routing; all internet traffic from
+ * containers on this network must pass through the stage-scoped CONNECT proxy
+ * that is bound to the gateway address.
+ *
+ * The network is created synchronously and inspected to discover the gateway.
+ * Callers must call `handle.remove()` in the job's finally block.
+ */
+export async function createJobNetwork(jobId: string, attemptId: string): Promise<JobNetworkHandle> {
+	const safeSuffix = `${jobId}-${attemptId}`.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 60);
+	const name = `ompk-${safeSuffix}`;
+
+	const createProc = Bun.spawn([CONTAINER_BIN, "network", "create", "--internal", name], {
+		env: process.env,
+		stdout: "ignore",
+		stderr: "pipe",
+	});
+	const createExit = await createProc.exited;
+	if (createExit !== 0) {
+		const errText = createProc.stderr ? await new Response(createProc.stderr).text() : "";
+		throw new Error(
+			`failed to create podman network ${name}: ${errText.trim() || `exit code ${createExit}`}`,
+		);
+	}
+
+	// Inspect to get the gateway address. podman outputs a JSON array.
+	const inspectProc = Bun.spawn([CONTAINER_BIN, "network", "inspect", name], {
+		env: process.env,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const inspectExit = await inspectProc.exited;
+	if (inspectExit !== 0) {
+		const errText = inspectProc.stderr ? await new Response(inspectProc.stderr).text() : "";
+		// Best-effort cleanup before throwing.
+		await Bun.spawn([CONTAINER_BIN, "network", "rm", "--force", name], {
+			env: process.env,
+			stdout: "ignore",
+			stderr: "ignore",
+		}).exited.catch(() => undefined);
+		throw new Error(
+			`failed to inspect podman network ${name}: ${errText.trim() || `exit code ${inspectExit}`}`,
+		);
+	}
+
+	const inspectText = inspectProc.stdout ? await new Response(inspectProc.stdout).text() : "";
+	let gatewayIp: string | undefined;
+	try {
+		// podman network inspect returns [{..., "subnets": [{"subnet": "...", "gateway": "..."}], ...}]
+		const parsed: unknown = JSON.parse(inspectText);
+		if (Array.isArray(parsed) && parsed.length > 0) {
+			const net = parsed[0] as Record<string, unknown>;
+			const subnets = net["subnets"] ?? net["Subnets"];
+			if (Array.isArray(subnets) && subnets.length > 0) {
+				const first = subnets[0] as Record<string, unknown>;
+				const gw = first["gateway"] ?? first["Gateway"];
+				if (typeof gw === "string" && gw.length > 0) gatewayIp = gw;
+			}
+		}
+	} catch {
+		// JSON parse failure: fall through to the error below.
+	}
+	if (!gatewayIp) {
+		await Bun.spawn([CONTAINER_BIN, "network", "rm", "--force", name], {
+			env: process.env,
+			stdout: "ignore",
+			stderr: "ignore",
+		}).exited.catch(() => undefined);
+		throw new Error(`podman network ${name} has no gateway in inspect output`);
+	}
+
+	return {
+		name,
+		gatewayIp,
+		remove: async () => {
+			await Bun.spawn([CONTAINER_BIN, "network", "rm", "--force", name], {
+				env: process.env,
+				stdout: "ignore",
+				stderr: "ignore",
+			}).exited;
+		},
+	};
+}
+
 // ─── Git credential broker ────────────────────────────────────────────────────
 
 /**
- * Handle returned by startGitBroker. The url is a loopback address reachable
- * from containers running with --network=host.
+ * Handle returned by startGitBroker.
+ *
+ * `url` is the address of the broker — either `http://127.0.0.1:<port>` in
+ * legacy host-network mode or `http://<gatewayIp>:<port>` when running with
+ * a per-job isolated podman network.
  */
 export interface GitBrokerHandle {
-	/** http://127.0.0.1:<port> — set as OMPK_BROKER_URL in the container env. */
+	/** http://<host>:<port> — set as OMPK_BROKER_URL in the container env. */
 	url: string;
 	/** Shut down the broker server. Call in the job's finally block. */
 	stop: () => Promise<void>;
 }
 
-/** Options for startGitBroker. fetchImpl is injected by tests. */
+/** Options for startGitBroker. Injectables (fetchImpl) are used by tests. */
 export interface GitBrokerOptions {
 	jobId: string;
 	attemptId: string;
 	leaseToken: string;
 	/** Worker /github-token endpoint for JIT token issuance. */
 	workerTokenUrl: string;
+	/**
+	 * Worker /fence-check endpoint. When set, POST /fence-check on the broker
+	 * is proxied to this URL so the container does not need direct Worker
+	 * connectivity. Required when running with a per-job isolated network.
+	 */
+	workerFenceUrl?: string;
 	/** Fetch implementation override; defaults to the global fetch. */
 	fetchImpl?: (url: string | URL, init?: RequestInit) => Promise<Response>;
+	/**
+	 * Address to bind the broker server to.
+	 * Defaults to "127.0.0.1" (loopback, for --network=host containers).
+	 * Set to the podman network gateway IP when using a per-job network so the
+	 * broker is reachable from inside the isolated container.
+	 */
+	bindAddress?: string;
 }
 
 /**
- * Start a per-job Git credential broker on a random loopback port.
+ * Start a per-job Git credential + operations broker on a random port.
  *
- * The broker holds the fence triple (never the installation token directly)
- * and fetches a JIT token from the Worker on demand. This decouples the
- * container from the real token: git inside the container calls the broker's
- * /credential endpoint via the ompk-git-credential helper, and the broker
- * returns fresh credentials without the token ever entering the container env.
+ * Endpoints
+ * ---------
+ * GET /credential?host=<host>
+ *   Called by the ompk-git-credential helper in the container. Fetches a
+ *   JIT token from the Worker (fence-authenticated) and returns it in the
+ *   git credential protocol format (username= / password= lines).
+ *   Only github.com is served; all other hosts receive 403.
  *
- * The broker additionally enforces branch naming via POST /push-check: the
- * pre-push hook sends the target refs and the broker rejects anything outside
- * the refs/heads/ompk/* namespace.
+ * POST /push-check
+ *   Body: { refs: string[] } — the remote refs being pushed to.
+ *   Rejects any ref outside the refs/heads/ompk/* namespace (403).
+ *   Returns 200 "ok" when all refs are permitted.
+ *
+ * POST /fence-check
+ *   Proxies the fence-check body to the Worker /fence-check URL and mirrors
+ *   the response. Allows the pre-push hook to validate its lease without a
+ *   direct connection to the Cloudflare Worker. Only active when
+ *   options.workerFenceUrl is set.
+ *
+ * GET|POST /gh/<path>
+ *   Git smart-HTTP proxy for github.com. Fetches a JIT token and forwards
+ *   the request to https://github.com/<path> with Authorization injected.
+ *   The insteadOf git config in buildContainerArgs rewrites github.com URLs
+ *   to /gh/ so git never opens a direct TLS connection to github.com.
  *
  * Lifecycle: start before the agent container, stop in the job's finally block.
  */
 export async function startGitBroker(options: GitBrokerOptions): Promise<GitBrokerHandle> {
-	const { jobId, attemptId, leaseToken, workerTokenUrl, fetchImpl = fetch } = options;
+	const {
+		jobId,
+		attemptId,
+		leaseToken,
+		workerTokenUrl,
+		workerFenceUrl,
+		fetchImpl = fetch,
+		bindAddress = "127.0.0.1",
+	} = options;
+
+	/** Fetch a fresh JIT token from the Worker. Throws on error. */
+	const fetchJitToken = async (): Promise<string> => {
+		let jitRes: Response;
+		try {
+			jitRes = await fetchImpl(workerTokenUrl, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ jobId, attemptId, leaseToken }),
+			});
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			throw new Error(`JIT token fetch error: ${msg}`);
+		}
+		if (!jitRes.ok) {
+			const body = await jitRes.text().catch(() => "");
+			throw new Error(`JIT token fetch failed: ${jitRes.status} ${body}`);
+		}
+		const rawData: unknown = await jitRes.json().catch(() => null);
+		if (
+			rawData === null ||
+			typeof rawData !== "object" ||
+			!("token" in rawData) ||
+			typeof (rawData as Record<string, unknown>)["token"] !== "string" ||
+			(rawData as Record<string, unknown>)["token"] === ""
+		) {
+			throw new Error("JIT token response has invalid or missing token");
+		}
+		return (rawData as Record<string, unknown>)["token"] as string;
+	};
 
 	const server = Bun.serve({
-		hostname: "127.0.0.1",
+		hostname: bindAddress,
 		port: 0, // OS picks a free port; available as server.port immediately.
 		async fetch(req: Request): Promise<Response> {
 			const url = new URL(req.url);
@@ -858,42 +1200,18 @@ export async function startGitBroker(options: GitBrokerOptions): Promise<GitBrok
 				const host = url.searchParams.get("host") ?? "";
 				if (host !== "github.com") {
 					// Refuse credentials for any host other than github.com.
-					// This is defence-in-depth: the CONNECT proxy (follow-up) will
-					// provide network-level enforcement; the broker enforces at the
-					// credential-issuance layer.
 					return new Response(
 						`refused: credential broker only serves github.com (got: ${host})\n`,
 						{ status: 403 },
 					);
 				}
-				// Fetch a JIT token from the Worker using the fence triple.
-				let jitRes: Response;
+				let jitToken: string;
 				try {
-					jitRes = await fetchImpl(workerTokenUrl, {
-						method: "POST",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({ jobId, attemptId, leaseToken }),
-					});
+					jitToken = await fetchJitToken();
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : String(err);
-					return new Response(`JIT token fetch error: ${msg}\n`, { status: 502 });
+					return new Response(`${msg}\n`, { status: 502 });
 				}
-				if (!jitRes.ok) {
-					const body = await jitRes.text().catch(() => "");
-					return new Response(`JIT token fetch failed: ${jitRes.status} ${body}\n`, { status: 502 });
-				}
-				// Parse the token from the Worker response without using `any`.
-				const rawData: unknown = await jitRes.json().catch(() => null);
-				if (
-					rawData === null ||
-					typeof rawData !== "object" ||
-					!("token" in rawData) ||
-					typeof (rawData as Record<string, unknown>)["token"] !== "string" ||
-					(rawData as Record<string, unknown>)["token"] === ""
-				) {
-					return new Response("JIT token response has invalid or missing token\n", { status: 502 });
-				}
-				const jitToken = (rawData as Record<string, unknown>)["token"] as string;
 				return new Response(`username=x-access-token\npassword=${jitToken}\n`);
 			}
 
@@ -924,12 +1242,81 @@ export async function startGitBroker(options: GitBrokerOptions): Promise<GitBrok
 				return new Response("ok\n");
 			}
 
+			// POST /fence-check
+			// Proxies fence validation to the Worker so the container doesn't need
+			// direct connectivity to the Cloudflare Worker URL.
+			if (req.method === "POST" && url.pathname === "/fence-check") {
+				if (!workerFenceUrl) {
+					return new Response("fence-check proxy not configured\n", { status: 503 });
+				}
+				let fenceRes: Response;
+				try {
+					fenceRes = await fetchImpl(workerFenceUrl, {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: await req.text(),
+					});
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return new Response(`fence-check proxy error: ${msg}\n`, { status: 502 });
+				}
+				return new Response(fenceRes.body, {
+					status: fenceRes.status,
+					headers: { "content-type": fenceRes.headers.get("content-type") ?? "text/plain" },
+				});
+			}
+
+			// GET|POST /gh/<path>
+			// Git smart-HTTP proxy for github.com. Forwards the request to GitHub
+			// with a fresh JIT token injected as Authorization. The git insteadOf
+			// rewrite in buildContainerArgs redirects all github.com URLs here so
+			// the agent container has no direct github.com network access.
+			if (url.pathname.startsWith("/gh/")) {
+				const ghPath = url.pathname.slice("/gh".length); // "/owner/repo.git/..."
+				const ghUrl = `https://github.com${ghPath}${url.search}`;
+				let jitToken: string;
+				try {
+					jitToken = await fetchJitToken();
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return new Response(`git proxy error: ${msg}\n`, { status: 502 });
+				}
+				const upstreamHeaders: Record<string, string> = {
+					Authorization: `Basic ${btoa(`x-access-token:${jitToken}`)}`,
+					"User-Agent": "git/ompk-relay",
+				};
+				// Forward Content-Type and Git-Protocol headers from the client.
+				const ct = req.headers.get("content-type");
+				if (ct) upstreamHeaders["Content-Type"] = ct;
+				const gp = req.headers.get("git-protocol");
+				if (gp) upstreamHeaders["Git-Protocol"] = gp;
+				let ghRes: Response;
+				try {
+					ghRes = await fetchImpl(ghUrl, {
+						method: req.method,
+						headers: upstreamHeaders,
+						// Pass the body for POST (upload-pack / receive-pack) unchanged.
+						body: req.method === "GET" ? undefined : req.body,
+					});
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return new Response(`git proxy upstream error: ${msg}\n`, { status: 502 });
+				}
+				// Mirror the response headers that git cares about.
+				const respHeaders: Record<string, string> = {};
+				const ghCt = ghRes.headers.get("content-type");
+				if (ghCt) respHeaders["Content-Type"] = ghCt;
+				const ghCacheControl = ghRes.headers.get("cache-control");
+				if (ghCacheControl) respHeaders["Cache-Control"] = ghCacheControl;
+				return new Response(ghRes.body, { status: ghRes.status, headers: respHeaders });
+			}
+
 			return new Response("not found\n", { status: 404 });
 		},
 	});
 
 	return {
-		url: `http://127.0.0.1:${server.port}`,
+		url: `http://${bindAddress}:${server.port}`,
 		stop: async () => {
 			server.stop();
 		},
@@ -1183,9 +1570,9 @@ function ts(): string {
 }
 
 /**
- * Core job runner: workspace preparation, broker start, heartbeat, setup hook,
- * agent execution, and result submit. Assumes the per-repo mutex is already
- * held by the caller (runJob).
+ * Core job runner: workspace preparation, per-job network + proxy setup,
+ * broker start, heartbeat, setup hook, agent execution, and result submit.
+ * Assumes the per-repo mutex is already held by the caller (runJob).
  */
 async function runJobCore(token: string, allowedModels: readonly string[], job: Job): Promise<void> {
 	console.log(`[${ts()}] running job ${job.id} (${job.issueIdentifier}, model=${job.model})`);
@@ -1193,6 +1580,9 @@ async function runJobCore(token: string, allowedModels: readonly string[], job: 
 	let fenceLost = false;
 	let workspace: string | undefined;
 	let broker: GitBrokerHandle | undefined;
+	let jobNetwork: JobNetworkHandle | undefined;
+	let setupProxy: EgressProxyHandle | undefined;
+	let agentProxy: EgressProxyHandle | undefined;
 	let activeContainerName: string | undefined;
 	let containerStop: Promise<void> | undefined;
 
@@ -1243,7 +1633,7 @@ async function runJobCore(token: string, allowedModels: readonly string[], job: 
 			}
 			const executionWorkspace = workspace ?? WORKSPACE_DIR;
 			const agentEnv = fenceEnv(job);
-			const containerOptions: ContainerRunOptions | undefined = CONTAINER_IMAGE
+			let containerOptions: ContainerRunOptions | undefined = CONTAINER_IMAGE
 				? {
 						image: CONTAINER_IMAGE,
 						memory: CONTAINER_MEMORY,
@@ -1252,16 +1642,58 @@ async function runJobCore(token: string, allowedModels: readonly string[], job: 
 					}
 				: undefined;
 
-			// Start the per-job credential broker when running in container mode
-			// for a GitHub job. The broker's URL is passed into the container via
-			// OMPK_BROKER_URL so git credentials are never part of the container env.
+			if (containerOptions) {
+				// Create a per-job isolated network. The network's gateway IP is
+				// used to bind the proxy and broker so the container can reach them.
+				try {
+					jobNetwork = await createJobNetwork(job.id, job.attemptId);
+					console.log(
+						`[${ts()}] job ${job.id}: network ${jobNetwork.name} (gateway ${jobNetwork.gatewayIp})`,
+					);
+
+					// Start stage-scoped egress proxies bound to the gateway address.
+					// The setup proxy allows registries; the agent proxy allows only
+					// the Anthropic API (git traffic goes through the broker's /gh/).
+					[setupProxy, agentProxy] = await Promise.all([
+						startEgressProxy("setup", jobNetwork.gatewayIp),
+						startEgressProxy("agent", jobNetwork.gatewayIp),
+					]);
+
+					// Wire the per-job network and proxy into the container options.
+					// NO_PROXY must exclude the gateway so broker/fence-check HTTP
+					// calls bypass the CONNECT proxy.
+					containerOptions = {
+						...containerOptions,
+						network: jobNetwork.name,
+						noProxyHosts: jobNetwork.gatewayIp,
+					};
+				} catch (err) {
+					// Network or proxy startup failure is transient infrastructure: log
+					// and degrade to host networking rather than failing the whole job.
+					console.error(
+						`[${ts()}] job ${job.id}: network/proxy setup failed, falling back to host network: ${err instanceof Error ? err.message : err}`,
+					);
+				}
+			}
+
+			// Start the per-job credential broker. In isolated-network mode it
+			// binds to the gateway IP so the container can reach it; in host-
+			// network mode (fallback or bare) it binds to loopback.
 			if (containerOptions && job.source === "github" && job.githubToken) {
 				broker = await startGitBroker({
 					jobId: job.id,
 					attemptId: job.attemptId,
 					leaseToken: job.leaseToken,
 					workerTokenUrl: `${WORKER_URL}/github-token`,
+					workerFenceUrl: `${WORKER_URL}/fence-check`,
+					bindAddress: jobNetwork?.gatewayIp ?? "127.0.0.1",
 				});
+				// Now that the broker URL is known, wire the agent-phase egress proxy
+				// URL into the container options.
+				if (agentProxy && jobNetwork) {
+					const agentProxyUrl = `http://${jobNetwork.gatewayIp}:${agentProxy.port}`;
+					containerOptions = { ...containerOptions, egressProxyUrl: agentProxyUrl };
+				}
 			}
 
 			const setupContainerName = containerOptions
@@ -1287,7 +1719,13 @@ async function runJobCore(token: string, allowedModels: readonly string[], job: 
 				}
 
 				// Run the repo-declared .ompk/setup.sh hook when present.
+				// The setup phase gets its own proxy allowlist (registries + github.com).
 				const setupEnv = buildSetupHookEnv();
+				if (setupProxy && jobNetwork) {
+					setupEnv.HTTP_PROXY = `http://${jobNetwork.gatewayIp}:${setupProxy.port}`;
+					setupEnv.HTTPS_PROXY = `http://${jobNetwork.gatewayIp}:${setupProxy.port}`;
+					setupEnv.NO_PROXY = jobNetwork.gatewayIp;
+				}
 				const setupResult = await runSetupHook(executionWorkspace, {
 					spawn,
 					timeoutMs: SETUP_TIMEOUT_MS,
@@ -1300,6 +1738,10 @@ async function runJobCore(token: string, allowedModels: readonly string[], job: 
 								args: buildContainerSetupArgs(executionWorkspace, setupEnv, {
 									...containerOptions,
 									name: setupContainerName,
+									// Setup phase uses the setup proxy, not the agent proxy.
+									egressProxyUrl: setupProxy && jobNetwork
+										? `http://${jobNetwork.gatewayIp}:${setupProxy.port}`
+										: undefined,
 								}),
 								nonZeroFailureClass: "transient" as const,
 								onTimeout: () => stopNamedContainer(setupContainerName, child),
@@ -1320,10 +1762,13 @@ async function runJobCore(token: string, allowedModels: readonly string[], job: 
 						...(containerOptions && agentContainerName
 							? {
 									command: CONTAINER_BIN,
-									args: buildContainerArgs(job, executionWorkspace, agentEnv, {
-										...containerOptions,
-										name: agentContainerName,
-									}, broker?.url),
+									args: buildContainerArgs(
+										job,
+										executionWorkspace,
+										agentEnv,
+										{ ...containerOptions, name: agentContainerName },
+										broker?.url,
+									),
 									cwd: WORKSPACE_DIR,
 									nonZeroFailureClass: "transient" as const,
 									onTimeout: () => stopNamedContainer(agentContainerName, child),
@@ -1359,6 +1804,15 @@ async function runJobCore(token: string, allowedModels: readonly string[], job: 
 			?.stop()
 			.catch(err =>
 				console.error(`[${ts()}] broker stop failed: ${err instanceof Error ? err.message : err}`),
+			);
+		setupProxy?.stop();
+		agentProxy?.stop();
+		await jobNetwork
+			?.remove()
+			.catch(err =>
+				console.error(
+					`[${ts()}] network ${jobNetwork!.name} remove failed: ${err instanceof Error ? err.message : err}`,
+				),
 			);
 		if (workspace) await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
 	}

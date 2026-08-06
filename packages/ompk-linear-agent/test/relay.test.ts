@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { createConnection } from "node:net";
 import {
+	AGENT_ALLOWED_HOSTS,
+	SETUP_ALLOWED_HOSTS,
 	buildContainerArgs,
 	buildOmpArgs,
 	buildWorkspaceCloneArgs,
@@ -11,11 +14,13 @@ import {
 	fenceEnv,
 	parseAllowedModels,
 	scrubJobResult,
+	startEgressProxy,
 	startGitBroker,
 	tryPrepareRepoMirror,
 	withLock,
 	type CloneFallbackDependencies,
 	type ContainerRunOptions,
+	type EgressProxyHandle,
 	type GitBrokerHandle,
 	type GitBrokerOptions,
 	type Job,
@@ -914,7 +919,7 @@ describe("buildContainerArgs — token isolation", () => {
 		expect(entries.every(e => !e.startsWith("OMPK_BROKER_URL="))).toBe(true);
 	});
 
-	it("passes fence vars through to the container", () => {
+	it("redirects OMPK_FENCE_URL to the broker fence-check when broker active", () => {
 		const job: Pick<Job, "model" | "prompt" | "source"> = {
 			model: "combo-a",
 			prompt: "p",
@@ -922,7 +927,10 @@ describe("buildContainerArgs — token isolation", () => {
 		};
 		const args = buildContainerArgs(job, "/ws", FENCE_ENV, OPTS, "http://127.0.0.1:1");
 		const entries = envEntries(args);
-		expect(entries.some(e => e === "OMPK_FENCE_URL=https://worker.test/fence-check")).toBe(true);
+		// OMPK_FENCE_URL must route through the broker, not the Worker directly.
+		// Container has no direct Worker connectivity when on an isolated network.
+		expect(entries.some(e => e === "OMPK_FENCE_URL=http://127.0.0.1:1/fence-check")).toBe(true);
+		// Fence identity vars still pass through for the fence check body.
 		expect(entries.some(e => e === "OMPK_FENCE_JOB=job-1")).toBe(true);
 		expect(entries.some(e => e === "OMPK_FENCE_ATTEMPT=attempt-1")).toBe(true);
 		expect(entries.some(e => e === "OMPK_FENCE_TOKEN=token-1")).toBe(true);
@@ -938,5 +946,461 @@ describe("buildContainerArgs — token isolation", () => {
 		const entries = envEntries(args);
 		// OMPK_TOKEN_URL must NOT appear: the container uses the broker, not the Worker directly
 		expect(entries.every(e => !e.startsWith("OMPK_TOKEN_URL="))).toBe(true);
+	});
+});
+// ─── Egress allowlist constants ───────────────────────────────────────────────
+
+describe("egress allowlist constants", () => {
+	it("SETUP_ALLOWED_HOSTS includes github.com:443 and npm registry", () => {
+		expect(SETUP_ALLOWED_HOSTS.has("github.com:443")).toBe(true);
+		expect(SETUP_ALLOWED_HOSTS.has("registry.npmjs.org:443")).toBe(true);
+		expect(SETUP_ALLOWED_HOSTS.has("pypi.org:443")).toBe(true);
+		expect(SETUP_ALLOWED_HOSTS.has("crates.io:443")).toBe(true);
+	});
+
+	it("AGENT_ALLOWED_HOSTS includes only the Anthropic API (no github.com)", () => {
+		expect(AGENT_ALLOWED_HOSTS.has("api.anthropic.com:443")).toBe(true);
+		// github.com is intentionally absent: git traffic routes through the broker
+		expect(AGENT_ALLOWED_HOSTS.has("github.com:443")).toBe(false);
+		// registries must not be in the agent phase
+		expect(AGENT_ALLOWED_HOSTS.has("registry.npmjs.org:443")).toBe(false);
+		expect(AGENT_ALLOWED_HOSTS.has("pypi.org:443")).toBe(false);
+	});
+
+	it("github.com:443 is in SETUP but not AGENT", () => {
+		expect(SETUP_ALLOWED_HOSTS.has("github.com:443")).toBe(true);
+		expect(AGENT_ALLOWED_HOSTS.has("github.com:443")).toBe(false);
+	});
+});
+
+// ─── Helpers for CONNECT proxy tests ──────────────────────────────────────────
+
+/**
+ * Open a raw TCP connection to the proxy and send a CONNECT request.
+ * Returns the HTTP status line response code. Does NOT await the upstream
+ * tunnel — just captures the proxy's initial decision (403 = blocked,
+ * 200 = allowed, 502 = allowed but upstream unreachable).
+ */
+async function connectThrough(
+	proxyPort: number,
+	target: string,
+	timeoutMs = 3000,
+): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const socket = createConnection({ host: "127.0.0.1", port: proxyPort });
+		const timer = setTimeout(() => {
+			socket.destroy();
+			reject(new Error(`CONNECT timed out after ${timeoutMs}ms`));
+		}, timeoutMs);
+		socket.once("connect", () => {
+			socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+		});
+		let buf = "";
+		socket.on("data", (chunk: Buffer) => {
+			buf += chunk.toString();
+			const m = /^HTTP\/1\.[01] (\d{3})/.exec(buf);
+			if (m) {
+				clearTimeout(timer);
+				socket.destroy();
+				resolve(parseInt(m[1]!, 10));
+			}
+		});
+		socket.on("error", err => {
+			clearTimeout(timer);
+			reject(err);
+		});
+		socket.on("close", () => {
+			clearTimeout(timer);
+			// Socket closed without a response (upstream reset) — check what we got.
+			const m = /^HTTP\/1\.[01] (\d{3})/.exec(buf);
+			if (m) resolve(parseInt(m[1]!, 10));
+			else reject(new Error("connection closed without HTTP response"));
+		});
+	});
+}
+
+// ─── startEgressProxy — policy enforcement ────────────────────────────────────
+
+describe("startEgressProxy — setup phase allowlist", () => {
+	it("blocks a destination not in the allowlist", async () => {
+		const proxy = await startEgressProxy("setup");
+		try {
+			const status = await connectThrough(proxy.port, "evil.example.com:443");
+			expect(status).toBe(403);
+		} finally {
+			proxy.stop();
+		}
+	});
+
+	it("blocks port 80 for a host that only has port 443 listed", async () => {
+		const proxy = await startEgressProxy("setup");
+		try {
+			// api.github.com:443 is allowed but :80 is not
+			const status = await connectThrough(proxy.port, "api.github.com:80");
+			expect(status).toBe(403);
+		} finally {
+			proxy.stop();
+		}
+	});
+
+	it("allows github.com:443 (returns 200 or 502, never 403)", async () => {
+		const proxy = await startEgressProxy("setup");
+		try {
+			const status = await connectThrough(proxy.port, "github.com:443");
+			expect(status).not.toBe(403);
+		} finally {
+			proxy.stop();
+		}
+	});
+
+	it("allows registry.npmjs.org:443 (not 403)", async () => {
+		const proxy = await startEgressProxy("setup");
+		try {
+			const status = await connectThrough(proxy.port, "registry.npmjs.org:443");
+			expect(status).not.toBe(403);
+		} finally {
+			proxy.stop();
+		}
+	});
+
+	it("rejects a malformed CONNECT request with 400", async () => {
+		const proxy = await startEgressProxy("setup");
+		try {
+			// Send a non-CONNECT request
+			const status = await new Promise<number>((resolve, reject) => {
+				const sock = createConnection({ host: "127.0.0.1", port: proxy.port });
+				const timer = setTimeout(() => { sock.destroy(); reject(new Error("timeout")); }, 3000);
+				sock.once("connect", () => {
+					sock.write("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n");
+				});
+				let buf = "";
+				sock.on("data", (c: Buffer) => {
+					buf += c.toString();
+					const m = /^HTTP\/1\.[01] (\d{3})/.exec(buf);
+					if (m) { clearTimeout(timer); sock.destroy(); resolve(parseInt(m[1]!, 10)); }
+				});
+				sock.on("error", (e) => { clearTimeout(timer); reject(e); });
+				sock.on("close", () => {
+					clearTimeout(timer);
+					const m = /^HTTP\/1\.[01] (\d{3})/.exec(buf);
+					if (m) resolve(parseInt(m[1]!, 10));
+					else reject(new Error("no response"));
+				});
+			});
+			expect(status).toBe(400);
+		} finally {
+			proxy.stop();
+		}
+	});
+});
+
+describe("startEgressProxy — agent phase allowlist", () => {
+	it("blocks github.com:443 in agent phase (git must use broker)", async () => {
+		const proxy = await startEgressProxy("agent");
+		try {
+			const status = await connectThrough(proxy.port, "github.com:443");
+			expect(status).toBe(403);
+		} finally {
+			proxy.stop();
+		}
+	});
+
+	it("blocks registry.npmjs.org:443 in agent phase", async () => {
+		const proxy = await startEgressProxy("agent");
+		try {
+			const status = await connectThrough(proxy.port, "registry.npmjs.org:443");
+			expect(status).toBe(403);
+		} finally {
+			proxy.stop();
+		}
+	});
+
+	it("blocks an arbitrary disallowed host (canary)", async () => {
+		const proxy = await startEgressProxy("agent");
+		try {
+			const status = await connectThrough(proxy.port, "attacker.controlled.example:443");
+			expect(status).toBe(403);
+		} finally {
+			proxy.stop();
+		}
+	});
+
+	it("allows api.anthropic.com:443 (not 403)", async () => {
+		const proxy = await startEgressProxy("agent");
+		try {
+			const status = await connectThrough(proxy.port, "api.anthropic.com:443");
+			expect(status).not.toBe(403);
+		} finally {
+			proxy.stop();
+		}
+	});
+
+	it("two agent proxies bind to different ports", async () => {
+		const p1 = await startEgressProxy("agent");
+		const p2 = await startEgressProxy("agent");
+		try {
+			expect(p1.port).not.toBe(p2.port);
+		} finally {
+			p1.stop();
+			p2.stop();
+		}
+	});
+});
+
+// ─── startGitBroker — fence-check proxy endpoint ──────────────────────────────
+
+describe("startGitBroker — fence-check proxy endpoint", () => {
+	it("proxies POST /fence-check to the Worker fence URL", async () => {
+		const captured: { url: string; body: string }[] = [];
+		const recordFetch: GitBrokerOptions["fetchImpl"] = async (url, init) => {
+			captured.push({ url: String(url), body: String(init?.body ?? "") });
+			return new Response("ok", { status: 200 });
+		};
+		const broker = await startGitBroker(
+			makeBrokerOptions(recordFetch, { workerFenceUrl: "https://worker.test/fence-check" }),
+		);
+		try {
+			const body = JSON.stringify({ jobId: "j1", attemptId: "a1", leaseToken: "l1" });
+			const res = await fetch(`${broker.url}/fence-check`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body,
+			});
+			expect(res.status).toBe(200);
+			expect(captured).toHaveLength(1);
+			expect(captured[0]!.url).toBe("https://worker.test/fence-check");
+			expect(captured[0]!.body).toBe(body);
+		} finally {
+			await broker.stop();
+		}
+	});
+
+	it("mirrors the Worker fence response status (e.g. 409 for invalid fence)", async () => {
+		const failFetch: GitBrokerOptions["fetchImpl"] = async () =>
+			new Response("fenced", { status: 409 });
+		const broker = await startGitBroker(
+			makeBrokerOptions(failFetch, { workerFenceUrl: "https://worker.test/fence-check" }),
+		);
+		try {
+			const res = await fetch(`${broker.url}/fence-check`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: "{}",
+			});
+			expect(res.status).toBe(409);
+		} finally {
+			await broker.stop();
+		}
+	});
+
+	it("returns 503 when workerFenceUrl is not configured", async () => {
+		// No workerFenceUrl in options → fence-check not available
+		const broker = await startGitBroker(makeBrokerOptions(makeTokenFetch("t")));
+		try {
+			const res = await fetch(`${broker.url}/fence-check`, {
+				method: "POST",
+				body: "{}",
+			});
+			expect(res.status).toBe(503);
+		} finally {
+			await broker.stop();
+		}
+	});
+
+	it("returns 502 when the Worker fence-check call throws", async () => {
+		const errFetch: GitBrokerOptions["fetchImpl"] = async () => {
+			throw new Error("network error");
+		};
+		const broker = await startGitBroker(
+			makeBrokerOptions(errFetch, { workerFenceUrl: "https://worker.test/fence-check" }),
+		);
+		try {
+			const res = await fetch(`${broker.url}/fence-check`, {
+				method: "POST",
+				body: "{}",
+			});
+			expect(res.status).toBe(502);
+		} finally {
+			await broker.stop();
+		}
+	});
+});
+
+// ─── startGitBroker — git HTTP proxy (/gh/) ───────────────────────────────────
+
+describe("startGitBroker — git HTTP proxy (/gh/)", () => {
+	it("forwards GET /gh/ to github.com with a JIT token", async () => {
+		const captured: { url: string; headers: Record<string, string> }[] = [];
+		const recordFetch: GitBrokerOptions["fetchImpl"] = async (url, init) => {
+			const hdrs = init?.headers as Record<string, string> | undefined;
+			if (String(url).includes("github-token")) {
+				// Token issuance call
+				return new Response(JSON.stringify({ token: "ghs_jit_proxy" }), { status: 200 });
+			}
+			// git proxy call
+			captured.push({ url: String(url), headers: hdrs ?? {} });
+			return new Response("git-data", {
+				status: 200,
+				headers: { "Content-Type": "application/x-git-upload-pack-advertisement" },
+			});
+		};
+		const broker = await startGitBroker(makeBrokerOptions(recordFetch));
+		try {
+			const res = await fetch(`${broker.url}/gh/owner/repo.git/info/refs?service=git-upload-pack`);
+			expect(res.status).toBe(200);
+			expect(captured).toHaveLength(1);
+			expect(captured[0]!.url).toBe(
+				"https://github.com/owner/repo.git/info/refs?service=git-upload-pack",
+			);
+			// Authorization must be a Basic auth header with the JIT token (Base64-encoded)
+			const auth = captured[0]!.headers["Authorization"] ?? "";
+			expect(auth).toMatch(/^Basic /);
+			const decoded = atob(auth.slice("Basic ".length));
+			expect(decoded).toBe("x-access-token:ghs_jit_proxy");
+		} finally {
+			await broker.stop();
+		}
+	});
+
+	it("does not expose the raw JIT token in the response body", async () => {
+		const fetchImpl: GitBrokerOptions["fetchImpl"] = async url => {
+			if (String(url).includes("github-token")) {
+				return new Response(JSON.stringify({ token: "ghs_secret_should_not_leak" }), {
+					status: 200,
+				});
+			}
+			return new Response("repo-data", { status: 200 });
+		};
+		const broker = await startGitBroker(makeBrokerOptions(fetchImpl));
+		try {
+			const res = await fetch(`${broker.url}/gh/owner/repo.git/info/refs`);
+			const body = await res.text();
+			expect(body).not.toContain("ghs_secret_should_not_leak");
+			expect(body).toBe("repo-data");
+		} finally {
+			await broker.stop();
+		}
+	});
+
+	it("returns 502 when the JIT token fetch fails for a /gh/ request", async () => {
+		const failFetch: GitBrokerOptions["fetchImpl"] = async () =>
+			new Response("internal error", { status: 500 });
+		const broker = await startGitBroker(makeBrokerOptions(failFetch));
+		try {
+			const res = await fetch(`${broker.url}/gh/owner/repo.git/info/refs`);
+			expect(res.status).toBe(502);
+		} finally {
+			await broker.stop();
+		}
+	});
+});
+
+// ─── buildContainerArgs — per-job network and proxy env ───────────────────────
+
+describe("buildContainerArgs — per-job network and proxy env", () => {
+	const OPTS_WITH_NET: ContainerRunOptions = {
+		image: "ompk-runner:latest",
+		network: "ompk-job1-attempt1",
+		egressProxyUrl: "http://10.89.0.1:9999",
+		noProxyHosts: "10.89.0.1",
+	};
+
+	function envEntries(args: string[]): string[] {
+		const out: string[] = [];
+		for (let i = 0; i < args.length; i++) {
+			if (args[i] === "--env" && i + 1 < args.length) out.push(args[i + 1]!);
+		}
+		return out;
+	}
+
+	const FENCE_ENV_NET: NodeJS.ProcessEnv = {
+		OMPK_FENCE_URL: "https://worker.test/fence-check",
+		OMPK_FENCE_JOB: "job-net",
+		OMPK_FENCE_ATTEMPT: "attempt-net",
+		OMPK_FENCE_TOKEN: "token-net",
+		GIT_CONFIG_COUNT: "1",
+		GIT_CONFIG_KEY_0: "core.hooksPath",
+		GIT_CONFIG_VALUE_0: "/host/git-hooks",
+	};
+
+	it("uses the per-job network instead of host when network option is set", () => {
+		const job: Pick<Job, "model" | "prompt" | "source"> = {
+			model: "combo-a",
+			prompt: "p",
+			source: "linear",
+		};
+		const args = buildContainerArgs(job, "/ws", FENCE_ENV_NET, OPTS_WITH_NET);
+		expect(args.includes("--network=ompk-job1-attempt1")).toBe(true);
+		expect(args.includes("--network=host")).toBe(false);
+	});
+
+	it("injects HTTP_PROXY and HTTPS_PROXY when egressProxyUrl is set", () => {
+		const job: Pick<Job, "model" | "prompt" | "source"> = {
+			model: "combo-a",
+			prompt: "p",
+			source: "linear",
+		};
+		const args = buildContainerArgs(job, "/ws", FENCE_ENV_NET, OPTS_WITH_NET);
+		const entries = envEntries(args);
+		expect(entries.some(e => e === "HTTP_PROXY=http://10.89.0.1:9999")).toBe(true);
+		expect(entries.some(e => e === "HTTPS_PROXY=http://10.89.0.1:9999")).toBe(true);
+	});
+
+	it("injects NO_PROXY so broker/gateway traffic bypasses the CONNECT proxy", () => {
+		const job: Pick<Job, "model" | "prompt" | "source"> = {
+			model: "combo-a",
+			prompt: "p",
+			source: "linear",
+		};
+		const args = buildContainerArgs(job, "/ws", FENCE_ENV_NET, OPTS_WITH_NET);
+		const entries = envEntries(args);
+		expect(entries.some(e => e === "NO_PROXY=10.89.0.1")).toBe(true);
+	});
+
+	it("does not inject HTTP_PROXY when egressProxyUrl is absent", () => {
+		const job: Pick<Job, "model" | "prompt" | "source"> = {
+			model: "combo-a",
+			prompt: "p",
+			source: "linear",
+		};
+		const { egressProxyUrl: _, noProxyHosts: __, ...optsNoProxy } = OPTS_WITH_NET;
+		const args = buildContainerArgs(job, "/ws", FENCE_ENV_NET, optsNoProxy);
+		const entries = envEntries(args);
+		expect(entries.every(e => !e.startsWith("HTTP_PROXY="))).toBe(true);
+		expect(entries.every(e => !e.startsWith("HTTPS_PROXY="))).toBe(true);
+	});
+
+	it("sets insteadOf git config to redirect github.com through broker when broker active", () => {
+		const job: Pick<Job, "model" | "prompt" | "source"> = {
+			model: "combo-a",
+			prompt: "p",
+			source: "github",
+		};
+		const args = buildContainerArgs(
+			job,
+			"/ws",
+			FENCE_ENV_NET,
+			OPTS_WITH_NET,
+			"http://10.89.0.1:8765",
+		);
+		const entries = envEntries(args);
+		// GIT_CONFIG_KEY_2 must be the insteadOf key pointing to the broker /gh/ prefix
+		expect(
+			entries.some(e => e === "GIT_CONFIG_KEY_2=url.http://10.89.0.1:8765/gh/.insteadOf"),
+		).toBe(true);
+		// GIT_CONFIG_VALUE_2 rewrites https://github.com/ to the broker prefix
+		expect(entries.some(e => e === "GIT_CONFIG_VALUE_2=https://github.com/")).toBe(true);
+		expect(entries.some(e => e === "GIT_CONFIG_COUNT=3")).toBe(true);
+	});
+
+	it("defaults to --network=host when no network option is provided", () => {
+		const job: Pick<Job, "model" | "prompt" | "source"> = {
+			model: "combo-a",
+			prompt: "p",
+			source: "linear",
+		};
+		const { network: _, egressProxyUrl: __, noProxyHosts: ___, ...bareOpts } = OPTS_WITH_NET;
+		const args = buildContainerArgs(job, "/ws", FENCE_ENV_NET, bareOpts);
+		expect(args.includes("--network=host")).toBe(true);
 	});
 });
