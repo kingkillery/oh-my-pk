@@ -1,9 +1,9 @@
 {
   "type": "module",
-  "name": "@oh-my-pi/pi-ai",
+  "name": "@pk-nerdsaver-ai/pi-ai",
   "version": "18.0.9",
   "description": "Unified LLM API with automatic model discovery and provider configuration",
-  "homepage": "https://omp.sh",
+  "homepage": "https://oh-my-pk.pkking.computer",
   "author": "Stencil Labs, Inc.",
   "contributors": [
     "Mario Zechner"
@@ -11,11 +11,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/can1357/oh-my-pi.git",
+    "url": "git+https://github.com/kingkillery/oh-my-pk.git",
     "directory": "packages/ai"
   },
   "bugs": {
-    "url": "https://github.com/can1357/oh-my-pi/issues"
+    "url": "https://github.com/kingkillery/oh-my-pk/issues"
   },
   "keywords": [
     "ai",
@@ -37,10 +37,10 @@
     "fmt": "biome format --write ."
   },
   "dependencies": {
-    "@oh-my-pi/omptype": "catalog:",
-    "@oh-my-pi/pi-catalog": "catalog:",
-    "@oh-my-pi/pi-utils": "catalog:",
-    "@oh-my-pi/pi-wire": "catalog:"
+    "@pk-nerdsaver-ai/omptype": "catalog:",
+    "@pk-nerdsaver-ai/pi-catalog": "catalog:",
+    "@pk-nerdsaver-ai/pi-utils": "catalog:",
+    "@pk-nerdsaver-ai/pi-wire": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:"

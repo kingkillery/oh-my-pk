@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { writeToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/write";
+import * as themeModule from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import { writeToolRenderer } from "@pk-nerdsaver-ai/pi-coding-agent/tools/write";
 
 const stripAnsi = (s: string): string => s.replace(/\[[0-9;]*m/g, "");
 const hasLine = (lines: readonly string[], n: number): boolean =>

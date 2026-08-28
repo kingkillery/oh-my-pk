@@ -1,4 +1,4 @@
-import { type Component, CURSOR_MARKER, type Focusable, Input, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { type Component, CURSOR_MARKER, type Focusable, Input, truncateToWidth, visibleWidth } from "@pk-nerdsaver-ai/pi-tui";
 import { theme } from "../theme/theme";
 import { bottomBorder, row, topBorder } from "./overlay-box";
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
-import { FileType } from "@oh-my-pi/pi-natives";
+import { FileType } from "@pk-nerdsaver-ai/pi-natives";
 import { Settings } from "../../src/config/settings";
 import type { ToolSession } from "../../src/tools";
 import { GlobTool } from "../../src/tools/glob";

@@ -1,12 +1,12 @@
-import type { Api, Model, ModelSpec, RemoteCompactionConfig } from "@oh-my-pi/pi-ai/types";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import type { Api, Model, ModelSpec, RemoteCompactionConfig } from "@pk-nerdsaver-ai/pi-ai/types";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 import {
 	getBundledModelReferenceIndex,
 	inheritReferenceThinking,
 	resolveModelReference,
-} from "@oh-my-pi/pi-catalog/identity";
-import { getVariantAliasSources, resolveVariantAlias } from "@oh-my-pi/pi-catalog/variant-collapse";
-import { logger } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-catalog/identity";
+import { getVariantAliasSources, resolveVariantAlias } from "@pk-nerdsaver-ai/pi-catalog/variant-collapse";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import { createLiveConfigHeaders, type HeaderSource } from "./model-config-values";
 import { type ModelPatch, mergeCompat, mergeRemoteCompactionConfig } from "./model-patch";
 import { parseModelString } from "./model-resolver";

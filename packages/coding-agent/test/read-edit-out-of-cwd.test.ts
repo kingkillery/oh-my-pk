@@ -2,13 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { EditTool, type ExecuteHashlineSingleOptions, executeHashlineSingle } from "@oh-my-pi/pi-coding-agent/edit";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import type { ReadToolDetails } from "@oh-my-pi/pi-coding-agent/tools/read";
-import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import type { AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { EditTool, type ExecuteHashlineSingleOptions, executeHashlineSingle } from "@pk-nerdsaver-ai/pi-coding-agent/edit";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import type { ReadToolDetails } from "@pk-nerdsaver-ai/pi-coding-agent/tools/read";
+import { ReadTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/read";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 function textOutput(result: AgentToolResult<ReadToolDetails>): string {
 	return result.content

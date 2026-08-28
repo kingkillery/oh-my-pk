@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { TreeSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tree-selector";
-import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { TreeSelectorComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/tree-selector";
+import * as themeModule from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import type { SessionTreeNode } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-entries";
 
 interface AdvisorNoteFixture {
 	note: string;

@@ -1,5 +1,5 @@
-import { type } from "@oh-my-pi/omptype";
-import type { FetchImpl } from "@oh-my-pi/pi-utils";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import type { FetchImpl } from "@pk-nerdsaver-ai/pi-utils";
 import { parseGeminiModel, semverGte } from "../identity/classify";
 import { isGeminiModelId } from "../identity/family";
 import { createBundledReferenceMap } from "../provider-models/bundled-references";

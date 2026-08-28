@@ -1,5 +1,5 @@
-import { type } from "@oh-my-pi/omptype";
-import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core/types";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import type { AgentTool, AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core/types";
 
 export interface GetCurrentTimeResult extends AgentToolResult<{ utcTimestamp: number }> {}
 

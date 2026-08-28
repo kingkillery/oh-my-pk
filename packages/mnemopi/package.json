@@ -1,9 +1,9 @@
 {
   "type": "module",
-  "name": "@oh-my-pi/pi-mnemopi",
+  "name": "@pk-nerdsaver-ai/pi-mnemopi",
   "version": "18.0.9",
   "description": "Local SQLite memory engine for Oh My Pi agents",
-  "homepage": "https://omp.sh",
+  "homepage": "https://oh-my-pk.pkking.computer",
   "author": "Stencil Labs, Inc.",
   "contributors": [
     "Abdias J"
@@ -11,11 +11,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/can1357/oh-my-pi.git",
+    "url": "git+https://github.com/kingkillery/oh-my-pk.git",
     "directory": "packages/mnemopi"
   },
   "bugs": {
-    "url": "https://github.com/can1357/oh-my-pi/issues"
+    "url": "https://github.com/kingkillery/oh-my-pk/issues"
   },
   "keywords": [
     "memory",
@@ -39,10 +39,10 @@
     "fmt": "biome format --write ."
   },
   "dependencies": {
-    "@oh-my-pi/pi-ai": "catalog:",
-    "@oh-my-pi/pi-catalog": "catalog:",
-    "@oh-my-pi/pi-natives": "catalog:",
-    "@oh-my-pi/pi-utils": "catalog:"
+    "@pk-nerdsaver-ai/pi-ai": "catalog:",
+    "@pk-nerdsaver-ai/pi-catalog": "catalog:",
+    "@pk-nerdsaver-ai/pi-natives": "catalog:",
+    "@pk-nerdsaver-ai/pi-utils": "catalog:"
   },
   "peerDependencies": {
     "fastembed": "2.1.0",

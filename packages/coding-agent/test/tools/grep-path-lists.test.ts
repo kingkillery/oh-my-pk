@@ -12,15 +12,15 @@ import { TreeSelectorComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/co
 import type {
 	ObservableSession,
 	SessionObserverRegistry,
-} from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
-import type { Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import type { SessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-queue";
-import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import type { Text } from "@oh-my-pi/pi-tui";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/modes/session-observer-registry";
+import type { Theme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import { AgentRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-registry";
+import type { SessionEntry, SessionTreeNode } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-entries";
+import { ToolChoiceQueue } from "@pk-nerdsaver-ai/pi-coding-agent/session/tool-choice-queue";
+import { createTools, type ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import type { Text } from "@pk-nerdsaver-ai/pi-tui";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 import { grepToolRenderer } from "../../src/tools/grep";
 
 function createTestSession(cwd: string, overrides: Partial<ToolSession> = {}): ToolSession {

@@ -8,11 +8,11 @@ import {
 	executeHashlineSingle,
 	formatHashlineHeader,
 	getFileSnapshotStore as getFileReadCache,
-} from "@oh-my-pi/pi-coding-agent/edit";
-import { NOOP_HARD_LIMIT } from "@oh-my-pi/pi-coding-agent/edit/hashline/noop-loop-guard";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { ToolError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/edit";
+import { NOOP_HARD_LIMIT } from "@pk-nerdsaver-ai/pi-coding-agent/edit/hashline/noop-loop-guard";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import { ToolError } from "@pk-nerdsaver-ai/pi-coding-agent/tools/tool-errors";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 beforeAll(async () => {
 	resetSettingsForTest();

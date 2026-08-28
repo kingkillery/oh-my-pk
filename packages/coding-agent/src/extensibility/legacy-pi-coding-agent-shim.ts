@@ -21,17 +21,17 @@ import {
 	type AgentToolUpdateCallback,
 	type MessageCountOptions,
 	Tokenizer,
-} from "@oh-my-pi/pi-agent-core";
-import { type AuthCredential, SqliteAuthCredentialStore, type TSchema } from "@oh-my-pi/pi-ai";
-import { piEscapeRegexLiteral, piJoinPath } from "@oh-my-pi/pi-ai/providers/cursor-pi-args";
-import { getKeybindings, type Keybinding, Text } from "@oh-my-pi/pi-tui";
+} from "@pk-nerdsaver-ai/pi-agent-core";
+import { type AuthCredential, SqliteAuthCredentialStore, type TSchema } from "@pk-nerdsaver-ai/pi-ai";
+import { piEscapeRegexLiteral, piJoinPath } from "@pk-nerdsaver-ai/pi-ai/providers/cursor-pi-args";
+import { getKeybindings, type Keybinding, Text } from "@pk-nerdsaver-ai/pi-tui";
 import {
 	getAgentDbPath,
 	getAgentDir,
 	getProjectDir,
 	isCompiledBinary,
 	parseFrontmatter as parseOmpFrontmatter,
-} from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-utils";
 import { getPackageDir as getOmpPackageDir } from "../config";
 import { formatKeyHints } from "../config/keybindings";
 import type { PromptTemplate } from "../config/prompt-templates";
@@ -1449,10 +1449,10 @@ export function readStoredCredential(provider: string): AuthCredential | undefin
 }
 
 // Pi SDK path helpers. `export * from "../index"` above only forwards
-// `getAgentDir`; `getProjectDir` (a `@oh-my-pi/pi-utils` helper) and
+// `getAgentDir`; `getProjectDir` (a `@pk-nerdsaver-ai/pi-utils` helper) and
 // `getPackageDir` are absent from that barrel, so legacy extensions importing
 // either fail Bun's static export check during validation (issue #5968).
-export { getProjectDir } from "@oh-my-pi/pi-utils";
+export { getProjectDir } from "@pk-nerdsaver-ai/pi-utils";
 
 /**
  * Coding-agent package install directory, matching pi's string-valued
@@ -1475,10 +1475,10 @@ export function getPackageDir(): string {
 // Legacy pi's `@earendil-works/pi-coding-agent` re-exported `estimateTokens`,
 // `compact`, and `serializeConversation` from its package root (via
 // `./core/compaction/index.ts`). In omp `compact` and `serializeConversation`
-// live in `@oh-my-pi/pi-agent-core/compaction`, and the coding-agent barrel
+// live in `@pk-nerdsaver-ai/pi-agent-core/compaction`, and the coding-agent barrel
 // below does not forward them, so legacy extensions importing them fail Bun's
 // static export check during validation (issues #6583, #7174, #7403).
-export { compact, serializeConversation } from "@oh-my-pi/pi-agent-core/compaction";
+export { compact, serializeConversation } from "@pk-nerdsaver-ai/pi-agent-core/compaction";
 
 const legacyTokenizer = new Tokenizer();
 
@@ -1495,10 +1495,10 @@ export function estimateTokens(message: AgentMessage, tokenizer?: Tokenizer, opt
 
 // Same barrel gap for two more legacy package-root exports: pi re-exported the
 // `CONFIG_DIR_NAME` constant and the CLI parser `parseArgs`. In omp
-// `CONFIG_DIR_NAME` lives in `@oh-my-pi/pi-utils` and `parseArgs` in
+// `CONFIG_DIR_NAME` lives in `@pk-nerdsaver-ai/pi-utils` and `parseArgs` in
 // `../cli/args`, neither of which the barrel below forwards, so legacy
 // extensions importing either fail Bun's static export check during validation.
-export { CONFIG_DIR_NAME } from "@oh-my-pi/pi-utils";
+export { CONFIG_DIR_NAME } from "@pk-nerdsaver-ai/pi-utils";
 export { parseArgs } from "../cli/args";
 
 export * from "../index";

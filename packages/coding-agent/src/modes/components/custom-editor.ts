@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { ImageContent } from "@pk-nerdsaver-ai/pi-ai";
 import {
 	addKeyAliases,
 	canonicalKeyId,
@@ -10,8 +10,8 @@ import {
 	parseKey,
 	parseKittySequence,
 	TUI,
-} from "@oh-my-pi/pi-tui";
-import { BracketedPasteHandler } from "@oh-my-pi/pi-tui/bracketed-paste";
+} from "@pk-nerdsaver-ai/pi-tui";
+import { BracketedPasteHandler } from "@pk-nerdsaver-ai/pi-tui/bracketed-paste";
 import type { AppKeybinding } from "../../config/keybindings";
 import {
 	attachmentSgr,

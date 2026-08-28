@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { $which, isRecord, ptree, sanitizeText } from "@oh-my-pi/pi-utils";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { $which, isRecord, ptree, sanitizeText } from "@pk-nerdsaver-ai/pi-utils";
 import { CLEANSE_PARSER_KINDS, type CleanseParserKind, parseCleanseDiagnostics } from "./parsers";
 import type { CleanseCheckResult, CleanseDiagnostic, CleanseDiagnosticReport, SkippedCleanseCheck } from "./types";
 

@@ -21,8 +21,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { identifyImageFetcher } from "@oh-my-pi/pi-catalog/wire/image-fetchers";
-import { isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { identifyImageFetcher } from "@pk-nerdsaver-ai/pi-catalog/wire/image-fetchers";
+import { isEnoent, logger } from "@pk-nerdsaver-ai/pi-utils";
 import { BlobStore as SessionBlobStore } from "../session/blob-store";
 import {
 	BLOB_FETCH_EVENT_LIMIT,

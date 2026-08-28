@@ -11,7 +11,7 @@
  * Layering mirrors `pruning.ts`: no I/O here.
  */
 
-import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import type { TextContent, ToolResultMessage } from "@pk-nerdsaver-ai/pi-ai";
 import type { Tokenizer } from "../tokenizer";
 import type { AgentMessage } from "../types";
 import type { CustomMessageEntry, SessionEntry, SessionMessageEntry } from "./entries";

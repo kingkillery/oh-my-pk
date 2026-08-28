@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import type { UsageProvider, UsageReport } from "@oh-my-pi/pi-ai";
-import { unregisterOAuthProvider } from "@oh-my-pi/pi-ai/oauth";
-import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
-import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
-import type { ProviderConfig } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
-import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import type { UsageProvider, UsageReport } from "@pk-nerdsaver-ai/pi-ai";
+import { unregisterOAuthProvider } from "@pk-nerdsaver-ai/pi-ai/oauth";
+import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
+import { ExtensionRuntime, loadExtensionFromFactory } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions/loader";
+import { ExtensionRunner } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions/runner";
+import type { ProviderConfig } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions/types";
+import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
+import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
+import { EventBus } from "@pk-nerdsaver-ai/pi-coding-agent/utils/event-bus";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 
 const testProviderConfig: ProviderConfig = {
 	baseUrl: "https://example.invalid/v1",

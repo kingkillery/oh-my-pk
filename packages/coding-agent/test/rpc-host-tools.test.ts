@@ -8,8 +8,8 @@ import type {
 	RpcHostToolCallRequest,
 	RpcHostToolCancelRequest,
 	RpcHostToolUpdate,
-} from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/modes/rpc/rpc-types";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 const tempPaths: string[] = [];
 

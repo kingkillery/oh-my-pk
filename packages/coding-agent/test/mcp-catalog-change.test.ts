@@ -2,13 +2,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
-import type { MCPStdioServerConfig } from "@oh-my-pi/pi-coding-agent/mcp/types";
-import { ExtensionDashboard } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/extension-dashboard";
-import { snapshotMcpRuntime } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/mcp-runtime";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { MCPManager } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/manager";
+import type { MCPStdioServerConfig } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/types";
+import { ExtensionDashboard } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/extension-dashboard";
+import { snapshotMcpRuntime } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/mcp-runtime";
+import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import { removeSyncWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 import { PROMPT_NAME, RESOURCE_NAME, RESOURCE_URI, TOOL_NAME } from "./fixtures/delayed-catalog-mcp";
 
 const FIXTURE_PATH = path.join(import.meta.dir, "fixtures", "delayed-catalog-mcp.ts");

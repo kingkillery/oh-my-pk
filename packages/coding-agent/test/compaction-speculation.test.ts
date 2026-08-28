@@ -1,15 +1,15 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
-import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
-import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, Model, UserMessage } from "@oh-my-pi/pi-ai";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import type { CompactionMethod } from "@oh-my-pi/pi-coding-agent/session/compaction-methods";
-import { SessionMaintenance, type SessionMaintenanceHost } from "@oh-my-pi/pi-coding-agent/session/session-maintenance";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import * as snapcompactModule from "@oh-my-pi/snapcompact";
+import { Agent, type AgentMessage } from "@pk-nerdsaver-ai/pi-agent-core";
+import * as compactionModule from "@pk-nerdsaver-ai/pi-agent-core/compaction";
+import type { AssistantMessage, Model, UserMessage } from "@pk-nerdsaver-ai/pi-ai";
+import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
+import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
+import type { CompactionMethod } from "@pk-nerdsaver-ai/pi-coding-agent/session/compaction-methods";
+import { SessionMaintenance, type SessionMaintenanceHost } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-maintenance";
+import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
+import * as snapcompactModule from "@pk-nerdsaver-ai/snapcompact";
 
 const CONTEXT_WINDOW = 100_000;
 const THRESHOLD = 50_000;

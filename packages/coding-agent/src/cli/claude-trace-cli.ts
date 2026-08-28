@@ -9,8 +9,8 @@ import * as net from "node:net";
 import * as path from "node:path";
 import * as tls from "node:tls";
 import * as zlib from "node:zlib";
-import { PtySession } from "@oh-my-pi/pi-natives";
-import xterm from "@oh-my-pi/pi-utils/vterm";
+import { PtySession } from "@pk-nerdsaver-ai/pi-natives";
+import xterm from "@pk-nerdsaver-ai/pi-utils/vterm";
 
 const DEFAULT_PROXY_HOST = "127.0.0.1";
 const DEFAULT_PROXY_PORT = 8080;

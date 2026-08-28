@@ -1,11 +1,11 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import type { MCPServer } from "@oh-my-pi/pi-coding-agent/capability/mcp";
-import type { MCPServerConnection, MCPTransport } from "@oh-my-pi/pi-coding-agent/mcp/types";
-import { ExtensionList } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/extension-list";
-import { InspectorPanel } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/inspector-panel";
-import type { MCPRuntimeSource } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/mcp-runtime";
-import type { Extension } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/types";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { MCPServer } from "@pk-nerdsaver-ai/pi-coding-agent/capability/mcp";
+import type { MCPServerConnection, MCPTransport } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/types";
+import { ExtensionList } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/extension-list";
+import { InspectorPanel } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/inspector-panel";
+import type { MCPRuntimeSource } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/mcp-runtime";
+import type { Extension } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/types";
+import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
 
 beforeAll(async () => {
 	await initTheme(false);

@@ -1,16 +1,16 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import type { ToolInfo } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
-import { ExtensionList } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/extension-list";
-import { liveToolsForExtension } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/inspector-model";
-import { InspectorPanel } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/inspector-panel";
+import type { ToolInfo } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions/types";
+import { ExtensionList } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/extension-list";
+import { liveToolsForExtension } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/inspector-model";
+import { InspectorPanel } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/inspector-panel";
 import {
 	type LiveToolSessionLookup,
 	listLiveToolRecords,
 	liveToolRecordFromSession,
 	snapshotToolRuntimeSource,
-} from "@oh-my-pi/pi-coding-agent/modes/components/extensions/live-tool-session";
-import type { Extension } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/types";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+} from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/live-tool-session";
+import type { Extension } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/types";
+import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
 
 function info(
 	name: string,

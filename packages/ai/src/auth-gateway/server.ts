@@ -18,8 +18,8 @@
  *   POST /v1/responses                     → OpenAI Responses in/out
  */
 
-import { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { extractHttpStatusFromError, extractRetryHint, logger } from "@oh-my-pi/pi-utils";
+import { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
+import { extractHttpStatusFromError, extractRetryHint, logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { ApiKeyResolver } from "../auth-retry";
 import type { AuthStorage } from "../auth-storage";
 import * as AIError from "../error";

@@ -1,10 +1,10 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import type { VcsGitRepo, VcsWorktreeEntry } from "@oh-my-pi/pi-natives";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { getWorktreeDir, hashPath, isEnoent } from "@oh-my-pi/pi-utils";
+import type { AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { VcsGitRepo, VcsWorktreeEntry } from "@pk-nerdsaver-ai/pi-natives";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { getWorktreeDir, hashPath, isEnoent } from "@pk-nerdsaver-ai/pi-utils";
 import { github } from "../utils/github";
 import { withRepoLock } from "../utils/repo-lock";
 import type { ToolSession } from ".";

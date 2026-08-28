@@ -8,9 +8,9 @@ import {
 	type ExecuteHashlineSingleOptions,
 	executeHashlineSingle,
 	getFileSnapshotStore,
-} from "@oh-my-pi/pi-coding-agent/edit";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/edit";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 beforeAll(async () => {
 	resetSettingsForTest();

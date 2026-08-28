@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import type { ResponseInput } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
-import { buildResponsesInput } from "@oh-my-pi/pi-ai/providers/openai-shared";
-import type { AssistantMessage, Context, ToolResultMessage } from "@oh-my-pi/pi-ai/types";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import type { ResponseInput } from "@pk-nerdsaver-ai/pi-ai/providers/openai-responses-wire";
+import { buildResponsesInput } from "@pk-nerdsaver-ai/pi-ai/providers/openai-shared";
+import type { AssistantMessage, Context, ToolResultMessage } from "@pk-nerdsaver-ai/pi-ai/types";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 
 // deepseek-v4-flash on opencode-go (Console Go) — the gateway from #8789 that
 // rejects an assistant message interleaved between a function_call batch and

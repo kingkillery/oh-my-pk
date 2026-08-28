@@ -6,8 +6,8 @@
  * Theme helpers wrap whatever they are given, so those sequences must be
  * stripped *before* SGR is applied.
  */
-import { replaceTabs } from "@oh-my-pi/pi-tui";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { replaceTabs } from "@pk-nerdsaver-ai/pi-tui";
+import { sanitizeText } from "@pk-nerdsaver-ai/pi-utils";
 
 /** Strip ANSI/C0/C1/malformed unicode, then expand tabs. Call before theming. */
 export function sanitizeDisplayText(text: string): string {

@@ -1,4 +1,4 @@
-import { compareVersions, tryParseJson } from "@oh-my-pi/pi-utils";
+import { compareVersions, tryParseJson } from "@pk-nerdsaver-ai/pi-utils";
 import type { RenderResult, SpecialHandler } from "./types";
 import { buildResult, loadPage } from "./types";
 

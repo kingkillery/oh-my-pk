@@ -18,14 +18,14 @@
  */
 
 import { beforeAll, describe, expect, it, vi } from "bun:test";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { InteractiveModeContext, RenderSessionContextOptions } from "@oh-my-pi/pi-coding-agent/modes/types";
-import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
-import type { SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
-import { Container } from "@oh-my-pi/pi-tui";
+import type { AgentMessage } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { AssistantMessage, Usage } from "@pk-nerdsaver-ai/pi-ai";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import type { InteractiveModeContext, RenderSessionContextOptions } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
+import { UiHelpers } from "@pk-nerdsaver-ai/pi-coding-agent/modes/utils/ui-helpers";
+import type { SessionContext } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-context";
+import { Container } from "@pk-nerdsaver-ai/pi-tui";
 
 beforeAll(() => {
 	initTheme();

@@ -15,7 +15,7 @@
 import { Database, type Statement } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getDbBusyTimeoutMs, getHistoryDbPath, logger } from "@oh-my-pi/pi-utils";
+import { getDbBusyTimeoutMs, getHistoryDbPath, logger } from "@pk-nerdsaver-ai/pi-utils";
 
 const TITLE_TABLE_DDL = `
 CREATE TABLE IF NOT EXISTS session_titles (

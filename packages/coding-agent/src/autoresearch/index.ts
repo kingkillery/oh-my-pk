@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
-import { logger, prompt } from "@oh-my-pi/pi-utils";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import type { AutocompleteItem } from "@pk-nerdsaver-ai/pi-tui";
+import { logger, prompt } from "@pk-nerdsaver-ai/pi-utils";
 import type { ExtensionContext, ExtensionFactory } from "../extensibility/extensions";
 import commandResumeTemplate from "./command-resume.md" with { type: "text" };
 import { createDashboardController } from "./dashboard";

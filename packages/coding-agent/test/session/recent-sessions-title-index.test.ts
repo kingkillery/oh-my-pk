@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getRecentSessions } from "@oh-my-pi/pi-coding-agent/session/session-listing";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { resetSessionTitleIndexForTests } from "@oh-my-pi/pi-coding-agent/session/title-index";
-import { getConfigRootDir, removeSyncWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import { getRecentSessions } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-listing";
+import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
+import { resetSessionTitleIndexForTests } from "@pk-nerdsaver-ai/pi-coding-agent/session/title-index";
+import { getConfigRootDir, removeSyncWithRetries, setAgentDir } from "@pk-nerdsaver-ai/pi-utils";
 import { makeAssistantMessage } from "../session-manager/helpers";
 
 /**

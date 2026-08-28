@@ -7,10 +7,10 @@ import type {
 	Model,
 	OpenAIResponsesHistoryPayload,
 	TextContent,
-} from "@oh-my-pi/pi-ai";
-import { rasterizeSvg } from "@oh-my-pi/pi-natives";
-import { formatBytes, isRecord, logger, readImageMetadata, SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils";
-import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+} from "@pk-nerdsaver-ai/pi-ai";
+import { rasterizeSvg } from "@pk-nerdsaver-ai/pi-natives";
+import { formatBytes, isRecord, logger, readImageMetadata, SUPPORTED_IMAGE_MIME_TYPES } from "@pk-nerdsaver-ai/pi-utils";
+import { LRUCache } from "@pk-nerdsaver-ai/pi-utils/lru";
 import { resolveReadPath } from "../tools/path-utils";
 import { formatDimensionNote, type ImageResizeOptions, resizeImage } from "./image-resize";
 

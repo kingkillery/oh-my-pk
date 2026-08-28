@@ -9,14 +9,14 @@ import type {
 	AssistantMessageEventStream,
 	Model,
 	SimpleStreamOptions,
-} from "@oh-my-pi/pi-ai";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
-import { resolveModelCacheProviderId } from "@oh-my-pi/pi-catalog/provider-models";
-import { type BenchSummary, runBenchCommand } from "@oh-my-pi/pi-coding-agent/cli/bench-cli";
-import type { BenchModelRegistry } from "@oh-my-pi/pi-coding-agent/cli/bench-runtime";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getModelDbPath, TempDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-ai";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import { writeModelCache } from "@pk-nerdsaver-ai/pi-catalog/model-cache";
+import { resolveModelCacheProviderId } from "@pk-nerdsaver-ai/pi-catalog/provider-models";
+import { type BenchSummary, runBenchCommand } from "@pk-nerdsaver-ai/pi-coding-agent/cli/bench-cli";
+import type { BenchModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/cli/bench-runtime";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { getModelDbPath, TempDir } from "@pk-nerdsaver-ai/pi-utils";
 
 function fakeModel(provider: string, id: string): Model<Api> {
 	return {

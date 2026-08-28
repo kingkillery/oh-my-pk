@@ -1,6 +1,6 @@
-import type { Component, HistoryBatch } from "@oh-my-pi/pi-tui";
-import { Container } from "@oh-my-pi/pi-tui";
-import { logger } from "@oh-my-pi/pi-utils";
+import type { Component, HistoryBatch } from "@pk-nerdsaver-ai/pi-tui";
+import { Container } from "@pk-nerdsaver-ai/pi-tui";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import { isToolActivityComponent } from "./tool-activity";
 
 /** Shared animation time supplied by the constrained transcript root. */

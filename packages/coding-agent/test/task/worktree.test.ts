@@ -15,10 +15,10 @@ import {
 	IsolationBaselineTooLargeError,
 	mergeTaskBranches,
 	parseIsolationMode,
-} from "@oh-my-pi/pi-coding-agent/task/worktree";
-import * as natives from "@oh-my-pi/pi-natives";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { removeWithRetries, setWorktreesDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/task/worktree";
+import * as natives from "@pk-nerdsaver-ai/pi-natives";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { removeWithRetries, setWorktreesDir } from "@pk-nerdsaver-ai/pi-utils";
 
 const tempDirs: string[] = [];
 

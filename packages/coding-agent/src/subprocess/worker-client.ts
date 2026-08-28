@@ -9,7 +9,7 @@ import {
 	postmortem,
 	stripWindowsExtendedLengthPathPrefix,
 	workerHostEntry,
-} from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-utils";
 import type { Subprocess } from "bun";
 
 /**

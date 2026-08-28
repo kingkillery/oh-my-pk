@@ -1,4 +1,4 @@
-import { Marked } from "@oh-my-pi/pi-utils/marked";
+import { Marked } from "@pk-nerdsaver-ai/pi-utils/marked";
 import type { ReactNode } from "react";
 import { memo, useMemo } from "react";
 import { escapeHtml } from "../../lib/format";

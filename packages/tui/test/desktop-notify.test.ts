@@ -7,8 +7,8 @@ import {
 	resolveDesktopNotifier,
 	sendDesktopNotification,
 	shouldDeliverDesktopNotification,
-} from "@oh-my-pi/pi-tui/desktop-notify";
-import * as utils from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-tui/desktop-notify";
+import * as utils from "@pk-nerdsaver-ai/pi-utils";
 
 const LINUX_ENV: NodeJS.ProcessEnv = { DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus" };
 

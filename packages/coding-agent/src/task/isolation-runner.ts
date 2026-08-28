@@ -19,8 +19,8 @@
  * before mutation); steps 2 and 3 are per-spawn.
  */
 import * as path from "node:path";
-import type * as natives from "@oh-my-pi/pi-natives";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
+import type * as natives from "@pk-nerdsaver-ai/pi-natives";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
 import { AgentRegistry } from "../registry/agent-registry";
 import type { ToolSession } from "../tools";
 import { generateCommitMessage } from "../utils/commit-message-generator";

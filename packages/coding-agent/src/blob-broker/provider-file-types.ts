@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { OmpErrors, type } from "@oh-my-pi/omptype";
-import type { ProviderFileReference } from "@oh-my-pi/pi-ai";
-import { isEnoent } from "@oh-my-pi/pi-utils";
+import { OmpErrors, type } from "@pk-nerdsaver-ai/omptype";
+import type { ProviderFileReference } from "@pk-nerdsaver-ai/pi-ai";
+import { isEnoent } from "@pk-nerdsaver-ai/pi-utils";
 import type { RemoteDeleteAction } from "./publication";
 
 /** Model providers whose official APIs support reusable uploaded-file references. */

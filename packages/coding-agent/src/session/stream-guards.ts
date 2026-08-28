@@ -1,9 +1,9 @@
-import type { Agent, AgentEvent, AgentMessage, AgentTurnEndContext } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, AssistantMessageEvent, Model, ToolCall } from "@oh-my-pi/pi-ai";
-import { GeminiHeaderRunDetector } from "@oh-my-pi/pi-ai/utils/thinking-loop";
-import { type RepeatedToolCallDetection, ToolCallLoopGuard } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
-import { modelFamilyToken } from "@oh-my-pi/pi-catalog/identity";
-import { logger, prompt } from "@oh-my-pi/pi-utils";
+import type { Agent, AgentEvent, AgentMessage, AgentTurnEndContext } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { AssistantMessage, AssistantMessageEvent, Model, ToolCall } from "@pk-nerdsaver-ai/pi-ai";
+import { GeminiHeaderRunDetector } from "@pk-nerdsaver-ai/pi-ai/utils/thinking-loop";
+import { type RepeatedToolCallDetection, ToolCallLoopGuard } from "@pk-nerdsaver-ai/pi-ai/utils/tool-call-loop-guard";
+import { modelFamilyToken } from "@pk-nerdsaver-ai/pi-catalog/identity";
+import { logger, prompt } from "@pk-nerdsaver-ai/pi-utils";
 import type { Settings } from "../config/settings";
 import { normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";

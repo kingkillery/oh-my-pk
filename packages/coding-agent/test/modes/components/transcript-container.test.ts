@@ -1,12 +1,12 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
+import type { AssistantMessage } from "@pk-nerdsaver-ai/pi-ai";
+import { AssistantMessageComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/assistant-message";
 import {
 	TranscriptContainer,
 	type TranscriptStableRow,
-} from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { Component } from "@oh-my-pi/pi-tui";
+} from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/transcript-container";
+import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import type { Component } from "@pk-nerdsaver-ai/pi-tui";
 
 class Block implements Component {
 	#rows: string[];

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
 import {
 	expandDefaultRetryFallbackChains,
 	findRetryFallbackCandidates,
 	type RetryFallbackResolutionContext,
 	resolveRetryFallbackChainKey,
-} from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
+} from "@pk-nerdsaver-ai/pi-coding-agent/session/retry-fallback-chains";
 
 function createContext(
 	chains: RetryFallbackResolutionContext["chains"],

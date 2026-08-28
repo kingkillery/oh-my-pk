@@ -15,7 +15,7 @@
  * the original crash again.
  */
 import { describe, expect, it } from "bun:test";
-import { createTinyTitleSubprocess, smokeTestTinyTitleWorker } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
+import { createTinyTitleSubprocess, smokeTestTinyTitleWorker } from "@pk-nerdsaver-ai/pi-coding-agent/tiny/title-client";
 
 describe("issue #1606 — tiny model lives in an isolated subprocess", () => {
 	it("ping/pongs through the spawned worker subprocess and tears it down cleanly", async () => {

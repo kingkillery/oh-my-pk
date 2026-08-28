@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
-import { type AgentMessage, Tokenizer } from "@oh-my-pi/pi-agent-core";
+import { type AgentMessage, Tokenizer } from "@pk-nerdsaver-ai/pi-agent-core";
 import {
 	type CompactionSettings,
 	calculateContextTokens,

@@ -7,8 +7,8 @@
  * the depth it reaches before it either loses the array or drops the cat sound,
  * which makes the two failure modes separable from a single reply.
  */
-import { streamSimple } from "@oh-my-pi/pi-ai";
-import chalk from "@oh-my-pi/pi-utils/chalk";
+import { streamSimple } from "@pk-nerdsaver-ai/pi-ai";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
 import {
 	type BenchRuntime,
 	createDefaultBenchRuntime,

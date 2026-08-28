@@ -1,5 +1,5 @@
-import type { TabBarTheme } from "@oh-my-pi/pi-tui";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import type { TabBarTheme } from "@pk-nerdsaver-ai/pi-tui";
+import { sanitizeText } from "@pk-nerdsaver-ai/pi-utils";
 import { theme } from "./theme/theme";
 
 // ═══════════════════════════════════════════════════════════════════════════

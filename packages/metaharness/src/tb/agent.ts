@@ -31,8 +31,8 @@ async function refreshCrossNatives(arches: GuestArch[], version: string): Promis
 	for (const arch of arches) {
 		if (process.platform === "linux" && process.arch === arch) continue;
 		const pkg = `pi-natives-linux-${arch}`;
-		const response = await fetch(`https://registry.npmjs.org/@oh-my-pi/${pkg}/-/${pkg}-${version}.tgz`);
-		if (!response.ok) throw new Error(`Fetching @oh-my-pi/${pkg}@${version} failed: HTTP ${response.status}`);
+		const response = await fetch(`https://registry.npmjs.org/@pk-nerdsaver-ai/${pkg}/-/${pkg}-${version}.tgz`);
+		if (!response.ok) throw new Error(`Fetching @pk-nerdsaver-ai/${pkg}@${version} failed: HTTP ${response.status}`);
 		const archive = new Bun.Archive(await response.arrayBuffer());
 		let extracted = 0;
 		for (const [entry, file] of await archive.files()) {
@@ -41,7 +41,7 @@ async function refreshCrossNatives(arches: GuestArch[], version: string): Promis
 			await Bun.write(path.join(NATIVES_DIR, name), file);
 			extracted++;
 		}
-		if (extracted === 0) throw new Error(`@oh-my-pi/${pkg}@${version} tarball contained no .node files`);
+		if (extracted === 0) throw new Error(`@pk-nerdsaver-ai/${pkg}@${version} tarball contained no .node files`);
 	}
 }
 

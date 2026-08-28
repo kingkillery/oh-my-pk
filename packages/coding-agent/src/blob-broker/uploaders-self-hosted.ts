@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { getSafeProjectCwd } from "@oh-my-pi/pi-utils";
+import { getSafeProjectCwd } from "@pk-nerdsaver-ai/pi-utils";
 import { writeRemoteFile } from "../ssh/file-transfer";
 import type { BlobDestinationId } from "./destinations";
 import type { BlobUploader, BlobUploadRequest, RemoteDeleteAction } from "./publication";

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { refreshAgentDiscovery, TaskTool } from "@oh-my-pi/pi-coding-agent/task";
-import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { refreshAgentDiscovery, TaskTool } from "@pk-nerdsaver-ai/pi-coding-agent/task";
+import * as discoveryModule from "@pk-nerdsaver-ai/pi-coding-agent/task/discovery";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
 
 const TEST_AGENTS = [
 	{

@@ -10,8 +10,8 @@
  * Non-TTY output keeps the original plain-line protocol
  * (`[start]`/`[done]`/`[fail]`), so scripted callers see unchanged output.
  */
-import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
-import chalk from "@oh-my-pi/pi-utils/chalk";
+import { formatDuration, formatNumber, sanitizeText } from "@pk-nerdsaver-ai/pi-utils";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
 import { createLiveBoard, type LiveBoardOutput } from "../cli/live-board";
 import type { AgentProgress } from "../task/types";
 import type { CleanseCheckerDescriptor } from "./checkers";

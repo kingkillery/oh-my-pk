@@ -2,12 +2,12 @@ import type { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { type FetchImpl, getEnvApiKey, type ImageContent, type TextContent } from "@oh-my-pi/pi-ai";
-import { htmlToMarkdown } from "@oh-my-pi/pi-natives";
-import { type Component, Text } from "@oh-my-pi/pi-tui";
-import { $which, ptree, truncate } from "@oh-my-pi/pi-utils";
-import { type ArchiveFormat, listArchiveRoot, sniffArchiveFormat } from "@oh-my-pi/pi-utils/ar";
+import type { AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
+import { type FetchImpl, getEnvApiKey, type ImageContent, type TextContent } from "@pk-nerdsaver-ai/pi-ai";
+import { htmlToMarkdown } from "@pk-nerdsaver-ai/pi-natives";
+import { type Component, Text } from "@pk-nerdsaver-ai/pi-tui";
+import { $which, ptree, truncate } from "@pk-nerdsaver-ai/pi-utils";
+import { type ArchiveFormat, listArchiveRoot, sniffArchiveFormat } from "@pk-nerdsaver-ai/pi-utils/ar";
 import type { Settings } from "../config/settings";
 import { readEditableNotebookText } from "../edit/notebook";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -517,7 +517,7 @@ function cleanFeedText(text: string): string {
  * Parse RSS/Atom feed to markdown
  */
 async function parseFeedToMarkdown(content: string, maxItems = 10): Promise<string> {
-	const { parseHTML } = await import("@oh-my-pi/pi-utils/dom");
+	const { parseHTML } = await import("@pk-nerdsaver-ai/pi-utils/dom");
 	try {
 		const doc = parseHTML(content).document;
 

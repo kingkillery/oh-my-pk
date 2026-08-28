@@ -2,15 +2,15 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn, vi } from 
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ReviewCommand } from "@oh-my-pi/pi-coding-agent/extensibility/custom-commands/bundled/review";
-import type { CustomCommandAPI } from "@oh-my-pi/pi-coding-agent/extensibility/custom-commands/types";
-import type { HookCommandContext } from "@oh-my-pi/pi-coding-agent/extensibility/hooks/types";
-import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import type { PrDiffPayload, ViewLookupResult } from "@oh-my-pi/pi-coding-agent/tools/gh";
-import * as gh from "@oh-my-pi/pi-coding-agent/tools/gh";
-import type { VcsGitRepo, VcsRepo } from "@oh-my-pi/pi-natives";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { ReviewCommand } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/custom-commands/bundled/review";
+import type { CustomCommandAPI } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/custom-commands/types";
+import type { HookCommandContext } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/hooks/types";
+import type { SessionEntry } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-entries";
+import type { PrDiffPayload, ViewLookupResult } from "@pk-nerdsaver-ai/pi-coding-agent/tools/gh";
+import * as gh from "@pk-nerdsaver-ai/pi-coding-agent/tools/gh";
+import type { VcsGitRepo, VcsRepo } from "@pk-nerdsaver-ai/pi-natives";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 const SAMPLE_JJ_DIFF = `diff --git a/src/workspace.ts b/src/workspace.ts
 --- a/src/workspace.ts

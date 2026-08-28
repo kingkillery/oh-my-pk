@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { streamDevin } from "@oh-my-pi/pi-ai/providers/devin";
-import type { Context, Model } from "@oh-my-pi/pi-ai/types";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { GetUserJwtResponseSchema } from "@oh-my-pi/pi-catalog/discovery/devin-proto";
-import { create, toBinary } from "@oh-my-pi/pi-catalog/discovery/protobuf";
+import { streamDevin } from "@pk-nerdsaver-ai/pi-ai/providers/devin";
+import type { Context, Model } from "@pk-nerdsaver-ai/pi-ai/types";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import { GetUserJwtResponseSchema } from "@pk-nerdsaver-ai/pi-catalog/discovery/devin-proto";
+import { create, toBinary } from "@pk-nerdsaver-ai/pi-catalog/discovery/protobuf";
 
 /**
  * Regression for #4228: a Devin Connect frame header advertising an outsized

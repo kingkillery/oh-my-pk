@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { visibleWidth } from "@oh-my-pi/pi-tui";
+import { visibleWidth } from "@pk-nerdsaver-ai/pi-tui";
 import { Settings } from "../../../src/config/settings";
 import { PlanSaveOverlay, type PlanSaveOverlayResult } from "../../../src/modes/components/plan-save-overlay";
 import { getThemeByName, setThemeInstance, type Theme, theme } from "../../../src/modes/theme/theme";

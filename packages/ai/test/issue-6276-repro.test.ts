@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { streamBedrock } from "@oh-my-pi/pi-ai/providers/amazon-bedrock";
-import { crc32 } from "@oh-my-pi/pi-ai/providers/aws-eventstream";
-import { streamSimple } from "@oh-my-pi/pi-ai/stream";
-import type { Context, FetchImpl, Model } from "@oh-my-pi/pi-ai/types";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { streamBedrock } from "@pk-nerdsaver-ai/pi-ai/providers/amazon-bedrock";
+import { crc32 } from "@pk-nerdsaver-ai/pi-ai/providers/aws-eventstream";
+import { streamSimple } from "@pk-nerdsaver-ai/pi-ai/stream";
+import type { Context, FetchImpl, Model } from "@pk-nerdsaver-ai/pi-ai/types";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 
 interface GuardrailPayload {
 	guardrailConfig?: {

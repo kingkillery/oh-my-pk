@@ -16,11 +16,11 @@ import {
 	type UsageLimit,
 	type UsageReport,
 	type UsageUnit,
-} from "@oh-my-pi/pi-ai";
-import { AuthBrokerClient } from "@oh-my-pi/pi-ai/auth-broker";
-import type { ClientUsageClientSummary } from "@oh-my-pi/pi-ai/usage";
-import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
-import chalk from "@oh-my-pi/pi-utils/chalk";
+} from "@pk-nerdsaver-ai/pi-ai";
+import { AuthBrokerClient } from "@pk-nerdsaver-ai/pi-ai/auth-broker";
+import type { ClientUsageClientSummary } from "@pk-nerdsaver-ai/pi-ai/usage";
+import { formatDuration, formatNumber, sanitizeText } from "@pk-nerdsaver-ai/pi-utils";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
 import { discoverAuthStorage } from "../sdk";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";

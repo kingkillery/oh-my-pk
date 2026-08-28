@@ -6,8 +6,8 @@ import {
 	resolveProviderChain,
 	setExcludedSearchProviders,
 	setSearchProviderOrder,
-} from "@oh-my-pi/pi-coding-agent/web/search/provider";
-import { SEARCH_PROVIDER_ORDER } from "@oh-my-pi/pi-coding-agent/web/search/types";
+} from "@pk-nerdsaver-ai/pi-coding-agent/web/search/provider";
+import { SEARCH_PROVIDER_ORDER } from "@pk-nerdsaver-ai/pi-coding-agent/web/search/types";
 
 const authStorage = {
 	hasAuth(provider: string): boolean {

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { Tokenizer } from "@oh-my-pi/pi-agent-core";
-import type { SessionMessageEntry } from "@oh-my-pi/pi-agent-core/compaction/entries";
-import { DEFAULT_PRUNE_CONFIG, pruneToolOutputs } from "@oh-my-pi/pi-agent-core/compaction/pruning";
-import { AGGRESSIVE_SHAKE_CONFIG, collectShakeRegions } from "@oh-my-pi/pi-agent-core/compaction/shake";
-import type { AssistantMessage, TextContent, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
+import { Tokenizer } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { SessionMessageEntry } from "@pk-nerdsaver-ai/pi-agent-core/compaction/entries";
+import { DEFAULT_PRUNE_CONFIG, pruneToolOutputs } from "@pk-nerdsaver-ai/pi-agent-core/compaction/pruning";
+import { AGGRESSIVE_SHAKE_CONFIG, collectShakeRegions } from "@pk-nerdsaver-ai/pi-agent-core/compaction/shake";
+import type { AssistantMessage, TextContent, ToolResultMessage, Usage } from "@pk-nerdsaver-ai/pi-ai";
 
 const tokenizer = new Tokenizer();
 

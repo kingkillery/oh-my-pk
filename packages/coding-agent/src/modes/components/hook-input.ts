@@ -1,7 +1,7 @@
 /**
  * Simple text input component for hooks.
  */
-import { Input, matchesKey, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { Input, matchesKey, Spacer, Text, type TUI } from "@pk-nerdsaver-ai/pi-tui";
 import { theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt } from "../../modes/utils/keybinding-matchers";
 import { CountdownTimer } from "./countdown-timer";

@@ -2,9 +2,9 @@ import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { syncAllSessions } from "@oh-my-pi/omp-stats/aggregator";
-import { closeDb, getBehaviorOverall, getFileOffset, initDb } from "@oh-my-pi/omp-stats/db";
-import { getAgentDir, getStatsDbPath } from "@oh-my-pi/pi-utils";
+import { syncAllSessions } from "@pk-nerdsaver-ai/omp-stats/aggregator";
+import { closeDb, getBehaviorOverall, getFileOffset, initDb } from "@pk-nerdsaver-ai/omp-stats/db";
+import { getAgentDir, getStatsDbPath } from "@pk-nerdsaver-ai/pi-utils";
 import { installStatsTestIsolation } from "./helpers/temp-agent";
 
 installStatsTestIsolation("@pi-stats-behavior-backfill-");

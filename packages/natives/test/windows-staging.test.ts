@@ -117,8 +117,8 @@ describe("windows native addon staging", () => {
 	});
 
 	it("classifies only Windows node_modules paths case-insensitively", () => {
-		const leafPackageDir = "/tmp/node_modules/@oh-my-pi/pi-natives-darwin-arm64";
-		const uppercaseNodeModulesNativeDir = "/tmp/NODE_MODULES/@oh-my-pi/pi-natives/native";
+		const leafPackageDir = "/tmp/node_modules/@pk-nerdsaver-ai/pi-natives-darwin-arm64";
+		const uppercaseNodeModulesNativeDir = "/tmp/NODE_MODULES/@pk-nerdsaver-ai/pi-natives/native";
 		const variantCacheKey = "__PI_NATIVE_VARIANT_CACHE";
 		const previousVariantCache = process.env[variantCacheKey];
 		try {
@@ -131,7 +131,7 @@ describe("windows native addon staging", () => {
 			const installed = initLoaderContext({
 				platform: "linux",
 				isCompiledBinary: false,
-				nativeDir: "/tmp/node_modules/@oh-my-pi/pi-natives/native",
+				nativeDir: "/tmp/node_modules/@pk-nerdsaver-ai/pi-natives/native",
 				leafPackageDir,
 			});
 			const uppercaseWorkspace = initLoaderContext({

@@ -17,10 +17,10 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	RegisteredCommand,
-} from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
-import type { VcsGitRepo, VcsGitRepoInfo } from "@oh-my-pi/pi-natives";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { TempDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions";
+import type { VcsGitRepo, VcsGitRepoInfo } from "@pk-nerdsaver-ai/pi-natives";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 
 afterEach(() => {
 	vi.restoreAllMocks();

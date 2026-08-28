@@ -9,7 +9,7 @@
  */
 
 import * as fs from "node:fs";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import { isUploaderKind, LocalBlobBackend } from "./broker";
 import {
 	BLOB_BROKER_CONFIG_ENV,

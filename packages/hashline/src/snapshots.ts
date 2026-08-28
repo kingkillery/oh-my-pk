@@ -19,7 +19,7 @@
  * short history of full-file versions so in-session edit chains can still
  * recover against the version a stale tag names.
  */
-import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import { LRUCache } from "@pk-nerdsaver-ai/pi-utils/lru";
 import { computeFileHash } from "./format";
 
 /**

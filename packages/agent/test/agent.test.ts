@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { type } from "@oh-my-pi/omptype";
-import { Agent, AgentBusyError, type AgentEvent, type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { SimpleStreamOptions, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
-import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
-import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import { Agent, AgentBusyError, type AgentEvent, type AgentTool, ThinkingLevel } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { SimpleStreamOptions, ToolResultMessage } from "@pk-nerdsaver-ai/pi-ai";
+import { createMockModel } from "@pk-nerdsaver-ai/pi-ai/providers/mock";
+import { kCursorExecResolved } from "@pk-nerdsaver-ai/pi-ai/utils/block-symbols";
+import { AssistantMessageEventStream } from "@pk-nerdsaver-ai/pi-ai/utils/event-stream";
 import { createAssistantMessage } from "./helpers";
 
 describe("Agent", () => {

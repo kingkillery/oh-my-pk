@@ -1,5 +1,5 @@
-import type { Model } from "@oh-my-pi/pi-ai";
-import { isAnthropicOAuthToken } from "@oh-my-pi/pi-catalog/utils";
+import type { Model } from "@pk-nerdsaver-ai/pi-ai";
+import { isAnthropicOAuthToken } from "@pk-nerdsaver-ai/pi-catalog/utils";
 import type { ProviderFileClient, ProviderFileHandle, ProviderFileUploadRequest } from "./provider-file-types";
 import type { FetchImpl } from "./uploader-runtime";
 

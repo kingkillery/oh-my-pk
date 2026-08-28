@@ -15,19 +15,19 @@
  *   CLI flags, scope globs — onto that pipeline.
  */
 
-import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { Api, Effort, KnownProvider, Model, ModelSpec } from "@oh-my-pi/pi-ai";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
-import { buildModelProviderPriorityRank } from "@oh-my-pi/pi-catalog/identity";
-import { stripThinkingVariantToken } from "@oh-my-pi/pi-catalog/identity/family";
-import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
-import { type GeneratedProvider, getBundledModels, modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
-import { resolveBareVariantAlias, resolveVariantAlias } from "@oh-my-pi/pi-catalog/variant-collapse";
-import { fuzzyMatch } from "@oh-my-pi/pi-tui";
-import { logger } from "@oh-my-pi/pi-utils";
-import chalk from "@oh-my-pi/pi-utils/chalk";
+import { ThinkingLevel } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { Api, Effort, KnownProvider, Model, ModelSpec } from "@pk-nerdsaver-ai/pi-ai";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import { modelMatchesHost } from "@pk-nerdsaver-ai/pi-catalog/hosts";
+import { buildModelProviderPriorityRank } from "@pk-nerdsaver-ai/pi-catalog/identity";
+import { stripThinkingVariantToken } from "@pk-nerdsaver-ai/pi-catalog/identity/family";
+import { clampThinkingLevelForModel } from "@pk-nerdsaver-ai/pi-catalog/model-thinking";
+import { type GeneratedProvider, getBundledModels, modelsAreEqual } from "@pk-nerdsaver-ai/pi-catalog/models";
+import { DEFAULT_MODEL_PER_PROVIDER } from "@pk-nerdsaver-ai/pi-catalog/provider-models";
+import { resolveBareVariantAlias, resolveVariantAlias } from "@pk-nerdsaver-ai/pi-catalog/variant-collapse";
+import { fuzzyMatch } from "@pk-nerdsaver-ai/pi-tui";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import {
 	AUTO_THINKING,

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import { type } from "@oh-my-pi/omptype";
-import type { Tool } from "@oh-my-pi/pi-ai/types";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import type { Tool } from "@pk-nerdsaver-ai/pi-ai/types";
 import {
 	adaptSchemaForStrict,
 	normalizeEmptySchemas,
 	stripSchemaDescriptions,
 	stripToolDescriptions,
 	toolWireSchema,
-} from "@oh-my-pi/pi-ai/utils/schema";
+} from "@pk-nerdsaver-ai/pi-ai/utils/schema";
 
 // ---------------------------------------------------------------------------
 // normalizeEmptySchemas — provider-agnostic post-pipeline normalization

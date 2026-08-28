@@ -6,9 +6,9 @@
  * `x` kill, `r` restart, `a` toggle all scopes, `q`/`esc`/`ctrl+c` quit.
  * Sub-views (info, logs): `esc`/`q` back.
  */
-import { type Component, matchesKey, ProcessTerminal, TUI, truncateToWidth } from "@oh-my-pi/pi-tui";
-import { formatDuration } from "@oh-my-pi/pi-utils";
-import chalk from "@oh-my-pi/pi-utils/chalk";
+import { type Component, matchesKey, ProcessTerminal, TUI, truncateToWidth } from "@pk-nerdsaver-ai/pi-tui";
+import { formatDuration } from "@pk-nerdsaver-ai/pi-utils";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
 import { closeDaemonClients, type DaemonBrokerClient } from "../launch/client";
 import type { DaemonSnapshot, DaemonSpec } from "../launch/protocol";
 import {

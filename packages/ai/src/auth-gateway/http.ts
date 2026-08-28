@@ -6,7 +6,7 @@
  */
 import { timingSafeEqual as nodeTimingSafeEqual } from "node:crypto";
 import * as os from "node:os";
-import { getInstallId } from "@oh-my-pi/pi-utils";
+import { getInstallId } from "@pk-nerdsaver-ai/pi-utils";
 import type { Api, AssistantMessage, Model } from "../types";
 import type { ClientUsageIdentity } from "../usage";
 

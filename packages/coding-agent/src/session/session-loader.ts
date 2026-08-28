@@ -1,6 +1,6 @@
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { getBlobsDir, isEnoent, parseJsonlLenient } from "@oh-my-pi/pi-utils";
-import * as snapcompact from "@oh-my-pi/snapcompact";
+import type { AgentMessage } from "@pk-nerdsaver-ai/pi-agent-core";
+import { getBlobsDir, isEnoent, parseJsonlLenient } from "@pk-nerdsaver-ai/pi-utils";
+import * as snapcompact from "@pk-nerdsaver-ai/snapcompact";
 import { BlobStore, isBlobRef, resolveImageData, resolveImageDataUrl } from "./blob-store";
 import { buildSessionContext } from "./session-context";
 import type { FileEntry, RawFileEntry, SessionEntry, SessionHeader } from "./session-entries";

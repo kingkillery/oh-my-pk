@@ -8,15 +8,15 @@ import {
 	clearClaudePluginRootsCache,
 	listClaudePluginRoots,
 	parseClaudePluginsRegistry,
-} from "@oh-my-pi/pi-coding-agent/discovery/helpers";
-import { loadSlashCommands } from "@oh-my-pi/pi-coding-agent/extensibility/slash-commands";
-import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
-import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
-import "@oh-my-pi/pi-coding-agent/discovery/claude-plugins";
-import { type MCPServer, mcpCapability } from "@oh-my-pi/pi-coding-agent/capability/mcp";
-import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
-import type { Skill } from "@oh-my-pi/pi-coding-agent/capability/skill";
-import type { SlashCommand } from "@oh-my-pi/pi-coding-agent/capability/slash-command";
+} from "@pk-nerdsaver-ai/pi-coding-agent/discovery/helpers";
+import { loadSlashCommands } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/slash-commands";
+import { discoverAgents } from "@pk-nerdsaver-ai/pi-coding-agent/task/discovery";
+import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@pk-nerdsaver-ai/pi-utils";
+import "@pk-nerdsaver-ai/pi-coding-agent/discovery/claude-plugins";
+import { type MCPServer, mcpCapability } from "@pk-nerdsaver-ai/pi-coding-agent/capability/mcp";
+import type { Rule } from "@pk-nerdsaver-ai/pi-coding-agent/capability/rule";
+import type { Skill } from "@pk-nerdsaver-ai/pi-coding-agent/capability/skill";
+import type { SlashCommand } from "@pk-nerdsaver-ai/pi-coding-agent/capability/slash-command";
 
 describe("parseClaudePluginsRegistry", () => {
 	test("parses valid registry", () => {

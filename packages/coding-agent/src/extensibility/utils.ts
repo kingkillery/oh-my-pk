@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { postmortem } from "@oh-my-pi/pi-utils";
+import { postmortem } from "@pk-nerdsaver-ai/pi-utils";
 import { theme } from "../modes/theme/theme";
 import { expandPath, normalizeLocalScheme } from "../tools/path-utils";
 import type { HookUIContext } from "./hooks/types";

@@ -17,7 +17,7 @@
  */
 import * as os from "node:os";
 import * as path from "node:path";
-import { isRecord, logger, parseFrontmatter } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, parseFrontmatter } from "@pk-nerdsaver-ai/pi-utils";
 import { JSONC } from "bun";
 import { registerProvider } from "../capability";
 import { type ContextFile, contextFileCapability } from "../capability/context-file";

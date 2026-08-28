@@ -9,10 +9,10 @@ import {
 	type EditToolDetails,
 	executePatchSingle,
 	executeReplace,
-} from "@oh-my-pi/pi-coding-agent/edit";
-import { writethroughNoop } from "@oh-my-pi/pi-coding-agent/lsp";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/edit";
+import { writethroughNoop } from "@pk-nerdsaver-ai/pi-coding-agent/lsp";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 // ─── Minimal ToolSession stub ────────────────────────────────────────────────
 

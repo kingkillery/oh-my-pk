@@ -5,10 +5,10 @@
  * directories do not depend on workspace module resolution.
  */
 import * as path from "node:path";
-import { type } from "@oh-my-pi/omptype";
-import * as zod from "@oh-my-pi/omptype/zod";
-import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { logger } from "@oh-my-pi/pi-utils";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import * as zod from "@pk-nerdsaver-ai/omptype/zod";
+import type { AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import { toolCapability } from "../../capability/tool";
 import { type CustomTool, loadCapability } from "../../discovery";
 import type { ExecOptions } from "../../exec/exec";

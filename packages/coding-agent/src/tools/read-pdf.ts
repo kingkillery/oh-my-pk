@@ -1,5 +1,5 @@
 import { pathToFileURL } from "node:url";
-import { untilAborted } from "@oh-my-pi/pi-utils";
+import { untilAborted } from "@pk-nerdsaver-ai/pi-utils";
 import type { ToolSession } from "../sdk";
 import type { BrowserHandle } from "./browser/registry";
 import type { ScreenshotResult } from "./browser/tab-protocol";

@@ -1,18 +1,18 @@
 {
   "type": "module",
-  "name": "@oh-my-pi/snapcompact",
+  "name": "@pk-nerdsaver-ai/snapcompact",
   "version": "18.0.9",
   "description": "Bitmap-frame context compression for vision-capable LLMs",
-  "homepage": "https://omp.sh",
+  "homepage": "https://oh-my-pk.pkking.computer",
   "author": "Stencil Labs, Inc.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/can1357/oh-my-pi.git",
+    "url": "git+https://github.com/kingkillery/oh-my-pk.git",
     "directory": "packages/snapcompact"
   },
   "bugs": {
-    "url": "https://github.com/can1357/oh-my-pi/issues"
+    "url": "https://github.com/kingkillery/oh-my-pk/issues"
   },
   "keywords": [
     "context-compression",
@@ -31,11 +31,11 @@
     "fmt": "biome format --write ."
   },
   "dependencies": {
-    "@oh-my-pi/pi-ai": "catalog:",
-    "@oh-my-pi/pi-catalog": "catalog:",
-    "@oh-my-pi/pi-natives": "catalog:",
-    "@oh-my-pi/pi-utils": "catalog:",
-    "@oh-my-pi/pi-wire": "catalog:"
+    "@pk-nerdsaver-ai/pi-ai": "catalog:",
+    "@pk-nerdsaver-ai/pi-catalog": "catalog:",
+    "@pk-nerdsaver-ai/pi-natives": "catalog:",
+    "@pk-nerdsaver-ai/pi-utils": "catalog:",
+    "@pk-nerdsaver-ai/pi-wire": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:"

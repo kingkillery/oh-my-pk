@@ -1,6 +1,6 @@
-import { type } from "@oh-my-pi/omptype";
-import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import type { AgentTool, AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
+import { logger, untilAborted } from "@pk-nerdsaver-ai/pi-utils";
 import { ensureBankExists } from "../hindsight/bank";
 import reflectDescription from "../prompts/tools/reflect.md" with { type: "text" };
 import type { ToolSession } from ".";

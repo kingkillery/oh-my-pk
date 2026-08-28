@@ -20,7 +20,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { $which, TempDir } from "@oh-my-pi/pi-utils";
+import { $which, TempDir } from "@pk-nerdsaver-ai/pi-utils";
 import { $ } from "bun";
 import {
 	type InstalledVersionVerification,
@@ -78,7 +78,7 @@ async function verifyLauncher(binDir: string, expectedVersion: string): Promise<
 const RELEASE: ReleaseInfo = {
 	tag: `v${NEW_VERSION}`,
 	version: NEW_VERSION,
-	packages: { pkg: NEW_PKG, natives: "@oh-my-pi/pi-natives" },
+	packages: { pkg: NEW_PKG, natives: "@pk-nerdsaver-ai/pi-natives" },
 };
 
 describe.skipIf(process.platform === "win32" || !$which("npm"))("rename migration over real npm", () => {

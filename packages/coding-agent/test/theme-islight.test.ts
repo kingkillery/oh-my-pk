@@ -2,17 +2,17 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { generateThemeVars } from "@oh-my-pi/pi-coding-agent/export/html";
-import { defaultThemes } from "@oh-my-pi/pi-coding-agent/modes/theme/defaults";
-import { createTheme, getBuiltinThemes } from "@oh-my-pi/pi-coding-agent/modes/theme/loader";
+import { generateThemeVars } from "@pk-nerdsaver-ai/pi-coding-agent/export/html";
+import { defaultThemes } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/defaults";
+import { createTheme, getBuiltinThemes } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/loader";
 import {
 	getEditorTheme,
 	getResolvedThemeColors,
 	getThemeByName,
 	isLightTheme,
 	setThemeInstance,
-} from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { getAgentDir, getCustomThemesDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import { getAgentDir, getCustomThemesDir, removeWithRetries, setAgentDir } from "@pk-nerdsaver-ai/pi-utils";
 
 function createBaseThemes() {
 	const builtins = getBuiltinThemes();

@@ -2,7 +2,7 @@
  * MusicBrainz URL handler for artists, releases, and recordings
  */
 
-import { tryParseJson, USER_AGENT } from "@oh-my-pi/pi-utils";
+import { tryParseJson, USER_AGENT } from "@pk-nerdsaver-ai/pi-utils";
 import type { RenderResult, SpecialHandler } from "./types";
 import { buildResult, formatMediaDuration, loadPage } from "./types";
 

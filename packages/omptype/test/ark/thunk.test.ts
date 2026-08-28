@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { type Scope, scope, type } from "@oh-my-pi/omptype/ark";
+import { type Scope, scope, type } from "@pk-nerdsaver-ai/omptype/ark";
 import type { Eq } from "./type-assert";
 
 it("in type", () => {

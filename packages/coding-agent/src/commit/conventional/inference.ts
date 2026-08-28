@@ -1,6 +1,6 @@
-import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { Api, ApiKey, AssistantMessage, AuthStorage, Model } from "@oh-my-pi/pi-ai";
-import { completeSimple } from "@oh-my-pi/pi-ai";
+import type { ThinkingLevel } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { Api, ApiKey, AssistantMessage, AuthStorage, Model } from "@pk-nerdsaver-ai/pi-ai";
+import { completeSimple } from "@pk-nerdsaver-ai/pi-ai";
 import { toReasoningEffort } from "../../thinking";
 import type { ResolvedCommitModel } from "../model-selection";
 import { type CommitInferenceCache, computeCommitCacheKey } from "./cache";

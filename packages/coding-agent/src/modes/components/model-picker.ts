@@ -4,8 +4,8 @@
  * Model entries switch the current session only; a search beginning with `@`
  * exposes the configured ctrl+p quick roles.
  */
-import type { Model } from "@oh-my-pi/pi-ai";
-import { addKeyAliases, type Component, canonicalKeyId, type KeyId, parseKey, type TUI } from "@oh-my-pi/pi-tui";
+import type { Model } from "@pk-nerdsaver-ai/pi-ai";
+import { addKeyAliases, type Component, canonicalKeyId, type KeyId, parseKey, type TUI } from "@pk-nerdsaver-ai/pi-tui";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
 import type { ResolvedRoleModel } from "../../session/agent-session";

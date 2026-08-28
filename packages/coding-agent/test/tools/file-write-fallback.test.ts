@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { applyPatch } from "@oh-my-pi/pi-coding-agent/edit/modes/patch";
+import { applyPatch } from "@pk-nerdsaver-ai/pi-coding-agent/edit/modes/patch";
 import {
 	addFileDeleteFallback,
 	addFileWriteFallback,
@@ -10,7 +10,7 @@ import {
 	isPermissionDeniedError,
 	withFileMutationSession,
 	writeFileWithFallback,
-} from "@oh-my-pi/pi-coding-agent/tools/file-write-fallback";
+} from "@pk-nerdsaver-ai/pi-coding-agent/tools/file-write-fallback";
 
 /** Mimics a Node/Bun filesystem error with a structured `code`, without touching a real fs. */
 function fsError(code: string, message = `${code}: simulated`): NodeJS.ErrnoException {

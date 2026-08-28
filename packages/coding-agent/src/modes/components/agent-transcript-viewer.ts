@@ -14,9 +14,9 @@
  * same append path over the host's byte-capped transcript reads.
  */
 import * as fs from "node:fs";
-import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-import { type Component, Editor, matchesKey, routeSgrMouseInput, ScrollView, type TUI } from "@oh-my-pi/pi-tui";
-import { formatDuration, formatNumber, logger } from "@oh-my-pi/pi-utils";
+import type { AgentTool } from "@pk-nerdsaver-ai/pi-agent-core";
+import { type Component, Editor, matchesKey, routeSgrMouseInput, ScrollView, type TUI } from "@pk-nerdsaver-ai/pi-tui";
+import { formatDuration, formatNumber, logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import type { AgentLifecycleManager } from "../../registry/agent-lifecycle";

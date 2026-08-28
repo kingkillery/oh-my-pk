@@ -1,5 +1,5 @@
 import { scheduler } from "node:timers/promises";
-import { isRetryableError } from "@oh-my-pi/pi-utils";
+import { isRetryableError } from "@pk-nerdsaver-ai/pi-utils";
 import { isCopilotTransientModelError, status } from "../error/flags";
 import { getHeadersFromError, getRetryAfterMsFromHeaders } from "./retry-after";
 

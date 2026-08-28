@@ -4,7 +4,7 @@
  * leaving unrelated commands and read-only `gh` calls alone.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { invalidateGithubCacheForBashCommand } from "@oh-my-pi/pi-coding-agent/tools/gh-cache-invalidation";
+import { invalidateGithubCacheForBashCommand } from "@pk-nerdsaver-ai/pi-coding-agent/tools/gh-cache-invalidation";
 import {
 	clearAll,
 	getCached,

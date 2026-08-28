@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Encoding } from "@oh-my-pi/pi-natives";
+import { Encoding } from "@pk-nerdsaver-ai/pi-natives";
 import { Tokenizer, tokenizerEncodingForModel } from "../src/tokenizer";
 
 // Contract: the catalog resolves model identity once as Model.tokenizer; the

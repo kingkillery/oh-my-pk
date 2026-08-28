@@ -2,7 +2,7 @@
  * LSP-based linter client.
  * Uses the Language Server Protocol for formatting and diagnostics.
  */
-import { untilAborted } from "@oh-my-pi/pi-utils";
+import { untilAborted } from "@pk-nerdsaver-ai/pi-utils";
 import { getOrCreateClient, notifySaved, sendRequest, syncContent } from "../../lsp/client";
 import { applyTextEditsToString } from "../../lsp/edits";
 import { resolveFormatOptions } from "../../lsp/format-options";

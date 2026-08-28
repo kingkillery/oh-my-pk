@@ -14,11 +14,11 @@ import { afterEach, beforeEach, describe, expect, setSystemTime, test, vi } from
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
-import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
-import * as oauthFlow from "@oh-my-pi/pi-coding-agent/mcp/oauth-flow";
-import type { MCPServerConfig } from "@oh-my-pi/pi-coding-agent/mcp/types";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { AuthStorage, SqliteAuthCredentialStore } from "@pk-nerdsaver-ai/pi-ai";
+import { MCPManager } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/manager";
+import * as oauthFlow from "@pk-nerdsaver-ai/pi-coding-agent/mcp/oauth-flow";
+import type { MCPServerConfig } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/types";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 const CREDENTIAL_ID = "mcp_oauth_test_1908";
 const TOKEN_URL = "https://example.com/oauth/token";

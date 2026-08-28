@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { buildResponsesInput } from "@oh-my-pi/pi-ai/providers/openai-shared";
-import type { Context, ImageContent, ModelSpec, TextContent } from "@oh-my-pi/pi-ai/types";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { buildResponsesInput } from "@pk-nerdsaver-ai/pi-ai/providers/openai-shared";
+import type { Context, ImageContent, ModelSpec, TextContent } from "@pk-nerdsaver-ai/pi-ai/types";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 
 const model = buildModel({
 	id: "test-vision",

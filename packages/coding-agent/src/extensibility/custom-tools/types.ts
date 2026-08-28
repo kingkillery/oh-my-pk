@@ -5,9 +5,9 @@
  * They can provide custom rendering for tool calls and results in the TUI.
  */
 
-import type { type as ArkType } from "@oh-my-pi/omptype";
-import type * as TypeBox from "@oh-my-pi/omptype/typebox";
-import type * as zod from "@oh-my-pi/omptype/zod";
+import type { type as ArkType } from "@pk-nerdsaver-ai/omptype";
+import type * as TypeBox from "@pk-nerdsaver-ai/omptype/typebox";
+import type * as zod from "@pk-nerdsaver-ai/omptype/zod";
 import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
@@ -15,11 +15,11 @@ import type {
 	ToolApprovalDecision,
 	ToolLoadMode,
 	ToolTier,
-} from "@oh-my-pi/pi-agent-core";
-import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
-import type { FetchImpl, Model, Static, TSchema } from "@oh-my-pi/pi-ai";
-import type { Component } from "@oh-my-pi/pi-tui";
-import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-agent-core";
+import type { CompactionResult } from "@pk-nerdsaver-ai/pi-agent-core/compaction";
+import type { FetchImpl, Model, Static, TSchema } from "@pk-nerdsaver-ai/pi-ai";
+import type { Component } from "@pk-nerdsaver-ai/pi-tui";
+import type { logger as PiLogger } from "@pk-nerdsaver-ai/pi-utils";
 import type { Rule } from "../../capability/rule";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";

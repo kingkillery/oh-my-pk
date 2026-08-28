@@ -1,6 +1,6 @@
-import { type } from "@oh-my-pi/omptype";
-import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import { instrumentedCompleteSimple, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@pk-nerdsaver-ai/pi-agent-core";
+import { instrumentedCompleteSimple, resolveTelemetry } from "@pk-nerdsaver-ai/pi-agent-core";
 import {
 	type Api,
 	type AssistantMessage,
@@ -9,8 +9,8 @@ import {
 	type Model,
 	type ToolExample,
 	type Usage,
-} from "@oh-my-pi/pi-ai";
-import { prompt } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-ai";
+import { prompt } from "@pk-nerdsaver-ai/pi-utils";
 import { extractTextContent } from "../commit/utils";
 
 import {

@@ -24,15 +24,15 @@ import {
 	loadMnemopiCore,
 	MnemopiSessionState,
 	setMnemopiSessionState,
-} from "@oh-my-pi/pi-coding-agent/mnemopi/state";
-import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
-import { MemoryEditTool } from "@oh-my-pi/pi-coding-agent/tools/memory-edit";
-import { MemoryRecallTool } from "@oh-my-pi/pi-coding-agent/tools/memory-recall";
-import { MemoryReflectTool } from "@oh-my-pi/pi-coding-agent/tools/memory-reflect";
-import { MemoryRetainTool } from "@oh-my-pi/pi-coding-agent/tools/memory-retain";
-import { resetMemoryForTests } from "@oh-my-pi/pi-mnemopi";
-import { logger, TempDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/mnemopi/state";
+import type { AgentSessionEventListener } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools/index";
+import { MemoryEditTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/memory-edit";
+import { MemoryRecallTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/memory-recall";
+import { MemoryReflectTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/memory-reflect";
+import { MemoryRetainTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/memory-retain";
+import { resetMemoryForTests } from "@pk-nerdsaver-ai/pi-mnemopi";
+import { logger, TempDir } from "@pk-nerdsaver-ai/pi-utils";
 
 // Mnemopi is lazy-loaded at runtime; preload it for synchronous state construction.
 await Promise.all([loadMnemopi(), loadMnemopiCore()]);

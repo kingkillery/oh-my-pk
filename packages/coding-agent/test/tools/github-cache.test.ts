@@ -18,10 +18,10 @@ import {
 	openDb,
 	putCached,
 	resetForTests as resetCacheForTests,
-} from "@oh-my-pi/pi-coding-agent/tools/github-cache";
-import { ToolAbortError, throwIfAborted } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { github } from "@oh-my-pi/pi-coding-agent/utils/github";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/tools/github-cache";
+import { ToolAbortError, throwIfAborted } from "@pk-nerdsaver-ai/pi-coding-agent/tools/tool-errors";
+import { github } from "@pk-nerdsaver-ai/pi-coding-agent/utils/github";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 const TEST_REPO = "owner/example";
 const TEST_AUTH_KEY = "test-auth";

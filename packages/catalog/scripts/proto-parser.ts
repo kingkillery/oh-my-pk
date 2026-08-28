@@ -1,5 +1,5 @@
 /**
- * Lightweight protobuf (.proto) parser and TypeScript code generator for @oh-my-pi/pi-catalog.
+ * Lightweight protobuf (.proto) parser and TypeScript code generator for @pk-nerdsaver-ai/pi-catalog.
  *
  * Generates type-safe schema definitions and message types using the discovery/protobuf runtime codecs.
  */

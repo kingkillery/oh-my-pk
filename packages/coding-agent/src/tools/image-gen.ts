@@ -1,9 +1,9 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { type } from "@oh-my-pi/omptype";
-import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { type ApiKey, type FetchImpl, getEnvApiKey, getOpenRouterHeaders, type Model, withAuth } from "@oh-my-pi/pi-ai";
-import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import type { AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
+import { type ApiKey, type FetchImpl, getEnvApiKey, getOpenRouterHeaders, type Model, withAuth } from "@pk-nerdsaver-ai/pi-ai";
+import { ProviderHttpError } from "@pk-nerdsaver-ai/pi-ai/error";
 import {
 	applyCodexResidencyHeader,
 	CODEX_BASE_URL,
@@ -24,7 +24,7 @@ import {
 	Snowflake,
 	USER_AGENT,
 	untilAborted,
-} from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-utils";
 import { isAuthenticated, type ModelRegistry } from "../config/model-registry";
 import { settings } from "../config/settings";
 import type { CustomTool } from "../extensibility/custom-tools/types";

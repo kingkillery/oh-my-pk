@@ -1,4 +1,4 @@
-import { type } from "@oh-my-pi/omptype";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import { parseKnownModel, semverEqual } from "../identity/classify";
 import { getBundledModels } from "../models";
 import { resolveOpenAIDaybreakStandardCost } from "../openai-pricing";

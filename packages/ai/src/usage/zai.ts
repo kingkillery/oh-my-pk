@@ -1,5 +1,5 @@
-import { toNumber } from "@oh-my-pi/pi-catalog/utils";
-import { USER_AGENT } from "@oh-my-pi/pi-utils";
+import { toNumber } from "@pk-nerdsaver-ai/pi-catalog/utils";
+import { USER_AGENT } from "@pk-nerdsaver-ai/pi-utils";
 import type {
 	CredentialRankingStrategy,
 	UsageAmount,

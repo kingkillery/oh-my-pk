@@ -1,11 +1,11 @@
-import { type } from "@oh-my-pi/omptype";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import type {
 	AgentTool,
 	AgentToolContext,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
-} from "@oh-my-pi/pi-agent-core";
+} from "@pk-nerdsaver-ai/pi-agent-core";
 import {
 	BINARY_SNIFF_BYTES,
 	formatBytes,
@@ -13,7 +13,7 @@ import {
 	parseImageMetadata,
 	prompt,
 	untilAborted,
-} from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-utils";
 import githubDescription from "../prompts/tools/github.md" with { type: "text" };
 import { github } from "../utils/github";
 import { loadImageAttachmentInput, webpExclusionForModel } from "../utils/image-loading";

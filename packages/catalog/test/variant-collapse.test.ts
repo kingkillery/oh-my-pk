@@ -6,18 +6,18 @@ import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 import {
 	ANTIGRAVITY_PRIMARY_ENDPOINT,
 	fetchAntigravityDiscoveryModels,
-} from "@oh-my-pi/pi-catalog/discovery/antigravity";
-import { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { stripThinkingVariantToken } from "@oh-my-pi/pi-catalog/identity/family";
-import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
+} from "@pk-nerdsaver-ai/pi-catalog/discovery/antigravity";
+import { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
+import { stripThinkingVariantToken } from "@pk-nerdsaver-ai/pi-catalog/identity/family";
+import { resolveProviderModels } from "@pk-nerdsaver-ai/pi-catalog/model-manager";
 import {
 	defaultSupportedEffort,
 	mapEffortToGoogleThinkingLevel,
 	resolveWireModelId,
-} from "@oh-my-pi/pi-catalog/model-thinking";
-import { getBundledModel, getBundledModels } from "@oh-my-pi/pi-catalog/models";
-import { googleGeminiCliModelManagerOptions } from "@oh-my-pi/pi-catalog/provider-models/google";
-import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
+} from "@pk-nerdsaver-ai/pi-catalog/model-thinking";
+import { getBundledModel, getBundledModels } from "@pk-nerdsaver-ai/pi-catalog/models";
+import { googleGeminiCliModelManagerOptions } from "@pk-nerdsaver-ai/pi-catalog/provider-models/google";
+import type { ModelSpec } from "@pk-nerdsaver-ai/pi-catalog/types";
 import {
 	ANTIGRAVITY_VARIANT_COLLAPSE_TABLE,
 	CURSOR_VARIANT_COLLAPSE_TABLE,

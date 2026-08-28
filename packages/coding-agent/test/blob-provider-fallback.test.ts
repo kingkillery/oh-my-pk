@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import type { StreamFn } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, Context, Model } from "@oh-my-pi/pi-ai";
-import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { ImageUrlService } from "@oh-my-pi/pi-coding-agent/blob-broker/service";
-import { wrapStreamFnWithBlobUrlFallback } from "@oh-my-pi/pi-coding-agent/blob-broker/stream-fallback";
+import type { StreamFn } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { AssistantMessage, Context, Model } from "@pk-nerdsaver-ai/pi-ai";
+import { AssistantMessageEventStream } from "@pk-nerdsaver-ai/pi-ai/utils/event-stream";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import { ImageUrlService } from "@pk-nerdsaver-ai/pi-coding-agent/blob-broker/service";
+import { wrapStreamFnWithBlobUrlFallback } from "@pk-nerdsaver-ai/pi-coding-agent/blob-broker/stream-fallback";
 
 const model: Model = buildModel({
 	id: "gpt-4.1",

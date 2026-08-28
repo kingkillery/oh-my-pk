@@ -5,8 +5,8 @@
  * diagnostics metadata, snapshot cap, and aggregate shape. Keeping those
  * mechanics here makes each backend responsible only for applying its edit.
  */
-import { buildCompactDiffPreview } from "@oh-my-pi/hashline";
-import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { buildCompactDiffPreview } from "@pk-nerdsaver-ai/hashline";
+import type { AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
 import type { FileDiagnosticsResult } from "../lsp";
 import { outputMeta } from "../tools/output-meta";
 import { generateDiffString } from "./diff";

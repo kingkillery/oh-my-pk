@@ -19,18 +19,18 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AuthStorage, type OAuthCredential, REMOTE_REFRESH_SENTINEL, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
+import { AuthStorage, type OAuthCredential, REMOTE_REFRESH_SENTINEL, SqliteAuthCredentialStore } from "@pk-nerdsaver-ai/pi-ai";
 import {
 	AuthBrokerClient,
 	type AuthBrokerServerHandle,
 	RemoteAuthCredentialStore,
 	startAuthBroker,
-} from "@oh-my-pi/pi-ai/auth-broker";
-import { refreshBrokerOAuthCredential } from "@oh-my-pi/pi-coding-agent/cli/auth-broker-cli";
-import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
-import { mcpOAuthCredentialId } from "@oh-my-pi/pi-coding-agent/mcp/oauth-flow";
-import type { MCPServerConfig } from "@oh-my-pi/pi-coding-agent/mcp/types";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-ai/auth-broker";
+import { refreshBrokerOAuthCredential } from "@pk-nerdsaver-ai/pi-coding-agent/cli/auth-broker-cli";
+import { MCPManager } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/manager";
+import { mcpOAuthCredentialId } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/oauth-flow";
+import type { MCPServerConfig } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/types";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 import type { Server } from "bun";
 
 const SERVER_URL = "https://mcp.granola.ai/mcp";

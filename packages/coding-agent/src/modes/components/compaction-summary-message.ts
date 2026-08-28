@@ -1,5 +1,5 @@
-import { Box, type Component, Markdown } from "@oh-my-pi/pi-tui";
-import { formatNumber } from "@oh-my-pi/pi-utils";
+import { Box, type Component, Markdown } from "@pk-nerdsaver-ai/pi-tui";
+import { formatNumber } from "@pk-nerdsaver-ai/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import type { BranchSummaryMessage, CompactionSummaryMessage, CustomMessage } from "../../session/messages";
 

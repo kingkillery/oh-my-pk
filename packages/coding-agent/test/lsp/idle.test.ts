@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { isIdleClient, sendRequest } from "@oh-my-pi/pi-coding-agent/lsp/client";
-import type { LspClient } from "@oh-my-pi/pi-coding-agent/lsp/types";
+import { isIdleClient, sendRequest } from "@pk-nerdsaver-ai/pi-coding-agent/lsp/client";
+import type { LspClient } from "@pk-nerdsaver-ai/pi-coding-agent/lsp/types";
 
 const IDLE_TIMEOUT_MS = 60_000;
 

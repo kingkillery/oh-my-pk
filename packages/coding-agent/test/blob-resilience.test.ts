@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import type { Context, ImageContent, Model } from "@oh-my-pi/pi-ai";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import * as snapcompact from "@oh-my-pi/snapcompact";
+import type { Context, ImageContent, Model } from "@pk-nerdsaver-ai/pi-ai";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import * as snapcompact from "@pk-nerdsaver-ai/snapcompact";
 import { type BlobBackend, LocalBlobBackend } from "../src/blob-broker/broker";
 import { probeExposureHealth } from "../src/blob-broker/exposure";
 import type { BlobBrokerWorkerConfig } from "../src/blob-broker/protocol";

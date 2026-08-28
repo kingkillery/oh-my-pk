@@ -1,14 +1,14 @@
 import { afterEach, expect, it, vi } from "bun:test";
-import { AuthStorage } from "@oh-my-pi/pi-ai";
-import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
-import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
-import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
-import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
-import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { AuthStorage } from "@pk-nerdsaver-ai/pi-ai";
+import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
+import { ExtensionRuntime } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions/loader";
+import type { CreateAgentSessionResult } from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
+import * as sdkModule from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
+import type { AgentSession, AgentSessionEvent } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
+import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
+import { runSubprocess } from "@pk-nerdsaver-ai/pi-coding-agent/task/executor";
+import { EventBus } from "@pk-nerdsaver-ai/pi-coding-agent/utils/event-bus";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 
 const authStorages: AuthStorage[] = [];
 const tempDirs: TempDir[] = [];

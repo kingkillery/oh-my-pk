@@ -2,11 +2,11 @@ import { describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { clearCustomApis } from "@oh-my-pi/pi-ai/api-registry";
-import { startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
-import { AuthStorage } from "@oh-my-pi/pi-ai/auth-storage";
-import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
-import { encodeStream, formatError, parseRequest } from "@oh-my-pi/pi-ai/providers/pi-native-server";
+import { clearCustomApis } from "@pk-nerdsaver-ai/pi-ai/api-registry";
+import { startAuthGateway } from "@pk-nerdsaver-ai/pi-ai/auth-gateway";
+import { AuthStorage } from "@pk-nerdsaver-ai/pi-ai/auth-storage";
+import { createMockModel, registerMockApi } from "@pk-nerdsaver-ai/pi-ai/providers/mock";
+import { encodeStream, formatError, parseRequest } from "@pk-nerdsaver-ai/pi-ai/providers/pi-native-server";
 import type {
 	AssistantMessage,
 	AssistantMessageEvent,

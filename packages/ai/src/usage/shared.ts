@@ -1,4 +1,4 @@
-import { toNumber } from "@oh-my-pi/pi-catalog/utils";
+import { toNumber } from "@pk-nerdsaver-ai/pi-catalog/utils";
 import type { UsageStatus } from "../usage";
 
 /** Milliseconds in one hour. */

@@ -15,17 +15,17 @@
  * when the agent has nothing else to do.
  */
 
-import { type } from "@oh-my-pi/omptype";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import type {
 	AgentTool,
 	AgentToolContext,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
-} from "@oh-my-pi/pi-agent-core";
-import type { ToolExample } from "@oh-my-pi/pi-ai";
-import type { Component } from "@oh-my-pi/pi-tui";
-import { prompt } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-agent-core";
+import type { ToolExample } from "@pk-nerdsaver-ai/pi-ai";
+import type { Component } from "@pk-nerdsaver-ai/pi-tui";
+import { prompt } from "@pk-nerdsaver-ai/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { IrcBus } from "../../irc/bus";
 import type { Theme } from "../../modes/theme/theme";

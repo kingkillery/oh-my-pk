@@ -1,5 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
-import { sanitizeText } from "@oh-my-pi/pi-utils/sanitize-text";
+import { sanitizeText } from "@pk-nerdsaver-ai/pi-utils/sanitize-text";
 import {
 	parseJsonlLenient,
 	readJsonl,

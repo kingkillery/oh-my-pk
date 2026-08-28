@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { dedupeContainedContextFiles } from "@oh-my-pi/pi-coding-agent/system-prompt";
+import { dedupeContainedContextFiles } from "@pk-nerdsaver-ai/pi-coding-agent/system-prompt";
 
 interface ContextFile {
 	path: string;

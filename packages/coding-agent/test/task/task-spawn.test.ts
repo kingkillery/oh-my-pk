@@ -12,15 +12,15 @@
  * test/task/task-schema.test.ts.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import { type AsyncJob, AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
-import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
-import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
-import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentDefinition, SingleResult, TaskParams } from "@oh-my-pi/pi-coding-agent/task/types";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { type AsyncJob, AsyncJobManager } from "@pk-nerdsaver-ai/pi-coding-agent/async/job-manager";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { AgentLifecycleManager } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-lifecycle";
+import { AgentRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-registry";
+import { TaskTool } from "@pk-nerdsaver-ai/pi-coding-agent/task";
+import * as discoveryModule from "@pk-nerdsaver-ai/pi-coding-agent/task/discovery";
+import * as executorModule from "@pk-nerdsaver-ai/pi-coding-agent/task/executor";
+import type { AgentDefinition, SingleResult, TaskParams } from "@pk-nerdsaver-ai/pi-coding-agent/task/types";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
 
 const taskAgent: AgentDefinition = {
 	name: "task",

@@ -1,4 +1,4 @@
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import { throwIfAborted } from "../tools/tool-errors";
 import {
 	getActiveClients,

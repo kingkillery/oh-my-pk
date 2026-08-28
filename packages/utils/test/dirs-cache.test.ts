@@ -12,8 +12,8 @@ import {
 	getProfileRootDir,
 	getSecretPlaceholderKeyPath,
 	setAgentDir,
-} from "@oh-my-pi/pi-utils/dirs";
-import { Snowflake } from "@oh-my-pi/pi-utils/snowflake";
+} from "@pk-nerdsaver-ai/pi-utils/dirs";
+import { Snowflake } from "@pk-nerdsaver-ai/pi-utils/snowflake";
 
 function restoreEnv(key: string, value: string | undefined): void {
 	if (value === undefined) {

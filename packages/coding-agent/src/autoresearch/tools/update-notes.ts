@@ -1,6 +1,6 @@
-import { type } from "@oh-my-pi/omptype";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { Text } from "@oh-my-pi/pi-tui";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { Text } from "@pk-nerdsaver-ai/pi-tui";
 import type { ToolDefinition } from "../../extensibility/extensions";
 import type { Theme } from "../../modes/theme/theme";
 import { replaceTabs, truncateToWidth } from "../../tools/render-utils";

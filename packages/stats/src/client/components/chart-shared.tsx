@@ -5,7 +5,7 @@
  * behavior series.
  */
 
-import { format } from "@oh-my-pi/pi-utils/dates";
+import { format } from "@pk-nerdsaver-ai/pi-utils/dates";
 
 // OMP brand palette (packages/collab-web/src/styles/tokens.css): pink/purple/cyan.
 // Categorical series lead with the brand gradient hues (pink -> purple -> cyan).

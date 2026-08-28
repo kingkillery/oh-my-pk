@@ -2,18 +2,18 @@ import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Tokenizer } from "@oh-my-pi/pi-agent-core";
+import { Tokenizer } from "@pk-nerdsaver-ai/pi-agent-core";
 import type {
 	ResetCreditAccountStatus,
 	ResetCreditRedeemOutcome,
 	ResetCreditTarget,
 	UsageReport,
-} from "@oh-my-pi/pi-ai";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
-import { getProjectDir, removeWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-ai";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import type { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
+import type { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
+import { executeAcpBuiltinSlashCommand } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/acp-builtins";
+import { getProjectDir, removeWithRetries, setProjectDir } from "@pk-nerdsaver-ai/pi-utils";
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;

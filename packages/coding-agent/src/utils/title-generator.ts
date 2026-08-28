@@ -4,10 +4,10 @@
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import * as path from "node:path";
 
-import { type Api, type AssistantMessage, completeSimple, type Model, retryTransientCompletion } from "@oh-my-pi/pi-ai";
-import { StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
-import { isConPTYHosted, writeThroughActiveTerminal } from "@oh-my-pi/pi-tui";
-import { isTerminalHeadless, logger, prompt } from "@oh-my-pi/pi-utils";
+import { type Api, type AssistantMessage, completeSimple, type Model, retryTransientCompletion } from "@pk-nerdsaver-ai/pi-ai";
+import { StreamMarkupHealing } from "@pk-nerdsaver-ai/pi-ai/utils/stream-markup-healing";
+import { isConPTYHosted, writeThroughActiveTerminal } from "@pk-nerdsaver-ai/pi-tui";
+import { isTerminalHeadless, logger, prompt } from "@pk-nerdsaver-ai/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 
 import { resolveRoleSelection } from "../config/model-resolver";

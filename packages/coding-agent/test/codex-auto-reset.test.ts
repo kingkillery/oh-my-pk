@@ -17,9 +17,9 @@
  *   ({@link isTerminalRedeemOutcome}).
  */
 import { describe, expect, it } from "bun:test";
-import type { UsageReport } from "@oh-my-pi/pi-ai";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { SETTINGS_SCHEMA } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
+import type { UsageReport } from "@pk-nerdsaver-ai/pi-ai";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { SETTINGS_SCHEMA } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings-schema";
 import {
 	blockedAttemptKey,
 	type CodexResetPlanInput,

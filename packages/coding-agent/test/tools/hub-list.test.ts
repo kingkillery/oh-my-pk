@@ -1,26 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AgentProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/agent-protocol";
-import { HistoryProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/history-protocol";
-import { parseInternalUrl } from "@oh-my-pi/pi-coding-agent/internal-urls/parse";
-import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
-import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
-import { AgentRegistry, getAgentTombstonePath, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { ensurePersistedRoster, registerPersistedSubagents } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { collectIrcPeerRoster } from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { HubTool } from "@oh-my-pi/pi-coding-agent/tools/hub";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { AgentProtocolHandler } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls/agent-protocol";
+import { HistoryProtocolHandler } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls/history-protocol";
+import { parseInternalUrl } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls/parse";
+import { IrcBus } from "@pk-nerdsaver-ai/pi-coding-agent/irc/bus";
+import { AgentLifecycleManager } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-lifecycle";
+import { AgentRegistry, getAgentTombstonePath, MAIN_AGENT_ID } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-registry";
+import { ensurePersistedRoster, registerPersistedSubagents } from "@pk-nerdsaver-ai/pi-coding-agent/registry/persisted-agents";
+import type { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
+import { CURRENT_SESSION_VERSION } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-entries";
+import { collectIrcPeerRoster } from "@pk-nerdsaver-ai/pi-coding-agent/task/executor";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import { HubTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/hub";
 import {
 	DEFAULT_HUB_LIST_LIMIT,
 	executeList,
 	executeSend,
 	MAX_HUB_LIST_LIMIT,
-} from "@oh-my-pi/pi-coding-agent/tools/hub/messaging";
-import { prompt, TempDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/tools/hub/messaging";
+import { prompt, TempDir } from "@pk-nerdsaver-ai/pi-utils";
 
 function sessionHeader(id: string): string {
 	return JSON.stringify({

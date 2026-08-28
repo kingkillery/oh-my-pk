@@ -1,6 +1,6 @@
-import { isDefinitiveOAuthFailure, REMOTE_REFRESH_SENTINEL, type StoredOAuthRefreshResult } from "@oh-my-pi/pi-ai";
-import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
-import { getActiveProfile } from "@oh-my-pi/pi-utils/dirs";
+import { isDefinitiveOAuthFailure, REMOTE_REFRESH_SENTINEL, type StoredOAuthRefreshResult } from "@pk-nerdsaver-ai/pi-ai";
+import type { OAuthCredentials } from "@pk-nerdsaver-ai/pi-ai/oauth/types";
+import { getActiveProfile } from "@pk-nerdsaver-ai/pi-utils/dirs";
 import { expandEnvVarsDeep } from "../discovery/helpers";
 import type { AuthStorage } from "../session/auth-storage";
 import { canonicalizeOAuthIssuer } from "./oauth-discovery";

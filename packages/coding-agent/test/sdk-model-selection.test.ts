@@ -2,20 +2,20 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Effort, type FetchImpl } from "@oh-my-pi/pi-ai";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { resolveModelCacheProviderId } from "@oh-my-pi/pi-catalog/provider-models";
-import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
-import { ModelRegistry, type ProviderConfigInput } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { getModelMatchPreferences, resolveModelScope } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { buildSessionOptions as buildCliSessionOptions } from "@oh-my-pi/pi-coding-agent/main";
-import { createAgentSession, type ExtensionFactory } from "@oh-my-pi/pi-coding-agent/sdk";
-import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { Effort, type FetchImpl } from "@pk-nerdsaver-ai/pi-ai";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import { writeModelCache } from "@pk-nerdsaver-ai/pi-catalog/model-cache";
+import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
+import { resolveModelCacheProviderId } from "@pk-nerdsaver-ai/pi-catalog/provider-models";
+import { parseArgs } from "@pk-nerdsaver-ai/pi-coding-agent/cli/args";
+import { ModelRegistry, type ProviderConfigInput } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
+import { getModelMatchPreferences, resolveModelScope } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-resolver";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { buildSessionOptions as buildCliSessionOptions } from "@pk-nerdsaver-ai/pi-coding-agent/main";
+import { createAgentSession, type ExtensionFactory } from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
+import type { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
+import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
+import { removeSyncWithRetries, Snowflake } from "@pk-nerdsaver-ai/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 describe("createAgentSession deferred model pattern resolution", () => {

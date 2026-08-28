@@ -3,9 +3,9 @@ import {
 	getDefaultPasteImageKeys,
 	KeybindingsManager,
 	setKeyHintPlatform,
-} from "@oh-my-pi/pi-coding-agent/config/keybindings";
-import { keyText } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
-import { getKeybindings, setKeybindings, type KeybindingsManager as TuiKeybindingsManager } from "@oh-my-pi/pi-tui";
+} from "@pk-nerdsaver-ai/pi-coding-agent/config/keybindings";
+import { keyText } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
+import { getKeybindings, setKeybindings, type KeybindingsManager as TuiKeybindingsManager } from "@pk-nerdsaver-ai/pi-tui";
 
 describe("KeybindingsManager.getDisplayString", () => {
 	beforeEach(() => setKeyHintPlatform("linux"));

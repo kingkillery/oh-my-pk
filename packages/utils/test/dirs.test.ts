@@ -7,7 +7,7 @@ import {
 	directoryIsMissing,
 	getProjectDir,
 	setProjectDir,
-} from "@oh-my-pi/pi-utils/dirs";
+} from "@pk-nerdsaver-ai/pi-utils/dirs";
 
 const originalProjectDir = fs.realpathSync(process.cwd()).replace(/^\/private(?=\/)/, "");
 

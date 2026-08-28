@@ -2,12 +2,12 @@ import { HookEditorComponent, HookInputComponent, HookSelectorComponent } from "
 
 // Core session management
 
-export * as zod from "@oh-my-pi/omptype/zod";
-export { z } from "@oh-my-pi/omptype/zod";
+export * as zod from "@pk-nerdsaver-ai/omptype/zod";
+export { z } from "@pk-nerdsaver-ai/omptype/zod";
 // Re-export TUI components for custom tool rendering
 export { Container, Markdown, Spacer, Text } from "@pk-nerdsaver-ai/pi-tui";
 // Logging
-export { getAgentDir, logger, VERSION } from "@oh-my-pi/pi-utils";
+export { getAgentDir, logger, VERSION } from "@pk-nerdsaver-ai/pi-utils";
 export * from "./config/keybindings";
 export * from "./config/model-registry";
 // Prompt templates

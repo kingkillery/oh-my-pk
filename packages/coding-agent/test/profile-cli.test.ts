@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as url from "node:url";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 import {
 	__resetProfileSnapshotForTests,
 	APP_NAME,

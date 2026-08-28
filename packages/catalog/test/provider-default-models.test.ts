@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { type GeneratedProvider, getBundledModels } from "@oh-my-pi/pi-catalog/models";
-import { CATALOG_PROVIDERS } from "@oh-my-pi/pi-catalog/provider-models/descriptors";
+import { type GeneratedProvider, getBundledModels } from "@pk-nerdsaver-ai/pi-catalog/models";
+import { CATALOG_PROVIDERS } from "@pk-nerdsaver-ai/pi-catalog/provider-models/descriptors";
 
 /**
  * Providers whose bundled slice is one account's credential-scoped snapshot

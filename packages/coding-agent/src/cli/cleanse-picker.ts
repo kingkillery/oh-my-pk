@@ -5,7 +5,7 @@
  * {@link SelectList} or {@link Input}, resolved on select/submit/cancel and torn
  * down immediately so the command can keep writing plain stdout afterwards.
  */
-import { Input, ProcessTerminal, type SelectItem, SelectList, TUI } from "@oh-my-pi/pi-tui";
+import { Input, ProcessTerminal, type SelectItem, SelectList, TUI } from "@pk-nerdsaver-ai/pi-tui";
 import type { CleanseCheckerDescriptor } from "../cleanse/checkers";
 import type { CleanseTargetChoice } from "../cleanse/types";
 import { getSelectListTheme } from "../modes/theme/theme";

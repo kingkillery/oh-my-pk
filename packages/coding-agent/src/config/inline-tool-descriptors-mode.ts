@@ -1,4 +1,4 @@
-import { modelFamilyToken } from "@oh-my-pi/pi-catalog/identity";
+import { modelFamilyToken } from "@pk-nerdsaver-ai/pi-catalog/identity";
 
 /**
  * Resolves whether full tool descriptors should be inlined into the system

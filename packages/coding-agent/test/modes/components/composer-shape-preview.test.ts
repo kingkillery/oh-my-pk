@@ -1,17 +1,17 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { COMPOSER_SHAPE_VALUES, type ComposerShape } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
+import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { COMPOSER_SHAPE_VALUES, type ComposerShape } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings-schema";
 import {
 	ComposerShapePreview,
 	renderComposerShapePreview,
-} from "@oh-my-pi/pi-coding-agent/modes/components/composer-shape-preview";
+} from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/composer-shape-preview";
 import {
 	getComposerShapeOptions,
 	installExtensionComposerShape,
-} from "@oh-my-pi/pi-coding-agent/modes/components/composer-shape-registry";
-import { SettingsSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
-import { initTheme, setTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { ComposerStyle } from "@oh-my-pi/pi-tui";
+} from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/composer-shape-registry";
+import { SettingsSelectorComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/settings-selector";
+import { initTheme, setTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import type { ComposerStyle } from "@pk-nerdsaver-ai/pi-tui";
 
 beforeAll(async () => {
 	await initTheme();

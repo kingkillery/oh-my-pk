@@ -11,7 +11,7 @@ import {
 	normalizeDomain,
 	normalizeGitHubCopilotEnterpriseDomain,
 	OPENCODE_HEADERS,
-} from "@oh-my-pi/pi-catalog/wire/github-copilot";
+} from "@pk-nerdsaver-ai/pi-catalog/wire/github-copilot";
 import * as AIError from "../../error";
 import type { FetchImpl } from "../../types";
 import type { OAuthCredentials } from "./types";

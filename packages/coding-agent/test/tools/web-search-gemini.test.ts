@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
-import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
-import { serializeCloudflareAiGatewayCredential } from "@oh-my-pi/pi-catalog/wire/cloudflare-ai-gateway";
-import { GeminiProvider, searchGemini } from "@oh-my-pi/pi-coding-agent/web/search/providers/gemini";
+import type { AuthStorage } from "@pk-nerdsaver-ai/pi-ai";
+import type { FetchImpl } from "@pk-nerdsaver-ai/pi-ai/types";
+import { serializeCloudflareAiGatewayCredential } from "@pk-nerdsaver-ai/pi-catalog/wire/cloudflare-ai-gateway";
+import { GeminiProvider, searchGemini } from "@pk-nerdsaver-ai/pi-coding-agent/web/search/providers/gemini";
 
 const SSE_RESPONSE =
 	'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Gemini answer"}]}}],"modelVersion":"gemini-2.5-flash"}}\n\n';

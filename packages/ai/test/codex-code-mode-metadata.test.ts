@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { streamOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
-import type { Context, FetchImpl } from "@oh-my-pi/pi-ai/types";
+import { streamOpenAICodexResponses } from "@pk-nerdsaver-ai/pi-ai/providers/openai-codex-responses";
+import type { Context, FetchImpl } from "@pk-nerdsaver-ai/pi-ai/types";
 import { createCodexModel } from "./helpers";
 
 function createCodexTestToken(accountId = "acc_test"): string {

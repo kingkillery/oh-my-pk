@@ -1,18 +1,18 @@
 {
   "type": "module",
-  "name": "@oh-my-pi/pi-utils",
+  "name": "@pk-nerdsaver-ai/pi-utils",
   "version": "18.0.9",
   "description": "Shared utilities for pi packages",
-  "homepage": "https://omp.sh",
+  "homepage": "https://oh-my-pk.pkking.computer",
   "author": "Stencil Labs, Inc.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/can1357/oh-my-pi.git",
+    "url": "git+https://github.com/kingkillery/oh-my-pk.git",
     "directory": "packages/utils"
   },
   "bugs": {
-    "url": "https://github.com/can1357/oh-my-pi/issues"
+    "url": "https://github.com/kingkillery/oh-my-pk/issues"
   },
   "keywords": [
     "utilities",
@@ -31,7 +31,7 @@
     "fmt": "biome format --write ."
   },
   "dependencies": {
-    "@oh-my-pi/pi-natives": "catalog:"
+    "@pk-nerdsaver-ai/pi-natives": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:"

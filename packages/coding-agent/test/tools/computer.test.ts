@@ -1,16 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import { type as arkType } from "@oh-my-pi/omptype";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { ComputerTool, computerApproval } from "@oh-my-pi/pi-coding-agent/tools/computer";
+import { type as arkType } from "@pk-nerdsaver-ai/omptype";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import { ComputerTool, computerApproval } from "@pk-nerdsaver-ai/pi-coding-agent/tools/computer";
 import type {
 	ComputerSessionSnapshot,
 	ComputerWorkerInbound,
 	ComputerWorkerOutbound,
 	ComputerWorkerTransport,
-} from "@oh-my-pi/pi-coding-agent/tools/computer/protocol";
-import { ComputerSupervisor, type ComputerWorkerHandle } from "@oh-my-pi/pi-coding-agent/tools/computer/supervisor";
-import { ComputerWorkerCore, type NativeDesktopSession } from "@oh-my-pi/pi-coding-agent/tools/computer/worker";
+} from "@pk-nerdsaver-ai/pi-coding-agent/tools/computer/protocol";
+import { ComputerSupervisor, type ComputerWorkerHandle } from "@pk-nerdsaver-ai/pi-coding-agent/tools/computer/supervisor";
+import { ComputerWorkerCore, type NativeDesktopSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools/computer/worker";
 import type {
 	AxNode,
 	AxQuery,
@@ -20,7 +20,7 @@ import type {
 	DesktopPoint,
 	DesktopWindow,
 	PointerOptions,
-} from "@oh-my-pi/pi-natives";
+} from "@pk-nerdsaver-ai/pi-natives";
 
 const capabilities: DesktopCapabilities = {
 	backend: "fake",

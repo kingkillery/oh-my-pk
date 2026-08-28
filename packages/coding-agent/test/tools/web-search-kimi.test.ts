@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
-import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { KimiProvider, searchKimi } from "@oh-my-pi/pi-coding-agent/web/search/providers/kimi";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import type { FetchImpl } from "@pk-nerdsaver-ai/pi-ai/types";
+import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
+import { KimiProvider, searchKimi } from "@pk-nerdsaver-ai/pi-coding-agent/web/search/providers/kimi";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 const originalMoonshotSearchApiKey = process.env.MOONSHOT_SEARCH_API_KEY;
 const originalKimiSearchApiKey = process.env.KIMI_SEARCH_API_KEY;

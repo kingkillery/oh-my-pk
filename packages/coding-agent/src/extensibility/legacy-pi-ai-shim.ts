@@ -27,16 +27,16 @@ import {
 	type Model,
 	type SimpleStreamOptions,
 	streamSimple,
-} from "@oh-my-pi/pi-ai";
-import type { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
+} from "@pk-nerdsaver-ai/pi-ai";
+import type { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
+import { clampThinkingLevelForModel } from "@pk-nerdsaver-ai/pi-catalog/model-thinking";
 import {
 	calculateCost,
 	getBundledModel,
 	getBundledModels,
 	getBundledProviders,
 	modelsAreEqual,
-} from "@oh-my-pi/pi-catalog/models";
+} from "@pk-nerdsaver-ai/pi-catalog/models";
 import { type TSchema, Type } from "./legacy-typebox";
 
 export interface StringEnumOptions<T extends string> {
@@ -115,13 +115,13 @@ export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
 }
 
-export * from "@oh-my-pi/pi-ai";
+export * from "@pk-nerdsaver-ai/pi-ai";
 /**
  * Compatibility re-exports for catalog symbols that pi-ai historically exposed
  * from its own barrel prior to the `refactor(catalog)!: split model catalog
  * from pi-ai` change. Legacy extensions still import these from the pi-ai
  * root, so the shim bridges them through to their new home in
- * `@oh-my-pi/pi-catalog/models`. `getModel`/`getModels` are the historical
+ * `@pk-nerdsaver-ai/pi-catalog/models`. `getModel`/`getModels` are the historical
  * pi-ai names for `getBundledModel`/`getBundledModels`; the remaining symbols
  * kept their names across the move.
  */
@@ -137,7 +137,7 @@ export const getModels = getBundledModels;
  *
  * Transient-failure retry (overload, rate-limit, 5xx) is the **caller's
  * responsibility**. Oneshot callers that collect the full result before acting
- * should wrap with `retryTransientCompletion` from `@oh-my-pi/pi-ai`.
+ * should wrap with `retryTransientCompletion` from `@pk-nerdsaver-ai/pi-ai`.
  */
 export function streamSimpleOpenAIResponses(
 	model: Model<"openai-responses">,
@@ -149,17 +149,17 @@ export function streamSimpleOpenAIResponses(
 /**
  * Compatibility re-exports for runtime helpers that upstream
  * `@earendil-works/pi-ai` exposed from its package root but omp's
- * `@oh-my-pi/pi-ai` barrel no longer forwards. Each symbol still exists in the
+ * `@pk-nerdsaver-ai/pi-ai` barrel no longer forwards. Each symbol still exists in the
  * host graph — only its root re-export was dropped — so bridging it here keeps
  * legacy extensions importing it from the pi-ai root resolving through Bun's
  * static named-export check (e.g. `omp plugin install pi-blackhole`).
  *
  * This is the full set derived from an audit of the upstream root surface: the
  * error-classification predicate `isContextOverflow` (now under
- * `@oh-my-pi/pi-ai/error`) and the JSON-repair helpers that omp relocated to
- * `@oh-my-pi/pi-utils`. Upstream root symbols with no omp equivalent are
+ * `@pk-nerdsaver-ai/pi-ai/error`) and the JSON-repair helpers that omp relocated to
+ * `@pk-nerdsaver-ai/pi-utils`. Upstream root symbols with no omp equivalent are
  * intentionally not shimmed — the package has diverged and there is nothing to
  * forward.
  */
-export { isContextOverflow } from "@oh-my-pi/pi-ai/error";
-export { parseJsonWithRepair, parseStreamingJson, repairJson } from "@oh-my-pi/pi-utils";
+export { isContextOverflow } from "@pk-nerdsaver-ai/pi-ai/error";
+export { parseJsonWithRepair, parseStreamingJson, repairJson } from "@pk-nerdsaver-ai/pi-utils";

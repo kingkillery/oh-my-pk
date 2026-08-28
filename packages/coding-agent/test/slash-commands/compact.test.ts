@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "bun:test";
-import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
-import type { CompactOptions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
-import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
-import type { CompactMode } from "@oh-my-pi/pi-coding-agent/session/compact-modes";
-import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { CompactionCancelledError } from "@pk-nerdsaver-ai/pi-agent-core/compaction";
+import type { CompactOptions } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions/types";
+import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
+import type { CompactMode } from "@pk-nerdsaver-ai/pi-coding-agent/session/compact-modes";
+import { USER_INTERRUPT_LABEL } from "@pk-nerdsaver-ai/pi-coding-agent/session/messages";
 import {
 	ACP_BUILTIN_SLASH_COMMANDS,
 	executeAcpBuiltinSlashCommand,

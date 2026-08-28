@@ -3,23 +3,23 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Effort, type FetchImpl, type Model } from "@oh-my-pi/pi-ai";
-import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { resolveModelCacheProviderId, resolveOllamaModelCacheProviderId } from "@oh-my-pi/pi-catalog/provider-models";
-import type { ModelSpec, OpenAICompat } from "@oh-my-pi/pi-catalog/types";
+import { Effort, type FetchImpl, type Model } from "@pk-nerdsaver-ai/pi-ai";
+import type { OAuthCredentials } from "@pk-nerdsaver-ai/pi-ai/oauth/types";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import { writeModelCache } from "@pk-nerdsaver-ai/pi-catalog/model-cache";
+import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
+import { resolveModelCacheProviderId, resolveOllamaModelCacheProviderId } from "@pk-nerdsaver-ai/pi-catalog/provider-models";
+import type { ModelSpec, OpenAICompat } from "@pk-nerdsaver-ai/pi-catalog/types";
 import {
 	applyLlamaCppQwenThinking,
 	discoverOllamaModels,
 	discoveryProbeTimeoutMs,
-} from "@oh-my-pi/pi-coding-agent/config/model-discovery";
-import { kNoAuth, ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { ProviderDiscoverySchema } from "@oh-my-pi/pi-coding-agent/config/models-config-schema";
-import { resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/config/model-discovery";
+import { kNoAuth, ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
+import { ProviderDiscoverySchema } from "@pk-nerdsaver-ai/pi-coding-agent/config/models-config-schema";
+import { resetSettingsForTest } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
+import { removeSyncWithRetries, Snowflake } from "@pk-nerdsaver-ai/pi-utils";
 
 describe("ModelRegistry runtime discovery", () => {
 	let tempDir: string;

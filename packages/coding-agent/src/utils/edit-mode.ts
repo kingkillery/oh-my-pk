@@ -1,5 +1,5 @@
-import { supportsHashlineEdits } from "@oh-my-pi/pi-catalog/identity";
-import { $env, $flag } from "@oh-my-pi/pi-utils";
+import { supportsHashlineEdits } from "@pk-nerdsaver-ai/pi-catalog/identity";
+import { $env, $flag } from "@pk-nerdsaver-ai/pi-utils";
 
 export type EditMode = "replace" | "patch" | "hashline" | "apply_patch" | "sloppy";
 

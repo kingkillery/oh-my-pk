@@ -32,17 +32,17 @@ import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { CmuxKind } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/rpc";
-import { CmuxSocketClient } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/socket-client";
-import { acquireBrowser } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
+import type { CmuxKind } from "@pk-nerdsaver-ai/pi-coding-agent/tools/browser/cmux/rpc";
+import { CmuxSocketClient } from "@pk-nerdsaver-ai/pi-coding-agent/tools/browser/cmux/socket-client";
+import { acquireBrowser } from "@pk-nerdsaver-ai/pi-coding-agent/tools/browser/registry";
 import {
 	acquireTab,
 	getTabsMapForTest,
 	releaseTab,
 	runInTab,
-} from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
-import * as logger from "@oh-my-pi/pi-utils/logger";
+} from "@pk-nerdsaver-ai/pi-coding-agent/tools/browser/tab-supervisor";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools/index";
+import * as logger from "@pk-nerdsaver-ai/pi-utils/logger";
 
 function makeKind(socketSuffix: string): CmuxKind {
 	return {

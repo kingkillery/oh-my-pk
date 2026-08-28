@@ -15,7 +15,7 @@ try {
  * lightweight CLI runner from pi-utils.
  */
 import { parentPort } from "node:worker_threads";
-import type { CliConfig, CommandMetadata } from "@oh-my-pi/pi-utils/cli";
+import type { CliConfig, CommandMetadata } from "@pk-nerdsaver-ai/pi-utils/cli";
 import {
 	APP_NAME,
 	getActiveProfile,
@@ -23,10 +23,10 @@ import {
 	resolveProfileEnv,
 	setProfile,
 	VERSION,
-} from "@oh-my-pi/pi-utils/dirs";
-import { interceptUnhandledRejections } from "@oh-my-pi/pi-utils/postmortem";
-import { setProcessName } from "@oh-my-pi/pi-utils/process-name";
-import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from "@oh-my-pi/pi-utils/worker-host";
+} from "@pk-nerdsaver-ai/pi-utils/dirs";
+import { interceptUnhandledRejections } from "@pk-nerdsaver-ai/pi-utils/postmortem";
+import { setProcessName } from "@pk-nerdsaver-ai/pi-utils/process-name";
+import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from "@pk-nerdsaver-ai/pi-utils/worker-host";
 import { BLOB_BROKER_WORKER_ARG } from "./blob-broker/protocol";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
@@ -72,7 +72,7 @@ async function showHelp(config: CliConfig<CommandMetadata>): Promise<void> {
 	// Root help historically loads the selected profile's environment. The
 	// lazily loaded help module imports it statically after profile bootstrap.
 	const [{ renderRootHelp }, { getExtraHelpText }] = await Promise.all([
-		import("@oh-my-pi/pi-utils/cli"),
+		import("@pk-nerdsaver-ai/pi-utils/cli"),
 		import("./cli/help-extra"),
 	]);
 	renderRootHelp(config);
@@ -398,7 +398,7 @@ export async function runCli(argv: string[]): Promise<void> {
 
 	// Declare this module as the worker-host entry now that the active profile
 	// is resolved. The worker-host module is side-effect-free; importing
-	// `@oh-my-pi/pi-utils/env` here would snapshot the wrong agent `.env`.
+	// `@pk-nerdsaver-ai/pi-utils/env` here would snapshot the wrong agent `.env`.
 	// Gated on `isProcessEntry`: only the real CLI process entry is a valid
 	// worker host. Worker-thread re-entry already returned above at the
 	// `__omp_worker_` dispatch, and importers (`runCli` in profile-CLI tests,
@@ -414,7 +414,7 @@ export async function runCli(argv: string[]): Promise<void> {
 	// like every other dependency in this entry module: a static `pi-ai` import
 	// would load the provider graph before profile bootstrap and on paths
 	// (`--version`, worker selectors) that never touch the network.
-	const { installGlobalProxyFetch } = await import("@oh-my-pi/pi-ai/utils/proxy");
+	const { installGlobalProxyFetch } = await import("@pk-nerdsaver-ai/pi-ai/utils/proxy");
 	installGlobalProxyFetch();
 
 	if (resolvedArgv[0] === "--smoke-test") {
@@ -442,7 +442,7 @@ export async function runCli(argv: string[]): Promise<void> {
 
 	try {
 		const [{ run }, { commands, resolveCliArgv }] = await Promise.all([
-			import("@oh-my-pi/pi-utils/cli"),
+			import("@pk-nerdsaver-ai/pi-utils/cli"),
 			import("./cli-commands"),
 		]);
 		// --help and --version are handled by run() directly; --license returned above.

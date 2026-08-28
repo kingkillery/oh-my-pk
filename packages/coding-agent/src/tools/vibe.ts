@@ -11,11 +11,11 @@
  * stacked, each showing its tool calls and streamed text as it works.
  */
 
-import { type } from "@oh-my-pi/omptype";
-import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import type { Component } from "@oh-my-pi/pi-tui";
-import { Text } from "@oh-my-pi/pi-tui";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { Component } from "@pk-nerdsaver-ai/pi-tui";
+import { Text } from "@pk-nerdsaver-ai/pi-tui";
+import { prompt } from "@pk-nerdsaver-ai/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../modes/theme/shimmer";
 import type { Theme } from "../modes/theme/theme";

@@ -1,5 +1,5 @@
-import type * as DomNs from "@oh-my-pi/pi-utils/dom";
-import type * as ReadabilityNs from "@oh-my-pi/pi-utils/readability";
+import type * as DomNs from "@pk-nerdsaver-ai/pi-utils/dom";
+import type * as ReadabilityNs from "@pk-nerdsaver-ai/pi-utils/readability";
 import { htmlToBasicMarkdown } from "../../web/scrapers/types";
 
 export type ReadableFormat = "text" | "markdown";
@@ -23,7 +23,7 @@ function normalize(text: string | null | undefined): string | undefined {
 let readabilityModule: typeof ReadabilityNs | undefined;
 async function loadReadability(): Promise<typeof ReadabilityNs> {
 	if (!readabilityModule) {
-		readabilityModule = await import("@oh-my-pi/pi-utils/readability");
+		readabilityModule = await import("@pk-nerdsaver-ai/pi-utils/readability");
 	}
 	return readabilityModule;
 }
@@ -31,7 +31,7 @@ async function loadReadability(): Promise<typeof ReadabilityNs> {
 let domModule: typeof DomNs | undefined;
 async function loadDom(): Promise<typeof DomNs> {
 	if (!domModule) {
-		domModule = await import("@oh-my-pi/pi-utils/dom");
+		domModule = await import("@pk-nerdsaver-ai/pi-utils/dom");
 	}
 	return domModule;
 }

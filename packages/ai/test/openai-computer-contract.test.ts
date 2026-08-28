@@ -1,26 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { type } from "@oh-my-pi/omptype";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import {
 	buildTransformedCodexRequestBody,
 	convertCodexResponsesMessages,
 	convertOpenAICodexResponsesTools,
 	normalizeCodexToolChoice,
-} from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+} from "@pk-nerdsaver-ai/pi-ai/providers/openai-codex-responses";
 import {
 	buildParams,
 	convertTools,
 	mapOpenAIResponsesToolChoiceForTools,
-} from "@oh-my-pi/pi-ai/providers/openai-responses";
-import type { ResponseStreamEvent } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
+} from "@pk-nerdsaver-ai/pi-ai/providers/openai-responses";
+import type { ResponseStreamEvent } from "@pk-nerdsaver-ai/pi-ai/providers/openai-responses-wire";
 import {
 	appendResponsesToolResultMessages,
 	buildResponsesInput,
 	convertResponsesAssistantMessage,
 	processResponsesStream,
-} from "@oh-my-pi/pi-ai/providers/openai-shared";
-import type { AssistantMessage, Context, Model, ModelSpec, Tool, ToolResultMessage } from "@oh-my-pi/pi-ai/types";
-import { sanitizeOpenAIResponsesHistoryItemsForReplay } from "@oh-my-pi/pi-ai/utils";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
+} from "@pk-nerdsaver-ai/pi-ai/providers/openai-shared";
+import type { AssistantMessage, Context, Model, ModelSpec, Tool, ToolResultMessage } from "@pk-nerdsaver-ai/pi-ai/types";
+import { sanitizeOpenAIResponsesHistoryItemsForReplay } from "@pk-nerdsaver-ai/pi-ai/utils";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 
 function model<TApi extends "openai-responses" | "openai-codex-responses">(
 	api: TApi,

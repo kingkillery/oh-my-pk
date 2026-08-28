@@ -4,7 +4,7 @@
  */
 import { Database } from "bun:sqlite";
 import { renameSync } from "node:fs";
-import { getModelDbPath, isEnoent, isSqliteCorruptionError, logger } from "@oh-my-pi/pi-utils";
+import { getModelDbPath, isEnoent, isSqliteCorruptionError, logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { Api, Model, ModelSpec } from "./types";
 
 // Rows persist ModelSpec JSON (sparse `compat`, never the resolved record);

@@ -1,12 +1,12 @@
 import { beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { AskDialogComponent } from "@oh-my-pi/pi-coding-agent/modes/components/ask-dialog";
-import { TreeSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tree-selector";
-import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
-import type { SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { type KeyId, matchesKey } from "@oh-my-pi/pi-tui";
+import type { ImageContent } from "@pk-nerdsaver-ai/pi-ai";
+import { AskDialogComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/ask-dialog";
+import { TreeSelectorComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/tree-selector";
+import { InputController } from "@pk-nerdsaver-ai/pi-coding-agent/modes/controllers/input-controller";
+import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
+import type { SessionTreeNode } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-entries";
+import { type KeyId, matchesKey } from "@pk-nerdsaver-ai/pi-tui";
 import manualContinuePrompt from "../src/prompts/system/manual-continue.md" with { type: "text" };
 
 type FakeEditor = {

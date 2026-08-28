@@ -9,8 +9,8 @@ import {
 	type ToolCall,
 	type ToolResultMessage,
 	type Usage,
-} from "@oh-my-pi/pi-ai";
-import { getSessionsDir, isEnoent, readLines } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-ai";
+import { getSessionsDir, isEnoent, readLines } from "@pk-nerdsaver-ai/pi-utils";
 import type {
 	AgentType,
 	MessageStats,

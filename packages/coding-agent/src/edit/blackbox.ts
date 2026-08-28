@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { summarizeCode } from "@oh-my-pi/pi-natives";
-import { logger } from "@oh-my-pi/pi-utils";
+import { summarizeCode } from "@pk-nerdsaver-ai/pi-natives";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { ToolSession } from "../tools";
 import type { EditMode } from "../utils/edit-mode";
 

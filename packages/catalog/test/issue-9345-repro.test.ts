@@ -19,13 +19,13 @@
  * carries `reasoning_effort` instead of `enable_thinking`.
  */
 import { describe, expect, it } from "bun:test";
-import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
-import type { Context } from "@oh-my-pi/pi-ai/types";
-import { buildOpenAICompat } from "@oh-my-pi/pi-catalog/compat/openai";
-import { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import type { FetchImpl, ModelSpec } from "@oh-my-pi/pi-catalog/types";
-import { isRecord } from "@oh-my-pi/pi-utils";
+import { streamOpenAICompletions } from "@pk-nerdsaver-ai/pi-ai/providers/openai-completions";
+import type { Context } from "@pk-nerdsaver-ai/pi-ai/types";
+import { buildOpenAICompat } from "@pk-nerdsaver-ai/pi-catalog/compat/openai";
+import { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
+import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
+import type { FetchImpl, ModelSpec } from "@pk-nerdsaver-ai/pi-catalog/types";
+import { isRecord } from "@pk-nerdsaver-ai/pi-utils";
 
 function veniceQwenSpec(overrides: Partial<ModelSpec<"openai-completions">> = {}): ModelSpec<"openai-completions"> {
 	return {

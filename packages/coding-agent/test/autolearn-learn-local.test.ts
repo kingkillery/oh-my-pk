@@ -8,12 +8,12 @@ import {
 	getMemoryRoot,
 	refreshMemoryToolDeveloperInstructionsCacheAfterStartup,
 	saveLearnedLesson,
-} from "@oh-my-pi/pi-coding-agent/memories";
-import { localBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/local-backend";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { LearnTool } from "@oh-my-pi/pi-coding-agent/tools/learn";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/memories";
+import { localBackend } from "@pk-nerdsaver-ai/pi-coding-agent/memory-backend/local-backend";
+import type { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import { LearnTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/learn";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
 

@@ -1,6 +1,6 @@
-import "@oh-my-pi/pi-utils/env";
-import chalk from "@oh-my-pi/pi-utils/chalk";
-import { APP_NAME, CONFIG_DIR_NAME } from "@oh-my-pi/pi-utils/dirs";
+import "@pk-nerdsaver-ai/pi-utils/env";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
+import { APP_NAME, CONFIG_DIR_NAME } from "@pk-nerdsaver-ai/pi-utils/dirs";
 
 export function getExtraHelpText(): string {
 	return `${chalk.bold("Environment Variables:")}

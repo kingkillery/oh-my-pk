@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { nativeLibraryPathOverlay } from "@oh-my-pi/pi-coding-agent/subprocess/worker-client";
-import { tinyWorkerEnvOverlay } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
+import { nativeLibraryPathOverlay } from "@pk-nerdsaver-ai/pi-coding-agent/subprocess/worker-client";
+import { tinyWorkerEnvOverlay } from "@pk-nerdsaver-ai/pi-coding-agent/tiny/title-client";
 
 describe("tinyWorkerEnvOverlay", () => {
 	it("maps non-default settings onto the worker env vars when neither is already set", () => {

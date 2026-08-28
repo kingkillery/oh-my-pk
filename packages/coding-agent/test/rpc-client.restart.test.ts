@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
-import { RpcClient } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { RpcClient } from "@pk-nerdsaver-ai/pi-coding-agent/modes/rpc/rpc-client";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 
 const MOCK_AGENT = path.join(import.meta.dir, "fixtures", "mock-rpc-agent.ts");
 

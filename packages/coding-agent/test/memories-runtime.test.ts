@@ -9,9 +9,9 @@ import {
 	buildMemoryToolDeveloperInstructions,
 	getMemoryRoot,
 	startMemoryStartupTask,
-} from "@oh-my-pi/pi-coding-agent/memories";
-import * as memoryStorage from "@oh-my-pi/pi-coding-agent/memories/storage";
-import { getAgentDbPath, Snowflake, TempDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/memories";
+import * as memoryStorage from "@pk-nerdsaver-ai/pi-coding-agent/memories/storage";
+import { getAgentDbPath, Snowflake, TempDir } from "@pk-nerdsaver-ai/pi-utils";
 import { restoreEnvValue } from "./helpers/settings-test-state";
 
 interface SessionFixture {

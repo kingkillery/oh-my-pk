@@ -1,8 +1,8 @@
 import { afterEach, beforeEach } from "bun:test";
 
-import type { CompleteOptions, LlmBackend } from "@oh-my-pi/pi-mnemopi/core/llm-backends";
-import { resetHostLlmBackendForTests, setHostLlmBackend } from "@oh-my-pi/pi-mnemopi/core/llm-backends";
-import { resetDefaultInstanceForTests } from "@oh-my-pi/pi-mnemopi/core/memory";
+import type { CompleteOptions, LlmBackend } from "@pk-nerdsaver-ai/pi-mnemopi/core/llm-backends";
+import { resetHostLlmBackendForTests, setHostLlmBackend } from "@pk-nerdsaver-ai/pi-mnemopi/core/llm-backends";
+import { resetDefaultInstanceForTests } from "@pk-nerdsaver-ai/pi-mnemopi/core/memory";
 
 export function resetModuleStateForTests(): void {
 	resetDefaultInstanceForTests();

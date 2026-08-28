@@ -6,7 +6,7 @@
  * Non-TTY outputs disable rendering entirely and `log` degrades to plain
  * writes, so callers keep one code path for both modes.
  */
-import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
+import { replaceTabs, truncateToWidth } from "@pk-nerdsaver-ai/pi-tui";
 
 const RENDER_INTERVAL_MS = 80;
 

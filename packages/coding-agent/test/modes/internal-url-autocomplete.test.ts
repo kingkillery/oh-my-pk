@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import * as capability from "@oh-my-pi/pi-coding-agent/capability";
-import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
-import { resetActiveRulesForTests, setActiveRules } from "@oh-my-pi/pi-coding-agent/capability/rule";
-import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
-import type { CapabilityResult } from "@oh-my-pi/pi-coding-agent/capability/types";
-import type { Skill } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
-import { resetActiveSkillsForTests, setActiveSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
-import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls/router";
+import * as capability from "@pk-nerdsaver-ai/pi-coding-agent/capability";
+import type { Rule } from "@pk-nerdsaver-ai/pi-coding-agent/capability/rule";
+import { resetActiveRulesForTests, setActiveRules } from "@pk-nerdsaver-ai/pi-coding-agent/capability/rule";
+import type { SSHHost } from "@pk-nerdsaver-ai/pi-coding-agent/capability/ssh";
+import type { CapabilityResult } from "@pk-nerdsaver-ai/pi-coding-agent/capability/types";
+import type { Skill } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/skills";
+import { resetActiveSkillsForTests, setActiveSkills } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/skills";
+import { InternalUrlRouter } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls/router";
 import {
 	applyInternalUrlCompletion,
 	extractInternalUrlContext,

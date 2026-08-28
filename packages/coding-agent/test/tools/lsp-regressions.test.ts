@@ -3,22 +3,22 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolResult, RenderResultOptions } from "@oh-my-pi/pi-agent-core";
-import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { preloadPluginRoots } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
-import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
-import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
-import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
-import { getServersForFile, type LspConfig, loadConfig } from "@oh-my-pi/pi-coding-agent/lsp/config";
+import type { AgentToolResult, RenderResultOptions } from "@pk-nerdsaver-ai/pi-agent-core";
+import { arkToWireSchema } from "@pk-nerdsaver-ai/pi-ai/utils/schema";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { preloadPluginRoots } from "@pk-nerdsaver-ai/pi-coding-agent/discovery/helpers";
+import { LspTool } from "@pk-nerdsaver-ai/pi-coding-agent/lsp";
+import * as lspClient from "@pk-nerdsaver-ai/pi-coding-agent/lsp/client";
+import * as lspConfig from "@pk-nerdsaver-ai/pi-coding-agent/lsp/config";
+import { getServersForFile, type LspConfig, loadConfig } from "@pk-nerdsaver-ai/pi-coding-agent/lsp/config";
 import {
 	applyTextEditsToString,
 	applyWorkspaceEdit,
 	type ExecutedWorkspaceChange,
 	sortAndValidateTextEdits,
-} from "@oh-my-pi/pi-coding-agent/lsp/edits";
-import { renderCall, renderResult } from "@oh-my-pi/pi-coding-agent/lsp/render";
-import { configCache, getConfig } from "@oh-my-pi/pi-coding-agent/lsp/servers";
+} from "@pk-nerdsaver-ai/pi-coding-agent/lsp/edits";
+import { renderCall, renderResult } from "@pk-nerdsaver-ai/pi-coding-agent/lsp/render";
+import { configCache, getConfig } from "@pk-nerdsaver-ai/pi-coding-agent/lsp/servers";
 import {
 	type CodeAction,
 	type CreateFile,
@@ -32,7 +32,7 @@ import {
 	type SymbolInformation,
 	type TextDocumentEdit,
 	type WorkspaceEdit,
-} from "@oh-my-pi/pi-coding-agent/lsp/types";
+} from "@pk-nerdsaver-ai/pi-coding-agent/lsp/types";
 import {
 	applyCodeAction,
 	collectGlobMatches,
@@ -44,13 +44,13 @@ import {
 	resolveDiagnosticTargets,
 	resolveSymbolColumn,
 	uriToFile,
-} from "@oh-my-pi/pi-coding-agent/lsp/utils";
-import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { clampTimeout } from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
-import * as piUtils from "@oh-my-pi/pi-utils";
-import { sanitizeText, TempDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/lsp/utils";
+import { getThemeByName, initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import { ToolAbortError } from "@pk-nerdsaver-ai/pi-coding-agent/tools/tool-errors";
+import { clampTimeout } from "@pk-nerdsaver-ai/pi-coding-agent/tools/tool-timeouts";
+import * as piUtils from "@pk-nerdsaver-ai/pi-utils";
+import { sanitizeText, TempDir } from "@pk-nerdsaver-ai/pi-utils";
 import type { Subprocess } from "bun";
 import DEFAULTS from "../../src/lsp/defaults.json" with { type: "json" };
 import { renderResult as renderLocalResult } from "../../src/lsp/render";

@@ -16,10 +16,10 @@ import {
 	llmAvailable,
 	localGgufAvailable,
 	summarizeMemories,
-} from "@oh-my-pi/pi-mnemopi/core/local-llm";
-import { Mnemopi } from "@oh-my-pi/pi-mnemopi/core/memory";
-import { withMnemopiRuntimeOptions } from "@oh-my-pi/pi-mnemopi/core/runtime-options";
-import { TempDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-mnemopi/core/local-llm";
+import { Mnemopi } from "@pk-nerdsaver-ai/pi-mnemopi/core/memory";
+import { withMnemopiRuntimeOptions } from "@pk-nerdsaver-ai/pi-mnemopi/core/runtime-options";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 
 const OLD_ENV = { ...process.env };
 

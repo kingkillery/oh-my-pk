@@ -1,7 +1,7 @@
-import type { Clipboard, InMemorySnapshotStore } from "@oh-my-pi/hashline";
-import type { AgentOptions, AgentTelemetryConfig, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
-import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } from "@oh-my-pi/pi-ai";
-import { logger } from "@oh-my-pi/pi-utils";
+import type { Clipboard, InMemorySnapshotStore } from "@pk-nerdsaver-ai/hashline";
+import type { AgentOptions, AgentTelemetryConfig, AgentTool, AgentToolContext } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } from "@pk-nerdsaver-ai/pi-ai";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
 import type { EffectiveExtensionRoots } from "../capability/types";

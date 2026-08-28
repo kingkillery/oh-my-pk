@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { resumeCommand } from "@oh-my-pi/pi-coding-agent/utils/resume-command";
-import { APP_NAME, getActiveProfile, setProfile } from "@oh-my-pi/pi-utils/dirs";
+import { resumeCommand } from "@pk-nerdsaver-ai/pi-coding-agent/utils/resume-command";
+import { APP_NAME, getActiveProfile, setProfile } from "@pk-nerdsaver-ai/pi-utils/dirs";
 
 describe("resumeCommand", () => {
 	const originalProfile = getActiveProfile();

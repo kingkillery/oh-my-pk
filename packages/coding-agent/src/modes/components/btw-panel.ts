@@ -1,4 +1,4 @@
-import { type Component, Markdown, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { type Component, Markdown, Spacer, Text, type TUI } from "@pk-nerdsaver-ai/pi-tui";
 import { replaceTabs } from "../../tools/render-utils";
 import { getMarkdownTheme, theme } from "../theme/theme";
 import { OverlayPanel } from "./overlay-box";

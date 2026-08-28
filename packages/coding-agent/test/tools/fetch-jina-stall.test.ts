@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
-import { renderHtmlToText } from "@oh-my-pi/pi-coding-agent/tools/fetch";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { AgentStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-storage";
+import { renderHtmlToText } from "@pk-nerdsaver-ai/pi-coding-agent/tools/fetch";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 import { asGlobalFetch } from "../helpers/fetch-mock";
 
 /**

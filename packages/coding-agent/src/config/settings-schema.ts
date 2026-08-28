@@ -1,6 +1,6 @@
-import { THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
-import { DEFAULT_SHARE_URL } from "@oh-my-pi/pi-wire";
-import { SHAPE_VARIANT_NAMES } from "@oh-my-pi/snapcompact";
+import { THINKING_EFFORTS } from "@pk-nerdsaver-ai/pi-ai";
+import { DEFAULT_SHARE_URL } from "@pk-nerdsaver-ai/pi-wire";
+import { SHAPE_VARIANT_NAMES } from "@pk-nerdsaver-ai/snapcompact";
 import {
 	type BlobDestinationId,
 	type BlobDestinationMetadata,

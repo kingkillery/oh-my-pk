@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as tls from "node:tls";
-import { type as arkType } from "@oh-my-pi/omptype";
-import { Effort } from "@oh-my-pi/pi-ai";
+import { type as arkType } from "@pk-nerdsaver-ai/omptype";
+import { Effort } from "@pk-nerdsaver-ai/pi-ai";
 import {
 	applyClaudeToolPrefix,
 	buildAnthropicClientOptions,
@@ -17,10 +17,10 @@ import {
 	mapStainlessArch,
 	streamAnthropic,
 	stripClaudeToolPrefix,
-} from "@oh-my-pi/pi-ai/providers/anthropic";
-import type { MessageCreateParams } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
-import { claudeCodeVersion } from "@oh-my-pi/pi-ai/providers/claude-code-fingerprint";
-import { getEnvApiKey, streamSimple } from "@oh-my-pi/pi-ai/stream";
+} from "@pk-nerdsaver-ai/pi-ai/providers/anthropic";
+import type { MessageCreateParams } from "@pk-nerdsaver-ai/pi-ai/providers/anthropic-wire";
+import { claudeCodeVersion } from "@pk-nerdsaver-ai/pi-ai/providers/claude-code-fingerprint";
+import { getEnvApiKey, streamSimple } from "@pk-nerdsaver-ai/pi-ai/stream";
 import type {
 	AssistantMessage,
 	Context,
@@ -29,9 +29,9 @@ import type {
 	TJsonSchema,
 	TokenTaskBudget,
 	Tool,
-} from "@oh-my-pi/pi-ai/types";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-ai/types";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import { removeSyncWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 import { withEnv, withOfficialAnthropicEndpoint } from "./helpers";
 
 const ANTHROPIC_MODEL_SPEC: ModelSpec<"anthropic-messages"> = {

@@ -1,9 +1,9 @@
 import { mkdirSync } from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as nodePath from "node:path";
-import { type ApiKey, getOpenRouterHeaders, withAuth } from "@oh-my-pi/pi-ai";
-import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
-import { hostMatchesUrl } from "@oh-my-pi/pi-catalog/hosts";
+import { type ApiKey, getOpenRouterHeaders, withAuth } from "@pk-nerdsaver-ai/pi-ai";
+import { ProviderHttpError } from "@pk-nerdsaver-ai/pi-ai/error";
+import { hostMatchesUrl } from "@pk-nerdsaver-ai/pi-catalog/hosts";
 import {
 	$env,
 	$flag,
@@ -11,8 +11,8 @@ import {
 	fetchWithRetry,
 	getFastembedCacheDir,
 	logger,
-} from "@oh-my-pi/pi-utils";
-import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+} from "@pk-nerdsaver-ai/pi-utils";
+import { LRUCache } from "@pk-nerdsaver-ai/pi-utils/lru";
 import type { EmbeddingModel } from "fastembed";
 import { ensureFastembedModelSidecars } from "./fastembed-model-cache";
 import { loadFastembed } from "./fastembed-runtime";

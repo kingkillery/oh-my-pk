@@ -1,9 +1,9 @@
 {
   "type": "module",
-  "name": "@oh-my-pi/pi-coding-agent",
+  "name": "@pk-nerdsaver-ai/pi-coding-agent",
   "version": "18.0.9",
   "description": "Coding agent CLI with read, bash, edit, write tools and session management",
-  "homepage": "https://omp.sh",
+  "homepage": "https://oh-my-pk.pkking.computer",
   "author": "Stencil Labs, Inc.",
   "contributors": [
     "Mario Zechner"
@@ -11,11 +11,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/can1357/oh-my-pi.git",
+    "url": "git+https://github.com/kingkillery/oh-my-pk.git",
     "directory": "packages/coding-agent"
   },
   "bugs": {
-    "url": "https://github.com/can1357/oh-my-pi/issues"
+    "url": "https://github.com/kingkillery/oh-my-pk/issues"
   },
   "keywords": [
     "coding-agent",
@@ -48,18 +48,18 @@
   },
   "dependencies": {
     "@babel/parser": "catalog:",
-    "@oh-my-pi/hashline": "catalog:",
-    "@oh-my-pi/omp-stats": "catalog:",
-    "@oh-my-pi/omptype": "catalog:",
-    "@oh-my-pi/pi-agent-core": "catalog:",
-    "@oh-my-pi/pi-ai": "catalog:",
-    "@oh-my-pi/pi-catalog": "catalog:",
-    "@oh-my-pi/pi-mnemopi": "catalog:",
-    "@oh-my-pi/pi-natives": "catalog:",
-    "@oh-my-pi/pi-tui": "catalog:",
-    "@oh-my-pi/pi-utils": "catalog:",
-    "@oh-my-pi/pi-wire": "catalog:",
-    "@oh-my-pi/snapcompact": "catalog:",
+    "@pk-nerdsaver-ai/hashline": "catalog:",
+    "@pk-nerdsaver-ai/omp-stats": "catalog:",
+    "@pk-nerdsaver-ai/omptype": "catalog:",
+    "@pk-nerdsaver-ai/pi-agent-core": "catalog:",
+    "@pk-nerdsaver-ai/pi-ai": "catalog:",
+    "@pk-nerdsaver-ai/pi-catalog": "catalog:",
+    "@pk-nerdsaver-ai/pi-mnemopi": "catalog:",
+    "@pk-nerdsaver-ai/pi-natives": "catalog:",
+    "@pk-nerdsaver-ai/pi-tui": "catalog:",
+    "@pk-nerdsaver-ai/pi-utils": "catalog:",
+    "@pk-nerdsaver-ai/pi-wire": "catalog:",
+    "@pk-nerdsaver-ai/snapcompact": "catalog:",
     "@opentelemetry/api": "catalog:",
     "@opentelemetry/api-logs": "catalog:",
     "@opentelemetry/context-async-hooks": "catalog:",

@@ -11,7 +11,7 @@
  * headless paths and tests that never initialize the store never open agent.db.
  */
 
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import { AgentStorage } from "../session/agent-storage";
 
 let counts: Record<string, number> = {};

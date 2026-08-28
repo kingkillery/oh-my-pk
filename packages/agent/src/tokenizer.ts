@@ -1,8 +1,8 @@
-import type { Model } from "@oh-my-pi/pi-ai";
-import type { ModelTokenizer } from "@oh-my-pi/pi-catalog/types";
-import { countTokens as countTokensNat, Encoding } from "@oh-my-pi/pi-natives";
-import { stringifyJson } from "@oh-my-pi/pi-utils";
-import * as snapcompact from "@oh-my-pi/snapcompact";
+import type { Model } from "@pk-nerdsaver-ai/pi-ai";
+import type { ModelTokenizer } from "@pk-nerdsaver-ai/pi-catalog/types";
+import { countTokens as countTokensNat, Encoding } from "@pk-nerdsaver-ai/pi-natives";
+import { stringifyJson } from "@pk-nerdsaver-ai/pi-utils";
+import * as snapcompact from "@pk-nerdsaver-ai/snapcompact";
 import { isEstimateCacheable, messageEstimateVersion } from "./compaction/message-cache";
 import type { AgentMessage } from "./types";
 

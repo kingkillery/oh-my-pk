@@ -5,14 +5,14 @@
  * rule of the same name overrides a bundled default (first-wins dedup).
  */
 import { describe, expect, it } from "bun:test";
-import { getCapability } from "@oh-my-pi/pi-coding-agent/capability";
+import { getCapability } from "@pk-nerdsaver-ai/pi-coding-agent/capability";
 import {
 	BUILTIN_DEFAULTS_PROVIDER_ID,
 	compileRuleCondition,
 	type Rule,
 	ruleCapability,
-} from "@oh-my-pi/pi-coding-agent/capability/rule";
-import type { LoadContext } from "@oh-my-pi/pi-coding-agent/capability/types";
+} from "@pk-nerdsaver-ai/pi-coding-agent/capability/rule";
+import type { LoadContext } from "@pk-nerdsaver-ai/pi-coding-agent/capability/types";
 // Register all discovery providers as a side effect.
 import "@pk-nerdsaver-ai/pi-coding-agent/discovery";
 import { TtsrManager, type TtsrMatchContext } from "@pk-nerdsaver-ai/pi-coding-agent/export/ttsr";
@@ -129,7 +129,7 @@ describe("builtin-defaults rule provider", () => {
 
 		manager.resetBuffer();
 		expect(
-			manager.checkDelta('import { isRecord } from "@oh-my-pi/pi-utils";', {
+			manager.checkDelta('import { isRecord } from "@pk-nerdsaver-ai/pi-utils";', {
 				source: "tool",
 				toolName: "write",
 				filePaths: ["packages/x/src/foo.ts"],

@@ -2,23 +2,23 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AuthStorage } from "@oh-my-pi/pi-ai";
+import { AuthStorage } from "@pk-nerdsaver-ai/pi-ai";
 import type {
 	BlobBrokerDoctorResponse,
 	BlobBrokerProbeResponse,
 	BlobBrokerPurgeRequest,
 	BlobBrokerPurgeResponse,
 	BlobBrokerStatus,
-} from "@oh-my-pi/pi-coding-agent/blob-broker/protocol";
-import { ProviderFileCache } from "@oh-my-pi/pi-coding-agent/blob-broker/provider-file-types";
+} from "@pk-nerdsaver-ai/pi-coding-agent/blob-broker/protocol";
+import { ProviderFileCache } from "@pk-nerdsaver-ai/pi-coding-agent/blob-broker/provider-file-types";
 import {
 	type ImagesCliDependencies,
 	type ImagesCommandArgs,
 	type ImagesResolvedConfig,
 	runImagesCommand,
-} from "@oh-my-pi/pi-coding-agent/cli/images-cli";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { FetchImpl } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/cli/images-cli";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import type { FetchImpl } from "@pk-nerdsaver-ai/pi-utils";
 
 interface CapturedRequest {
 	readonly method: string;

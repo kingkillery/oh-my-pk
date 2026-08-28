@@ -1,5 +1,5 @@
-import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
-import type { DesktopCapabilities } from "@oh-my-pi/pi-natives";
+import type { ImageContent, TextContent } from "@pk-nerdsaver-ai/pi-ai";
+import type { DesktopCapabilities } from "@pk-nerdsaver-ai/pi-natives";
 
 /** Hidden CLI selector that re-enters the computer worker host. */
 export const COMPUTER_WORKER_ARG = "__omp_worker_computer";

@@ -1,13 +1,13 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { StoppingCriteria, TextGenerationPipeline } from "@huggingface/transformers";
-import type { Api, Model } from "@oh-my-pi/pi-ai";
-import * as ai from "@oh-my-pi/pi-ai";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { isSubcommand } from "@oh-my-pi/pi-coding-agent/cli-commands";
-import { getDefault, getEnumValues, getUi } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
-import { TinyTitleDownloadProgressComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tiny-title-download-progress";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { RefCountedWorkerHandle } from "@oh-my-pi/pi-coding-agent/subprocess/worker-client";
+import type { Api, Model } from "@pk-nerdsaver-ai/pi-ai";
+import * as ai from "@pk-nerdsaver-ai/pi-ai";
+import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
+import { isSubcommand } from "@pk-nerdsaver-ai/pi-coding-agent/cli-commands";
+import { getDefault, getEnumValues, getUi } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings-schema";
+import { TinyTitleDownloadProgressComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/tiny-title-download-progress";
+import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import type { RefCountedWorkerHandle } from "@pk-nerdsaver-ai/pi-coding-agent/subprocess/worker-client";
 import {
 	TINY_MODEL_DEVICE_DEFAULT,
 	TINY_MODEL_DEVICE_SETTING_OPTIONS,
@@ -22,14 +22,14 @@ import {
 	ONLINE_TINY_TITLE_MODEL_KEY,
 	TINY_TITLE_MODEL_OPTIONS,
 	TINY_TITLE_MODEL_VALUES,
-} from "@oh-my-pi/pi-coding-agent/tiny/models";
+} from "@pk-nerdsaver-ai/pi-coding-agent/tiny/models";
 import {
 	createTinyTitleSubprocess,
 	TinyTitleClient,
 	tinyTitleClient,
-} from "@oh-my-pi/pi-coding-agent/tiny/title-client";
-import type { TinyTitleWorkerInbound, TinyTitleWorkerOutbound } from "@oh-my-pi/pi-coding-agent/tiny/title-protocol";
-import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
+} from "@pk-nerdsaver-ai/pi-coding-agent/tiny/title-client";
+import type { TinyTitleWorkerInbound, TinyTitleWorkerOutbound } from "@pk-nerdsaver-ai/pi-coding-agent/tiny/title-protocol";
+import { generateSessionTitle } from "@pk-nerdsaver-ai/pi-coding-agent/utils/title-generator";
 import type { Subprocess } from "bun";
 import { buildCompletionPrompt } from "../src/tiny/completion-prompt";
 import { createStopOnTextCriteria, type TransformersRuntime } from "../src/tiny/worker";

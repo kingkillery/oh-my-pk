@@ -29,13 +29,13 @@ import {
 	renderInbandToolPrompt,
 	renderToolExamples,
 	wrapInbandToolStream,
-} from "@oh-my-pi/pi-ai/dialect";
-import * as AIError from "@oh-my-pi/pi-ai/error";
+} from "@pk-nerdsaver-ai/pi-ai/dialect";
+import * as AIError from "@pk-nerdsaver-ai/pi-ai/error";
 import {
 	type CursorExecResolvedCarrier,
 	copyCursorExecResolved,
 	kCursorExecResolved,
-} from "@oh-my-pi/pi-ai/utils/block-symbols";
+} from "@pk-nerdsaver-ai/pi-ai/utils/block-symbols";
 import {
 	createHarmonyAuditEvent,
 	detectHarmonyLeakInAssistantMessage,
@@ -45,9 +45,9 @@ import {
 	isHarmonyLeakMitigationTarget,
 	recoverHarmonyToolCall,
 	signalListLabel,
-} from "@oh-my-pi/pi-ai/utils/harmony-leak";
-import { logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
-import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
+} from "@pk-nerdsaver-ai/pi-ai/utils/harmony-leak";
+import { logger, sanitizeText, structuredCloneJSON } from "@pk-nerdsaver-ai/pi-utils";
+import { INTENT_FIELD } from "@pk-nerdsaver-ai/pi-wire";
 import { agentPauseGate } from "./pause";
 import { type AgentRunCoverage, type AgentRunSummary, ToolCallBlockedError } from "./run-collector";
 import {

@@ -1,10 +1,10 @@
 import { afterEach, beforeEach } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Model } from "@oh-my-pi/pi-ai/types";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
-import { isEnoent } from "@oh-my-pi/pi-utils";
+import type { Model } from "@pk-nerdsaver-ai/pi-ai/types";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import type { ModelSpec } from "@pk-nerdsaver-ai/pi-catalog/types";
+import { isEnoent } from "@pk-nerdsaver-ai/pi-utils";
 
 export async function withEnv(
 	overrides: Record<string, string | undefined>,

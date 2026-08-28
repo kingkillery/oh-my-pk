@@ -1,3 +1,3 @@
-import { isBunTestRuntime } from "@oh-my-pi/pi-utils/env";
+import { isBunTestRuntime } from "@pk-nerdsaver-ai/pi-utils/env";
 
 process.stdout.write(JSON.stringify(isBunTestRuntime()));

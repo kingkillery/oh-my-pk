@@ -9,7 +9,7 @@ import {
 	AppendOnlyContextManager,
 	filterProviderReplayMessages,
 	type ThinkingLevel,
-} from "@oh-my-pi/pi-agent-core";
+} from "@pk-nerdsaver-ai/pi-agent-core";
 import type {
 	Context,
 	CredentialDisabledEvent,
@@ -20,15 +20,15 @@ import type {
 	ProviderSessionState,
 	ServiceTier,
 	SimpleStreamOptions,
-} from "@oh-my-pi/pi-ai";
-import { resolveApiKeyOnce } from "@oh-my-pi/pi-ai/auth-retry";
-import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
+} from "@pk-nerdsaver-ai/pi-ai";
+import { resolveApiKeyOnce } from "@pk-nerdsaver-ai/pi-ai/auth-retry";
+import type { Dialect } from "@pk-nerdsaver-ai/pi-ai/dialect";
 import {
 	getOpenAICodexTransportDetails,
 	prewarmOpenAICodexResponses,
-} from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
-import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
-import type { Component } from "@oh-my-pi/pi-tui";
+} from "@pk-nerdsaver-ai/pi-ai/providers/openai-codex-responses";
+import { FALLBACK_DIALECT, preferredDialect } from "@pk-nerdsaver-ai/pi-catalog/identity";
+import type { Component } from "@pk-nerdsaver-ai/pi-tui";
 import {
 	$env,
 	$flag,
@@ -39,8 +39,8 @@ import {
 	postmortem,
 	prompt,
 	Snowflake,
-} from "@oh-my-pi/pi-utils";
-import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
+} from "@pk-nerdsaver-ai/pi-utils";
+import { INTENT_FIELD } from "@pk-nerdsaver-ai/pi-wire";
 import {
 	discoverAdvisorConfigs,
 	discoverWatchdogFiles,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
-import type { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
-import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { ExtensionRunner } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions/runner";
+import type { ExtensionRuntime } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions/types";
+import type { AsyncJobSnapshot } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
 
 function createRunner(getAsyncJobSnapshot?: () => AsyncJobSnapshot | null): ExtensionRunner {
 	const runtime = {

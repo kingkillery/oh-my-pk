@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { Tokenizer } from "@oh-my-pi/pi-agent-core";
+import { Tokenizer } from "@pk-nerdsaver-ai/pi-agent-core";
 import {
 	compact,
 	estimateTokens,
 	serializeConversation,
-} from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
+} from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
 
 // Issue #6583: pi extensions import `estimateTokens` from
 // `@earendil-works/pi-coding-agent`, which aliases to this shim. Legacy pi
@@ -27,7 +27,7 @@ describe("legacy shim compaction helpers", () => {
 		expect(tokens).toBeGreaterThan(0);
 	});
 
-	// Issue #7174: `compact` (same `@oh-my-pi/pi-agent-core/compaction` module as
+	// Issue #7174: `compact` (same `@pk-nerdsaver-ai/pi-agent-core/compaction` module as
 	// `estimateTokens`) was likewise absent from the shim surface, so
 	// `omp plugin install npm:pi-claude-bridge` failed with "Export named
 	// 'compact' not found". Pin the callable re-export.

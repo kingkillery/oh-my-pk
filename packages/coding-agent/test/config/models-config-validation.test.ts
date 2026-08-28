@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { validateProviderConfiguration } from "@oh-my-pi/pi-coding-agent/config/models-config";
+import { validateProviderConfiguration } from "@pk-nerdsaver-ai/pi-coding-agent/config/models-config";
 
 const models = [{ id: "grok-4", api: "openai-completions" as const }];
 const baseUrl = "https://api.example.invalid/v1";

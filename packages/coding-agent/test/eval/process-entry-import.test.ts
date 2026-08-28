@@ -1,7 +1,7 @@
 import { expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 
 it("imports the CLI entry graph without loading dotenv before profile bootstrap", async () => {
 	using tempDir = TempDir.createSync("@omp-js-process-import-");
@@ -96,7 +96,7 @@ it("dispatches the computer worker from a single npm-style host bundle", async (
 			outdir: outDir,
 			naming: "cli.js",
 			target: "bun",
-			external: ["@oh-my-pi/pi-natives"],
+			external: ["@pk-nerdsaver-ai/pi-natives"],
 			define: { "process.env.PI_BUNDLED": JSON.stringify("true") },
 			throw: false,
 		});

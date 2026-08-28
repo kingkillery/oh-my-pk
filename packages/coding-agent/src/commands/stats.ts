@@ -2,7 +2,7 @@
  * View usage statistics dashboard.
  */
 
-import { Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { Command, Flags } from "@pk-nerdsaver-ai/pi-utils/cli";
 import { statsHelp as commandHelp } from "../cli/command-help";
 import type { StatsCommandArgs } from "../cli/stats-cli";
 import * as statsCli from "../cli/stats-cli";

@@ -6,9 +6,9 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type } from "@oh-my-pi/omptype";
-import * as zod from "@oh-my-pi/omptype/zod";
-import { getAgentDir, getProjectDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import * as zod from "@pk-nerdsaver-ai/omptype/zod";
+import { getAgentDir, getProjectDir, isEnoent, logger } from "@pk-nerdsaver-ai/pi-utils";
 import { getConfigDirs } from "../../config";
 
 import { execCommand } from "../../exec/exec";

@@ -2,10 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Skill } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
-import { parseInternalUrl } from "@oh-my-pi/pi-coding-agent/internal-urls/parse";
-import { SkillProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/skill-protocol";
-import { resolveSkillUrlToPath } from "@oh-my-pi/pi-coding-agent/tools/bash-skill-urls";
+import type { Skill } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/skills";
+import { parseInternalUrl } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls/parse";
+import { SkillProtocolHandler } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls/skill-protocol";
+import { resolveSkillUrlToPath } from "@pk-nerdsaver-ai/pi-coding-agent/tools/bash-skill-urls";
 
 let tempDir: string;
 let pluginRoot: string;

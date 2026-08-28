@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { scheduler } from "node:timers/promises";
-import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { AsyncJobManager } from "@pk-nerdsaver-ai/pi-coding-agent/async/job-manager";
 
 async function waitForJobEviction(manager: AsyncJobManager, jobId: string): Promise<void> {
 	const deadline = Date.now() + 2_000;

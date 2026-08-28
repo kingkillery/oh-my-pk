@@ -1,4 +1,4 @@
-import { truncate } from "@oh-my-pi/pi-utils";
+import { truncate } from "@pk-nerdsaver-ai/pi-utils";
 
 /**
  * Connect-protocol end-stream error formatting.

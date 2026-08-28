@@ -2,8 +2,8 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { DiffSide, DiffStream } from "@oh-my-pi/pi-natives";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { DiffSide, DiffStream } from "@pk-nerdsaver-ai/pi-natives";
+import { sanitizeText } from "@pk-nerdsaver-ai/pi-utils";
 import { $ } from "bun";
 import {
 	buildDiffDocument,

@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getManagedSkillsDir } from "@oh-my-pi/pi-coding-agent/autolearn/managed-skills";
-import "@oh-my-pi/pi-coding-agent/discovery";
-import { loadSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
-import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
+import { getManagedSkillsDir } from "@pk-nerdsaver-ai/pi-coding-agent/autolearn/managed-skills";
+import "@pk-nerdsaver-ai/pi-coding-agent/discovery";
+import { loadSkills } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/skills";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
+import { getAgentDir, setAgentDir } from "@pk-nerdsaver-ai/pi-utils/dirs";
 
 async function writeSkill(dir: string, name: string, description: string): Promise<void> {
 	const file = path.join(dir, name, "SKILL.md");

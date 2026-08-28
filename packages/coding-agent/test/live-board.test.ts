@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createLiveBoard } from "@oh-my-pi/pi-coding-agent/cli/live-board";
+import { createLiveBoard } from "@pk-nerdsaver-ai/pi-coding-agent/cli/live-board";
 
 describe("live board", () => {
 	test("repaints in place with cursor-up bookkeeping and interleaves permanent log lines", () => {

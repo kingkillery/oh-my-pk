@@ -7,8 +7,8 @@ import {
 	truncateToWidth as nativeTruncateToWidth,
 	wrapTextWithAnsi as nativeWrapTextWithAnsi,
 	type SliceResult,
-} from "@oh-my-pi/pi-natives";
-import { DEFAULT_TAB_WIDTH } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-natives";
+import { DEFAULT_TAB_WIDTH } from "@pk-nerdsaver-ai/pi-utils";
 
 export const Ellipsis = nativeBindings.Ellipsis;
 export type Ellipsis = NativeEllipsis;

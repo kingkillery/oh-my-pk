@@ -7,10 +7,10 @@
 // AssistantMessage) instead of instantiating the error class directly, so a
 // regression in status/body propagation is caught, not masked.
 import { describe, expect, it } from "bun:test";
-import * as AIError from "@oh-my-pi/pi-ai/error";
-import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
-import type { Context, FetchImpl, Model } from "@oh-my-pi/pi-ai/types";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import * as AIError from "@pk-nerdsaver-ai/pi-ai/error";
+import { streamOpenAICompletions } from "@pk-nerdsaver-ai/pi-ai/providers/openai-completions";
+import type { Context, FetchImpl, Model } from "@pk-nerdsaver-ai/pi-ai/types";
+import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
 
 const completionsModel = {
 	...(getBundledModel("openai", "gpt-4o-mini") as Model<"openai-completions">),

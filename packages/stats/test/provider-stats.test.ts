@@ -2,16 +2,16 @@ import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getProviderDashboardStats } from "@oh-my-pi/omp-stats/aggregator";
-import { initDb, insertMessageStats } from "@oh-my-pi/omp-stats/db";
-import type { MessageStats } from "@oh-my-pi/omp-stats/types";
+import { getProviderDashboardStats } from "@pk-nerdsaver-ai/omp-stats/aggregator";
+import { initDb, insertMessageStats } from "@pk-nerdsaver-ai/omp-stats/db";
+import type { MessageStats } from "@pk-nerdsaver-ai/omp-stats/types";
 import {
 	computeUsageWindowStats,
 	readUsageSnapshots,
 	sumFleetTokens,
 	type UsageSnapshotRow,
-} from "@oh-my-pi/omp-stats/usage-windows";
-import { getAgentDbPath } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/omp-stats/usage-windows";
+import { getAgentDbPath } from "@pk-nerdsaver-ai/pi-utils";
 import { installStatsTestIsolation } from "./helpers/temp-agent";
 
 installStatsTestIsolation("@pi-stats-providers-");

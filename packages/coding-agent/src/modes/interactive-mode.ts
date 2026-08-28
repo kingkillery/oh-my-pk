@@ -36,9 +36,9 @@ import {
 	Text,
 	type TUI,
 	visibleWidth,
-} from "@oh-my-pi/pi-tui";
-import type { TerminalAppearanceRequestToken } from "@oh-my-pi/pi-tui/terminal";
-import { isInsideTerminalMultiplexer } from "@oh-my-pi/pi-tui/terminal-capabilities";
+} from "@pk-nerdsaver-ai/pi-tui";
+import type { TerminalAppearanceRequestToken } from "@pk-nerdsaver-ai/pi-tui/terminal";
+import { isInsideTerminalMultiplexer } from "@pk-nerdsaver-ai/pi-tui/terminal-capabilities";
 import {
 	$env,
 	adjustHsv,
@@ -51,8 +51,8 @@ import {
 	prompt,
 	sanitizeText,
 	setProjectDir,
-} from "@oh-my-pi/pi-utils";
-import chalk from "@oh-my-pi/pi-utils/chalk";
+} from "@pk-nerdsaver-ai/pi-utils";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
 import { reset as resetCapabilities } from "../capability";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";

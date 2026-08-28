@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { computeFileHash } from "@oh-my-pi/hashline";
-import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { computeFileHash } from "@pk-nerdsaver-ai/hashline";
+import type { AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
+import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import {
 	DEFAULT_FUZZY_THRESHOLD,
 	type EditToolDetails,
@@ -12,14 +12,14 @@ import {
 	executePatchSingle,
 	executeReplace,
 	type hashlineEditParamsSchema,
-} from "@oh-my-pi/pi-coding-agent/edit";
-import { HashlineFilesystem } from "@oh-my-pi/pi-coding-agent/edit/hashline/filesystem";
-import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
-import type { WritethroughCallback } from "@oh-my-pi/pi-coding-agent/lsp";
-import type { PlanModeState } from "@oh-my-pi/pi-coding-agent/plan-mode/state";
-import type { ClientBridge } from "@oh-my-pi/pi-coding-agent/session/client-bridge";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/edit";
+import { HashlineFilesystem } from "@pk-nerdsaver-ai/pi-coding-agent/edit/hashline/filesystem";
+import { resolveLocalUrlToPath } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls";
+import type { WritethroughCallback } from "@pk-nerdsaver-ai/pi-coding-agent/lsp";
+import type { PlanModeState } from "@pk-nerdsaver-ai/pi-coding-agent/plan-mode/state";
+import type { ClientBridge } from "@pk-nerdsaver-ai/pi-coding-agent/session/client-bridge";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 

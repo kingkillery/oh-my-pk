@@ -5,7 +5,7 @@
  * checker/repair/agent rows from {@link CleanseBoardModel} animate in place while
  * permanent log lines accumulate above them.
  */
-import { Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { Spacer, Text, type TUI } from "@pk-nerdsaver-ai/pi-tui";
 import { CleanseBoardModel, type CleanseStatusBoard } from "../../cleanse/board";
 import type { CleanseCheckerDescriptor } from "../../cleanse/checkers";
 import type { CleanseAgentOutcome, CleanseAssignment, CleanseCheckResult, CleanseRunStatus } from "../../cleanse/types";

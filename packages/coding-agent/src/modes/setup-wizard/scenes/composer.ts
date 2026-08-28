@@ -1,4 +1,4 @@
-import { routeSelectListMouse, type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
+import { routeSelectListMouse, type SelectItem, SelectList, type SgrMouseEvent } from "@pk-nerdsaver-ai/pi-tui";
 import type { ComposerShape } from "../../../config/settings-schema";
 import { renderComposerShapePreview } from "../../components/composer-shape-preview";
 import { getComposerShapeOptions } from "../../components/composer-shape-registry";

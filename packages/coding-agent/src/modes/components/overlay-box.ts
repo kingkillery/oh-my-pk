@@ -6,7 +6,7 @@
  * (rounded corners, sharp tee/cross junctions) and the `border`/`accent` theme
  * colors so all outlined overlays read identically.
  */
-import { type Component, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { type Component, padding, truncateToWidth, visibleWidth } from "@pk-nerdsaver-ai/pi-tui";
 import { type ThemeColor, theme } from "../theme/theme";
 
 /** Pad or truncate a (possibly ANSI-styled) string to exactly `width` columns. */

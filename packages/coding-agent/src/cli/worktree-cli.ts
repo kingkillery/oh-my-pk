@@ -18,9 +18,9 @@
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { getWorktreesDir, isEnoent } from "@oh-my-pi/pi-utils";
-import chalk from "@oh-my-pi/pi-utils/chalk";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { getWorktreesDir, isEnoent } from "@pk-nerdsaver-ai/pi-utils";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
 import { hasLiveIsolationOwner, ISOLATION_OWNER_FILE } from "../task/isolation-ownership";
 
 type WorktreeKind = "pr-checkout" | "task-isolation" | "empty" | "stray";

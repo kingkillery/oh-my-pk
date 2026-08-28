@@ -2,19 +2,19 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "bu
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { clearCache as clearFsCache } from "@oh-my-pi/pi-coding-agent/capability/fs";
-import { type SlashCommand, slashCommandCapability } from "@oh-my-pi/pi-coding-agent/capability/slash-command";
-import { resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { loadCapability } from "@oh-my-pi/pi-coding-agent/discovery";
+import { clearCache as clearFsCache } from "@pk-nerdsaver-ai/pi-coding-agent/capability/fs";
+import { type SlashCommand, slashCommandCapability } from "@pk-nerdsaver-ai/pi-coding-agent/capability/slash-command";
+import { resetSettingsForTest } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { loadCapability } from "@pk-nerdsaver-ai/pi-coding-agent/discovery";
 import {
 	commandInspectorData,
 	commandPreview,
-} from "@oh-my-pi/pi-coding-agent/modes/components/extensions/inspector-model";
-import { InspectorPanel } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/inspector-panel";
-import { applyFilter } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/state-manager";
-import type { Extension } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/types";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/inspector-model";
+import { InspectorPanel } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/inspector-panel";
+import { applyFilter } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/state-manager";
+import type { Extension } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/types";
+import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 const COMMAND_FILE = `---
 description: Deploy a service

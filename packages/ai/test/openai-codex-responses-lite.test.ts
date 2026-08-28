@@ -9,12 +9,12 @@ import {
 	convertCodexResponsesMessages,
 	resetOpenAICodexHistoryAfterCompaction,
 	streamOpenAICodexResponses,
-} from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
-import { isOpenAIResponsesProgressEvent } from "@oh-my-pi/pi-ai/providers/openai-shared";
-import { configureCredentialRedaction } from "@oh-my-pi/pi-ai/providers/transform-messages";
-import type { CodexCompactionRequestContext, Context, FetchImpl, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import * as piUtils from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-ai/providers/openai-codex-responses";
+import { isOpenAIResponsesProgressEvent } from "@pk-nerdsaver-ai/pi-ai/providers/openai-shared";
+import { configureCredentialRedaction } from "@pk-nerdsaver-ai/pi-ai/providers/transform-messages";
+import type { CodexCompactionRequestContext, Context, FetchImpl, ProviderSessionState } from "@pk-nerdsaver-ai/pi-ai/types";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import * as piUtils from "@pk-nerdsaver-ai/pi-utils";
 import { createCodexModel } from "./helpers";
 
 beforeAll(() => configureCredentialRedaction(true));

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { relativeLuminance } from "@oh-my-pi/pi-utils";
+import { relativeLuminance } from "@pk-nerdsaver-ai/pi-utils";
 import { resolveVarRefs } from "../src/modes/theme/color";
 import { loadTheme, loadThemeJson } from "../src/modes/theme/loader";
 

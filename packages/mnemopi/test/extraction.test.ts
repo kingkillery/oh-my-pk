@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import type { FetchImpl } from "@oh-my-pi/pi-ai";
+import type { FetchImpl } from "@pk-nerdsaver-ai/pi-ai";
 import {
 	buildExtractionPrompt,
 	extractFacts,

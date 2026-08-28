@@ -11,8 +11,8 @@
  * massage shapes the LLM almost got right.
  */
 
-import { type Type, type } from "@oh-my-pi/omptype";
-import { structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import { type Type, type } from "@pk-nerdsaver-ai/omptype";
+import { structuredCloneJSON } from "@pk-nerdsaver-ai/pi-utils";
 import * as AIError from "../error";
 import type { Tool, ToolCall } from "../types";
 import { upgradeJsonSchemaTo202012 } from "./schema/draft";

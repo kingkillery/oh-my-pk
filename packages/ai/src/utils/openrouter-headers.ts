@@ -1,4 +1,4 @@
-import { USER_AGENT } from "@oh-my-pi/pi-utils";
+import { USER_AGENT } from "@pk-nerdsaver-ai/pi-utils";
 
 const OPENROUTER_APP_TITLE = APP_NAME.replace(/\b\w/g, character => character.toUpperCase()).replace(/Pk$/, "PK");
 

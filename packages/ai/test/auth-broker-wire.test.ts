@@ -14,8 +14,8 @@ import {
 	type SnapshotResponse,
 	type SnapshotStreamEvent,
 	startAuthBroker,
-} from "@oh-my-pi/pi-ai/auth-broker";
-import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
+} from "@pk-nerdsaver-ai/pi-ai/auth-broker";
+import * as oauthUtils from "@pk-nerdsaver-ai/pi-ai/registry/oauth";
 import { removeWithRetries } from "../../utils/src/temp";
 
 const ANTHROPIC_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"] as const;

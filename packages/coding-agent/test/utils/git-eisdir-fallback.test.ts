@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 import { $ } from "bun";
 
 describe("git reference directory fallback", () => {

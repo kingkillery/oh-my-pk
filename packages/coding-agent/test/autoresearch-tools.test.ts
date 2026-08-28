@@ -8,15 +8,15 @@ import {
 	closeAllAutoresearchStorages,
 	openAutoresearchStorage,
 	type SessionRow,
-} from "@oh-my-pi/pi-coding-agent/autoresearch/storage";
-import { createInitExperimentTool } from "@oh-my-pi/pi-coding-agent/autoresearch/tools/init-experiment";
-import { createLogExperimentTool } from "@oh-my-pi/pi-coding-agent/autoresearch/tools/log-experiment";
-import { createRunExperimentTool } from "@oh-my-pi/pi-coding-agent/autoresearch/tools/run-experiment";
-import { createUpdateNotesTool } from "@oh-my-pi/pi-coding-agent/autoresearch/tools/update-notes";
-import type { ASIData, LogDetails, NumericMetricMap, RunDetails } from "@oh-my-pi/pi-coding-agent/autoresearch/types";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { TempDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/storage";
+import { createInitExperimentTool } from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/tools/init-experiment";
+import { createLogExperimentTool } from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/tools/log-experiment";
+import { createRunExperimentTool } from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/tools/run-experiment";
+import { createUpdateNotesTool } from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/tools/update-notes";
+import type { ASIData, LogDetails, NumericMetricMap, RunDetails } from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/types";
+import type { ExtensionAPI, ExtensionContext } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 import { $ } from "bun";
 
 afterEach(() => {

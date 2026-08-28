@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $which, getPuppeteerDir, logger, removeWithRetries } from "@oh-my-pi/pi-utils";
-import type * as BrowsersNs from "@oh-my-pi/pi-utils/browsers";
+import { $which, getPuppeteerDir, logger, removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
+import type * as BrowsersNs from "@pk-nerdsaver-ai/pi-utils/browsers";
 import type { Browser, CDPSession, Page, default as Puppeteer, Target } from "puppeteer-core";
 import stealthTamperingScript from "../puppeteer/00_stealth_tampering.txt" with { type: "text" };
 import stealthActivityScript from "../puppeteer/01_stealth_activity.txt" with { type: "text" };
@@ -165,7 +165,7 @@ export async function loadPuppeteerInWorker(safeDir: string): Promise<typeof Pup
 let browsersModule: typeof BrowsersNs | undefined;
 async function loadBrowsers(): Promise<typeof BrowsersNs> {
 	if (!browsersModule) {
-		browsersModule = await import("@oh-my-pi/pi-utils/browsers");
+		browsersModule = await import("@pk-nerdsaver-ai/pi-utils/browsers");
 	}
 	return browsersModule;
 }

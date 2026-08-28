@@ -1,15 +1,15 @@
 {
 	"type": "module",
-	"name": "@oh-my-pi/browser-relay",
+	"name": "@pk-nerdsaver-ai/browser-relay",
 	"version": "0.1.0",
 	"private": true,
 	"description": "Chrome extension that lets the omp browser tool drive your existing tabs (relay server lives in the omp CLI: `omp browser-relay`)",
-	"homepage": "https://omp.sh",
+	"homepage": "https://oh-my-pk.pkking.computer",
 	"author": "Stencil Labs, Inc.",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/can1357/oh-my-pi.git",
+		"url": "git+https://github.com/kingkillery/oh-my-pk.git",
 		"directory": "packages/browser-relay"
 	},
 	"scripts": {

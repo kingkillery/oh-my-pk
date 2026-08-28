@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import type { OAuthAuthInfo, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/registry/oauth/types";
-import { opencodeGoProvider } from "@oh-my-pi/pi-ai/registry/opencode-go";
-import { opencodeZenProvider } from "@oh-my-pi/pi-ai/registry/opencode-zen";
+import type { OAuthAuthInfo, OAuthLoginCallbacks } from "@pk-nerdsaver-ai/pi-ai/registry/oauth/types";
+import { opencodeGoProvider } from "@pk-nerdsaver-ai/pi-ai/registry/opencode-go";
+import { opencodeZenProvider } from "@pk-nerdsaver-ai/pi-ai/registry/opencode-zen";
 
 /**
  * Regression for #8738: `opencode-go` and `opencode-zen` share the same

@@ -10,11 +10,11 @@
  * `flags.json` is set so the renderer takes the JSON branch and avoids the theme.
  */
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { runPluginCommand } from "@oh-my-pi/pi-coding-agent/cli/plugin-cli";
-import { PluginManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/manager";
-import type { InstalledPluginSummary } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace";
-import { MarketplaceManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace";
-import type { InstalledPlugin } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/types";
+import { runPluginCommand } from "@pk-nerdsaver-ai/pi-coding-agent/cli/plugin-cli";
+import { PluginManager } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/plugins/manager";
+import type { InstalledPluginSummary } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/plugins/marketplace";
+import { MarketplaceManager } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/plugins/marketplace";
+import type { InstalledPlugin } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/plugins/types";
 
 describe("runPluginCommand({ action: 'config', args: ['validate'] })", () => {
 	const output: string[] = [];

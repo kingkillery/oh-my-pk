@@ -1,10 +1,10 @@
-import * as native from "@oh-my-pi/pi-natives";
+import * as native from "@pk-nerdsaver-ai/pi-natives";
 import type {
 	EditorInlineReplacement,
 	EditorTextAssistProvider,
 	EditorWordReplacements,
-} from "@oh-my-pi/pi-tui/components/editor";
-import { logger } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-tui/components/editor";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import { maskNonProse } from "./markdown-prose";
 
 const TYPO_START = "\x1b[4:3m\x1b[58:2::255:95:95m";

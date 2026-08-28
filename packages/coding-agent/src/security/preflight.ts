@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
 import type {
 	SecurityAccountRef,
 	SecurityKnowledgeBaseRef,

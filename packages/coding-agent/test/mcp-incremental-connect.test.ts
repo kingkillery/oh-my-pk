@@ -11,10 +11,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
-import type { MCPStdioServerConfig } from "@oh-my-pi/pi-coding-agent/mcp/types";
-import { applyMcpToggleRuntime } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/mcp-runtime";
-import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { MCPManager } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/manager";
+import type { MCPStdioServerConfig } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/types";
+import { applyMcpToggleRuntime } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/mcp-runtime";
+import { removeSyncWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 import { MANY_TOOL_COUNT, manyToolName } from "./fixtures/many-tools-mcp";
 
 const FIXTURE_PATH = path.join(import.meta.dir, "fixtures", "many-tools-mcp.ts");

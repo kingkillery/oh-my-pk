@@ -6,8 +6,8 @@ import { getDefault } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings-sch
 import {
 	ReadToolGroupComponent,
 	readArgsCollapseIntoGroup,
-} from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
-import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+} from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/read-tool-group";
+import * as themeModule from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
 
 function extractLinkUris(text: string): string[] {
 	return [...text.matchAll(/\x1b\]8;[^;]*;([^\x1b]+)\x1b\\/g)].map(match => match[1]!);

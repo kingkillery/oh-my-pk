@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { OmpErrors, type Type } from "@oh-my-pi/omptype";
-import { getAgentDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { OmpErrors, type Type } from "@pk-nerdsaver-ai/omptype";
+import { getAgentDir, isEnoent, logger } from "@pk-nerdsaver-ai/pi-utils";
 import { JSONC, YAML } from "bun";
 
 const YAML_MAPPING_HEADER_TRAILING_SPACE = /: +$/gm;

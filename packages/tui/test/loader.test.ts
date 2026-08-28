@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, setSystemTime, spyOn, vi } from "bun:test";
-import { Container, TUI } from "@oh-my-pi/pi-tui";
-import { Loader, type LoaderMessageColorFn } from "@oh-my-pi/pi-tui/components/loader";
-import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
+import { Container, TUI } from "@pk-nerdsaver-ai/pi-tui";
+import { Loader, type LoaderMessageColorFn } from "@pk-nerdsaver-ai/pi-tui/components/loader";
+import { visibleWidth } from "@pk-nerdsaver-ai/pi-tui/utils";
 import { VirtualTerminal } from "./virtual-terminal";
 
 describe("Loader component", () => {

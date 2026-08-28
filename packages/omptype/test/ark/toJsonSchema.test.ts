@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { type } from "@oh-my-pi/omptype/ark";
+import { type } from "@pk-nerdsaver-ai/omptype/ark";
 
 describe("target option", () => {
 	it("omits the dialect until a target is requested", () => {

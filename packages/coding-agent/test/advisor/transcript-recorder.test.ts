@@ -21,8 +21,8 @@ import {
 	AdvisorTranscriptRecorder,
 	advisorTranscriptFilename,
 	loadAdvisorTranscriptCosts,
-} from "@oh-my-pi/pi-coding-agent/advisor/transcript-recorder";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/advisor/transcript-recorder";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 interface AdvisorEntry {
 	type?: string;

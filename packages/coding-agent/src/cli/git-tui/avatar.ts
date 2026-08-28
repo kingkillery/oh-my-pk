@@ -11,8 +11,8 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { getAvatarCacheDir, logger } from "@oh-my-pi/pi-utils";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { getAvatarCacheDir, logger } from "@pk-nerdsaver-ai/pi-utils";
 
 const AVATAR_PX = 64;
 const FETCH_TIMEOUT_MS = 5_000;

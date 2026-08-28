@@ -6,9 +6,9 @@ import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/mo
 import {
 	type BuiltinSlashCommandRuntime,
 	executeBuiltinSlashCommand,
-} from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
-import { CollabQrCodeComponent } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/collab-qrcode";
-import { Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
+} from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/builtin-registry";
+import { CollabQrCodeComponent } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/helpers/collab-qrcode";
+import { Spacer, Text, visibleWidth } from "@pk-nerdsaver-ai/pi-tui";
 
 beforeAll(async () => {
 	resetSettingsForTest();

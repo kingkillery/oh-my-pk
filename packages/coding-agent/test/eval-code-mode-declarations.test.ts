@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type } from "@oh-my-pi/omptype";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import { Settings } from "../src/config/settings";
 import type { ToolSession } from "../src/tools";
 import { EvalTool } from "../src/tools/eval";

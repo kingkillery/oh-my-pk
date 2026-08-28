@@ -24,8 +24,8 @@ import {
 	Text,
 	truncateToWidth,
 	visibleWidth,
-} from "@oh-my-pi/pi-tui";
-import type { ShapeTarget } from "@oh-my-pi/snapcompact";
+} from "@pk-nerdsaver-ai/pi-tui";
+import type { ShapeTarget } from "@pk-nerdsaver-ai/snapcompact";
 import {
 	getDefault,
 	getType,

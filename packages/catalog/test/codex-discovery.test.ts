@@ -3,15 +3,15 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { fetchCodexModels } from "@oh-my-pi/pi-catalog/discovery/codex";
-import { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
-import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
-import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
-import { openaiCodexModelManagerOptions } from "@oh-my-pi/pi-catalog/provider-models/special";
-import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
-import { resolveProviderModelReference } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import { fetchCodexModels } from "@pk-nerdsaver-ai/pi-catalog/discovery/codex";
+import { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
+import { writeModelCache } from "@pk-nerdsaver-ai/pi-catalog/model-cache";
+import { resolveProviderModels } from "@pk-nerdsaver-ai/pi-catalog/model-manager";
+import { getSupportedEfforts } from "@pk-nerdsaver-ai/pi-catalog/model-thinking";
+import { openaiCodexModelManagerOptions } from "@pk-nerdsaver-ai/pi-catalog/provider-models/special";
+import type { ModelSpec } from "@pk-nerdsaver-ai/pi-catalog/types";
+import { resolveProviderModelReference } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-resolver";
 
 describe("Codex model discovery", () => {
 	it("marks discovered models for provider-native V2 compaction", async () => {

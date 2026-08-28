@@ -1,4 +1,4 @@
-import { APP_NAME, getActiveProfile } from "@oh-my-pi/pi-utils";
+import { APP_NAME, getActiveProfile } from "@pk-nerdsaver-ai/pi-utils";
 
 /**
  * Build the shell command that resumes a session by id.

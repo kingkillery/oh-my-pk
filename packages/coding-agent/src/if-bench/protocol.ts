@@ -7,7 +7,7 @@
  * The cat directive rotates through the start, middle, and end of the user turn
  * so a model cannot succeed by only attending to the prompt's edges.
  */
-import { prompt } from "@oh-my-pi/pi-utils";
+import { prompt } from "@pk-nerdsaver-ai/pi-utils";
 import type { Action } from "./actions";
 import { encodeAction } from "./actions";
 import catDirectiveTemplate from "./prompts/cat-directive.md" with { type: "text" };

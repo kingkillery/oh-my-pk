@@ -8,9 +8,9 @@
  * callers keep a parseable trace.
  */
 
-import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
-import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
-import chalk from "@oh-my-pi/pi-utils/chalk";
+import { replaceTabs, truncateToWidth } from "@pk-nerdsaver-ai/pi-tui";
+import { formatDuration, formatNumber } from "@pk-nerdsaver-ai/pi-utils";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
 import { createLiveBoard, type LiveBoardOutput } from "../cli/live-board";
 import type { IfBenchFailure } from "./protocol";
 import type { IfBenchModelReport, IfBenchObserver, IfBenchSummary, IfBenchTurnRecord } from "./runner";

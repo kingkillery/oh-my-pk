@@ -4,8 +4,8 @@ import {
 	formatNumberedLine,
 	formatNumberedLines,
 	splitAddressableFileLines,
-} from "@oh-my-pi/hashline";
-import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
+} from "@pk-nerdsaver-ai/hashline";
+import type { AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
 import { canonicalSnapshotKey, getFileSnapshotStore, recordSeenLines } from "../edit/file-snapshot-store";
 import { normalizeToLF } from "../edit/normalize";
 import { isMarkdownPath } from "../modes/theme/theme";

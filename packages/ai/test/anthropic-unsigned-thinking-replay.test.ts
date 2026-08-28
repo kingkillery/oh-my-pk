@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { renderDemotedThinking } from "@oh-my-pi/pi-ai/dialect";
-import { convertAnthropicMessages, streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
+import { renderDemotedThinking } from "@pk-nerdsaver-ai/pi-ai/dialect";
+import { convertAnthropicMessages, streamAnthropic } from "@pk-nerdsaver-ai/pi-ai/providers/anthropic";
 import type {
 	AssistantMessage,
 	Message,

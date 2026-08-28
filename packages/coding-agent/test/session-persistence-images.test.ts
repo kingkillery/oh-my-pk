@@ -1,17 +1,17 @@
 import { describe, expect, it } from "bun:test";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
-import { BlobStore, isBlobRef } from "@oh-my-pi/pi-coding-agent/session/blob-store";
+import type { AgentMessage } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { ImageContent, TextContent } from "@pk-nerdsaver-ai/pi-ai";
+import { BlobStore, isBlobRef } from "@pk-nerdsaver-ai/pi-coding-agent/session/blob-store";
 import type {
 	CompactionEntry,
 	FileEntry,
 	SessionMessageEntry,
-} from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { resolveBlobRefsInEntries } from "@oh-my-pi/pi-coding-agent/session/session-loader";
-import { prepareEntryForPersistence } from "@oh-my-pi/pi-coding-agent/session/session-persistence";
-import { TempDir } from "@oh-my-pi/pi-utils";
-import type { Archive } from "@oh-my-pi/snapcompact";
-import * as snapcompact from "@oh-my-pi/snapcompact";
+} from "@pk-nerdsaver-ai/pi-coding-agent/session/session-entries";
+import { resolveBlobRefsInEntries } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-loader";
+import { prepareEntryForPersistence } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-persistence";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
+import type { Archive } from "@pk-nerdsaver-ai/snapcompact";
+import * as snapcompact from "@pk-nerdsaver-ai/snapcompact";
 
 type ImagePayload = { data: string; mimeType: string; type?: "image" };
 type ToolResultMessage = Extract<AgentMessage, { role: "toolResult" }>;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
-import { searchZai, ZaiProvider } from "@oh-my-pi/pi-coding-agent/web/search/providers/zai";
+import type { AuthStorage, FetchImpl } from "@pk-nerdsaver-ai/pi-ai";
+import { searchZai, ZaiProvider } from "@pk-nerdsaver-ai/pi-coding-agent/web/search/providers/zai";
 
 interface CapturedRequest {
 	method: string | undefined;

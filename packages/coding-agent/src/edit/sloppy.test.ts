@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 import type { ToolSession } from "../tools";
 import {
 	applySloppy,

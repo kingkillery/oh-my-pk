@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
-import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
-import { resolveModelCacheProviderId } from "@oh-my-pi/pi-catalog/provider-models";
-import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { writeModelCache } from "@pk-nerdsaver-ai/pi-catalog/model-cache";
+import { getBundledModels } from "@pk-nerdsaver-ai/pi-catalog/models";
+import { resolveModelCacheProviderId } from "@pk-nerdsaver-ai/pi-catalog/provider-models";
+import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
+import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
+import { removeSyncWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 describe("startup model cache header restoration (#5780)", () => {
 	let tempDir: string;

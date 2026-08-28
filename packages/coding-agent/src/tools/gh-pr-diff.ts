@@ -1,4 +1,4 @@
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { Settings } from "../config/settings";
 import { github } from "../utils/github";
 import { appendRepoFlag, ghApiHostArgs, parseRepoRef } from "./gh-common";

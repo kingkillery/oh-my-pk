@@ -2,8 +2,8 @@
  * List and clean up agent-managed git worktrees under `~/.ompk/wt`.
  */
 
-import { getProjectDir } from "@oh-my-pi/pi-utils";
-import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { getProjectDir } from "@pk-nerdsaver-ai/pi-utils";
+import { Args, Command, Flags } from "@pk-nerdsaver-ai/pi-utils/cli";
 import { worktreeHelp as commandHelp } from "../cli/command-help";
 import { clearWorktrees, listWorktrees } from "../cli/worktree-cli";
 import { Settings } from "../config/settings";

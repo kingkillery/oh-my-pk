@@ -8,7 +8,7 @@
  * runs isn't required.
  */
 import * as os from "node:os";
-import { getAppName, getInstallId, logger } from "@oh-my-pi/pi-utils";
+import { getAppName, getInstallId, logger } from "@pk-nerdsaver-ai/pi-utils";
 import {
 	type AuthCredential,
 	type AuthCredentialSnapshotEntry,

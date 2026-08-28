@@ -1,5 +1,5 @@
-import type { Agent } from "@oh-my-pi/pi-agent-core";
-import { logger } from "@oh-my-pi/pi-utils";
+import type { Agent } from "@pk-nerdsaver-ai/pi-agent-core";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { Settings } from "../config/settings";
 import { disposeJuliaKernelSessionsByOwner } from "../eval/jl/executor";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";

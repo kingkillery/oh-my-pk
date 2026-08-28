@@ -1,4 +1,4 @@
-import { extractRetryHint } from "@oh-my-pi/pi-utils";
+import { extractRetryHint } from "@pk-nerdsaver-ai/pi-utils";
 import * as AIError from "./error";
 import type { AssistantMessage } from "./types";
 import { getHeadersFromError, getRetryAfterMsFromHeaders, type HeadersLike } from "./utils/retry-after";

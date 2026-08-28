@@ -1,5 +1,5 @@
-import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import type { UsageLimit, UsageReport } from "@pk-nerdsaver-ai/pi-ai";
+import { sanitizeText } from "@pk-nerdsaver-ai/pi-utils";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import { computeFusionTokenSplit } from "../../session/fusion-usage";
 import type { SlashCommandRuntime } from "../types";

@@ -6,7 +6,7 @@ import type {
 	CursorRule,
 	McpToolDefinition,
 	RequestedModel_ModelParameterbytes,
-} from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
+} from "@pk-nerdsaver-ai/pi-catalog/discovery/cursor-proto";
 import {
 	AgentClientMessageSchema,
 	AgentConversationTurnStructureSchema,
@@ -147,7 +147,7 @@ import {
 	WriteShellStdinErrorSchema,
 	WriteShellStdinResultSchema,
 	WriteSuccessSchema,
-} from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
+} from "@pk-nerdsaver-ai/pi-catalog/discovery/cursor-proto";
 import {
 	create,
 	decodeJsonValue,
@@ -156,10 +156,10 @@ import {
 	type JsonValue,
 	toBinary,
 	toJson,
-} from "@oh-my-pi/pi-catalog/discovery/protobuf";
-import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
-import { isKimiK3ModelId, parseOpenAIModel } from "@oh-my-pi/pi-catalog/identity";
-import { calculateCost } from "@oh-my-pi/pi-catalog/models";
+} from "@pk-nerdsaver-ai/pi-catalog/discovery/protobuf";
+import { THINKING_EFFORTS } from "@pk-nerdsaver-ai/pi-catalog/effort";
+import { isKimiK3ModelId, parseOpenAIModel } from "@pk-nerdsaver-ai/pi-catalog/identity";
+import { calculateCost } from "@pk-nerdsaver-ai/pi-catalog/models";
 import {
 	$env,
 	isRecord,
@@ -168,7 +168,7 @@ import {
 	parseStreamingJson,
 	parseStreamingJsonThrottled,
 	sanitizeText,
-} from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-utils";
 import * as AIError from "../error";
 import type {
 	Api,

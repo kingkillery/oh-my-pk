@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
-import type { AssistantMessage, Context, Model } from "@oh-my-pi/pi-ai/types";
-import { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { streamOpenAIResponses } from "@pk-nerdsaver-ai/pi-ai/providers/openai-responses";
+import type { AssistantMessage, Context, Model } from "@pk-nerdsaver-ai/pi-ai/types";
+import { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
+import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
 
 // Issue #8248: with prewalk enabled, OMP switches into a DeepSeek Responses
 // target (opencode-go) after mid-run compaction. The replayed assistant turns

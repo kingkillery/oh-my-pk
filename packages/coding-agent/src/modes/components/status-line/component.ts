@@ -1,11 +1,11 @@
 import * as path from "node:path";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
+import type { AgentMessage } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { AssistantMessage, UsageLimit, UsageReport } from "@pk-nerdsaver-ai/pi-ai";
 import {
 	getAntigravityCounterKeyForModel,
 	scopeAntigravityLimitsForModel,
-} from "@oh-my-pi/pi-ai/usage/google-antigravity";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
+} from "@pk-nerdsaver-ai/pi-ai/usage/google-antigravity";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
 import {
 	type Component,
 	type ComposerStyle,
@@ -13,8 +13,8 @@ import {
 	padding,
 	truncateToWidth,
 	visibleWidth,
-} from "@oh-my-pi/pi-tui";
-import { adjustHsv, formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-tui";
+import { adjustHsv, formatNumber, getProjectDir } from "@pk-nerdsaver-ai/pi-utils";
 import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";

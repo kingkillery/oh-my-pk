@@ -1,12 +1,12 @@
-import { type AgentMessage, type AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
-import { PASTE_CODE_LOGIN_PROVIDERS } from "@oh-my-pi/pi-ai";
-import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
-import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import type { Component, OverlayHandle, ResizeScrollbackMode } from "@oh-my-pi/pi-tui";
-import { Loader, Spacer, setTuiTight, Text } from "@oh-my-pi/pi-tui";
-import { getAgentDbPath, getAgentDir, getProjectDir, normalizePathForComparison } from "@oh-my-pi/pi-utils";
+import { type AgentMessage, type AgentToolResult, ThinkingLevel } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { CompactionOutcome } from "@pk-nerdsaver-ai/pi-agent-core/compaction";
+import { PASTE_CODE_LOGIN_PROVIDERS } from "@pk-nerdsaver-ai/pi-ai";
+import { getOAuthProviders } from "@pk-nerdsaver-ai/pi-ai/oauth";
+import type { OAuthProvider } from "@pk-nerdsaver-ai/pi-ai/oauth/types";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import type { Component, OverlayHandle, ResizeScrollbackMode } from "@pk-nerdsaver-ai/pi-tui";
+import { Loader, Spacer, setTuiTight, Text } from "@pk-nerdsaver-ai/pi-tui";
+import { getAgentDbPath, getAgentDir, getProjectDir, normalizePathForComparison } from "@pk-nerdsaver-ai/pi-utils";
 import {
 	type AdvisorConfigScope,
 	discoverAdvisorConfigs,

@@ -19,10 +19,10 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentMessage, AgentState } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
-import { $which, logger } from "@oh-my-pi/pi-utils";
-import { DEFAULT_SHARE_URL } from "@oh-my-pi/pi-wire";
+import type { AgentMessage, AgentState } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { AssistantMessage, ImageContent, TextContent } from "@pk-nerdsaver-ai/pi-ai";
+import { $which, logger } from "@pk-nerdsaver-ai/pi-utils";
+import { DEFAULT_SHARE_URL } from "@pk-nerdsaver-ai/pi-wire";
 import { $ } from "bun";
 import { obfuscateToolArguments } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";

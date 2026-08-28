@@ -1,8 +1,8 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
-import { KeybindingsManager, setKeyHintPlatform } from "@oh-my-pi/pi-coding-agent/config/keybindings";
-import { getThemeByName, initTheme, type Theme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { KeybindingsManager, setKeyHintPlatform } from "@pk-nerdsaver-ai/pi-coding-agent/config/keybindings";
+import { getThemeByName, initTheme, type Theme, theme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
 import {
 	dedupeParseErrors,
 	expandKeyHint,

@@ -1,8 +1,8 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { getAutoresearchDbPath, getAutoresearchProjectDir, logger } from "@oh-my-pi/pi-utils";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { getAutoresearchDbPath, getAutoresearchProjectDir, logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { ASIData, ExperimentStatus, MetricDirection, NumericMetricMap } from "./types";
 
 /**

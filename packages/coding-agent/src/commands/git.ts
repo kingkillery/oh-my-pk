@@ -3,8 +3,8 @@
  * staging sidebar, and generated or manual commit composer.
  */
 
-import { getProjectDir } from "@oh-my-pi/pi-utils";
-import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { getProjectDir } from "@pk-nerdsaver-ai/pi-utils";
+import { Args, Command, Flags } from "@pk-nerdsaver-ai/pi-utils/cli";
 import { gitHelp as commandHelp } from "../cli/command-help";
 import { runGitTui } from "../cli/git-tui";
 import { Settings, settings } from "../config/settings";

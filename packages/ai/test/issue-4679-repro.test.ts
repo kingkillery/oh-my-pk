@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { buildAnthropicClientOptions, streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
-import type { Context, Model, ModelSpec, TJsonSchema, Tool } from "@oh-my-pi/pi-ai/types";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { buildAnthropicClientOptions, streamAnthropic } from "@pk-nerdsaver-ai/pi-ai/providers/anthropic";
+import type { Context, Model, ModelSpec, TJsonSchema, Tool } from "@pk-nerdsaver-ai/pi-ai/types";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 
 const STRUCTURED_OUTPUTS_BETA = "structured-outputs-2025-12-15";
 

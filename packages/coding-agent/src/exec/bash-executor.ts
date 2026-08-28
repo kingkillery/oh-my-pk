@@ -3,10 +3,10 @@
  *
  * Uses brush-core via native bindings for shell execution.
  */
-import { ExponentialYield } from "@oh-my-pi/pi-agent-core/utils/yield";
-import { type MinimizerOptions, PtySession, Shell, type ShellRunResult } from "@oh-my-pi/pi-natives";
-import { $env } from "@oh-my-pi/pi-utils/env";
-import { isCmdShell, isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
+import { ExponentialYield } from "@pk-nerdsaver-ai/pi-agent-core/utils/yield";
+import { type MinimizerOptions, PtySession, Shell, type ShellRunResult } from "@pk-nerdsaver-ai/pi-natives";
+import { $env } from "@pk-nerdsaver-ai/pi-utils/env";
+import { isCmdShell, isExecutable, type ShellConfig } from "@pk-nerdsaver-ai/pi-utils/procmgr";
 import { Settings, type ShellMinimizerSettings } from "../config/settings";
 import { OutputSink } from "../session/streaming-output";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../tools/output-meta";

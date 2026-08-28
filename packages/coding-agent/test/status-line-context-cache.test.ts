@@ -14,13 +14,13 @@
  * redraw — that per-event recompute is what previously froze large sessions.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { ContextUsage } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
-import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
-import { initTheme, setSymbolPreset, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { getSessionAccentAnsi } from "@oh-my-pi/pi-coding-agent/utils/session-color";
-import { adjustHsv } from "@oh-my-pi/pi-utils";
+import { resetSettingsForTest, Settings, settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import type { ContextUsage } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions/types";
+import { StatusLineComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/status-line";
+import { initTheme, setSymbolPreset, theme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import type { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
+import { getSessionAccentAnsi } from "@pk-nerdsaver-ai/pi-coding-agent/utils/session-color";
+import { adjustHsv } from "@pk-nerdsaver-ai/pi-utils";
 
 beforeAll(async () => {
 	resetSettingsForTest();

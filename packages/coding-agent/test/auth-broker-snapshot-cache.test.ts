@@ -9,9 +9,9 @@ import {
 	type SnapshotResponse,
 	startAuthBroker,
 	writeAuthBrokerSnapshotCache,
-} from "@oh-my-pi/pi-ai/auth-broker";
-import { discoverAuthStorage } from "@oh-my-pi/pi-coding-agent/sdk";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-ai/auth-broker";
+import { discoverAuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 const ENV_KEYS = [
 	"OMP_AUTH_BROKER_URL",

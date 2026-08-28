@@ -4,22 +4,22 @@ import {
 	__getLegacyPiBundledModulesGlobal,
 	__synthesizeLegacyPiBundledSourceWithModules,
 	resolveBundledVirtualSpecifier,
-} from "@oh-my-pi/pi-coding-agent/extensibility/plugins/legacy-pi-compat";
-import { TempDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/plugins/legacy-pi-compat";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 import type { BunPlugin } from "bun";
 
 // Regression for issue #3423: Bun 1.3.14 made `--compile` extras unreachable
 // via every filesystem-style API. The compat layer now routes canonical
-// `@oh-my-pi/pi-*` imports through virtual modules backed by live host module
+// `@pk-nerdsaver-ai/pi-*` imports through virtual modules backed by live host module
 // references. The synthesizer must preserve every named/default export.
 describe("legacy-pi bundled virtual module synthesizer (issue #3423)", () => {
 	const modules = {
-		"@oh-my-pi/pi-coding-agent": {
+		"@pk-nerdsaver-ai/pi-coding-agent": {
 			VERSION: "16.1.17",
 			defineTool: () => undefined,
 			Type: { Object: () => undefined },
 		},
-		"@oh-my-pi/pi-utils": {
+		"@pk-nerdsaver-ai/pi-utils": {
 			isCompiledBinary: () => false,
 			default: () => "default-export",
 			VERSION: "16.1.17",
@@ -31,9 +31,9 @@ describe("legacy-pi bundled virtual module synthesizer (issue #3423)", () => {
 	const globalKey = __getLegacyPiBundledModulesGlobal();
 
 	it("emits one ES named export per enumerable namespace key", () => {
-		const src = __synthesizeLegacyPiBundledSourceWithModules("@oh-my-pi/pi-coding-agent", modules);
+		const src = __synthesizeLegacyPiBundledSourceWithModules("@pk-nerdsaver-ai/pi-coding-agent", modules);
 		expect(src).toContain(
-			`const __omp_bundled = globalThis[${JSON.stringify(globalKey)}]["@oh-my-pi/pi-coding-agent"];`,
+			`const __omp_bundled = globalThis[${JSON.stringify(globalKey)}]["@pk-nerdsaver-ai/pi-coding-agent"];`,
 		);
 		expect(src).toContain('export const VERSION = __omp_bundled["VERSION"];');
 		expect(src).toContain('export const defineTool = __omp_bundled["defineTool"];');
@@ -43,7 +43,7 @@ describe("legacy-pi bundled virtual module synthesizer (issue #3423)", () => {
 	});
 
 	it("forwards `default` through `export default` so default imports survive", () => {
-		const src = __synthesizeLegacyPiBundledSourceWithModules("@oh-my-pi/pi-utils", modules);
+		const src = __synthesizeLegacyPiBundledSourceWithModules("@pk-nerdsaver-ai/pi-utils", modules);
 		expect(src).toContain("export default __omp_bundled.default;");
 		// Default and named exports coexist on the same module.
 		expect(src).toContain('export const VERSION = __omp_bundled["VERSION"];');
@@ -51,12 +51,12 @@ describe("legacy-pi bundled virtual module synthesizer (issue #3423)", () => {
 	});
 
 	it("omits `default` line when the registered namespace has no default export", () => {
-		const src = __synthesizeLegacyPiBundledSourceWithModules("@oh-my-pi/pi-coding-agent", modules);
+		const src = __synthesizeLegacyPiBundledSourceWithModules("@pk-nerdsaver-ai/pi-coding-agent", modules);
 		expect(src).not.toContain("export default");
 	});
 
 	it("throws when asked to synthesize a key the bundled modules do not cover", () => {
-		expect(() => __synthesizeLegacyPiBundledSourceWithModules("@oh-my-pi/pi-not-bundled", modules)).toThrow(
+		expect(() => __synthesizeLegacyPiBundledSourceWithModules("@pk-nerdsaver-ai/pi-not-bundled", modules)).toThrow(
 			/no bundled module registered for @oh-my-pi\/pi-not-bundled/,
 		);
 	});
@@ -77,7 +77,7 @@ describe("legacy-pi bundled virtual module synthesizer (issue #3423)", () => {
 		// or skipped an enumerable export.
 		Reflect.set(globalThis, globalKey, modules);
 		try {
-			const src = __synthesizeLegacyPiBundledSourceWithModules("@oh-my-pi/pi-coding-agent", modules);
+			const src = __synthesizeLegacyPiBundledSourceWithModules("@pk-nerdsaver-ai/pi-coding-agent", modules);
 			// Strip the ES export prefix and run the body as a plain script so
 			// we can read `__omp_bundled` from the returned closure.
 			const body = src
@@ -104,16 +104,16 @@ describe("legacy-pi bundled virtual module synthesizer (issue #3423)", () => {
 
 		await Bun.write(
 			entryPath,
-			['export { legacyAnswer } from "omp-legacy-pi-bundled:@oh-my-pi/pi-utils";', ""].join("\n"),
+			['export { legacyAnswer } from "omp-legacy-pi-bundled:@pk-nerdsaver-ai/pi-utils";', ""].join("\n"),
 		);
 
-		expect(resolveBundledVirtualSpecifier("@oh-my-pi/pi-utils")).toEqual({
+		expect(resolveBundledVirtualSpecifier("@pk-nerdsaver-ai/pi-utils")).toEqual({
 			namespace: "omp-legacy-pi-bundled",
-			path: "@oh-my-pi/pi-utils",
+			path: "@pk-nerdsaver-ai/pi-utils",
 		});
-		expect(resolveBundledVirtualSpecifier("omp-legacy-pi-bundled:@oh-my-pi/pi-utils")).toEqual({
+		expect(resolveBundledVirtualSpecifier("omp-legacy-pi-bundled:@pk-nerdsaver-ai/pi-utils")).toEqual({
 			namespace: "omp-legacy-pi-bundled",
-			path: "@oh-my-pi/pi-utils",
+			path: "@pk-nerdsaver-ai/pi-utils",
 		});
 
 		const onLoadPaths: string[] = [];
@@ -146,10 +146,10 @@ describe("legacy-pi bundled virtual module synthesizer (issue #3423)", () => {
 		const buildLogs = buildResult.logs.map(log => log.message).join("\n");
 		expect(buildResult.success, buildLogs).toBe(true);
 		await Bun.write(bundlePath, await buildResult.outputs[0]!.text());
-		expect(onLoadPaths).toEqual(["@oh-my-pi/pi-utils"]);
+		expect(onLoadPaths).toEqual(["@pk-nerdsaver-ai/pi-utils"]);
 
 		// The generated bundle has a runtime-selected temp path; importing it is the loading boundary under test.
 		const bundledModule = (await import(url.pathToFileURL(bundlePath).href)) as { legacyAnswer: string };
-		expect(bundledModule.legacyAnswer).toBe("served:@oh-my-pi/pi-utils");
+		expect(bundledModule.legacyAnswer).toBe("served:@pk-nerdsaver-ai/pi-utils");
 	});
 });

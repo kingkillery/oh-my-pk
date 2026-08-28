@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
-import { Container, type OverlayOptions, setKeybindings } from "@oh-my-pi/pi-tui";
+import { Container, type OverlayOptions, setKeybindings } from "@pk-nerdsaver-ai/pi-tui";
 import { KeybindingsManager } from "../../../src/config/keybindings";
 import type { ExtensionAskDialogQuestion, ExtensionUIContext } from "../../../src/extensibility/extensions";
 import { AskDialogComponent } from "../../../src/modes/components/ask-dialog";

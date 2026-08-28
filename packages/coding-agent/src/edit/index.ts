@@ -1,10 +1,10 @@
 import * as nodePath from "node:path";
-import { MismatchError as HashlineMismatchError } from "@oh-my-pi/hashline";
-import hashlineGrammar from "@oh-my-pi/hashline/grammar.lark" with { type: "text" };
-import hashlineDescription from "@oh-my-pi/hashline/prompt.md" with { type: "text" };
-import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import type { ToolExample } from "@oh-my-pi/pi-ai";
-import { isEnoent, isEnotdir, logger, prompt } from "@oh-my-pi/pi-utils";
+import { MismatchError as HashlineMismatchError } from "@pk-nerdsaver-ai/hashline";
+import hashlineGrammar from "@pk-nerdsaver-ai/hashline/grammar.lark" with { type: "text" };
+import hashlineDescription from "@pk-nerdsaver-ai/hashline/prompt.md" with { type: "text" };
+import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { ToolExample } from "@pk-nerdsaver-ai/pi-ai";
+import { isEnoent, isEnotdir, logger, prompt } from "@pk-nerdsaver-ai/pi-utils";
 import { createLspWritethrough, flushLspWritethroughBatch, type WritethroughCallback, writethroughNoop } from "../lsp";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";

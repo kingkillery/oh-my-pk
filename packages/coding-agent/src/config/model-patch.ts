@@ -1,9 +1,9 @@
-import type { Api, Model, ModelSpec, RemoteCompactionConfig, ThinkingConfig } from "@oh-my-pi/pi-ai/types";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { isVertexExpressOpenAIUrl } from "@oh-my-pi/pi-catalog/hosts";
-import { PROVIDER_DESCRIPTORS } from "@oh-my-pi/pi-catalog/provider-models";
-import { toModelSpec } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
-import { isRecord } from "@oh-my-pi/pi-utils";
+import type { Api, Model, ModelSpec, RemoteCompactionConfig, ThinkingConfig } from "@pk-nerdsaver-ai/pi-ai/types";
+import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import { isVertexExpressOpenAIUrl } from "@pk-nerdsaver-ai/pi-catalog/hosts";
+import { PROVIDER_DESCRIPTORS } from "@pk-nerdsaver-ai/pi-catalog/provider-models";
+import { toModelSpec } from "@pk-nerdsaver-ai/pi-catalog/provider-models/bundled-references";
+import { isRecord } from "@pk-nerdsaver-ai/pi-utils";
 import { createLiveConfigHeaders } from "./model-config-values";
 import type { ModelOverride } from "./models-config-schema";
 /** Provider override config (baseUrl, headers, apiKey, compat, transport) without custom models */

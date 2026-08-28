@@ -1,16 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import * as url from "node:url";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components/custom-editor";
-import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/user-message";
-import { chipLabel } from "@oh-my-pi/pi-coding-agent/modes/composer-attachments";
-import { imageReferenceHyperlink } from "@oh-my-pi/pi-coding-agent/modes/image-references";
-import { getEditorTheme, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
-import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
-import { Container } from "@oh-my-pi/pi-tui";
+import type { AgentMessage } from "@pk-nerdsaver-ai/pi-agent-core";
+import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { CustomEditor } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/custom-editor";
+import { UserMessageComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/user-message";
+import { chipLabel } from "@pk-nerdsaver-ai/pi-coding-agent/modes/composer-attachments";
+import { imageReferenceHyperlink } from "@pk-nerdsaver-ai/pi-coding-agent/modes/image-references";
+import { getEditorTheme, initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
+import { UiHelpers } from "@pk-nerdsaver-ai/pi-coding-agent/modes/utils/ui-helpers";
+import { Container } from "@pk-nerdsaver-ai/pi-tui";
 
 beforeAll(async () => {
 	resetSettingsForTest();

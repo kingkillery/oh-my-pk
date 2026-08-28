@@ -1,8 +1,8 @@
-import { Tokenizer } from "@oh-my-pi/pi-agent-core";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { estimateToolSchemaTokens } from "@oh-my-pi/pi-coding-agent/modes/utils/context-usage";
-import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
-import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { Tokenizer } from "@pk-nerdsaver-ai/pi-agent-core";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { estimateToolSchemaTokens } from "@pk-nerdsaver-ai/pi-coding-agent/modes/utils/context-usage";
+import { buildSystemPrompt } from "@pk-nerdsaver-ai/pi-coding-agent/system-prompt";
+import { createTools, type Tool, type ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
 
 function bytes(s: string): number {
 	return Buffer.byteLength(s, "utf-8");

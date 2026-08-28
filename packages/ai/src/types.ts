@@ -1,7 +1,7 @@
 export * from "@pk-nerdsaver-ai/pi-catalog/effort";
 export * from "@pk-nerdsaver-ai/pi-catalog/types";
 
-import type { Type } from "@oh-my-pi/omptype";
+import type { Type } from "@pk-nerdsaver-ai/omptype";
 import type {
 	DeleteArgs,
 	DeleteResult,
@@ -32,10 +32,10 @@ import type {
 	ShellResult,
 	WriteArgs,
 	WriteResult,
-} from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
-import type { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { isOpenAIModelId } from "@oh-my-pi/pi-catalog/identity/family";
-import type { Api, FetchImpl, KnownApi, Model, Provider, ThinkingBudgets, Usage } from "@oh-my-pi/pi-catalog/types";
+} from "@pk-nerdsaver-ai/pi-catalog/discovery/cursor-proto";
+import type { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
+import { isOpenAIModelId } from "@pk-nerdsaver-ai/pi-catalog/identity/family";
+import type { Api, FetchImpl, KnownApi, Model, Provider, ThinkingBudgets, Usage } from "@pk-nerdsaver-ai/pi-catalog/types";
 import type { ApiKey } from "./auth-retry";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";

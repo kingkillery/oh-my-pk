@@ -31,8 +31,8 @@ import {
 	type SessionStorage,
 	type SessionStorageWriter,
 	type WriteTextAtomicOptions,
-} from "@oh-my-pi/pi-coding-agent/session/session-storage";
-import type { SessionTitleUpdate } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
+} from "@pk-nerdsaver-ai/pi-coding-agent/session/session-storage";
+import type { SessionTitleUpdate } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-title-slot";
 
 class CloseHoldingStorage implements SessionStorage {
 	readonly #inner = new MemorySessionStorage();

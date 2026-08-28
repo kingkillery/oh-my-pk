@@ -6,7 +6,7 @@
  * kind-specific surface → contents → boring config.
  */
 import * as os from "node:os";
-import { type Component, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { type Component, visibleWidth, wrapTextWithAnsi } from "@pk-nerdsaver-ai/pi-tui";
 import { theme } from "../../../modes/theme/theme";
 import { expandKeyHint, PREVIEW_LIMITS, replaceTabs, shortenPath } from "../../../tools/render-utils";
 import {

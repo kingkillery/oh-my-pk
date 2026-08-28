@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { type AgentMessage, Tokenizer } from "@oh-my-pi/pi-agent-core";
-import type { SessionEntry, SessionMessageEntry } from "@oh-my-pi/pi-agent-core/compaction";
+import { type AgentMessage, Tokenizer } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { SessionEntry, SessionMessageEntry } from "@pk-nerdsaver-ai/pi-agent-core/compaction";
 import {
 	DEFAULT_PRUNE_CONFIG,
 	maskConsumedObservations,

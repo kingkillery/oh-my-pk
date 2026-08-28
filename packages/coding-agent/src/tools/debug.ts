@@ -1,5 +1,5 @@
 import * as fs from "node:fs/promises";
-import { type } from "@oh-my-pi/omptype";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -7,10 +7,10 @@ import type {
 	AgentToolUpdateCallback,
 	RenderResultOptions,
 	ToolApprovalDecision,
-} from "@oh-my-pi/pi-agent-core";
-import type { ToolExample } from "@oh-my-pi/pi-ai";
-import { type Component, Text } from "@oh-my-pi/pi-tui";
-import { isEnoent, prompt } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-agent-core";
+import type { ToolExample } from "@pk-nerdsaver-ai/pi-ai";
+import { type Component, Text } from "@pk-nerdsaver-ai/pi-tui";
+import { isEnoent, prompt } from "@pk-nerdsaver-ai/pi-utils";
 import {
 	type DapBreakpointRecord,
 	type DapCapabilities,

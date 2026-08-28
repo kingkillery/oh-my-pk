@@ -1,4 +1,4 @@
-import { $env, ptree, USER_AGENT } from "@oh-my-pi/pi-utils";
+import { $env, ptree, USER_AGENT } from "@pk-nerdsaver-ai/pi-utils";
 import type { RenderResult, SpecialHandler } from "./types";
 import { buildResult, formatMediaDuration, loadPage } from "./types";
 

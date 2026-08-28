@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
-import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { AgentStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-storage";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 
 describe("AgentStorage command usage", () => {
 	let tempDir: TempDir | undefined;

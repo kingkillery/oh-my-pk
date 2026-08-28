@@ -19,16 +19,16 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
-import { resetRegisteredArtifactDirsForTests } from "@oh-my-pi/pi-coding-agent/internal-urls/registry-helpers";
-import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { ensurePersistedRoster } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
-import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { expandInternalUrls } from "@oh-my-pi/pi-coding-agent/tools/bash-skill-urls";
-import { GlobTool } from "@oh-my-pi/pi-coding-agent/tools/glob";
-import { GrepTool } from "@oh-my-pi/pi-coding-agent/tools/grep";
+import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { InternalUrlRouter } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls";
+import { resetRegisteredArtifactDirsForTests } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls/registry-helpers";
+import { AgentRegistry, MAIN_AGENT_ID } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-registry";
+import { ensurePersistedRoster } from "@pk-nerdsaver-ai/pi-coding-agent/registry/persisted-agents";
+import { CURRENT_SESSION_VERSION } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-entries";
+import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import { expandInternalUrls } from "@pk-nerdsaver-ai/pi-coding-agent/tools/bash-skill-urls";
+import { GlobTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/glob";
+import { GrepTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/grep";
 
 function sessionHeader(id: string): string {
 	return JSON.stringify({

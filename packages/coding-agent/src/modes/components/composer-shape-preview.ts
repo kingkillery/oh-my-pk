@@ -15,7 +15,7 @@ import {
 	padding,
 	truncateToWidth,
 	visibleWidth,
-} from "@oh-my-pi/pi-tui";
+} from "@pk-nerdsaver-ai/pi-tui";
 import type { ComposerShape } from "../../config/settings-schema";
 import { theme } from "../theme/theme";
 

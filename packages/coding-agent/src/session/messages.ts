@@ -8,7 +8,7 @@ import type { AgentMessage } from "@pk-nerdsaver-ai/pi-agent-core";
 import {
 	invalidateMessageCache,
 	registerMessageCacheInvalidator,
-} from "@oh-my-pi/pi-agent-core/compaction/message-cache";
+} from "@pk-nerdsaver-ai/pi-agent-core/compaction/message-cache";
 import {
 	type BranchSummaryMessage,
 	type CompactionSummaryMessage,
@@ -21,10 +21,10 @@ import type {
 	MessageAttribution,
 	TextContent,
 	UserMessage,
-} from "@oh-my-pi/pi-ai";
-import * as AIError from "@oh-my-pi/pi-ai/error";
-import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
-import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
+} from "@pk-nerdsaver-ai/pi-ai";
+import * as AIError from "@pk-nerdsaver-ai/pi-ai/error";
+import { isRecord, logger, prompt } from "@pk-nerdsaver-ai/pi-utils";
+import { COLLAB_PROMPT_MESSAGE_TYPE } from "@pk-nerdsaver-ai/pi-wire";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 

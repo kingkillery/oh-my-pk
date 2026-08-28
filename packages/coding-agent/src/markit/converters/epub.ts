@@ -1,7 +1,7 @@
 // Adapted from markit-ai (MIT). See ../NOTICE.
 
-import { archiveEntryText, readArchiveEntries } from "@oh-my-pi/pi-utils/ar";
-import { XMLParser } from "@oh-my-pi/pi-utils/xml";
+import { archiveEntryText, readArchiveEntries } from "@pk-nerdsaver-ai/pi-utils/ar";
+import { XMLParser } from "@pk-nerdsaver-ai/pi-utils/xml";
 import { createTurndown, normalizeTablesHtml } from "../../utils/turndown";
 import type { ConversionResult, Converter, StreamInfo } from "../types";
 

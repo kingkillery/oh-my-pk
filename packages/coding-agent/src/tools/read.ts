@@ -1,15 +1,15 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { splitAddressableFileLines } from "@oh-my-pi/hashline";
-import { type } from "@oh-my-pi/omptype";
+import { splitAddressableFileLines } from "@pk-nerdsaver-ai/hashline";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import type {
 	AgentTool,
 	AgentToolContext,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ToolTier,
-} from "@oh-my-pi/pi-agent-core";
-import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+} from "@pk-nerdsaver-ai/pi-agent-core";
+import type { ImageContent, TextContent } from "@pk-nerdsaver-ai/pi-ai";
 import {
 	BINARY_SNIFF_BYTES,
 	type ImageMetadata,
@@ -18,7 +18,7 @@ import {
 	logger,
 	prompt,
 	readImageMetadata,
-} from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-utils";
 import {
 	canonicalSnapshotKey,
 	getFileSnapshotStore,

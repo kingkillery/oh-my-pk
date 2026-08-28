@@ -22,7 +22,7 @@
  * unstages the selected row — on a directory, every file underneath it.
  */
 
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
 import {
 	type Component,
 	matchesKey,
@@ -31,7 +31,7 @@ import {
 	TUI,
 	truncateToWidth,
 	visibleWidth,
-} from "@oh-my-pi/pi-tui";
+} from "@pk-nerdsaver-ai/pi-tui";
 import { generateGitCommit } from "../../commit/conventional/service";
 import { theme, warmHighlighter } from "../../modes/theme/theme";
 import { aiStage } from "./ai-stage";

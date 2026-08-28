@@ -21,8 +21,8 @@
  */
 
 import * as path from "node:path";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { logger } from "@oh-my-pi/pi-utils";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { HindsightApi } from "./client";
 import type { HindsightConfig } from "./config";
 

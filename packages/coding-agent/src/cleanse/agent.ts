@@ -1,4 +1,4 @@
-import { getProjectDir, isRecord, prompt } from "@oh-my-pi/pi-utils";
+import { getProjectDir, isRecord, prompt } from "@pk-nerdsaver-ai/pi-utils";
 import { ModelRegistry } from "../config/model-registry";
 import { formatModelString, resolveCliModel } from "../config/model-resolver";
 import { Settings } from "../config/settings";

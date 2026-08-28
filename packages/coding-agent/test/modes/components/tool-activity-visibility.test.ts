@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
-import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
-import { TodoReminderComponent } from "@oh-my-pi/pi-coding-agent/modes/components/todo-reminder";
-import { ToolActivityContainer } from "@oh-my-pi/pi-coding-agent/modes/components/tool-activity";
-import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
-import { TtsrNotificationComponent } from "@oh-my-pi/pi-coding-agent/modes/components/ttsr-notification";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { Text } from "@oh-my-pi/pi-tui";
+import type { Rule } from "@pk-nerdsaver-ai/pi-coding-agent/capability/rule";
+import { TodoReminderComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/todo-reminder";
+import { ToolActivityContainer } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/tool-activity";
+import { TranscriptContainer } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/transcript-container";
+import { TtsrNotificationComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/ttsr-notification";
+import { getThemeByName, setThemeInstance } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import { Text } from "@pk-nerdsaver-ai/pi-tui";
 
 const darkTheme = await getThemeByName("dark");
 

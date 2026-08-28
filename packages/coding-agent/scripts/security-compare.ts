@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import * as path from "node:path";
-import { isEnoent } from "@oh-my-pi/pi-utils";
+import { isEnoent } from "@pk-nerdsaver-ai/pi-utils";
 import { compareSecurityProducers, importCodexSecurityBundle, parseSecurityScanBundle } from "../src/security";
 
 async function readBundle(directory: string) {

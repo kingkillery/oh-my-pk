@@ -10,12 +10,12 @@ import {
 	type FetchImpl,
 	getCustomApi,
 	type Model,
-} from "@oh-my-pi/pi-ai";
-import { getOAuthProviders, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
-import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
-import { ModelRegistry, type ProviderConfigInput } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { logger, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-ai";
+import { getOAuthProviders, unregisterOAuthProviders } from "@pk-nerdsaver-ai/pi-ai/oauth";
+import type { OAuthCredentials } from "@pk-nerdsaver-ai/pi-ai/oauth/types";
+import { ModelRegistry, type ProviderConfigInput } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
+import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
+import { logger, removeSyncWithRetries, Snowflake } from "@pk-nerdsaver-ai/pi-utils";
 
 describe("ModelRegistry runtime provider registration", () => {
 	let tempDir: string;

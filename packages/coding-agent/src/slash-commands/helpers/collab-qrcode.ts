@@ -1,4 +1,4 @@
-import { type Component, Ellipsis, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { type Component, Ellipsis, truncateToWidth, visibleWidth } from "@pk-nerdsaver-ai/pi-tui";
 import type { AnimationFrame, TranscriptPresentationTarget } from "../../modes/components/transcript-container";
 import { fgOrPlain } from "../../modes/theme/theme";
 import { urlHyperlinkAlways } from "../../tui";

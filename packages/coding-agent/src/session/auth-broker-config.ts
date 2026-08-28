@@ -21,16 +21,16 @@
  * boot without forcing a startup reorder.
  */
 
-import { AuthBrokerError } from "@oh-my-pi/pi-ai/auth-broker";
+import { AuthBrokerError } from "@pk-nerdsaver-ai/pi-ai/auth-broker";
 import {
 	type AuthBrokerClientConfig,
 	type DiscoverAuthStorageOptions,
 	discoverAuthStorage as discoverAuthStorageShared,
 	getAuthBrokerTokenFilePath,
 	resolveAuthBrokerConfig as resolveAuthBrokerConfigShared,
-} from "@oh-my-pi/pi-ai/auth-broker/discover";
-import { MissingApiKeyError } from "@oh-my-pi/pi-ai/error";
-import { getAgentDir } from "@oh-my-pi/pi-utils";
+} from "@pk-nerdsaver-ai/pi-ai/auth-broker/discover";
+import { MissingApiKeyError } from "@pk-nerdsaver-ai/pi-ai/error";
+import { getAgentDir } from "@pk-nerdsaver-ai/pi-utils";
 import { resolveConfigValue } from "../config/resolve-config-value";
 import type { AuthStorage } from "./auth-storage";
 
