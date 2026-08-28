@@ -1,13 +1,21 @@
-# Contributing to oh-my-pi
+# Contributing to oh-my-pk
 
-Pull requests are welcome. Keep them focused, understand the work you submit,
-and be prepared to explain and maintain it.
+Pull requests are welcome, but require a **vouch** before they can be accepted.
+This fork maintains a lightweight vouch system to ensure quality contributions.
+Keep PRs focused, understand the work you submit, and be prepared to explain and
+maintain it.
 
-> [!NOTE]
-> Pull requests are **temporarily open to everyone** as a trial. We previously
-> required a vouch before accepting PRs; that requirement is lifted for now
-> while we evaluate how open contributions go. Depending on the results, the
-> vouch system may return.
+## Getting vouched
+
+1. Open a [Discussion](../../discussions) (or comment on an existing one)
+   describing what you'd like to contribute.
+2. A maintainer vouches you by commenting **`!vouch`** (vouches the discussion
+   author) or **`!vouch @your-handle`** on that discussion.
+3. Once you appear in `.github/VOUCHED.td`, open your PR — it stays open and is
+   reviewed.
+
+If you are not yet vouched, do **not** open a PR to get noticed — it will be
+closed automatically. Start a Discussion first.
 
 ## Before you start
 

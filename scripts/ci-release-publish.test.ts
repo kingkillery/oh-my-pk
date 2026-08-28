@@ -52,7 +52,7 @@ describe("published legal payloads", () => {
 			await Bun.write(
 				path.join(pkgDir, "package.json"),
 				JSON.stringify({
-					name: "@oh-my-pi/pi-natives",
+					name: "@pk-nerdsaver-ai/pi-natives",
 					version: "15.5.15",
 					license: "MIT",
 				}),

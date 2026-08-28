@@ -1,6 +1,6 @@
 # SDK
 
-The SDK is the in-process integration surface for `@oh-my-pi/pi-coding-agent`.
+The SDK is the in-process integration surface for `@pk-nerdsaver-ai/pi-coding-agent`.
 Use it when you want direct access to agent state, event streaming, tool wiring, and session control from a Bun process.
 
 If you need cross-language/process isolation, use RPC mode instead.
@@ -18,7 +18,7 @@ available model, but prompting cannot.
 
 ## Entry points
 
-The package root, `@oh-my-pi/pi-coding-agent`, is the complete embedding surface. It includes `createAgentSession` and the focused `/sdk` exports, plus lower-level session, auth, model, mode, extension, and tool APIs.
+The package root, `@pk-nerdsaver-ai/pi-coding-agent`, is the complete embedding surface. It includes `createAgentSession` and the focused `/sdk` exports, plus lower-level session, auth, model, mode, extension, and tool APIs.
 
 Import these core embedding APIs from the package root:
 
@@ -32,7 +32,7 @@ Import these core embedding APIs from the package root:
 - Discovery helpers (`discoverExtensions`, `discoverSkills`, `discoverContextFiles`, `discoverPromptTemplates`, `discoverSlashCommands`, `discoverCustomTSCommands`, `discoverMCPServers`)
 - Tool factory surface (`createTools`, `BUILTIN_TOOLS`, tool classes)
 
-The narrower `@oh-my-pi/pi-coding-agent/sdk` subpath exports `createAgentSession`, its option/result types, `Settings`, `AgentRegistry`, discovery and system-prompt helpers, workspace-tree helpers, selected extension/MCP/tool types, and selected tool classes/factories. It does **not** export `SessionManager`, `AuthStorage`, or `ModelRegistry`; import those three from the package root as the examples below do.
+The narrower `@pk-nerdsaver-ai/pi-coding-agent/sdk` subpath exports `createAgentSession`, its option/result types, `Settings`, `AgentRegistry`, discovery and system-prompt helpers, workspace-tree helpers, selected extension/MCP/tool types, and selected tool classes/factories. It does **not** export `SessionManager`, `AuthStorage`, or `ModelRegistry`; import those three from the package root as the examples below do.
 
 ## Quick start (auto-discovery defaults)
 
@@ -271,7 +271,7 @@ Call `await session.dispose()` when the embedder is completely done with a sessi
 `beginDispose()` is the synchronous admission barrier for wrappers that must await their own teardown before calling `dispose()`. Call it before the wrapper's first `await`; otherwise deferred work can enter the gap. It immediately marks the session disposed, cancels memory startup, title generation, and auto-learn capture, clears queued yield/asides, stops advisor runtime, detaches aside delivery, and rejects new eval executions. Deferred session work checks the disposed state and is dropped or skipped. `beginDispose()` is also idempotent, and the later `dispose()` call remains required to finish asynchronous cleanup.
 
 ```ts
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
+import type { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent";
 
 async function closeEmbeddedSession(
   session: AgentSession,

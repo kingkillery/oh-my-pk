@@ -8,7 +8,7 @@
  * the final shipped behavior belongs in release notes.
  *
  * For every non-empty `[Unreleased]` section this script hands the whole section
- * to a small model (default `openai-codex/gpt-5.6-luna` via `@oh-my-pi/pi-ai`),
+ * to a small model (default `openai-codex/gpt-5.6-luna` via `@pk-nerdsaver-ai/pi-ai`),
  * and asks for a complete replacement grouped by changelog category. The model
  * returns structured sections/items; markdown is rendered locally so only the
  * Unreleased section changes and formatting stays deterministic.
@@ -31,10 +31,10 @@
 
 import * as path from "node:path";
 import { parseArgs } from "node:util";
-import { type } from "@oh-my-pi/omptype";
-import { type Api, completeSimple, Effort, type Model, type Tool, type ToolCall } from "@oh-my-pi/pi-ai";
-import { discoverAuthStorage } from "@oh-my-pi/pi-ai/auth-broker";
-import { type GeneratedProvider, getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import { type Api, completeSimple, Effort, type Model, type Tool, type ToolCall } from "@pk-nerdsaver-ai/pi-ai";
+import { discoverAuthStorage } from "@pk-nerdsaver-ai/pi-ai/auth-broker";
+import { type GeneratedProvider, getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
 import {
 	type ChangelogDocument,
 	changelogPaths,

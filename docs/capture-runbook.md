@@ -1,7 +1,7 @@
 # README capture runbook
 
 The README previously embedded 22 demo clips and screenshots served from
-`omp.sh` — upstream's recordings of upstream's TUI, on a domain the fork does
+`oh-my-pk.pkking.computer` — upstream's recordings of upstream's TUI, on a domain the fork does
 not own. They were removed in PR #18. This runbook covers re-shooting the
 high-value subset under the fork's own branding.
 

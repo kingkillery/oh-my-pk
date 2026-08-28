@@ -43,15 +43,15 @@ Upstream uses different package scopes. Replace them consistently.
 
 - Replace old scopes with the local scope used here.
 - Examples (adjust to match the actual packages you are porting):
-  - `@mariozechner/pi-coding-agent` → `@oh-my-pi/pi-coding-agent`
-  - `@mariozechner/pi-agent-core` → `@oh-my-pi/pi-agent-core`
-  - `@mariozechner/pi-tui` → `@oh-my-pi/pi-tui`
-  - `@mariozechner/pi-ai` → `@oh-my-pi/pi-ai`
-  - `@mariozechner/pi-utils` → `@oh-my-pi/pi-utils`
-  - `@mariozechner/pi-catalog` → `@oh-my-pi/pi-catalog`
-  - `@mariozechner/pi-natives` → `@oh-my-pi/pi-natives`
-- Some upstream packages publish under the `@earendil-works/*` scope instead of `@mariozechner/*`. Map it the same way (`@earendil-works/pi-coding-agent` → `@oh-my-pi/pi-coding-agent`, and so on).
-- The bare `typebox` package is not an `@oh-my-pi/*` scope; do not rewrite it as one. See the Extensions divergence in section 15 for how tool-parameter schemas map.
+  - `@mariozechner/pi-coding-agent` → `@pk-nerdsaver-ai/pi-coding-agent`
+  - `@mariozechner/pi-agent-core` → `@pk-nerdsaver-ai/pi-agent-core`
+  - `@mariozechner/pi-tui` → `@pk-nerdsaver-ai/pi-tui`
+  - `@mariozechner/pi-ai` → `@pk-nerdsaver-ai/pi-ai`
+  - `@mariozechner/pi-utils` → `@pk-nerdsaver-ai/pi-utils`
+  - `@mariozechner/pi-catalog` → `@pk-nerdsaver-ai/pi-catalog`
+  - `@mariozechner/pi-natives` → `@pk-nerdsaver-ai/pi-natives`
+- Some upstream packages publish under the `@earendil-works/*` scope instead of `@mariozechner/*`. Map it the same way (`@earendil-works/pi-coding-agent` → `@pk-nerdsaver-ai/pi-coding-agent`, and so on).
+- The bare `typebox` package is not an `@pk-nerdsaver-ai/*` scope; do not rewrite it as one. See the Extensions divergence in section 15 for how tool-parameter schemas map.
 
 ## 4) Use Bun APIs where they improve on Node
 
@@ -365,7 +365,7 @@ Our fork has architectural decisions that differ from upstream. **Do not port th
 | `jiti` for TypeScript loading                                          | Native Bun `import()`                                                                                                                                                                                                                                                                        |
 | `pkg.pi` manifest field                                                | `pkg.omp` preferred; fallback to `pkg.pi` remains                                                                                                                                                                                                                                            |
 | `StringEnum` from `pi-ai`                                              | `Type.Enum` from `pi.typebox`, or `pi.arktype.enumerated(...)`; `pi-ai` no longer exports `StringEnum`                                                                                                                                                                                       |
-| `formatSize` from `pi-coding-agent`                                    | `formatBytes` from `@oh-my-pi/pi-utils`                                                                                                                                                                                                                                                      |
+| `formatSize` from `pi-coding-agent`                                    | `formatBytes` from `@pk-nerdsaver-ai/pi-utils`                                                                                                                                                                                                                                                      |
 | Upstream resource/package/settings managers as the native architecture | Capability-based discovery (`loadCapability(...)`), the `Settings` singleton, and `EventBus`; legacy extension imports of `DefaultResourceLoader`, `DefaultPackageManager`, and `SettingsManager` are compatibility shims in `legacy-pi-coding-agent-shim.ts`, not the native implementation |
 
 ### Skip These Upstream Features

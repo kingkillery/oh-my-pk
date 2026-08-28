@@ -9,7 +9,7 @@ Prompt/schema overlap: content reconstructible from `(name, JSON schema, blank o
 
 ## Run probe
 
-`scripts/probe.ts`: `@oh-my-pi/pi-ai` `completeSimple`; production-matching model/auth/provider behavior.
+`scripts/probe.ts`: `@pk-nerdsaver-ai/pi-ai` `completeSimple`; production-matching model/auth/provider behavior.
 
 ```bash
 bun .ompk/skills/tool-prompt-optimization/scripts/probe.ts \

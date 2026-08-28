@@ -10,7 +10,7 @@ yet, and each phase must end verified before the next begins.
 | Repo | Remote | Branch | Commit inspected | Inspection date |
 | ---- | ------ | ------ | ---------------- | --------------- |
 | Prime Agent | `github.com/PrimeIntellect-ai/prime-agent` | `main` | `c22549a37b73cc603c6f0d202517cb0ca856c7d3` | 2026-08-06 |
-| Oh My PK | `origin: kingkillery/oh-my-pk`, `upstream: can1357/oh-my-pi` | `main` | `77a10a5d89d7e05aa7e4344c27ea46f3e2a9cbe6` | 2026-08-06 |
+| Oh My PK | `origin: kingkillery/oh-my-pk`, `upstream: kingkillery/oh-my-pk` | `main` | `77a10a5d89d7e05aa7e4344c27ea46f3e2a9cbe6` | 2026-08-06 |
 
 Prime's default branch was confirmed live via `git ls-remote --symref`
 (`HEAD` = `c22549a`, `refs/heads/main`). All Prime quotes are from that

@@ -5,7 +5,7 @@ These boundaries keep the fork's built-in collaboration feature, extension-owned
 | Boundary | Rule |
 |---|---|
 | **1. Command namespace** | Built-in reserved names must not claim short generic verbs that extensions own. `/collab` is the primary sharing command; `/remote-control` is a compatibility alias; `/remote` belongs to the pk-speak extension. |
-| **2. Product identity** | Fork-owned user-facing outbound identifiers use `oh-my-pk` through `APP_NAME` from `@pk-nerdsaver-ai/pi-utils`, not `Oh-My-Pi` or `omp.sh`. Upstream issue and pull-request links remain as factual attribution. |
+| **2. Product identity** | Fork-owned user-facing outbound identifiers use `oh-my-pk` through `APP_NAME` from `@pk-nerdsaver-ai/pi-utils`, not `Oh-My-Pi` or `oh-my-pk.pkking.computer`. Upstream issue and pull-request links remain as factual attribution. |
 | **3. Hosting domains** | `oh-my-pk.pkking.computer` hosts the CLI/install landing and the `/collab/` browser client; `collab.pkking.computer` hosts the collab relay, share storage, and hub APIs; `pkking.computer` is the apex landing. |
 | **4. Surface capability** | `/collab` provides ephemeral end-to-end encrypted session sharing for browser and TUI guests. `/remote` provides the pk-speak extension's persistent paired operator gateway for voice, routing, sessions, workspace access, and approvals. |
 

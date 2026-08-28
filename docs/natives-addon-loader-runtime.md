@@ -58,7 +58,7 @@ Detection uses `Bun.spawnSync` when available, then falls back to `node:child_pr
 
 ### Installed, non-compiled package
 
-1. Every selected filename in `@oh-my-pi/pi-natives-<tag>`.
+1. Every selected filename in `@pk-nerdsaver-ai/pi-natives-<tag>`.
 2. For each filename, package-local `nativeDir`, then the executable directory.
 
 The platform leaf wins over a stale core artifact. Workspace loads deliberately skip leaf resolution.

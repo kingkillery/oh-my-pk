@@ -1,8 +1,8 @@
 # omptype Guide (schema authoring in this repo)
 
-Internal schemas use **`@oh-my-pi/omptype`** — an ArkType-compatible validator
+Internal schemas use **`@pk-nerdsaver-ai/omptype`** — an ArkType-compatible validator
 with a lazy JIT runtime (`packages/omptype`). Author types with
-`import { type } from "@oh-my-pi/omptype"`.
+`import { type } from "@pk-nerdsaver-ai/omptype"`.
 
 
 ## Why omptype (perf contract)
@@ -48,7 +48,7 @@ validate locally but degrade to their base schema on the wire.
 ## Validating (same as arktype)
 
 ```ts
-import { type } from "@oh-my-pi/omptype";
+import { type } from "@pk-nerdsaver-ai/omptype";
 const out = schema(value);
 if (out instanceof type.errors) {
   // out.summary → human message; entries have .path (array) and .problem
@@ -81,8 +81,8 @@ object-literal operands degrade — wrap them with `type({...})` first.
 TypeBox-style and Zod-style authoring are backed by the omptype runtime:
 
 ```ts
-import { Type, type Static } from "@oh-my-pi/omptype/typebox";
-import { z } from "@oh-my-pi/omptype/zod";
+import { Type, type Static } from "@pk-nerdsaver-ai/omptype/typebox";
+import { z } from "@pk-nerdsaver-ai/omptype/zod";
 
 const User = z.object({ name: z.string() });
 type User = z.infer<typeof User>;

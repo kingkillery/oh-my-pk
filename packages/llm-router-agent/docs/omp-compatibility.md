@@ -10,7 +10,7 @@ export default function extension(pi) {
 }
 ```
 
-The extension deliberately avoids a hard runtime import from `@oh-my-pi/pi-coding-agent`. That makes it resilient to forks that rename packages or move type exports. The OMP runtime passes the `pi` object into the default factory; this package uses only runtime methods documented by OMP:
+The extension deliberately avoids a hard runtime import from `@pk-nerdsaver-ai/pi-coding-agent`. That makes it resilient to forks that rename packages or move type exports. The OMP runtime passes the `pi` object into the default factory; this package uses only runtime methods documented by OMP:
 
 - `setLabel`
 - `registerTool`

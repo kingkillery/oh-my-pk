@@ -10,7 +10,7 @@
 # (`No package.json was found for directory "$HOME/.bun/install/global"`) on
 # fresh hosts where the global install has not been initialized. Falling
 # through that error would expand `$(bun pm -g bin)/omp` to `/omp` and try to
-# write under `/` — see https://github.com/can1357/oh-my-pi/issues/3701.
+# write under `/` — see https://github.com/kingkillery/oh-my-pk/issues/3701.
 set -e
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
