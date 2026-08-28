@@ -755,10 +755,10 @@ For architecture and contribution guidelines, see [packages/coding-agent/DEVELOP
 
 ## Contributing
 
-Issues and pull requests are open to everyone. Open PRs are currently a
-**trial** — the previous vouch requirement is lifted while we evaluate how it
-goes, and it may return. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for
-guidelines on contributing.
+Pull requests require a vouch before they can be accepted. This fork maintains
+a vouch system to ensure quality contributions. See
+**[CONTRIBUTING.md](CONTRIBUTING.md)** for how to get vouched and open a PR.
+Issues are open to everyone.
 
 ---
 

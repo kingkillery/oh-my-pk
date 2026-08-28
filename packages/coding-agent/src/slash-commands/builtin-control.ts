@@ -1,4 +1,5 @@
 import { runPauseScreen } from "../modes/components/pause-screen";
+import { handleGraphtreeCommand, handleGraphtreeCommandTui } from "./builtin/graphtree";
 import { shutdownHandlerTui } from "./builtin-lifecycle";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import type { SlashCommandSpec } from "./types";
@@ -71,6 +72,16 @@ export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			runtime.ctx.editor.setText("");
 			await runPauseScreen(runtime.ctx);
 		},
+	},
+	{
+		name: "graphtree",
+		aliases: ["gt", "fractal"],
+		icon: "tree",
+		description: "Fractal-style multi-agent graph/tree node workflows",
+		inlineHint: "[status|list|agents|init|run|stop|steer|revive|merge|prune|help]",
+		allowArgs: true,
+		handle: async (command, runtime) => handleGraphtreeCommand(command.args, runtime),
+		handleTui: async (command, runtime) => handleGraphtreeCommandTui(command.args, runtime),
 	},
 	{
 		name: "quit",

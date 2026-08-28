@@ -32,7 +32,7 @@ Each subagent MUST:
 ### a. Read
 
 1. Read `issue://<N>`; cross-repo: `issue://<owner>/<repo>/<N>`. Includes body/comments; comments often contain repro/fix hints. Append `?comments=0` only to explicitly skip comments.
-2. Run `gh search prs` for issue number. Reasonable existing PR → review per `.omp/commands/review-prs.md`, report `existing-pr`; do NOT create competing fix.
+2. Run `gh search prs` for issue number. Reasonable existing PR → review per `.ompk/commands/review-prs.md`, report `existing-pr`; do NOT create competing fix.
 
 ### b. Diagnose/reproduce
 

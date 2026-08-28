@@ -954,34 +954,32 @@ jobs:
               NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
            run: bun run ci:release:publish
 
-   # Regenerate the Homebrew tap formula (can1357/homebrew-tap) from the freshly
-   # published release assets and push it. Gated on release_github_verify so the
-   # tap only cuts over to a release whose published binary was verified (matches
-   # how release_npm is gated). No-ops when HOMEBREW_TAP_DEPLOY_KEY is unset, so a
-   # release never blocks on tap access.
-   release_brew:
-      name: Update Homebrew tap
-      if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
-         needs.release_metadata.outputs.channel != 'canary' &&
-         needs.release_github_verify.result == 'success' }}
-      needs: [release_metadata, release_github_verify]
-      runs-on: ubuntu-22.04
-      env:
-         HAS_TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY != '' }}
-      steps:
-         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-           if: env.HAS_TAP_KEY == 'true'
-         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-           if: env.HAS_TAP_KEY == 'true'
-           with:
-              bun-version: "1.4"
-         - name: Check out the Homebrew tap
-           if: env.HAS_TAP_KEY == 'true'
-           uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-           with:
-              repository: can1357/homebrew-tap
-              ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
-              path: homebrew-tap
+  # Homebrew tap is not published for this fork (kingkillery/oh-my-pk).
+  # The upstream can1357/homebrew-tap is specific to can1357/oh-my-pi.
+  # This job is disabled to prevent attempting to push to an unavailable tap.
+  # To publish a Homebrew tap for this fork, create kingkillery/homebrew-tap
+  # and configure HOMEBREW_TAP_DEPLOY_KEY secret, then update repository below.
+  release_brew:
+     name: Update Homebrew tap
+     if: false  # Disabled - this fork does not publish a Homebrew tap
+     needs: [release_metadata, release_github_verify]
+     runs-on: ubuntu-22.04
+     env:
+        HAS_TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY != '' }}
+     steps:
+        - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+          if: env.HAS_TAP_KEY == 'true'
+        - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+          if: env.HAS_TAP_KEY == 'true'
+          with:
+             bun-version: "1.4"
+        - name: Check out the Homebrew tap
+          if: env.HAS_TAP_KEY == 'true'
+          uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+          with:
+             repository: kingkillery/homebrew-tap  # Fork-specific (not published)
+             ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+             path: homebrew-tap
          - name: Regenerate and push the formula
            if: env.HAS_TAP_KEY == 'true'
            env:
