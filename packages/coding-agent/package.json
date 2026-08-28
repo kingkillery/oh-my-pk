@@ -28,6 +28,8 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "bin": {
+    "oh-my-pk": "src/cli.ts",
+    "ompk": "src/cli.ts",
     "omp": "src/cli.ts"
   },
   "scripts": {
