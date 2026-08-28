@@ -4,8 +4,8 @@
  * One overlay, two views:
  * - Table view: every registered agent except Main (Main IS the ambient
  *   chat), live from the global AgentRegistry — status, unread irc count,
- *   current/last task, last activity. Select with j/k, Enter focuses/opens one,
- *   `r` revives a parked agent, and Ctrl+X twice removes one.
+ *   current/last task, last activity. Navigate with keys, wheel, hover, and
+ *   click; `r` revives a parked agent, `x` aborts + releases one.
  * - Chat view: per-agent transcript (incremental session-file tail, absorbed
  *   from the old session observer overlay) plus an input line. Submitting
  *   revives a parked agent, then prompts/steers it; the message lands in the
@@ -13,274 +13,87 @@
  *
  * Replaces the old SessionObserverOverlayComponent (ctrl+s observer).
  */
-import * as fs from "node:fs";
-import * as path from "node:path";
-import type { AgentTool } from "@pk-nerdsaver-ai/pi-agent-core";
-import { Container, Ellipsis, matchesKey, type OverlayHandle, type TUI, visibleWidth } from "@pk-nerdsaver-ai/pi-tui";
-import { formatAge, getProjectDir, logger, normalizePathForComparison } from "@pk-nerdsaver-ai/pi-utils";
-import { ADVISOR_TRANSCRIPT_FILENAME } from "../../advisor";
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import {
+	Container,
+	matchesKey,
+	type OverlayHandle,
+	padding,
+	routeSelectListMouse,
+	routeSgrMouseInput,
+	type SelectListMouseTarget,
+	type TUI,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@oh-my-pi/pi-tui";
+import { formatAge, formatNumber, getProjectDir, logger } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
+import type { Settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { IrcBus } from "../../irc/bus";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, type AgentStatus, MAIN_AGENT_ID } from "../../registry/agent-registry";
+import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
-import {
-	backgroundInstanceDisplayName,
-	isBackgroundInstanceSession,
-	type SessionStatus,
-} from "../../session/session-listing";
-import { SessionManager } from "../../session/session-manager";
-import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
+import { shortenPath, truncateToWidth } from "../../tools/render-utils";
+import { formatLocalDateTimeWithOffset } from "../../utils/local-date";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { isValidThemeColor, type ThemeColor, theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import { AgentHubKanbanSync, type AgentHubKanbanSyncResult } from "./agent-hub-kanban-sync";
+import {
+	type AgentMetrics,
+	type AggregateMetrics,
+	aggregateMetrics,
+	progressMetrics,
+	projectAgentTree,
+	STATUS_ORDER,
+} from "./agent-hub-projection";
+import {
+	clampHubLine,
+	contextGauge,
+	formatChildIds,
+	formatCost,
+	formatMetricDuration,
+	formatMetrics,
+	formatRoleBadge,
+	modelBadge,
+	type RosterRender,
+	sanitizeDisplayText,
+	sanitizeLine,
+	statusGlyph,
+	statusText,
+	treeBranch,
+} from "./agent-hub-renderer";
 import { AgentTranscriptViewer } from "./agent-transcript-viewer";
-import { DynamicBorder } from "./dynamic-border";
+import {
+	bottomBorder,
+	divider,
+	dividerSplit,
+	row,
+	splitBodyWidth,
+	splitRow,
+	topBorder,
+	topBorderSplit,
+} from "./overlay-box";
 
-/** Refresh cadence for the relative-time column */
+type HubViewMode = "roster" | "tree";
+
+/** Refresh cadence for the relative-time column. */
 const AGE_TICK_MS = 5_000;
+const DATA_CHANGE_RENDER_COALESCE_MS = 100;
 /** Double-tap window for the table's left-left "close hub" gesture. */
 const LEFT_TAP_WINDOW_MS = 500;
-/** Double-tap window for Ctrl+X "remove agent" gesture. */
-const REMOVE_TAP_WINDOW_MS = 2000;
-/** Compute the max content width for the current terminal, accounting for chrome. */
-function contentWidth(): number {
-	return Math.max(TRUNCATE_LENGTHS.SHORT, (process.stdout.columns || 80) - 6);
-}
 
-/** Sanitize a line for TUI display: replace tabs, then truncate to viewport width. */
-function sanitizeLine(text: string, maxWidth?: number): string {
-	const singleLine = replaceTabs(text).replace(/[\r\n]+/g, " ");
-	return truncateToWidth(singleLine, maxWidth ?? contentWidth());
-}
-
-function clampHubLine(line: string, width: number): string {
-	return truncateToWidth(line.replace(/[\r\n]+/g, " "), Math.max(1, width - 2), Ellipsis.Omit);
-}
-
-const STATUS_ORDER: Record<AgentStatus, number> = { running: 0, idle: 1, parked: 2, aborted: 3 };
-
-function rosterColor(color: string | undefined): ThemeColor | undefined {
-	return color && isValidThemeColor(color) ? color : undefined;
-}
-
-/**
- * One flattened tree row: an {@link AgentRef} plus its depth (folder root = 0,
- * session lane = 1, subagents = 2+) and the pre-built connector prefix that
- * renders the `├─`/`└─` branch and the `│`/space ancestor-continuation columns.
- */
-interface HubRow {
-	ref: HubAgentRef;
-	depth: number;
-	prefix: string;
-}
-type HubAgentKind = AgentRef["kind"] | "background" | "folder";
-type HubAgentRef = Omit<AgentRef, "kind"> & {
-	kind: HubAgentKind;
-	/** Folder rows only: number of session lanes grouped under this folder. */
-	laneCount?: number;
-	/** Folder rows only: whether this folder holds the active (current) session. */
-	isCurrentFolder?: boolean;
-	/** Background lanes only: coarse lifecycle status derived from the session file tail. */
-	sessionStatus?: SessionStatus;
-	/** Background lanes only: last assistant message text, shown as the row preview. */
-	preview?: string;
-};
-
-/** Outcome word + color for a session lane, Claude Code jobs-list style. */
-interface HubOutcome {
-	label: string;
-	color: ThemeColor;
-}
-
-/**
- * Map a lane to its outcome column. Explicit markers in the last assistant
- * message (`result:` / `failed:` / `needs input:`) win; otherwise the coarse
- * {@link SessionStatus} decides. Live registry work reads as Working.
- */
-function laneOutcome(ref: HubAgentRef): HubOutcome | undefined {
-	if (ref.id === MAIN_AGENT_ID) {
-		return ref.status === "running" ? { label: "Working", color: "accent" } : { label: "Idle", color: "success" };
-	}
-	if (!isBackgroundLane(ref)) return undefined;
-	const preview = ref.preview ?? "";
-	const marker = /(^|\n)\s*(result|failed|needs input):/i.exec(preview)?.[2]?.toLowerCase();
-	if (marker === "result") return { label: "Done", color: "success" };
-	if (marker === "failed") return { label: "Failed", color: "error" };
-	if (marker === "needs input") return { label: "Needs input", color: "warning" };
-	switch (ref.sessionStatus) {
-		case "complete":
-			return { label: "Done", color: "success" };
-		case "error":
-		case "aborted":
-			return { label: "Failed", color: "error" };
-		case "pending":
-		case "interrupted":
-			return { label: "Needs input", color: "warning" };
-		default:
-			return undefined;
-	}
-}
-
-/**
- * One-line preview for a background lane: the text following an explicit
- * `result:`/`failed:`/`needs input:` marker when present (the outcome column
- * already conveys the marker), otherwise the last assistant message itself.
- */
-function lanePreview(ref: HubAgentRef): string | undefined {
-	const preview = ref.preview?.trim();
-	if (!preview) return undefined;
-	const marker = /(^|\n)\s*(result|failed|needs input):\s*/i.exec(preview);
-	const text = marker ? preview.slice((marker.index ?? 0) + marker[0].length) : preview;
-	const line = text.replace(/\s+/g, " ").trim();
-	return line || undefined;
-}
-
-function isRegistryAgentRef(ref: HubAgentRef): ref is AgentRef {
-	return ref.kind !== "background" && ref.kind !== "folder" && ref.id !== MAIN_AGENT_ID;
-}
-
-function isBackgroundLane(ref: HubAgentRef): boolean {
-	return ref.kind === "background" && (ref.parentId ?? MAIN_AGENT_ID) === MAIN_AGENT_ID;
-}
-
-function isFolder(ref: HubAgentRef): boolean {
-	return ref.kind === "folder";
-}
-
-function isLane(ref: HubAgentRef): boolean {
-	return ref.id === MAIN_AGENT_ID || isBackgroundLane(ref);
-}
-
-/** Stable grouping key for a session's working directory (folder). Empty cwd → "" (unknown bucket). */
-function folderKey(cwd: string | undefined): string {
-	return cwd ? path.resolve(cwd) : "";
-}
-
-/** Human-facing folder label: directory basename, or "(unknown folder)" for sessions with no recorded cwd. */
-function folderDisplayName(cwd: string | undefined): string {
-	if (!cwd) return "(unknown folder)";
-	return path.basename(path.resolve(cwd)) || cwd;
-}
-
-/**
- * One ancestor-continuation column matching a connector's width: spaces when the
- * branch was the last sibling, else the `│` vertical plus padding. Computed per
- * call so a live theme switch updates the glyphs.
- */
-function treeContinuation(last: boolean): string {
-	const indent = theme.tree.branch.length + 1;
-	return last
-		? " ".repeat(indent)
-		: `${theme.tree.vertical}${" ".repeat(Math.max(1, indent - theme.tree.vertical.length))}`;
-}
-/** Scan a background session's artifact dir for its direct subagent transcripts (read-only, hub-local rows). */
-function collectBackgroundLaneSubagents(sessionFile: string, laneId: string): HubAgentRef[] {
-	if (!sessionFile.endsWith(".jsonl")) return [];
-	const dir = sessionFile.slice(0, -6);
-	let entries: fs.Dirent[];
-	try {
-		entries = fs.readdirSync(dir, { withFileTypes: true });
-	} catch {
-		return [];
-	}
-	const subs: HubAgentRef[] = [];
-	for (const entry of entries) {
-		if (!entry.isFile() || !entry.name.endsWith(".jsonl") || entry.name.includes(".bak")) continue;
-		if (entry.name === ADVISOR_TRANSCRIPT_FILENAME) continue;
-		const subId = entry.name.slice(0, -6);
-		const subFile = path.join(dir, entry.name);
-		let lastActivity = Date.now();
-		try {
-			lastActivity = fs.statSync(subFile).mtimeMs;
-		} catch {}
-		subs.push({
-			id: `${laneId}/${subId}`,
-			displayName: subId,
-			kind: "background",
-			parentId: laneId,
-			status: "parked",
-			session: null,
-			sessionFile: subFile,
-			createdAt: lastActivity,
-			lastActivity,
-			activity: "background subagent",
-		});
-	}
-	return subs;
-}
-
-/** Glyph + status word, colored per theme status conventions. */
-function statusBadge(status: AgentStatus): string {
-	switch (status) {
-		case "running":
-			return theme.fg("accent", `${theme.status.running} working`);
-		case "idle":
-			return theme.fg("success", `${theme.status.enabled} idle`);
-		case "parked":
-			return theme.fg("muted", `${theme.status.shadowed} parked`);
-		case "aborted":
-			return theme.fg("error", `${theme.status.aborted} failed`);
-	}
-}
-
-function registerPersistedSubagents(registry: AgentRegistry, sessionFile: string | null | undefined): void {
-	if (!sessionFile?.endsWith(".jsonl")) return;
-	const root = sessionFile.slice(0, -6);
-	registerPersistedSubagentsFromDir(registry, root, undefined);
-}
-
-function registerPersistedSubagentsFromDir(registry: AgentRegistry, dir: string, parentId: string | undefined): void {
-	let entries: fs.Dirent[];
-	try {
-		entries = fs.readdirSync(dir, { withFileTypes: true });
-	} catch {
-		return;
-	}
-	for (const entry of entries) {
-		if (!entry.isFile() || !entry.name.endsWith(".jsonl") || entry.name.includes(".bak")) continue;
-		const sessionFile = path.join(dir, entry.name);
-		// The advisor transcript is observability-only: register it as a non-peer
-		// `advisor` kind under its owning session so the Hub can show its read-only
-		// transcript, but it never joins agent-facing rosters and is not revivable.
-		if (entry.name === ADVISOR_TRANSCRIPT_FILENAME) {
-			const owner = parentId ?? MAIN_AGENT_ID;
-			const advisorId = `${owner}/advisor`;
-			const existing = registry.get(advisorId);
-			// Never clobber a non-advisor ref that happens to share this id (a freak
-			// user task literally named `<owner>/advisor`): leave it, skip the advisor.
-			if (existing && existing.kind !== "advisor") continue;
-			if (existing?.sessionFile !== sessionFile) {
-				// The id is reused across `/new`; refresh it to the current session's file.
-				if (existing) registry.unregister(advisorId);
-				registry.register({
-					id: advisorId,
-					displayName: "advisor",
-					kind: "advisor",
-					parentId: owner,
-					session: null,
-					sessionFile,
-					status: "parked",
-				});
-			}
-			continue;
-		}
-		const id = entry.name.slice(0, -6);
-		if (!registry.get(id)) {
-			registry.register({
-				id,
-				displayName: id,
-				kind: "sub",
-				parentId: parentId ?? MAIN_AGENT_ID,
-				session: null,
-				sessionFile,
-				status: "parked",
-			});
-		}
-		registerPersistedSubagentsFromDir(registry, path.join(dir, id), id);
-	}
+/** Two-pane mode needs a useful roster and a readable inspector. */
+const SPLIT_MIN_WIDTH = 96;
+const DETAIL_MIN_WIDTH = 34;
+const ROSTER_MIN_WIDTH = 48;
+/** Result of one host-backed transcript read for the Agent Hub viewer. */
+export interface AgentHubRemoteTranscript {
+	text: string;
+	newSize: number;
+	/** Terminal read failure reported by the host; guests should surface it instead of retrying hot. */
+	error?: string;
 }
 
 /** Guest-side proxy for hub actions executed on the collab host. */
@@ -288,13 +101,15 @@ export interface AgentHubRemote {
 	chat(id: string, text: string): void;
 	kill(id: string): void;
 	revive(id: string): void;
-	/** Mirrors readFileIncremental: text from fromByte (complete JSONL lines), newSize = next fromByte base; null = unavailable. */
-	readTranscript(id: string, fromByte: number): Promise<{ text: string; newSize: number } | null>;
+	/** Mirrors readFileIncremental: text from fromByte (complete JSONL lines), newSize = next fromByte base; null = temporarily unavailable. */
+	readTranscript(id: string, fromByte: number): Promise<AgentHubRemoteTranscript | null>;
 }
 
 export interface AgentHubDeps {
 	/** Progress/status snapshot source (task lifecycle + progress channels). */
 	observers: SessionObserverRegistry;
+	/** Production settings used to resolve textual model-role tags. */
+	settings?: Settings;
 	/** Keys that toggle the hub closed from inside (app.agents.hub + app.session.observe). */
 	hubKeys: KeyId[];
 	onDone: () => void;
@@ -309,31 +124,32 @@ export interface AgentHubDeps {
 	ui?: TUI;
 	/** Tool lookup for transcript renderers (labels, custom render functions). */
 	getTool?: (name: string) => AgentTool | undefined;
+	/** Whether the active registry entry came from a built-in factory. */
+	isBuiltInTool?: (name: string) => boolean;
 	/** Extension message renderers for custom messages in the transcript. */
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	/** Cwd used by tool renderers for path shortening; defaults to the project dir. */
 	cwd?: string;
 	/** Mirrors the main transcript's thinking-block visibility. */
 	hideThinkingBlock?: () => boolean;
+	proseOnlyThinking?: () => boolean;
 	/** Keys toggling tool output expansion (app.tools.expand). */
 	expandKeys?: KeyId[];
 	/** Focus the main view on this agent's live session (ctx.focusAgentSession). When absent (collab guest, tests), Enter opens the in-hub chat view instead. */
 	focusAgent?: (id: string) => Promise<void>;
 	/** Current main session file; used to seed parked historical subagents after restart. */
 	sessionFile?: string | null;
-	/** Session directory for persisted background-agent discovery. */
-	sessionDir?: string;
-	/** Resume a persisted background-agent session selected from the hub. */
-	resumeSession?: (sessionPath: string) => Promise<void>;
+
 	/** Collab guest: route actions/transcripts to the host instead of local sessions. */
 	remote?: AgentHubRemote;
 	/** Kanban board synchronizer. Pass null to disable Kanban sync mode in tests/collab guests. */
 	kanbanSync?: AgentHubKanbanSync | null;
 }
 
-export class AgentHubOverlayComponent extends Container {
+export class AgentHubOverlayComponent extends Container implements SelectListMouseTarget {
 	#registry: AgentRegistry;
 	#observers: SessionObserverRegistry;
+	#settings: Settings | undefined;
 	#irc: IrcBus;
 	#lifecycle: () => AgentLifecycleManager;
 	#onDone: () => void;
@@ -341,44 +157,65 @@ export class AgentHubOverlayComponent extends Container {
 	#hubKeys: KeyId[];
 	#unsubscribers: Array<() => void> = [];
 	#ageTimer: NodeJS.Timeout | undefined;
+	#dataChangeTimer?: NodeJS.Timeout;
 	#remote: AgentHubRemote | undefined;
-	#sessionDir: string | undefined;
-	#currentSessionFile: string | null;
-	#resumeSession: ((sessionPath: string) => Promise<void>) | undefined;
-	#backgroundRefs: HubAgentRef[] = [];
-	#backgroundSessionPaths = new Map<string, string>();
-	#backgroundLoadGeneration = 0;
-	/** Resolves when the constructor's initial background-session disk scan has landed. */
-	#backgroundsLoaded: Promise<void> = Promise.resolve();
-	#expandedLanes = new Set<string>([MAIN_AGENT_ID]);
-	#collapsedFolders = new Set<string>();
-	#backgroundSubagents = new Map<string, HubAgentRef[]>();
+	#disposed = false;
+	/** Resolves after persisted historical subagents have been registered and rows refreshed. */
+	readonly persistedSubagentsReady: Promise<void>;
+	/** Prevent the async persisted-session scan from flashing a false empty state. */
+	#loadingPersistedSubagents = false;
 
 	// Table state
-	/** Selectable subagent rows in Main→children tree order (Main itself is the non-selectable root header). */
-	#rows: HubRow[] = [];
+	#rows: AgentRef[] = [];
+	#statusCounts: Record<AgentStatus, number> = { running: 0, idle: 0, parked: 0, aborted: 0 };
 	#selectedRow = 0;
+	#hoveredRow: number | null = null;
+	/** Per-render screen-line to agent-row map, shared by click and hover routing. */
+	#hitRows: Array<number | undefined> = [];
 	#notice: string | undefined;
 	/** First-seen order per agent id; freezes sibling order while the hub is open. */
 	#rowOrder: Map<string, number> | undefined;
+	#nextRowOrder = 0;
 	/** Double-tap window state for the table's left-left "close hub" gesture. */
 	#lastLeftTap = 0;
-	/** Agent-specific Ctrl+X confirmation state. */
-	#pendingRemove: { id: string; at: number } | undefined;
-	/** Rename input mode: agent id being renamed. */
-	#renameInput: { id: string; buffer: string } | undefined;
-	/** Filter input mode: active filter query. */
-	#filterInput: string | undefined;
-	/** Kanban sync sub-mode: selected rows can be pushed into a pk-kanban board. */
-	#kanbanSyncMode = false;
-	#kanbanSync: AgentHubKanbanSync | undefined;
-	#kanbanSyncStatusByAgent = new Map<string, string>();
+	/** Operational ordering by default; tree mode groups descendants under their spawner. */
+	#viewMode: HubViewMode = "roster";
+	#treeDepthById = new Map<string, number>();
+	#treeParentById = new Map<string, string>();
+	#treeLastSiblingById = new Map<string, boolean>();
+	/** Current observer index and summary data, rebuilt on source changes rather than every paint. */
+	#observedById = new Map<string, ObservableSession>();
+	#aggregate: AggregateMetrics = {
+		tokens: 0,
+		requests: 0,
+		tools: 0,
+		cost: 0,
+		durationMs: 0,
+		durationKind: "active",
+		reportedAgents: 0,
+		activeDurationAgents: 0,
+	};
+	#childrenByParent = new Map<string, AgentRef[]>();
+	/** Transcript-derived fallback stats are sampled only on the bounded age cadence. */
+	#sessionMetrics = new WeakMap<object, { metrics: AgentMetrics | undefined }>();
+	/** Avoid a cadence-time row scan for the common persisted-only roster. */
+	#hasFallbackLiveSessions = false;
+	/** On narrow terminals Tab replaces the roster with the selected-agent inspector. */
+	#narrowDetailsOpen = false;
+	#lastRenderWasSplit = false;
+	#lastSplitRosterWidth: number | undefined;
+	/** Scroll offset for the selected-agent inspector when its content overflows. */
+	#detailScrollOffset = 0;
+	#detailAgentId: string | undefined;
+
 	// Transcript-viewer launch deps (passed through to AgentTranscriptViewer).
 	#ui: TUI;
 	#getTool: ((name: string) => AgentTool | undefined) | undefined;
+	#isBuiltInTool: ((name: string) => boolean) | undefined;
 	#getMessageRenderer: ((customType: string) => MessageRenderer | undefined) | undefined;
 	#cwd: string;
 	#hideThinkingBlock: (() => boolean) | undefined;
+	#proseOnlyThinking: (() => boolean) | undefined;
 	#expandKeys: KeyId[];
 	#focusAgent: ((id: string) => Promise<void>) | undefined;
 
@@ -390,6 +227,7 @@ export class AgentHubOverlayComponent extends Container {
 		super();
 		this.#registry = deps.registry ?? AgentRegistry.global();
 		this.#observers = deps.observers;
+		this.#settings = deps.settings;
 		this.#irc = deps.irc ?? IrcBus.global();
 		// Lazy: the lifecycle global self-constructs against the global
 		// registry, so only touch it when revive/kill actually needs it.
@@ -398,6 +236,7 @@ export class AgentHubOverlayComponent extends Container {
 		this.#requestRender = deps.requestRender;
 		this.#hubKeys = deps.hubKeys;
 		this.#remote = deps.remote;
+		this.#loadingPersistedSubagents = !this.#remote && Boolean(deps.sessionFile?.endsWith(".jsonl"));
 		this.#ui =
 			deps.ui ??
 			({
@@ -405,9 +244,11 @@ export class AgentHubOverlayComponent extends Container {
 				requestComponentRender: () => deps.requestRender(),
 			} as unknown as TUI);
 		this.#getTool = deps.getTool;
+		this.#isBuiltInTool = deps.isBuiltInTool;
 		this.#getMessageRenderer = deps.getMessageRenderer;
 		this.#cwd = deps.cwd ?? getProjectDir();
 		this.#hideThinkingBlock = deps.hideThinkingBlock;
+		this.#proseOnlyThinking = deps.proseOnlyThinking;
 		this.#expandKeys = deps.expandKeys ?? ["ctrl+o"];
 		this.#focusAgent = deps.focusAgent;
 		this.#sessionDir = deps.sessionDir;
@@ -416,23 +257,38 @@ export class AgentHubOverlayComponent extends Container {
 		this.#kanbanSync =
 			deps.kanbanSync === null ? undefined : (deps.kanbanSync ?? new AgentHubKanbanSync({ projectPath: this.#cwd }));
 
-		this.#unsubscribers.push(this.#registry.onChange(() => this.#onDataChange()));
-		this.#unsubscribers.push(this.#observers.onChange(() => this.#onDataChange()));
-		this.#ageTimer = setInterval(() => this.#requestRender(), AGE_TICK_MS);
+		this.#unsubscribers.push(this.#registry.onChange(() => this.#scheduleDataChange()));
+		this.#unsubscribers.push(this.#observers.onChange(() => this.#scheduleDataChange()));
+		this.#ageTimer = setInterval(() => {
+			if (this.#hasFallbackLiveSessions) {
+				this.#refreshAggregate(true);
+			}
+			this.#requestRender();
+		}, AGE_TICK_MS);
 		this.#ageTimer.unref?.();
 
-		if (!this.#remote) {
-			registerPersistedSubagents(this.#registry, deps.sessionFile);
-			// Never rejects: #loadBackgroundInstances catches internally.
-			this.#backgroundsLoaded = this.#loadBackgroundInstances();
-		}
+		this.persistedSubagentsReady = this.#remote
+			? Promise.resolve()
+			: registerPersistedSubagents(this.#registry, deps.sessionFile, {
+					shouldContinue: () => !this.#disposed,
+				})
+					.then(() => {
+						if (!this.#disposed) this.#refreshRows();
+					})
+					.catch((error: unknown) => {
+						logger.warn("Failed to register persisted subagents", { error });
+					})
+					.finally(() => {
+						this.#loadingPersistedSubagents = false;
+						if (!this.#disposed) this.#requestRender();
+					});
 		this.#refreshRows();
 	}
 
 	/**
-	 * Whether the hub has nothing worth opening: only the folder + current-session
-	 * scaffold, no subagents and no background sessions. The double-← gesture reads
-	 * this to stay inert when there is nothing to open.
+	 * Whether the current table view has no agents to show (every registered agent
+	 * except Main). Persisted historical rows may arrive later; callers that need
+	 * those included must wait for {@link persistedSubagentsReady} first.
 	 */
 	get isEmpty(): boolean {
 		return this.#rows.every(row => isFolder(row.ref) || row.ref.id === MAIN_AGENT_ID);
@@ -448,20 +304,44 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	/** Tear down every subscription and timer. Called by the overlay owner on close. */
-	dispose(): void {
+	override dispose(): void {
+		if (this.#disposed) return;
+		this.#disposed = true;
 		for (const unsubscribe of this.#unsubscribers.splice(0)) unsubscribe();
 		if (this.#ageTimer) {
 			clearInterval(this.#ageTimer);
 			this.#ageTimer = undefined;
 		}
+		if (this.#dataChangeTimer) {
+			clearTimeout(this.#dataChangeTimer);
+			this.#dataChangeTimer = undefined;
+		}
 		this.#closeTranscriptOverlay();
 	}
 
 	override render(width: number): readonly string[] {
-		return this.#renderTable(width).map(line => clampHubLine(line, width));
+		const termHeight = this.#ui.terminal?.rows || process.stdout.rows || 40;
+		const frame = this.#renderTable(width, termHeight).map(line => clampHubLine(line, width));
+		if (frame.length <= termHeight) return frame;
+
+		// A tiny terminal can leave less room than the fixed chrome needs. Keep
+		// the title and footer visible instead of spilling into scrollback.
+		const footerLines = Math.min(3, frame.length);
+		const bodyEnd = Math.max(0, termHeight - footerLines);
+		return [...frame.slice(0, bodyEnd), ...frame.slice(-footerLines)].slice(0, termHeight);
 	}
 
 	handleInput(keyData: string): void {
+		if (
+			routeSgrMouseInput(keyData, event => {
+				const split = this.#lastSplitRosterWidth;
+				if (split !== undefined && event.wheel === null && event.col > split + 2) return false;
+				return routeSelectListMouse(this, event, event.row);
+			})
+		) {
+			return;
+		}
+
 		// The hub/observe keys always close the overlay (toggle semantics)
 		for (const key of this.#hubKeys) {
 			if (matchesKey(keyData, key)) {
@@ -473,17 +353,31 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	/**
+	 * Seed the table's left-left close detector with the current time so a single
+	 * subsequent `←` (within {@link LEFT_TAP_WINDOW_MS}) dismisses the hub.
+	 *
+	 * The editor's own double-tap detector consumes the `←←` that opens the hub,
+	 * leaving this detector at its fresh `0` — without this handoff the user would
+	 * have to press `←←` a second time to escape. Called by the opener when the hub
+	 * was raised by that gesture.
+	 */
+	armCloseTap(): void {
+		this.#lastLeftTap = Date.now();
+	}
+
+	/**
 	 * Open the fullscreen transcript viewer for an agent id (public for table Enter
 	 * and tests). Mounts {@link AgentTranscriptViewer} as a `fullscreen` overlay so it
 	 * owns the alternate screen; the hub table stays mounted underneath and is
 	 * restored when the viewer closes. No-op without a real TUI (render-only test stub).
 	 */
 	openChat(id: string): void {
-		if (!this.#registry.get(id)) return;
+		if (this.#disposed || !this.#registry.get(id)) return;
 		if (typeof this.#ui.showOverlay !== "function") return;
 		this.#closeTranscriptOverlay();
 		this.#notice = undefined;
-		const viewer = new AgentTranscriptViewer({
+		let viewer: AgentTranscriptViewer;
+		viewer = new AgentTranscriptViewer({
 			agentId: id,
 			registry: this.#registry,
 			remote: this.#remote,
@@ -491,16 +385,19 @@ export class AgentHubOverlayComponent extends Container {
 			lifecycle: this.#remote ? undefined : this.#lifecycle,
 			ui: this.#ui,
 			getTool: this.#getTool,
+			isBuiltInTool: this.#isBuiltInTool,
 			getMessageRenderer: this.#getMessageRenderer,
 			cwd: this.#cwd,
 			hideThinkingBlock: this.#hideThinkingBlock,
+			proseOnlyThinking: this.#proseOnlyThinking,
 			expandKeys: this.#expandKeys,
 			hubKeys: this.#hubKeys,
 			requestRender: this.#requestRender,
-			onClose: () => this.#closeTranscriptOverlay(),
+			onClose: () => this.#closeTranscriptOverlay(viewer),
 			onHubClose: () => {
-				this.#closeTranscriptOverlay();
-				this.#onDone();
+				if (this.#disposed) return;
+				this.#closeTranscriptOverlay(viewer);
+				if (!this.#disposed) this.#onDone();
 			},
 		});
 		this.#transcriptViewer = viewer;
@@ -510,82 +407,32 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	/** Close and dispose the transcript overlay, restoring focus to the hub table. */
-	#closeTranscriptOverlay(): void {
-		this.#transcriptOverlay?.hide();
+	#closeTranscriptOverlay(expectedViewer?: AgentTranscriptViewer): void {
+		if (expectedViewer && this.#transcriptViewer !== expectedViewer) return;
+		const overlay = this.#transcriptOverlay;
+		const viewer = this.#transcriptViewer;
+		if (!overlay && !viewer) return;
+		overlay?.hide();
 		this.#transcriptOverlay = undefined;
-		this.#transcriptViewer?.dispose();
+		viewer?.dispose();
 		this.#transcriptViewer = undefined;
-		if (typeof this.#ui.setFocus === "function") this.#ui.setFocus(this);
-		this.#requestRender();
+		if (!this.#disposed) {
+			if (typeof this.#ui.setFocus === "function") this.#ui.setFocus(this);
+			this.#requestRender();
+		}
 	}
 
 	// ========================================================================
 	// Live data plumbing
 	// ========================================================================
 
-	async #loadBackgroundInstances(): Promise<void> {
-		const generation = ++this.#backgroundLoadGeneration;
-		try {
-			let sessions = await SessionManager.list(this.#cwd, this.#sessionDir);
-			sessions = sessions.filter(isBackgroundInstanceSession);
-			if (sessions.length === 0) {
-				sessions = (await SessionManager.listAll()).filter(isBackgroundInstanceSession);
-			}
-			if (generation !== this.#backgroundLoadGeneration) return;
-			const refs: HubAgentRef[] = [];
-			const sessionPaths = new Map<string, string>();
-			const subagentsByLane = new Map<string, HubAgentRef[]>();
-			const currentFile = this.#currentSessionFile
-				? normalizePathForComparison(this.#currentSessionFile)
-				: undefined;
-			const registrySessionPaths = new Set(
-				this.#registry
-					.list()
-					.flatMap(ref =>
-						ref.status !== "aborted" && ref.sessionFile !== null
-							? [normalizePathForComparison(ref.sessionFile)]
-							: [],
-					),
-			);
-			for (const session of sessions) {
-				if (
-					(currentFile && normalizePathForComparison(session.path) === currentFile) ||
-					registrySessionPaths.has(normalizePathForComparison(session.path))
-				)
-					continue;
-				const id = `background:${session.id}`;
-				const name = backgroundInstanceDisplayName(session);
-				const createdAt = session.created.getTime();
-				const lastActivity = session.modified.getTime();
-				const resolvedLastActivity = Number.isFinite(lastActivity) ? lastActivity : Date.now();
-				refs.push({
-					id,
-					displayName: name,
-					kind: "background",
-					parentId: MAIN_AGENT_ID,
-					status: "parked",
-					session: null,
-					sessionFile: session.path,
-					createdAt: Number.isFinite(createdAt) ? createdAt : resolvedLastActivity,
-					lastActivity: resolvedLastActivity,
-					activity: session.backgroundInstance?.model
-						? `background session · ${session.backgroundInstance.model}`
-						: "background session",
-					cwd: session.cwd,
-					sessionStatus: session.status,
-					preview: session.lastAssistantText,
-				});
-				sessionPaths.set(id, session.path);
-				subagentsByLane.set(id, collectBackgroundLaneSubagents(session.path, id));
-			}
-			this.#backgroundRefs = refs;
-			this.#backgroundSessionPaths = sessionPaths;
-			this.#backgroundSubagents = subagentsByLane;
-			this.#refreshRows();
-			this.#requestRender();
-		} catch (error) {
-			logger.warn("Agent hub: failed to load background sessions", { error: String(error) });
-		}
+	#scheduleDataChange(): void {
+		if (this.#dataChangeTimer) return;
+		this.#dataChangeTimer = setTimeout(() => {
+			this.#dataChangeTimer = undefined;
+			this.#onDataChange();
+		}, DATA_CHANGE_RENDER_COALESCE_MS);
+		this.#dataChangeTimer.unref?.();
 	}
 
 	#onDataChange(): void {
@@ -594,491 +441,549 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	#refreshRows(): void {
-		const selectedId = this.#selectedRef()?.id;
-		const rawQuery = this.#filterInput && this.#filterInput.length > 0 ? this.#filterInput.toLowerCase() : undefined;
-		const matches = (ref: HubAgentRef): boolean =>
-			!rawQuery ||
-			ref.id.toLowerCase().includes(rawQuery) ||
-			ref.displayName.toLowerCase().includes(rawQuery) ||
-			(ref.activity?.toLowerCase().includes(rawQuery) ?? false);
-
-		// Current session's subagents (the live registry tree). Background sessions
-		// are handled separately as top-level lanes below — they are NOT registry agents.
-		let registryRefs: HubAgentRef[] = this.#registry.list().filter(ref => ref.id !== MAIN_AGENT_ID);
-		if (rawQuery) registryRefs = registryRefs.filter(matches);
-
-		// Freeze each agent's first-seen order so siblings keep a stable position
-		// while the hub is open (agents heartbeat / bump lastActivity constantly).
-		// Seed by status, then recency; new agents append at the end thereafter.
-		if (!this.#rowOrder) {
-			const seeded = [...registryRefs].sort(
-				(a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || b.lastActivity - a.lastActivity,
+		const selectedId = this.#rows[this.#selectedRow]?.id;
+		const refs = this.#registry.list().filter(ref => ref.id !== MAIN_AGENT_ID);
+		this.#observedById = new Map();
+		for (const session of this.#observers.getSessions()) this.#observedById.set(session.id, session);
+		const rowOrder = this.#rowOrder;
+		let rosterRows: AgentRef[];
+		if (!rowOrder) {
+			rosterRows = refs.sort(
+				(a, b) =>
+					STATUS_ORDER[a.status] - STATUS_ORDER[b.status] ||
+					b.lastActivity - a.lastActivity ||
+					a.id.localeCompare(b.id),
 			);
-			this.#rowOrder = new Map(seeded.map((ref, i) => [ref.id, i]));
+			this.#rowOrder = new Map();
+			for (const ref of rosterRows) this.#rowOrder.set(ref.id, this.#nextRowOrder++);
 		} else {
-			for (const ref of registryRefs) {
-				if (!this.#rowOrder.has(ref.id)) this.#rowOrder.set(ref.id, this.#rowOrder.size);
+			rosterRows = refs.sort(
+				(a, b) => (rowOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rowOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+			);
+			for (const ref of rosterRows) {
+				if (!rowOrder.has(ref.id)) rowOrder.set(ref.id, this.#nextRowOrder++);
 			}
 		}
 
-		const rows: HubRow[] = [];
-
-		// The current session lane is always present, even with no subagents.
-		let mainRef = this.#registry.get(MAIN_AGENT_ID) as HubAgentRef | undefined;
-		if (!mainRef) {
-			mainRef = {
-				id: MAIN_AGENT_ID,
-				displayName: "current session",
-				kind: "main",
-				status: "running",
-				session: null,
-				sessionFile: null,
-				createdAt: Date.now(),
-				lastActivity: Date.now(),
-			};
+		if (this.#viewMode === "tree") {
+			const tree = projectAgentTree(rosterRows);
+			this.#rows = tree.rows;
+			this.#treeDepthById = tree.depthById;
+			this.#treeParentById = tree.parentById;
+			this.#treeLastSiblingById = tree.lastSiblingById;
+		} else {
+			this.#rows = rosterRows;
+			this.#treeDepthById.clear();
+			this.#treeParentById.clear();
+			this.#treeLastSiblingById.clear();
 		}
-
-		// Every session lane (current + background instances), tagged with its folder.
-		const currentFolderKey = folderKey(this.#cwd);
-		interface LaneEntry {
-			lane: HubAgentRef;
-			folderKey: string;
-			folderCwd: string;
-			isCurrent: boolean;
-		}
-		const laneEntries: LaneEntry[] = [];
-		const mainVisible = !rawQuery || matches(mainRef) || registryRefs.length > 0;
-		if (mainVisible) {
-			laneEntries.push({ lane: mainRef, folderKey: currentFolderKey, folderCwd: this.#cwd, isCurrent: true });
-		}
-		for (const lane of this.#backgroundRefs) {
-			laneEntries.push({ lane, folderKey: folderKey(lane.cwd), folderCwd: lane.cwd ?? "", isCurrent: false });
-		}
-
-		// Group lanes by folder. Current folder first, then by most-recent activity.
-		interface FolderGroup {
-			key: string;
-			cwd: string;
-			lanes: LaneEntry[];
-			maxActivity: number;
-		}
-		const folderByKey = new Map<string, FolderGroup>();
-		for (const entry of laneEntries) {
-			let group = folderByKey.get(entry.folderKey);
-			if (!group) {
-				group = { key: entry.folderKey, cwd: entry.folderCwd, lanes: [], maxActivity: 0 };
-				folderByKey.set(entry.folderKey, group);
-			}
-			// The current session owns its folder's display cwd even if a background lane created the bucket first.
-			if (entry.isCurrent && entry.folderCwd) group.cwd = entry.folderCwd;
-			group.lanes.push(entry);
-			group.maxActivity = Math.max(group.maxActivity, entry.lane.lastActivity);
-		}
-		const folderGroups = [...folderByKey.values()].sort((a, b) => {
-			const aCurrent = a.key === currentFolderKey;
-			const bCurrent = b.key === currentFolderKey;
-			if (aCurrent !== bCurrent) return aCurrent ? -1 : 1;
-			return b.maxActivity - a.maxActivity;
-		});
-
-		// Folder → session lane → subagents. Folders default-expanded; background
-		// session lanes default-collapsed (Space reveals their subagents).
-		for (const group of folderGroups) {
-			const groupLanes = [...group.lanes].sort((a, b) => {
-				if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
-				return b.lane.lastActivity - a.lane.lastActivity;
-			});
-			const visibleLanes = groupLanes.filter(entry => {
-				if (!rawQuery) return true;
-				if (entry.isCurrent) return matches(entry.lane) || registryRefs.length > 0;
-				const laneSubs = this.#backgroundSubagents.get(entry.lane.id) ?? [];
-				const hasMatchingSub = this.#expandedLanes.has(entry.lane.id) && laneSubs.some(matches);
-				return matches(entry.lane) || hasMatchingSub;
-			});
-			if (rawQuery && visibleLanes.length === 0) continue;
-
-			const folderId = `folder:${group.key}`;
-			const folderRef: HubAgentRef = {
-				id: folderId,
-				displayName: folderDisplayName(group.cwd),
-				kind: "folder",
-				status: "running",
-				session: null,
-				sessionFile: null,
-				createdAt: 0,
-				lastActivity: group.maxActivity || Date.now(),
-				cwd: group.cwd,
-				laneCount: visibleLanes.length,
-				isCurrentFolder: group.key === currentFolderKey,
-			};
-			rows.push({ ref: folderRef, depth: 0, prefix: "" });
-			if (this.#collapsedFolders.has(folderId)) continue;
-
-			visibleLanes.forEach((entry, laneIdx) => {
-				const lane = entry.lane;
-				const lastLane = laneIdx === visibleLanes.length - 1;
-				rows.push({ ref: lane, depth: 1, prefix: `${lastLane ? theme.tree.last : theme.tree.branch} ` });
-				if (!this.#expandedLanes.has(lane.id)) return;
-				const basePrefix = treeContinuation(lastLane);
-				if (entry.isCurrent) {
-					rows.push(...this.#buildTree(registryRefs, basePrefix, 2));
-				} else {
-					const laneSubs = this.#backgroundSubagents.get(lane.id) ?? [];
-					const visibleSubs = rawQuery ? laneSubs.filter(matches) : laneSubs;
-					visibleSubs.forEach((sub, i) => {
-						const last = i === visibleSubs.length - 1;
-						rows.push({
-							ref: sub,
-							depth: 2,
-							prefix: `${basePrefix}${last ? theme.tree.last : theme.tree.branch} `,
-						});
-					});
-				}
-			});
-		}
-
-		this.#rows = rows;
-		const keptIndex = selectedId ? this.#rows.findIndex(row => row.ref.id === selectedId) : -1;
+		const keptIndex = selectedId ? this.#rows.findIndex(ref => ref.id === selectedId) : -1;
 		this.#selectedRow = keptIndex >= 0 ? keptIndex : Math.min(this.#selectedRow, Math.max(0, this.#rows.length - 1));
-	}
-
-	/**
-	 * Flatten a session's subagent forest into tree order, rooted at Main. Every
-	 * ref is parented to its `parentId` when that agent is present, else hoisted
-	 * directly under the root; siblings keep the frozen {@link #rowOrder}. Each row
-	 * carries a connector prefix (`├─`/`└─` for the branch, `│`/spaces for ancestor
-	 * columns). `basePrefix`/`baseDepth` nest the whole forest under an outer
-	 * session lane (folder → session → subagents).
-	 */
-	#buildTree(refs: HubAgentRef[], basePrefix = "", baseDepth = 1): HubRow[] {
-		const known = new Set(refs.map(ref => ref.id));
-		const childrenOf = new Map<string, HubAgentRef[]>();
-		for (const ref of refs) {
-			const parent =
-				ref.parentId && ref.parentId !== ref.id && known.has(ref.parentId) ? ref.parentId : MAIN_AGENT_ID;
-			const bucket = childrenOf.get(parent);
-			if (bucket) bucket.push(ref);
-			else childrenOf.set(parent, [ref]);
+		const detailAgentId = this.#rows[this.#selectedRow]?.id;
+		if (detailAgentId !== this.#detailAgentId) {
+			this.#detailAgentId = detailAgentId;
+			this.#detailScrollOffset = 0;
 		}
 
-		const order = this.#rowOrder;
-		const bySibling = (a: HubAgentRef, b: HubAgentRef): number =>
-			(order?.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order?.get(b.id) ?? Number.MAX_SAFE_INTEGER);
-
-		const rows: HubRow[] = [];
-		const visited = new Set<string>();
-		const walk = (parentId: string, depth: number, ancestorPrefix: string): void => {
-			const kids = childrenOf.get(parentId);
-			if (!kids) return;
-			kids.sort(bySibling);
-			kids.forEach((ref, i) => {
-				if (visited.has(ref.id)) return; // defensive: never loop on a malformed parent cycle
-				visited.add(ref.id);
-				const last = i === kids.length - 1;
-				rows.push({ ref, depth, prefix: `${ancestorPrefix}${last ? theme.tree.last : theme.tree.branch} ` });
-				walk(ref.id, depth + 1, `${ancestorPrefix}${treeContinuation(last)}`);
-			});
-		};
-		walk(MAIN_AGENT_ID, baseDepth, basePrefix);
-
-		// Safety net: a ref whose parent chain never reaches Main (detached/cyclic)
-		// would otherwise vanish — surface it as a top-level row so it stays selectable.
-		const orphans = refs.filter(ref => !visited.has(ref.id)).sort(bySibling);
-		orphans.forEach((ref, i) => {
-			if (visited.has(ref.id)) return;
-			visited.add(ref.id);
-			const last = i === orphans.length - 1;
-			rows.push({ ref, depth: baseDepth, prefix: `${basePrefix}${last ? theme.tree.last : theme.tree.branch} ` });
-			walk(ref.id, baseDepth + 1, `${basePrefix}${treeContinuation(last)}`);
-		});
-		return rows;
+		this.#childrenByParent.clear();
+		for (const ref of rosterRows) {
+			const parent = ref.parentId ?? MAIN_AGENT_ID;
+			const children = this.#childrenByParent.get(parent);
+			if (children) children.push(ref);
+			else this.#childrenByParent.set(parent, [ref]);
+		}
+		this.#statusCounts = { running: 0, idle: 0, parked: 0, aborted: 0 };
+		for (const ref of rosterRows) this.#statusCounts[ref.status]++;
+		this.#refreshAggregate();
 	}
 
-	#selectedRef(): HubAgentRef | undefined {
-		return this.#rows[this.#selectedRow]?.ref;
+	#metricsFor(ref: AgentRef, observed: ObservableSession | undefined): AgentMetrics | undefined {
+		if (observed?.progress) return progressMetrics(observed);
+		if (ref.history?.metrics) return ref.history.metrics;
+		const session = this.#fallbackStatsSession(ref, observed);
+		return session ? this.#sessionMetrics.get(session)?.metrics : undefined;
 	}
 
-	#observableFor(id: string): ObservableSession | undefined {
-		return this.#observers.getSessions().find(s => s.id === id);
+	#fallbackStatsSession(
+		ref: AgentRef,
+		observed: ObservableSession | undefined,
+	): NonNullable<AgentRef["session"]> | undefined {
+		if (observed?.progress) return undefined;
+		const session = ref.session;
+		return session && typeof session.getSessionStats === "function" ? session : undefined;
 	}
 
 	// ========================================================================
 	// Table view
 	// ========================================================================
 
-	#renderTable(width: number): string[] {
+	#renderTable(width: number, termHeight: number): string[] {
+		this.#hitRows.length = 0;
+		const contentRows = Math.max(1, termHeight - 4);
+		const observedById = this.#observedById;
+		const split = this.#splitRosterWidth(width);
+		this.#lastRenderWasSplit = split !== undefined;
+		this.#lastSplitRosterWidth = split;
+		const selected = this.#rows[this.#selectedRow];
 		const lines: string[] = [];
-		lines.push(...new DynamicBorder().render(width));
-		const counts = this.#statusSummary();
-		lines.push(
-			` ${theme.fg("accent", this.#kanbanSyncMode ? "Agent Hub · Kanban sync" : "Agent Hub")}${counts ? theme.fg("dim", `${theme.sep.dot}${counts}`) : ""}`,
+
+		if (split !== undefined) {
+			const detailWidth = splitBodyWidth(width, split);
+			const roster = this.#renderRosterPanel(split, contentRows, observedById);
+			const details = this.#renderDetailPanel(selected, detailWidth, contentRows, observedById);
+			lines.push(topBorderSplit(width, "Agent Hub", split));
+			for (let i = 0; i < contentRows; i++) {
+				const hit = roster.hitRows[i];
+				if (hit !== undefined) this.#hitRows[lines.length] = hit;
+				lines.push(splitRow(roster.lines[i] ?? "", details[i] ?? "", width, split));
+			}
+			lines.push(dividerSplit(width, split));
+			lines.push(row(this.#footer(false, Math.max(1, width - 4)), width));
+			lines.push(bottomBorder(width));
+			return lines;
+		}
+
+		const innerWidth = Math.max(1, width - 4);
+		if (this.#narrowDetailsOpen && selected) {
+			const details = this.#renderDetailPanel(selected, innerWidth, contentRows, observedById);
+			lines.push(topBorder(width, `Agent Hub · ${selected.id}`));
+			for (const detail of details) lines.push(row(detail, width));
+		} else {
+			const roster = this.#renderRosterPanel(innerWidth, contentRows, observedById);
+			lines.push(topBorder(width, "Agent Hub"));
+			for (let i = 0; i < contentRows; i++) {
+				const hit = roster.hitRows[i];
+				if (hit !== undefined) this.#hitRows[lines.length] = hit;
+				lines.push(row(roster.lines[i] ?? "", width));
+			}
+		}
+		lines.push(divider(width));
+		lines.push(row(this.#footer(this.#narrowDetailsOpen, innerWidth), width));
+		lines.push(bottomBorder(width));
+		return lines;
+	}
+
+	#splitRosterWidth(width: number): number | undefined {
+		if (width < SPLIT_MIN_WIDTH) return undefined;
+		const rosterWidth = Math.max(ROSTER_MIN_WIDTH, Math.min(Math.floor(width * 0.58), width - DETAIL_MIN_WIDTH - 7));
+		return splitBodyWidth(width, rosterWidth) >= DETAIL_MIN_WIDTH ? rosterWidth : undefined;
+	}
+
+	#footer(showingNarrowDetails: boolean, availableWidth: number): string {
+		const nextView = this.#viewMode === "roster" ? "by parent" : "flat";
+		if (showingNarrowDetails) {
+			return theme.fg("dim", `Tab:roster  PgUp/PgDn:scroll  Enter:open  t:${nextView}  Esc:roster`);
+		}
+		if (availableWidth < 96) {
+			return theme.fg("dim", `j/k:select  Enter:open  t:${nextView}  Tab:details  r/x:manage  Esc:close`);
+		}
+		return theme.fg(
+			"dim",
+			`j/k/wheel:select  PgUp/PgDn:details  Enter/click:open  t:${nextView}  r:revive  x:kill  Esc:close`,
 		);
-		lines.push(...new DynamicBorder().render(width));
+	}
 
+	#renderRosterPanel(width: number, rows: number, observedById: ReadonlyMap<string, ObservableSession>): RosterRender {
+		const lines = this.#summaryLines(width);
+		const hitRows: Array<number | undefined> = Array.from({ length: lines.length });
+		if (rows >= 8) {
+			lines.push("");
+			hitRows.push(undefined);
+		}
+
+		const noticeLines = this.#notice ? [theme.fg("error", sanitizeLine(this.#notice, Math.max(10, width)))] : [];
+		const budget = Math.max(0, rows - lines.length - noticeLines.length);
 		if (this.#rows.length === 0) {
-			lines.push(` ${theme.fg("dim", "no agents yet — /tan and /background sessions appear here")}`);
-		} else {
-			// mainRef is now a regular row in rows; termHeight calculations stay the same.
-			const termHeight = process.stdout.rows || 40;
-			// Chrome: 2 borders + title + Main root + notice? + blank + hints + border
-			const maxVisible = Math.max(3, termHeight - 8 - (this.#notice ? 1 : 0));
-			let start = 0;
-			if (this.#rows.length > maxVisible) {
-				start = Math.min(
-					Math.max(0, this.#selectedRow - Math.floor(maxVisible / 2)),
-					this.#rows.length - maxVisible,
-				);
+			if (this.#loadingPersistedSubagents) {
+				if (budget > 0) {
+					lines.push(`${statusGlyph("running")} ${theme.fg("accent", "Loading saved agents…")}`);
+					hitRows.push(undefined);
+				}
+			} else {
+				const emptyState = [
+					`${theme.fg("muted", theme.status.shadowed)} ${theme.bold("No agents in this session")}`,
+					theme.fg("dim", "Finished, parked, and killed subagents remain with the session that created them."),
+					theme.fg("dim", "Resume that session with omp-dev --continue, or spawn a task here."),
+				];
+				for (const line of emptyState.slice(0, budget)) {
+					lines.push(line);
+					hitRows.push(undefined);
+				}
 			}
-			const end = Math.min(start + maxVisible, this.#rows.length);
-			for (let i = start; i < end; i++) {
-				lines.push(this.#renderRow(this.#rows[i], i === this.#selectedRow, width));
+		} else if (budget > 0) {
+			const window = this.#renderRosterWindow(width, budget, observedById);
+			lines.push(...window.lines);
+			hitRows.push(...window.hitRows);
+		}
+		for (const notice of noticeLines) {
+			lines.push(notice);
+			hitRows.push(undefined);
+		}
+		while (lines.length < rows) {
+			lines.push("");
+			hitRows.push(undefined);
+		}
+		return { lines: lines.slice(0, rows), hitRows: hitRows.slice(0, rows) };
+	}
+
+	#renderRosterWindow(
+		width: number,
+		budget: number,
+		_observedById: ReadonlyMap<string, ObservableSession>,
+	): RosterRender {
+		const lines: string[] = [];
+		const hitRows: Array<number | undefined> = [];
+		const rendered = new Map<number, string[]>();
+		const entryAt = (index: number): string[] => {
+			const cached = rendered.get(index);
+			if (cached) return cached;
+			const entry = this.#renderEntry(
+				this.#rows[index],
+				index === this.#selectedRow,
+				width,
+				this.#observableFor(this.#rows[index].id),
+				index === this.#hoveredRow,
+			);
+			rendered.set(index, entry);
+			return entry;
+		};
+		const appendEntry = (index: number, entry = entryAt(index)): void => {
+			for (const line of entry) {
+				lines.push(line);
+				hitRows.push(index);
 			}
-			if (end < this.#rows.length) {
-				lines.push(` ${theme.fg("dim", `… ${this.#rows.length - end} more`)}`);
-			}
+		};
+
+		let start = this.#selectedRow;
+		let end = this.#selectedRow + 1;
+		let used = entryAt(this.#selectedRow).length;
+		if (used > budget) {
+			appendEntry(this.#selectedRow, entryAt(this.#selectedRow).slice(0, budget));
+			return { lines, hitRows };
 		}
 
-		if (this.#notice) {
-			lines.push(` ${theme.fg("error", sanitizeLine(this.#notice, Math.max(10, width - 2)))}`);
-		}
-		if (this.#renameInput) {
-			const ref = this.#registry.get(this.#renameInput.id);
-			if (ref) {
-				lines.push(
-					` ${theme.fg("dim", "Rename:")} ${this.#renameInput.buffer}${theme.fg("accent", theme.nav.cursor)}`,
-				);
+		// Grow a window around the selection. Only visible entries are rendered,
+		// so the 5,000-agent Hub retains bounded paint cost.
+		for (let grew = true; grew; ) {
+			grew = false;
+			if (end < this.#rows.length) {
+				const next = entryAt(end);
+				if (used + next.length <= budget) {
+					used += next.length;
+					end++;
+					grew = true;
+				}
+			}
+			if (start > 0) {
+				const previous = entryAt(start - 1);
+				if (used + previous.length <= budget) {
+					start--;
+					used += previous.length;
+					grew = true;
+				}
 			}
 		}
-		lines.push("");
-		if (this.#renameInput) {
-			lines.push(` ${theme.fg("dim", "Enter:save  Esc:cancel")}`);
-		} else if (this.#filterInput !== undefined) {
-			lines.push(` ${theme.fg("dim", `Filter: ${this.#filterInput}  Enter:apply  Esc:clear`)}`);
-		} else if (this.#kanbanSyncMode) {
-			lines.push(` ${theme.fg("dim", "j/k:select  Enter:sync  a:sync all  Esc:table  q:close")}`);
-		} else {
-			const selected = this.#selectedRef();
-			const hints = selected ? this.#getAdaptiveHints(selected) : "j/k:select  K:kanban  q:close";
-			lines.push(` ${theme.fg("dim", hints)}`);
+		// Overflow labels consume real rows. Trim the farthest visible neighbors
+		// before painting them so the selected entry and both labels fit.
+		for (
+			let markerRows = Number(start > 0) + Number(end < this.#rows.length);
+			used + markerRows > budget && start < end;
+			markerRows = Number(start > 0) + Number(end < this.#rows.length)
+		) {
+			if (end - 1 > this.#selectedRow) {
+				end--;
+				used -= entryAt(end).length;
+			} else if (start < this.#selectedRow) {
+				used -= entryAt(start).length;
+				start++;
+			} else {
+				break;
+			}
 		}
-		lines.push(...new DynamicBorder().render(width));
+		const showTopOverflow = start > 0 && used < budget;
+		const showBottomOverflow = end < this.#rows.length && used + Number(showTopOverflow) < budget;
+		if (showTopOverflow) {
+			lines.push(theme.fg("dim", `… ${start} more`));
+			hitRows.push(undefined);
+		}
+		for (let i = start; i < end; i++) appendEntry(i);
+		if (showBottomOverflow) {
+			lines.push(theme.fg("dim", `… ${this.#rows.length - end} more`));
+			hitRows.push(undefined);
+		}
+		return { lines, hitRows };
+	}
+
+	#summaryLines(width: number): string[] {
+		const active = (label: string): string => theme.bg("selectedBg", theme.bold(theme.fg("accent", ` ${label} `)));
+		const inactive = (label: string): string => theme.fg("muted", ` ${label} `);
+		const projection =
+			this.#viewMode === "roster"
+				? `${active("Flat")}${theme.fg("dim", "/")}${inactive("By parent")}`
+				: `${inactive("Flat")}${theme.fg("dim", "/")}${active("By parent")}`;
+		const counts = this.#statusSummary();
+		const header = `${theme.bold("Roster")}${theme.fg("dim", theme.sep.dot)}${projection}${counts ? theme.fg("dim", theme.sep.dot) + counts : ""}`;
+		const lines = wrapTextWithAnsi(header, Math.max(1, width));
+
+		const metrics = this.#aggregate;
+		if (metrics.reportedAgents === 0) {
+			lines.push(
+				...wrapTextWithAnsi(
+					theme.fg("dim", `Usage —${theme.sep.dot}0/${this.#rows.length} measured`),
+					Math.max(1, width),
+				),
+			);
+			return lines;
+		}
+		const activeTime = formatMetricDuration(metrics);
+		const usage = [
+			theme.fg("statusLineCost", formatCost(metrics.cost)),
+			theme.fg("dim", activeTime ? `${activeTime} agent time` : "agent time —"),
+			theme.fg("dim", `${formatNumber(metrics.requests)} req`),
+			theme.fg("dim", `${formatNumber(metrics.tools)} tools`),
+			theme.fg("dim", `${formatNumber(metrics.tokens)} tok`),
+			theme.fg("dim", `${metrics.activeDurationAgents}/${metrics.reportedAgents} timed`),
+			theme.fg("dim", `${metrics.reportedAgents}/${this.#rows.length} measured`),
+		].join(theme.fg("dim", theme.sep.dot));
+		lines.push(...wrapTextWithAnsi(usage, Math.max(1, width)));
 		return lines;
 	}
 
 	// renderMainHeader deleted; Main renders as a selectable depth-0 row.
 
 	#statusSummary(): string {
-		// Claude Code jobs-list style: outcome counts across session lanes first,
-		// then the subagent tally.
-		const outcomes = new Map<string, number>();
-		let laneCount = 0;
-		for (const row of this.#rows) {
-			if (!isLane(row.ref)) continue;
-			laneCount++;
-			const outcome = laneOutcome(row.ref);
-			if (outcome) outcomes.set(outcome.label, (outcomes.get(outcome.label) ?? 0) + 1);
-		}
 		const parts: string[] = [];
-		for (const [label, key] of [
-			["Needs input", "awaiting input"],
-			["Working", "working"],
-			["Done", "completed"],
-			["Failed", "failed"],
-		] as const) {
-			const count = outcomes.get(label);
-			if (count) parts.push(`${count} ${key}`);
-		}
-		if (parts.length === 0 && laneCount > 0) {
-			parts.push(`${laneCount} ${laneCount === 1 ? "session" : "sessions"}`);
-		}
-		const subagentRows = this.#rows.filter(row => !isLane(row.ref) && !isFolder(row.ref));
-		if (subagentRows.length > 0) {
-			parts.push(`${subagentRows.length} ${subagentRows.length === 1 ? "agent" : "agents"}`);
+		for (const status of ["running", "idle", "parked", "aborted"] as const) {
+			const count = this.#statusCounts[status];
+			if (count > 0) parts.push(`${statusGlyph(status)} ${statusText(status, `${count} ${status}`)}`);
 		}
 		return parts.join(theme.sep.dot);
 	}
 
-	#getAdaptiveHints(ref: HubAgentRef): string {
-		const base = "j/k:select  ";
-		if (isFolder(ref)) {
-			const verb = this.#collapsedFolders.has(ref.id) ? "expand" : "collapse";
-			return `${base}Space:${verb}  /:filter  q:close`;
-		}
-		if (ref.id === MAIN_AGENT_ID) {
-			const verb = this.#expandedLanes.has(ref.id) ? "collapse" : "expand";
-			return `${base}Space:${verb}  Enter:focus  /:filter  q:close`;
-		}
-		if (ref.kind === "background") {
-			if (isBackgroundLane(ref)) {
-				const verb = this.#expandedLanes.has(ref.id) ? "collapse" : "expand";
-				return `${base}Space:${verb}  Enter:resume  /:filter  q:close`;
-			}
-			return `${base}Enter:open session  /:filter  q:close`;
-		}
-		switch (ref.status) {
-			case "running":
-				return `${base}Enter:focus  c:chat  r:rename  x×2:kill  K:kanban  q:close`;
-			case "parked":
-				return `${base}Enter:open  c:chat  r:rename  R:revive  x×2:remove  K:kanban  q:close`;
-			case "idle":
-				return `${base}Enter:focus  c:chat  r:rename  R:revive  x×2:remove  K:kanban  q:close`;
-			case "aborted":
-				return `${base}c:chat  r:rename  x×2:remove  K:kanban  q:close`;
-			default:
-				return `${base}Enter:focus  c:chat  r:rename  R:revive  x×2:remove  K:kanban  q:close`;
-		}
+	#refreshAggregate(refreshFallback = false): void {
+		const result = aggregateMetrics({
+			rows: this.#rows,
+			observedById: this.#observedById,
+			metricsFor: (ref, observed) => this.#metricsFor(ref, observed),
+			fallbackStatsSession: (ref, observed) => this.#fallbackStatsSession(ref, observed),
+			sessionMetrics: this.#sessionMetrics,
+			refreshFallback,
+		});
+		this.#aggregate = result.metrics;
+		this.#hasFallbackLiveSessions = result.hasFallbackLiveSessions;
 	}
 
-	#renderRow(row: HubRow, selected: boolean, width: number): string {
-		const { ref } = row;
-		const cursor = selected ? theme.fg("accent", theme.nav.cursor) : " ";
-		const color = rosterColor(ref.color);
-		const lane = isLane(ref);
-		const folder = isFolder(ref);
-		const expanded = folder ? !this.#collapsedFolders.has(ref.id) : this.#expandedLanes.has(ref.id);
-		const caret = lane || folder ? `${expanded ? "▾" : "▸"} ` : "";
-		const label =
-			ref.id === MAIN_AGENT_ID
-				? `${caret}current session`
-				: folder
-					? `${caret}${ref.cwd ? shortenPath(ref.cwd) : ref.displayName}`
-					: ref.kind === "background"
-						? `${caret}${ref.displayName}`
-						: ref.id;
-		const idText = color ? theme.bold(theme.fg(color, replaceTabs(label))) : theme.bold(replaceTabs(label));
-		const parts: string[] = lane || folder ? [idText] : [statusBadge(ref.status), idText];
-		if (folder) {
-			const count = ref.laneCount ?? 0;
-			const bits: string[] = [];
-			if (ref.isCurrentFolder) bits.push("current");
-			bits.push(`${count} ${count === 1 ? "session" : "sessions"}`);
-			parts.push(theme.fg("muted", bits.join(theme.sep.dot)));
-		} else if (ref.id === MAIN_AGENT_ID) {
-			const outcome = laneOutcome(ref);
-			if (outcome) parts.push(theme.fg(outcome.color, outcome.label));
-			const subCount = this.#registry.list().filter(r => r.id !== MAIN_AGENT_ID).length;
-			if (subCount > 0) {
-				parts.push(theme.fg("muted", `${subCount} ${subCount === 1 ? "agent" : "agents"}`));
+	#observableFor(id: string): ObservableSession | undefined {
+		return this.#observedById.get(id) ?? this.#observers.getSession(id);
+	}
+
+	#renderDetailPanel(
+		ref: AgentRef | undefined,
+		width: number,
+		rows: number,
+		_observedById: ReadonlyMap<string, ObservableSession>,
+	): string[] {
+		if (!ref) return [theme.fg("dim", "Select an agent to inspect"), ...Array.from({ length: rows - 1 }, () => "")];
+		const observed = this.#observableFor(ref.id);
+		const progress = observed?.progress;
+		const metrics = this.#metricsFor(ref, observed);
+		const children = this.#childrenByParent.get(ref.id) ?? [];
+		const lines: string[] = [];
+		const add = (line = ""): void => {
+			lines.push(truncateToWidth(line, width));
+		};
+		const addWrapped = (text: string, maxRows = 2): void => {
+			for (const wrapped of wrapTextWithAnsi(sanitizeLine(text), Math.max(1, width)).slice(0, maxRows)) add(wrapped);
+		};
+		const section = (label: string, contentRows = 0): void => {
+			if (lines.length > 0 && lines.length + 1 + contentRows < rows) add();
+			add(theme.bold(theme.fg("accent", label)));
+		};
+
+		add(`${statusGlyph(ref.status)} ${theme.bold(sanitizeDisplayText(ref.displayName || ref.id))}`);
+		if (ref.displayName && ref.displayName !== ref.id) add(theme.fg("dim", sanitizeDisplayText(ref.id)));
+		const lifecycleDetails = [
+			metrics ? formatMetricDuration(metrics) : undefined,
+			`active ${formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000)))}`,
+		].filter(Boolean);
+		add(
+			`${statusText(ref.status, ref.status)}${theme.fg("dim", `${theme.sep.dot}${lifecycleDetails.join(theme.sep.dot)}`)}`,
+		);
+		const modelDetails: string[] = [];
+		const modelRole = progress?.modelRole ?? ref.history?.modelRole;
+		if (modelRole && this.#settings) modelDetails.push(formatRoleBadge(modelRole, this.#settings));
+		const badge = modelBadge(ref, observed);
+		if (badge) modelDetails.push(badge);
+		if (modelDetails.length > 0) add(modelDetails.join(theme.sep.dot));
+
+		const task = observed?.description ?? progress?.task ?? ref.activity;
+		if (task) {
+			section("Task");
+			addWrapped(task);
+		}
+
+		const current = progress?.currentTool
+			? `${progress.currentTool}${progress.currentToolArgs ? ` · ${progress.currentToolArgs}` : ""}`
+			: (progress?.lastIntent ?? ref.activity);
+		if (current) {
+			section("Current");
+			addWrapped(current);
+			if (progress?.retryState) {
+				add(theme.fg("warning", `retry ${progress.retryState.attempt}/${progress.retryState.maxAttempts}`));
 			}
-		} else if (ref.kind === "background") {
-			if (lane) {
-				const outcome = laneOutcome(ref);
-				if (outcome) parts.push(theme.fg(outcome.color, outcome.label));
-				const preview = lanePreview(ref);
-				if (preview) parts.push(theme.fg("muted", sanitizeLine(preview, TRUNCATE_LENGTHS.TITLE)));
-				const subCount = this.#backgroundSubagents.get(ref.id)?.length ?? 0;
-				if (subCount > 0) {
-					parts.push(theme.fg("dim", `${subCount} ${subCount === 1 ? "agent" : "agents"}`));
-				}
-			} else {
-				parts.push(theme.fg("muted", "background subagent"));
+		}
+
+		section("Usage", 1);
+		if (metrics) {
+			addWrapped(formatMetrics(metrics), 3);
+			if (metrics.contextTokens !== undefined && metrics.contextWindow) {
+				add(contextGauge(metrics.contextTokens, metrics.contextWindow));
 			}
 		} else {
-			parts.push(theme.fg("dim", replaceTabs(ref.displayName)));
-			// Parentage is conveyed by the tree connectors, so the kind stands alone.
-			parts.push(theme.fg("dim", ref.kind));
+			add(theme.fg("dim", "usage —"));
 		}
-		// Surface the cwd only when it diverges from the parent's (CWD-aware spawns).
-		const parentCwd = this.#registry.get(ref.parentId ?? MAIN_AGENT_ID)?.cwd;
-		if (!folder && ref.cwd && ref.cwd !== parentCwd) {
-			parts.push(theme.fg("dim", `cwd ${replaceTabs(shortenPath(ref.cwd))}`));
+
+		section("Lineage");
+		add(
+			`Spawned by ${sanitizeDisplayText(ref.parentId ?? MAIN_AGENT_ID)}${children.length > 0 ? ` · ${children.length} children` : ""}`,
+		);
+		if (children.length > 0) add(theme.fg("dim", formatChildIds(children, width)));
+		add(theme.fg("dim", `Registered ${formatLocalDateTimeWithOffset(new Date(ref.createdAt))}`));
+
+		section("Changes");
+		add(
+			theme.fg(
+				"dim",
+				ref.kind === "advisor" || ref.history?.readOnly
+					? "Read-only · 0 LoC"
+					: "Shared workspace · per-agent LoC not attributable",
+			),
+		);
+		const artifacts = ref.history;
+		if (artifacts?.outputPath) addWrapped(`Output ${shortenPath(artifacts.outputPath)}`);
+		if (artifacts?.patchPath) addWrapped(`Patch ${shortenPath(artifacts.patchPath)}`);
+		if (artifacts?.branchName) addWrapped(`Worktree branch ${artifacts.branchName}`);
+
+		const maxScroll = Math.max(0, lines.length - rows);
+		this.#detailScrollOffset = Math.min(this.#detailScrollOffset, maxScroll);
+		const visible = lines.slice(this.#detailScrollOffset, this.#detailScrollOffset + rows);
+		while (visible.length < rows) visible.push("");
+		return visible;
+	}
+
+	/**
+	 * One agent entry keeps identity/model metadata on one line when it fits,
+	 * then packs task and all five usage metrics together below. Narrow rows wrap
+	 * only those dense secondary fields.
+	 */
+	#renderEntry(
+		ref: AgentRef,
+		selected: boolean,
+		width: number,
+		observed: ObservableSession | undefined,
+		hovered = false,
+	): string[] {
+		const max = Math.max(1, width);
+		const cursor = selected ? theme.fg("accent", theme.nav.cursor) : " ";
+		const depth = this.#viewMode === "tree" ? (this.#treeDepthById.get(ref.id) ?? 0) : 0;
+		const branch =
+			this.#viewMode === "tree"
+				? treeBranch(ref, max, this.#treeDepthById, this.#treeParentById, this.#treeLastSiblingById)
+				: "";
+		const id = sanitizeDisplayText(ref.id);
+		const styledId = selected ? theme.bold(theme.fg("accent", id)) : theme.bold(id);
+		const fields: string[] = [`${cursor} ${statusGlyph(ref.status)} ${branch}${styledId}`];
+		if (ref.displayName && ref.displayName !== ref.id) {
+			fields.push(theme.fg("dim", sanitizeDisplayText(ref.displayName)));
 		}
-		const observed = this.#observableFor(ref.id);
-		const task = observed?.description ?? observed?.progress?.task;
-		if (task) {
-			parts.push(theme.fg("muted", sanitizeLine(task, TRUNCATE_LENGTHS.TITLE)));
+		if (this.#viewMode === "roster" && ref.parentId && ref.parentId !== MAIN_AGENT_ID) {
+			fields.push(theme.fg("dim", `↳ ${sanitizeDisplayText(ref.parentId)}`));
+		}
+		if (ref.kind === "advisor") {
+			fields.push(theme.fg("warning", "read-only"));
 		}
 		const unread = this.#irc.unreadCount(ref.id);
 		if (unread > 0) {
-			parts.push(theme.fg("warning", `⧉ ${unread}`));
+			fields.push(theme.fg("warning", `⧉ ${unread}`));
 		}
-		if (isRegistryAgentRef(ref) && ref.needsAttention) {
-			const reason = ref.attentionReason
-				? truncateToWidth(ref.attentionReason, TRUNCATE_LENGTHS.TITLE)
-				: "needs response";
-			parts.push(theme.fg("warning", `⚠ ${reason}`));
+		const left = fields.join("  ");
+
+		const meta: string[] = [];
+		const modelRole = observed?.progress?.modelRole ?? ref.history?.modelRole;
+		if (modelRole && this.#settings) {
+			meta.push(formatRoleBadge(modelRole, this.#settings));
 		}
-		if (this.#kanbanSyncMode) {
-			const syncStatus = this.#kanbanSyncStatusByAgent.get(ref.id) ?? "not synced";
-			const colorName: ThemeColor = syncStatus.startsWith("✓")
-				? "success"
-				: syncStatus.startsWith("!")
-					? "error"
-					: "muted";
-			parts.push(theme.fg(colorName, syncStatus));
+		const badge = modelBadge(ref, observed);
+		if (badge) meta.push(badge);
+		meta.push(theme.fg("dim", formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000)))));
+		const right = meta.join(theme.sep.dot);
+
+		const leftWidth = visibleWidth(left);
+		const rightWidth = visibleWidth(right);
+		const entry: string[] = [];
+		const detailIndent = Math.min(max - 1, 4 + depth * 2);
+		if (leftWidth + 2 + rightWidth <= max) {
+			entry.push(left + padding(max - leftWidth - rightWidth) + right);
+		} else {
+			entry.push(truncateToWidth(left.replace(/[\r\n]+/g, " "), max));
+			entry.push(`${padding(Math.max(0, detailIndent))}${truncateToWidth(right, Math.max(1, max - detailIndent))}`);
 		}
 
-		const rawLine = ` ${cursor} ${theme.fg("dim", row.prefix)}${parts.join(theme.sep.dot)}`;
-		const sanitized = rawLine.replace(/[\r\n]+/g, " ");
-		// clampHubLine (render()) trims every hub line to width-2; build to that
-		// budget so the right-aligned age column survives the final clamp.
-		const maxWidth = Math.max(1, width - 2);
-		// Age renders as a right-aligned column (Claude Code jobs-list style); the
-		// folder header rows skip it — their lanes carry the meaningful timestamps.
-		const age = folder ? "" : formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000)));
-		const leftWidth = Math.max(1, maxWidth - (age ? visibleWidth(age) + 2 : 0));
-		const left = truncateToWidth(sanitized, leftWidth);
-		const padding = Math.max(age ? 2 : 0, maxWidth - visibleWidth(left) - visibleWidth(age));
-		const line = age ? `${left}${" ".repeat(padding)}${theme.fg("dim", age)}` : left;
-		// Selected row: wash the whole padded line with the selection background so
-		// the highlight is visible while navigating, not just the tiny cursor glyph.
-		if (selected) {
-			return theme.bg("selectedBg", truncateToWidth(line, maxWidth, Ellipsis.Omit, true));
+		const metrics = this.#metricsFor(ref, observed);
+		const usage = metrics ? theme.fg("dim", formatMetrics(metrics)) : theme.fg("dim", "usage —");
+		const task = observed?.description ?? observed?.progress?.task ?? ref.activity;
+		const detailWidth = Math.max(1, max - detailIndent);
+		const details = task
+			? `${theme.fg("muted", sanitizeLine(task, detailWidth))}${theme.fg("dim", theme.sep.dot)}${usage}`
+			: usage;
+		for (const wrapped of wrapTextWithAnsi(details, detailWidth)) {
+			entry.push(`${padding(Math.max(0, detailIndent))}${wrapped}`);
 		}
-		return truncateToWidth(line, maxWidth);
+		if (!hovered) return entry;
+		return entry.map(lineRow => {
+			const rowWidth = visibleWidth(lineRow);
+			return theme.bg("selectedBg", rowWidth < max ? lineRow + padding(max - rowWidth) : lineRow);
+		});
 	}
 
-	#handleKanbanSyncInput(keyData: string): void {
-		if (keyData === "q") {
-			this.#onDone();
-			return;
-		}
-		if (matchesKey(keyData, "escape")) {
-			this.#kanbanSyncMode = false;
-			this.#notice = undefined;
-			this.#requestRender();
-			return;
-		}
-		if (keyData === "j" || matchesSelectDown(keyData)) {
-			if (this.#rows.length > 0) this.#selectedRow = Math.min(this.#selectedRow + 1, this.#rows.length - 1);
-			this.#requestRender();
-			return;
-		}
-		if (keyData === "k" || matchesSelectUp(keyData)) {
-			if (this.#rows.length > 0) this.#selectedRow = Math.max(this.#selectedRow - 1, 0);
-			this.#requestRender();
-			return;
-		}
-		if (matchesKey(keyData, "enter") || keyData === "\r" || keyData === "\n") {
-			this.#syncSelectedAgentToKanban();
-			return;
-		}
-		if (keyData === "a") {
-			this.#syncAllAgentsToKanban();
-			return;
-		}
-	}
-
-	#clearPendingRemove(): void {
-		this.#pendingRemove = undefined;
-	}
-
-	#toggleLane(id: string): void {
-		this.#clearPendingRemove();
-		this.#notice = undefined;
-		if (this.#expandedLanes.has(id)) this.#expandedLanes.delete(id);
-		else this.#expandedLanes.add(id);
-		this.#refreshRows();
+	#scrollDetails(direction: -1 | 1): void {
+		this.#detailScrollOffset = Math.max(0, this.#detailScrollOffset + direction * 5);
 		this.#requestRender();
 	}
 
-	#toggleFolder(id: string): void {
-		this.#clearPendingRemove();
-		this.#notice = undefined;
-		if (this.#collapsedFolders.has(id)) this.#collapsedFolders.delete(id);
-		else this.#collapsedFolders.add(id);
-		this.#refreshRows();
+	#selectRow(index: number): void {
+		if (index !== this.#selectedRow) {
+			this.#detailScrollOffset = 0;
+			this.#detailAgentId = this.#rows[index]?.id;
+		}
+		this.#selectedRow = index;
+	}
+
+	handleWheel(delta: -1 | 1): void {
+		this.#hoveredRow = null;
+		if (this.#rows.length > 0) {
+			this.#selectRow(Math.max(0, Math.min(this.#selectedRow + delta, this.#rows.length - 1)));
+		}
 		this.#requestRender();
+	}
+
+	hitTest(line: number): number | undefined {
+		return this.#hitRows[line];
+	}
+
+	setHoverIndex(index: number | null): void {
+		if (index === this.#hoveredRow) return;
+		this.#hoveredRow = index;
+		this.#requestRender();
+	}
+
+	clickItem(index: number): void {
+		const selected = this.#rows[index];
+		if (!selected) return;
+		this.#hoveredRow = index;
+		this.#selectRow(index);
+		this.#requestRender();
+		this.#activateAgent(selected);
 	}
 
 	#handleTableInput(keyData: string): void {
@@ -1103,13 +1008,42 @@ export class AgentHubOverlayComponent extends Container {
 			return;
 		}
 		if (matchesKey(keyData, "escape")) {
-			this.#clearPendingRemove();
-			this.#onDone();
+			if (this.#narrowDetailsOpen && !this.#lastRenderWasSplit) {
+				this.#narrowDetailsOpen = false;
+				this.#requestRender();
+			} else {
+				this.#onDone();
+			}
+			return;
+		}
+		if ((matchesKey(keyData, "tab") || keyData === "\t") && !this.#lastRenderWasSplit) {
+			if (this.#rows.length > 0) this.#narrowDetailsOpen = !this.#narrowDetailsOpen;
+			this.#requestRender();
+			return;
+		}
+		if (this.#lastRenderWasSplit || this.#narrowDetailsOpen) {
+			if (matchesKey(keyData, "pageUp")) {
+				this.#scrollDetails(-1);
+				return;
+			}
+			if (matchesKey(keyData, "pageDown")) {
+				this.#scrollDetails(1);
+				return;
+			}
+		}
+		if (keyData === "t") {
+			this.#hoveredRow = null;
+			this.#viewMode = this.#viewMode === "roster" ? "tree" : "roster";
+			this.#refreshRows();
+			this.#requestRender();
 			return;
 		}
 		if (matchesKey(keyData, "left")) {
-			this.#clearPendingRemove();
-			this.#notice = undefined;
+			if (this.#narrowDetailsOpen && !this.#lastRenderWasSplit) {
+				this.#narrowDetailsOpen = false;
+				this.#requestRender();
+				return;
+			}
 			const now = Date.now();
 			if (now - this.#lastLeftTap < LEFT_TAP_WINDOW_MS) {
 				this.#lastLeftTap = 0;
@@ -1119,25 +1053,17 @@ export class AgentHubOverlayComponent extends Container {
 			}
 			return;
 		}
-		// x or ctrl+x triggers remove (double-tap confirmation)
-		if (keyData === "x" || matchesKey(keyData, "ctrl+x")) {
-			this.#handleRemoveTap();
-			return;
-		}
-		if (keyData === "j" || matchesSelectDown(keyData)) {
-			this.#clearPendingRemove();
-			this.#notice = undefined;
+		this.#hoveredRow = null;
+		if (matchesKey(keyData, "j") || matchesSelectDown(keyData)) {
 			if (this.#rows.length > 0) {
-				this.#selectedRow = Math.min(this.#selectedRow + 1, this.#rows.length - 1);
+				this.#selectRow(Math.min(this.#selectedRow + 1, this.#rows.length - 1));
 			}
 			this.#requestRender();
 			return;
 		}
-		if (keyData === "k" || matchesSelectUp(keyData)) {
-			this.#clearPendingRemove();
-			this.#notice = undefined;
+		if (matchesKey(keyData, "k") || matchesSelectUp(keyData)) {
 			if (this.#rows.length > 0) {
-				this.#selectedRow = Math.max(this.#selectedRow - 1, 0);
+				this.#selectRow(Math.max(this.#selectedRow - 1, 0));
 			}
 			this.#requestRender();
 			return;
@@ -1237,9 +1163,9 @@ export class AgentHubOverlayComponent extends Container {
 			return;
 		}
 		const focusAgent = this.#focusAgent;
-		// Advisor refs are read-only transcripts with no live/revivable session;
-		// open the in-hub chat view (file-backed) instead of trying to focus one.
-		if (ref.kind === "advisor" || this.#remote || !focusAgent) {
+		// Aborted agents and advisor refs are read-only transcripts with no
+		// revivable session; open the in-hub viewer instead of failing ensureLive.
+		if (ref.kind === "advisor" || ref.status === "aborted" || this.#remote || !focusAgent) {
 			this.openChat(ref.id);
 			return;
 		}
@@ -1612,8 +1538,7 @@ export class AgentHubOverlayComponent extends Container {
 				if (ref.status === "running" && ref.session) {
 					await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
 				}
-				await this.#lifecycle().release(ref.id);
-				this.#notice = `Removed agent "${ref.id}"`;
+				await this.#lifecycle().release(ref.id, ref, { tombstone: true });
 			} catch (error) {
 				logger.warn("Agent hub: remove failed", { id: ref.id, error: String(error) });
 				this.#notice = error instanceof Error ? error.message : String(error);

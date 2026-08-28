@@ -1,188 +1,191 @@
-import { describe, expect, it } from "bun:test";
-import type { AuthStorage, FetchImpl } from "@pk-nerdsaver-ai/pi-ai";
-import { searchDuckDuckGo } from "@pk-nerdsaver-ai/pi-coding-agent/web/search/providers/duckduckgo";
-import { SearchProviderError } from "@pk-nerdsaver-ai/pi-coding-agent/web/search/types";
+import { Database } from "bun:sqlite";
+import { afterAll, describe, expect, it } from "bun:test";
+import { AuthStorage, type FetchImpl, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
+import type { SearchParams } from "@oh-my-pi/pi-coding-agent/web/search/providers/base";
+import { searchDuckDuckGo } from "@oh-my-pi/pi-coding-agent/web/search/providers/duckduckgo";
+import { applyQueryConstraints, parseSearchQuery } from "@oh-my-pi/pi-coding-agent/web/search/query";
 
-const fakeAuthStorage = {
-	async getApiKey() {
-		throw new Error("DuckDuckGo must not request API keys");
-	},
-	resolver() {
-		throw new Error("DuckDuckGo must not request credential resolvers");
-	},
-	hasAuth() {
-		throw new Error("DuckDuckGo search must not check auth");
-	},
-} as unknown as AuthStorage;
+function duckResult(index: number): string {
+	return `<div class="result results_links"><a class="result__a" href="https://example.com/${index}">Result ${index}</a><a class="result__snippet">Snippet ${index}</a></div>`;
+}
 
-function makeParams(query: string, fetch: FetchImpl) {
+function duckPage(indices: readonly number[], continuation = false): string {
+	const results = indices.map(duckResult).join("\n");
+	if (!continuation) return results;
+	return `${results}
+		<div class="nav-link">
+			<form action="/html/" method="post">
+				<input type="submit" class="btn btn--alt" value="Next" />
+				<input type="hidden" name="q" value="open source software" />
+				<input value="10" type="hidden" name="s" />
+				<input type="hidden" name="nextParams" value="" />
+				<input type="hidden" name="v" value="l" />
+				<input type="hidden" name="o" value="json" />
+				<input type="hidden" name="dc" value="11" />
+				<input type="hidden" name="api" value="d.js" />
+				<input value="test-vqd" name="vqd" type="hidden" />
+				<input name="kl" value="us-en" type="hidden" />
+			</form>
+		</div>`;
+}
+
+describe("DuckDuckGo web search pagination", () => {
+	it("submits the returned continuation form to satisfy a 20-result limit", async () => {
+		const authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")));
+		const requests: URLSearchParams[] = [];
+		const fetchMock: FetchImpl = async (_input, init) => {
+			expect(init?.method).toBe("POST");
+			const body = new URLSearchParams(String(init?.body));
+			requests.push(body);
+			const html =
+				requests.length === 1
+					? duckPage([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], true)
+					: duckPage([9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+			return new Response(html, { status: 200 });
+		};
+
+		try {
+			const response = await searchDuckDuckGo({
+				query: "open source software",
+				limit: 20,
+				systemPrompt: "Test DuckDuckGo search",
+				authStorage,
+				fetch: fetchMock,
+			});
+
+			expect(requests).toHaveLength(2);
+			expect(Object.fromEntries(requests[0])).toEqual({ q: "open source software", kl: "us-en", b: "" });
+			expect(Object.fromEntries(requests[1])).toEqual({
+				q: "open source software",
+				s: "10",
+				nextParams: "",
+				v: "l",
+				o: "json",
+				dc: "11",
+				api: "d.js",
+				vqd: "test-vqd",
+				kl: "us-en",
+			});
+			expect(response.provider).toBe("duckduckgo");
+			expect(response.sources).toHaveLength(20);
+			expect(response.sources[0]?.url).toBe("https://example.com/0");
+			expect(response.sources.at(-1)?.url).toBe("https://example.com/19");
+		} finally {
+			authStorage.close();
+		}
+	});
+});
+
+const sharedAuthStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")));
+afterAll(() => sharedAuthStorage.close());
+
+function makeParams(query: string, fetch: FetchImpl): SearchParams {
 	return {
 		query,
-		authStorage: fakeAuthStorage,
-		systemPrompt: "DuckDuckGo test prompt",
+		authStorage: sharedAuthStorage,
+		systemPrompt: "DuckDuckGo search test prompt",
 		fetch,
-	} as const;
+	};
+}
+
+/** One result block in the shape DuckDuckGo's no-JS HTML page renders live. */
+function resultBlock(
+	url: string,
+	title: string,
+	snippet: string,
+	timestamp?: string,
+	snippetTag: "a" | "span" = "a",
+): string {
+	return `
+		<div class="result results_links results_links_deep web-result ">
+			<div class="links_main links_deep result__body">
+				<h2 class="result__title">
+					<a rel="nofollow" class="result__a" href="${url}">${title}</a>
+				</h2>
+				<div class="result__extras">
+					<div class="result__extras__url">
+						<span class="result__icon">
+							<a rel="nofollow" href="${url}"><img class="result__icon__img" width="16" height="16" alt="" src="//external-content.duckduckgo.com/ip3/example.ico" name="i15" /></a>
+						</span>
+						<a class="result__url" href="${url}">${url}</a>
+						${timestamp ? `<span>&nbsp; &nbsp; ${timestamp}</span>` : ""}
+					</div>
+				</div>
+				<${snippetTag} class="result__snippet" href="${url}">${snippet}</${snippetTag}>
+				<div class="clear"></div>
+			</div>
+		</div>`;
+}
+
+function resultsPage(blocks: string): string {
+	return `<!DOCTYPE html><html><body><div id="links" class="results">${blocks}<div class="nav-link"></div></div></body></html>`;
 }
 
 describe("DuckDuckGo web search provider", () => {
-	it("calls the official Instant Answer API with unauthenticated JSON query params", async () => {
-		let capturedUrl: string | null = null;
-		let capturedInit: RequestInit | undefined;
-		const fetchMock: FetchImpl = (input, init) => {
-			capturedUrl = typeof input === "string" ? input : input.toString();
-			capturedInit = init;
-			return Promise.resolve(
-				new Response(JSON.stringify({ AbstractText: "Duck answer", Results: [] }), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				}),
-			);
-		};
+	it("extracts result timestamps into publishedDate/ageSeconds so date bounds can be enforced", async () => {
+		const html = resultsPage(
+			[
+				resultBlock("https://example.com/fresh", "Fresh page", "A recent article.", "2026-07-30T20:19:00.0000000"),
+				resultBlock("https://example.com/undated", "Undated page", "No timestamp here."),
+			].join(""),
+		);
+		const fetchMock: FetchImpl = () => Promise.resolve(new Response(html, { status: 200 }));
 
-		await searchDuckDuckGo(makeParams("instant answer", fetchMock));
+		const response = await searchDuckDuckGo(makeParams("weather", fetchMock));
 
-		expect(capturedUrl).not.toBeNull();
-		const url = new URL(capturedUrl ?? "");
-		expect(`${url.origin}${url.pathname}`).toBe("https://api.duckduckgo.com/");
-		expect(url.searchParams.get("q")).toBe("instant answer");
-		expect(url.searchParams.get("format")).toBe("json");
-		expect(url.searchParams.get("no_redirect")).toBe("1");
-		expect(url.searchParams.get("no_html")).toBe("1");
-		expect(url.searchParams.get("skip_disambig")).toBe("1");
-		expect(url.searchParams.get("t")).toBe("oh-my-pi");
-		expect(capturedInit?.method).toBe("GET");
-		expect(capturedInit?.headers).toBeUndefined();
+		expect(response.provider).toBe("duckduckgo");
+		expect(response.sources).toHaveLength(2);
+
+		const dated = response.sources[0];
+		expect(dated.url).toBe("https://example.com/fresh");
+		expect(dated.publishedDate).toBe("2026-07-30T20:19:00.0000000");
+		expect(dated.ageSeconds).toBeGreaterThan(0);
+
+		const undated = response.sources[1];
+		expect(undated.url).toBe("https://example.com/undated");
+		expect(undated.publishedDate).toBeUndefined();
+		expect(undated.ageSeconds).toBeUndefined();
 	});
 
-	it("uses AbstractText as the answer and flattens abstract, result, and nested related topics within the local limit", async () => {
-		const fetchMock: FetchImpl = () =>
-			Promise.resolve(
-				new Response(
-					JSON.stringify({
-						AbstractText: "  DuckDuckGo <b>abstract</b> &amp; answer  ",
-						AbstractURL: " https://example.com/abstract ",
-						AbstractSource: " Example Abstract Source ",
-						Heading: "Example Heading",
-						Results: [
-							{
-								FirstURL: "https://example.com/result",
-								Text: "Result <i>snippet</i>",
-							},
-						],
-						RelatedTopics: [
-							{
-								FirstURL: "https://example.com/related",
-								Text: "Related topic",
-							},
-							{
-								Topics: [
-									{
-										FirstURL: "https://example.com/nested",
-										Text: "Nested related topic",
-									},
-								],
-							},
-							{
-								FirstURL: "https://example.com/omitted-by-limit",
-								Text: "Should be omitted by local limit",
-							},
-						],
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
+	it("does not mistake a date-leading span snippet for a publication timestamp", async () => {
+		const html = resultsPage(
+			resultBlock("https://example.com/undated-span", "Undated span result", "2020-01-02", undefined, "span"),
+		);
+		const fetchMock: FetchImpl = () => Promise.resolve(new Response(html, { status: 200 }));
+
+		const response = await searchDuckDuckGo(makeParams("history", fetchMock));
+
+		expect(response.sources[0].publishedDate).toBeUndefined();
+		expect(response.sources[0].ageSeconds).toBeUndefined();
+	});
+
+	it("honors after:/before: bounds against DuckDuckGo's extracted timestamps", async () => {
+		const html = resultsPage(
+			[
+				resultBlock(
+					"https://example.com/in-range",
+					"In range",
+					"Within the window.",
+					"2026-07-10T09:00:00.0000000",
 				),
-			);
-
-		const response = await searchDuckDuckGo({ ...makeParams("duck mapping", fetchMock), numSearchResults: 4 });
-
-		expect(response).toMatchObject({
-			provider: "duckduckgo",
-			answer: "DuckDuckGo abstract & answer",
-			sources: [
-				{
-					title: "Example Abstract Source",
-					url: "https://example.com/abstract",
-					snippet: "DuckDuckGo abstract & answer",
-				},
-				{
-					title: "Result snippet",
-					url: "https://example.com/result",
-					snippet: "Result snippet",
-				},
-				{
-					title: "Related topic",
-					url: "https://example.com/related",
-					snippet: "Related topic",
-				},
-				{
-					title: "Nested related topic",
-					url: "https://example.com/nested",
-					snippet: "Nested related topic",
-				},
-			],
-		});
-		expect(response.sources).toHaveLength(4);
-		expect(response.sources.some(source => source.url === "https://example.com/omitted-by-limit")).toBe(false);
-	});
-
-	it("clamps oversized local result limits to DuckDuckGo's provider maximum", async () => {
-		const fetchMock: FetchImpl = () =>
-			Promise.resolve(
-				new Response(
-					JSON.stringify({
-						RelatedTopics: Array.from({ length: 25 }, (_value, index) => ({
-							FirstURL: `https://example.com/topic-${index}`,
-							Text: `Topic ${index}`,
-						})),
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
+				resultBlock(
+					"https://example.com/too-new",
+					"Too new",
+					"After the window ends.",
+					"2026-07-30T09:00:00.0000000",
 				),
-			);
+				resultBlock("https://example.com/undated", "Undated", "No timestamp, cannot prove violation."),
+			].join(""),
+		);
+		const fetchMock: FetchImpl = () => Promise.resolve(new Response(html, { status: 200 }));
 
-		const response = await searchDuckDuckGo({ ...makeParams("duck clamp", fetchMock), numSearchResults: 999 });
+		const query = "weather after:2026-07-01 before:2026-07-15";
+		const response = await searchDuckDuckGo(makeParams(query, fetchMock));
+		const { sources } = applyQueryConstraints(response.sources, parseSearchQuery(query));
 
-		expect(response.sources).toHaveLength(20);
-		expect(response.sources.at(0)?.url).toBe("https://example.com/topic-0");
-		expect(response.sources.at(-1)?.url).toBe("https://example.com/topic-19");
-		expect(response.sources.some(source => source.url === "https://example.com/topic-20")).toBe(false);
-	});
-
-	it.each([
-		["Answer", { Answer: "  Direct answer  " }, "Direct answer"],
-		["Definition", { Definition: "  Definition answer  " }, "Definition answer"],
-	] as const)("falls back to %s when AbstractText is absent", async (_field, payload, expectedAnswer) => {
-		const fetchMock: FetchImpl = () =>
-			Promise.resolve(
-				new Response(JSON.stringify(payload), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				}),
-			);
-
-		const response = await searchDuckDuckGo(makeParams("fallback answer", fetchMock));
-		expect(response).toMatchObject({
-			provider: "duckduckgo",
-			answer: expectedAnswer,
-		});
-	});
-
-	it("throws a provider-tagged SearchProviderError for HTTP failures", async () => {
-		const fetchMock: FetchImpl = () =>
-			Promise.resolve(
-				new Response("upstream unavailable", {
-					status: 503,
-				}),
-			);
-
-		try {
-			await searchDuckDuckGo(makeParams("http failure", fetchMock));
-			expect.unreachable("DuckDuckGo HTTP failure should reject");
-		} catch (error) {
-			expect(error).toBeInstanceOf(SearchProviderError);
-			expect(error).toMatchObject({
-				provider: "duckduckgo",
-				status: 503,
-				message: "DuckDuckGo API error (503): upstream unavailable",
-			});
-		}
+		const urls = sources.map(s => s.url);
+		expect(urls).toContain("https://example.com/in-range");
+		expect(urls).toContain("https://example.com/undated");
+		expect(urls).not.toContain("https://example.com/too-new");
 	});
 });

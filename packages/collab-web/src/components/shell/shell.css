@@ -435,6 +435,79 @@
 	flex: none;
 }
 
+.sh-composer-ask {
+	display: grid;
+	gap: 8px;
+}
+
+.sh-ask-title {
+	max-width: 880px;
+	margin: 0 auto;
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--fg);
+	white-space: pre-wrap;
+}
+
+.sh-ask-options {
+	display: grid;
+	gap: 6px;
+	max-width: 880px;
+	margin: 0 auto;
+}
+
+.sh-ask-option {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	width: 100%;
+	padding: 8px 10px;
+	color: var(--fg);
+	text-align: left;
+	background: var(--bg-inset);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.sh-ask-option:hover {
+	border-color: var(--ring);
+}
+
+.sh-ask-option-checked {
+	border-color: var(--accent);
+	background: var(--accent-muted);
+}
+
+.sh-ask-option-marker {
+	width: 18px;
+	font: 400 13px / 18px var(--font-mono);
+	color: var(--accent);
+}
+
+.sh-ask-option-copy {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+
+.sh-ask-option-label {
+	font-size: 13px;
+	font-weight: 500;
+}
+
+.sh-ask-option-description {
+	font-size: 12px;
+	line-height: 1.35;
+	color: var(--fg-muted);
+}
+
+.sh-ask-actions {
+	justify-content: flex-end;
+	max-width: 880px;
+	width: 100%;
+	margin: 0 auto;
+}
+
 .sh-queued {
 	padding: 1px 6px;
 	color: var(--accent);
@@ -645,10 +718,10 @@
 }
 
 .sh-connect-card {
-	align-self: center;
-	width: min(100% - 48px, 420px);
-	margin: auto;
+	width: 100%;
+	max-width: 380px;
 	padding: 28px;
+	position: relative;
 	display: flex;
 	flex-direction: column;
 	gap: 18px;
@@ -660,9 +733,26 @@
 
 .sh-connect-head {
 	display: flex;
-	align-items: flex-start;
+	align-items: center;
 	justify-content: space-between;
 	gap: 12px;
+}
+
+.sh-lockup {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	font: 500 15px / 1.5 var(--font-mono);
+	letter-spacing: 0.02em;
+	margin: 0;
+}
+
+.sh-lockup-mark {
+	width: 16px;
+	height: 16px;
+	flex: none;
+	background: var(--brand-mark-gradient);
+	border-radius: 4px;
 }
 
 .sh-connect-head h2 {
@@ -680,17 +770,15 @@
 	color: var(--accent);
 }
 
-.sh-lockup-mark {
-	width: 16px;
-	height: 16px;
-	flex: none;
-	background: var(--brand-mark-gradient);
-	border-radius: 4px;
+.sh-connect-sub {
+	font-size: 12px;
+	color: var(--fg-muted);
+	margin-top: -4px;
 }
 
 .sh-field-hint {
-	color: var(--fg-faint);
 	font-size: 11px;
+	color: var(--fg-faint);
 }
 
 .sh-field {
@@ -755,7 +843,7 @@
 		z-index: 30;
 		width: 280px;
 		max-width: 85vw;
-		border-right: 1px solid var(--border-strong);
+		border-left: 1px solid var(--border-strong);
 		box-shadow: var(--rail-mobile-shadow);
 	}
 
@@ -831,7 +919,9 @@
 	}
 	.sh-composer-input,
 	.sh-input,
-	.sh-input-mono {
+	.sh-input-mono,
+	.sh-ask-title,
+	.sh-ask-option-label {
 		font-size: 16px;
 	}
 }

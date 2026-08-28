@@ -21,10 +21,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ImageContent } from "@pk-nerdsaver-ai/pi-ai";
-import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { InputController } from "@pk-nerdsaver-ai/pi-coding-agent/modes/controllers/input-controller";
-import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 
 const ONE_PX_PNG = Buffer.from(
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
@@ -34,6 +34,7 @@ const ONE_PX_PNG = Buffer.from(
 function createCtx() {
 	const pasteText = vi.fn();
 	const insertText = vi.fn();
+	const insertAtom = vi.fn();
 	const requestRender = vi.fn();
 	const showStatus = vi.fn();
 	const pendingImages: ImageContent[] = [];
@@ -42,6 +43,7 @@ function createCtx() {
 		editor: {
 			pasteText,
 			insertText,
+			insertAtom,
 			imageLinks: undefined,
 			pendingImages,
 			pendingImageLinks,
@@ -53,7 +55,10 @@ function createCtx() {
 		} as unknown as InteractiveModeContext["sessionManager"],
 		showStatus,
 	} as unknown as InteractiveModeContext;
-	return { ctx, spies: { pasteText, insertText, requestRender, showStatus, pendingImages, pendingImageLinks } };
+	return {
+		ctx,
+		spies: { pasteText, insertText, insertAtom, requestRender, showStatus, pendingImages, pendingImageLinks },
+	};
 }
 
 describe("InputController.handleImagePaste (issue #3506)", () => {
@@ -86,7 +91,7 @@ describe("InputController.handleImagePaste (issue #3506)", () => {
 		expect(result).toBe(true);
 		// The path MUST NOT land in the editor as literal text — that's the user-visible bug.
 		expect(spies.pasteText).not.toHaveBeenCalled();
-		expect(spies.insertText).toHaveBeenCalled();
+		expect(spies.insertAtom).toHaveBeenCalled();
 		// The image is attached to the draft.
 		expect(spies.pendingImages.length).toBe(1);
 		expect(spies.pendingImages[0]?.type).toBe("image");

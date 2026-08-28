@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { FetchImpl } from "@pk-nerdsaver-ai/pi-ai/types";
-import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
+import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import {
 	buildExaRequestBody,
 	ExaProvider,
@@ -12,8 +12,8 @@ import {
 	resetExaSearchThrottleForTest,
 	searchExa,
 	synthesizeAnswer,
-} from "@pk-nerdsaver-ai/pi-coding-agent/web/search/providers/exa";
-import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
+} from "@oh-my-pi/pi-coding-agent/web/search/providers/exa";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 async function withLocalAuthStorage<T>(run: (authStorage: AuthStorage) => Promise<T>): Promise<T> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "web-search-exa-auth-"));
@@ -297,6 +297,122 @@ describe("searchExa", () => {
 			contents: { summary: { query: "shape test" } },
 		});
 	});
+	it("maps site:/before: directives to native Exa params with an operator-free query", async () => {
+		await withLocalAuthStorage(authStorage =>
+			new ExaProvider().search({
+				query: "vector db benchmarks site:qdrant.tech before:2025-01-01",
+				systemPrompt: "",
+				authStorage,
+				fetch: mockFetch(makeMockExaResponse()),
+			}),
+		);
+		expect(capturedRequestBody!.query).toBe("vector db benchmarks");
+		expect(capturedRequestBody!.includeDomains).toEqual(["qdrant.tech"]);
+		expect(capturedRequestBody!.endPublishedDate).toBe("2025-01-01");
+		expect(capturedRequestBody!.startPublishedDate).toBeUndefined();
+		expect(capturedRequestBody!.excludeDomains).toBeUndefined();
+	});
+
+	it("sends directive-free queries byte-identical with no domain/date params", async () => {
+		await withLocalAuthStorage(authStorage =>
+			new ExaProvider().search({
+				query: "plain natural language question",
+				systemPrompt: "",
+				authStorage,
+				fetch: mockFetch(makeMockExaResponse()),
+			}),
+		);
+		expect(capturedRequestBody).toEqual({
+			query: "plain natural language question",
+			numResults: 10,
+			type: "auto",
+			contents: { summary: { query: "plain natural language question" } },
+		});
+	});
+
+	it("paces consecutive Exa API requests by the configured delay", async () => {
+		resetSettingsForTest();
+		resetExaSearchThrottleForTest();
+		await Settings.init({ inMemory: true, overrides: { "exa.searchDelayMs": 25 } });
+		const requestTimes: number[] = [];
+		const fetchMock: FetchImpl = (_url, init) => {
+			requestTimes.push(Date.now());
+			if (init?.body) {
+				capturedRequestBody = JSON.parse(init.body as string);
+			}
+			return Promise.resolve(
+				new Response(JSON.stringify(makeMockExaResponse()), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		};
+
+		await searchExa({ query: "first paced request", fetch: fetchMock });
+		await searchExa({ query: "second paced request", fetch: fetchMock });
+
+		expect(requestTimes).toHaveLength(2);
+		expect(requestTimes[1] - requestTimes[0]).toBeGreaterThanOrEqual(20);
+	});
+
+	it("aborts while waiting for the configured Exa request delay", async () => {
+		resetSettingsForTest();
+		resetExaSearchThrottleForTest();
+		await Settings.init({ inMemory: true, overrides: { "exa.searchDelayMs": 1_000 } });
+		let fetchCount = 0;
+		const fetchMock: FetchImpl = () => {
+			fetchCount += 1;
+			return Promise.resolve(
+				new Response(JSON.stringify(makeMockExaResponse()), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		};
+
+		await searchExa({ query: "first request", fetch: fetchMock });
+		const controller = new AbortController();
+		const startedAt = Date.now();
+		const pending = searchExa({ query: "cancelled request", fetch: fetchMock, signal: controller.signal });
+		await Bun.sleep(0);
+		controller.abort(new Error("cancelled Exa throttle wait"));
+
+		await expect(pending).rejects.toThrow("cancelled Exa throttle wait");
+		expect(Date.now() - startedAt).toBeLessThan(250);
+		expect(fetchCount).toBe(1);
+	});
+
+	it("aborts while queued behind another Exa throttle wait", async () => {
+		resetSettingsForTest();
+		resetExaSearchThrottleForTest();
+		await Settings.init({ inMemory: true, overrides: { "exa.searchDelayMs": 1_000 } });
+		let fetchCount = 0;
+		const fetchMock: FetchImpl = () => {
+			fetchCount += 1;
+			return Promise.resolve(
+				new Response(JSON.stringify(makeMockExaResponse()), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		};
+
+		await searchExa({ query: "first request", fetch: fetchMock });
+		const secondController = new AbortController();
+		const thirdController = new AbortController();
+		const second = searchExa({ query: "second request", fetch: fetchMock, signal: secondController.signal });
+		const startedAt = Date.now();
+		const third = searchExa({ query: "third request", fetch: fetchMock, signal: thirdController.signal });
+		await Bun.sleep(0);
+		thirdController.abort(new Error("cancelled queued Exa throttle wait"));
+
+		await expect(third).rejects.toThrow("cancelled queued Exa throttle wait");
+		expect(Date.now() - startedAt).toBeLessThan(250);
+		expect(fetchCount).toBe(1);
+
+		secondController.abort(new Error("cleanup second Exa throttle wait"));
+		await expect(second).rejects.toThrow("cleanup second Exa throttle wait");
+	});
 
 	it("paces consecutive Exa API requests by the configured delay", async () => {
 		resetSettingsForTest();
@@ -394,6 +510,19 @@ describe("searchExa", () => {
 			),
 		});
 		expect(result.sources[0].snippet).toBe("summary here");
+	});
+
+	it("caps snippets at 500 characters", async () => {
+		const result = await searchExa({
+			query: "bounded snippet",
+			fetch: mockFetch(
+				makeMockExaResponse({
+					results: [{ title: "Long", url: "https://long.example", summary: "x".repeat(800) }],
+				}),
+			),
+		});
+
+		expect(result.sources[0].snippet).toHaveLength(500);
 	});
 
 	it("falls back to text when summary is null", async () => {
@@ -501,6 +630,67 @@ describe("searchExa", () => {
 			name: "web_search_exa",
 			arguments: { query: "no key" },
 		});
+	});
+
+	it("encodes MCP filters in the basic query, uses camel-case result count, and tags the request source", async () => {
+		delete process.env.EXA_API_KEY;
+		let headers: Record<string, string> | undefined;
+		const fetchMock: FetchImpl = (_url, init) => {
+			headers = init?.headers as Record<string, string> | undefined;
+			if (init?.body) capturedRequestBody = JSON.parse(init.body as string);
+			return Promise.resolve(
+				new Response(JSON.stringify({ jsonrpc: "2.0", id: "mcp-filtered", result: makeMockExaResponse() }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		};
+
+		await searchExa({
+			query: "vector databases",
+			num_results: 4,
+			include_domains: [" qdrant.tech "],
+			exclude_domains: ["spam.example"],
+			start_published_date: "2024-01-01",
+			end_published_date: "2025-01-01",
+			fetch: fetchMock,
+		});
+
+		expect(headers?.["x-exa-source"]).toBe("oh-my-pi");
+		expect(capturedRequestBody?.params).toEqual({
+			name: "web_search_exa",
+			arguments: {
+				query: "vector databases site:qdrant.tech -site:spam.example after:2024-01-01 before:2025-01-01",
+				numResults: 4,
+			},
+		});
+	});
+
+	it("explains how to escape the keyless MCP rate limit", async () => {
+		delete process.env.EXA_API_KEY;
+		const fetchMock: FetchImpl = () =>
+			Promise.resolve(new Response("too many requests", { status: 429, statusText: "Too Many Requests" }));
+
+		await expect(searchExa({ query: "rate limited", fetch: fetchMock })).rejects.toThrow(
+			"exa: MCP rate limit reached (429); configure an Exa API key for higher limits",
+		);
+	});
+
+	it("surfaces MCP tool-level errors", async () => {
+		delete process.env.EXA_API_KEY;
+		const fetchMock: FetchImpl = () =>
+			Promise.resolve(
+				new Response(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: "mcp-error",
+						result: { isError: true, content: [{ type: "text", text: "tool quota exceeded" }] },
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+			);
+
+		await expect(searchExa({ query: "tool error", fetch: fetchMock })).rejects.toThrow("tool quota exceeded");
 	});
 
 	it("parses Exa MCP plain-text payloads when API key is missing", async () => {

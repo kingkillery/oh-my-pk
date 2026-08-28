@@ -3,14 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ImageContent, TextContent } from "@pk-nerdsaver-ai/pi-ai";
-import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
-import { ReadTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/read";
-import { zip } from "@pk-nerdsaver-ai/pi-coding-agent/utils/zip";
-import * as scrapers from "@pk-nerdsaver-ai/pi-coding-agent/web/scrapers/types";
-import * as scraperUtils from "@pk-nerdsaver-ai/pi-coding-agent/web/scrapers/utils";
-import { removeSyncWithRetries, Snowflake } from "@pk-nerdsaver-ai/pi-utils";
+import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import * as scrapers from "@oh-my-pi/pi-coding-agent/web/scrapers/types";
+import * as scraperUtils from "@oh-my-pi/pi-coding-agent/web/scrapers/utils";
+import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { encodeArchive } from "@oh-my-pi/pi-utils/ar";
 
 function makeSession(testDir: string): ToolSession {
 	const sessionFile = path.join(testDir, "session.jsonl");
@@ -112,10 +112,10 @@ describe("read URL binary dispatch", () => {
 	});
 
 	it("lists a remote zip instead of dumping decoded bytes", async () => {
-		const zipBytes = zip({
-			"root.txt": Buffer.from("root file\n"),
-			"nested/data.txt": Buffer.from("nested file\n"),
-		});
+		const zipBytes = await encodeArchive("zip", [
+			["root.txt", "root file\n"],
+			["nested/data.txt", "nested file\n"],
+		]);
 		const url = uniqueUrl("archive", ".zip");
 		stubUrlBytes(zipBytes, "application/octet-stream");
 

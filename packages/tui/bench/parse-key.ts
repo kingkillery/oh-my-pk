@@ -1,5 +1,6 @@
 import { parseKey as nativeParseKey } from "@pk-nerdsaver-ai/pi-natives";
 import * as native from "../src/keys";
+import { makeBench } from "./_harness";
 import * as js from "./_jskey";
 import { makeBench } from "./_harness";
 

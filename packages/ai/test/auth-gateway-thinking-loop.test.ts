@@ -3,11 +3,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
-import { clearCustomApis } from "@pk-nerdsaver-ai/pi-ai/api-registry";
-import { startAuthGateway } from "@pk-nerdsaver-ai/pi-ai/auth-gateway";
-import { AuthStorage } from "@pk-nerdsaver-ai/pi-ai/auth-storage";
-import { createMockModel, registerMockApi } from "@pk-nerdsaver-ai/pi-ai/providers/mock";
-import { THINKING_LOOP_ERROR_MARKER } from "@pk-nerdsaver-ai/pi-ai/utils/thinking-loop";
+import { clearCustomApis } from "@oh-my-pi/pi-ai/api-registry";
+import { startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
+import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
+import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
+import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
+import { THINKING_LOOP_ERROR_MARKER } from "@oh-my-pi/pi-ai/utils/thinking-loop";
 
 /** A degenerate near-duplicate reasoning loop (the gemini-3.5-flash shape). */
 function loopThinking(): string {
@@ -25,17 +26,15 @@ afterEach(() => {
 	clearCustomApis();
 });
 
-describe("auth-gateway non-streaming thinking-loop cook", () => {
-	it("returns 200 with cooked output instead of a 502 when the model loops", async () => {
+describe("auth-gateway non-streaming thinking-loop retries", () => {
+	it("returns an error after three guarded looping attempts", async () => {
 		registerMockApi();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-thinking-loop-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
 		storage.setRuntimeApiKey("openrouter", "test-key");
 		const mock = createMockModel({ provider: "openrouter", id: "google/gemini-3.5-flash" });
-		// Three guarded attempts stall on the thinking loop; the fourth (cook) pass
-		// runs with the guard disabled and returns the visible answer.
 		for (let i = 0; i < 4; i++) {
-			mock.push({ content: [{ type: "thinking", thinking: loopThinking() }, "Final answer after cooking."] });
+			mock.push({ content: [{ type: "thinking", thinking: loopThinking() }, "Unreachable cooked answer."] });
 		}
 		const waitSpy = spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		const handle = startAuthGateway({
@@ -55,18 +54,12 @@ describe("auth-gateway non-streaming thinking-loop cook", () => {
 					stream: false,
 				}),
 			});
-			const body = (await res.json()) as {
-				error?: unknown;
-				choices?: Array<{ message?: { content?: string | null } }>;
-			};
+			const body = (await res.json()) as { error?: unknown };
 
-			expect(res.status).toBe(200);
-			expect(body.error).toBeUndefined();
-			expect(body.choices?.[0]?.message?.content).toContain("Final answer after cooking.");
-			// Three guarded stalls + one unguarded cook pass.
-			expect(mock.calls).toHaveLength(4);
-			expect(mock.calls[0]?.options?.loopGuard?.enabled).toBeUndefined();
-			expect(mock.calls[3]?.options?.loopGuard?.enabled).toBe(false);
+			expect(res.status).toBe(502);
+			expect(body.error).toBeDefined();
+			expect(mock.calls).toHaveLength(3);
+			expect(mock.calls.every(call => call.options?.loopGuard?.enabled !== false)).toBe(true);
 		} finally {
 			waitSpy.mockRestore();
 			await handle.close();
@@ -100,11 +93,88 @@ describe("auth-gateway non-streaming thinking-loop cook", () => {
 				}),
 			});
 
-			// A genuine error is never a loop stall, so the cook fallback must not mask it.
+			// A genuine error is never a loop stall, so loop retry handling must not mask it.
 			expect(res.status).toBe(502);
 			expect(mock.calls).toHaveLength(1);
 			expect(THINKING_LOOP_ERROR_MARKER.length).toBeGreaterThan(0);
 		} finally {
+			await handle.close();
+			storage.close();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("auth-gateway auth retry", () => {
+	it("treats structured generic quota errors as usage-limit blocks before invalidating credentials", async () => {
+		registerMockApi();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-quota-rotation-"));
+		const store = await SqliteAuthCredentialStore.open(path.join(dir, "auth.db"));
+		const storage = new AuthStorage(store);
+		await storage.set("mock", [
+			{ type: "api_key", key: "quota-key" },
+			{ type: "api_key", key: "healthy-key" },
+		]);
+		const markUsageLimitSpy = spyOn(storage, "markUsageLimitReached");
+		const invalidateSpy = spyOn(storage, "invalidateCredentialMatching");
+		let attempt = 0;
+		const mock = createMockModel({
+			provider: "mock",
+			id: "gateway-quota-model",
+			handler: (_context, options) => {
+				attempt += 1;
+				if (attempt === 1) {
+					throw new ProviderHttpError("Generic provider failure", 429, { code: "insufficient_quota" });
+				}
+				return { content: [`ok:${options?.apiKey ?? "missing"}`] };
+			},
+		});
+		const handle = startAuthGateway({
+			bind: "127.0.0.1:0",
+			bearerTokens: ["t"],
+			storage,
+			resolveModel: () => mock.model,
+			version: "test",
+		});
+		try {
+			const res = await fetch(`${handle.url}/v1/chat/completions`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				body: JSON.stringify({
+					model: "gateway-quota-model",
+					messages: [{ role: "user", content: "hi" }],
+					prompt_cache_key: "gw-quota-rotation",
+					stream: false,
+				}),
+			});
+			const body = (await res.json()) as {
+				choices?: Array<{ message?: { content?: string | null } }>;
+			};
+			const attemptedKeys = mock.calls.map(call => call.options?.apiKey);
+
+			expect(res.status).toBe(200);
+			expect(attemptedKeys).toHaveLength(2);
+			const [failedKey, retriedKey] = attemptedKeys;
+			if (typeof failedKey !== "string" || typeof retriedKey !== "string") {
+				throw new Error("expected gateway retries to use static API keys");
+			}
+			expect(body.choices?.[0]?.message?.content).toBe(`ok:${retriedKey}`);
+			expect(new Set([failedKey, retriedKey]).size).toBe(2);
+			expect(markUsageLimitSpy.mock.calls).toHaveLength(1);
+			const usageLimitCall = markUsageLimitSpy.mock.calls[0];
+			if (!usageLimitCall) {
+				throw new Error("expected usage-limit mark call");
+			}
+			const [usageLimitProvider, usageLimitSessionId, usageLimitOptions] = usageLimitCall;
+			expect(usageLimitProvider).toBe("mock");
+			expect(usageLimitSessionId).toBe("gw-quota-rotation");
+			expect(usageLimitOptions?.apiKey).toBe(failedKey);
+			expect(invalidateSpy.mock.calls).toHaveLength(0);
+			expect(store.listAuthCredentials("mock")).toHaveLength(2);
+			expect(await storage.getApiKey("mock", "gw-quota-rotation")).toBe(retriedKey);
+		} finally {
+			markUsageLimitSpy.mockRestore();
+			invalidateSpy.mockRestore();
 			await handle.close();
 			storage.close();
 			await fs.rm(dir, { recursive: true, force: true });

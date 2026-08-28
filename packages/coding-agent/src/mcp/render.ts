@@ -4,9 +4,10 @@
  * Provides structured display of MCP tool calls and results,
  * showing args and output in JSON tree format similar to task tool.
  */
-import type { Component } from "@pk-nerdsaver-ai/pi-tui";
+import { type Component, Markdown } from "@oh-my-pi/pi-tui";
+import { settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
-import type { Theme } from "../modes/theme/theme";
+import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 import {
 	formatArgsInline,
 	JSON_TREE_MAX_DEPTH_COLLAPSED,
@@ -120,6 +121,61 @@ export function renderMCPCall(args: Record<string, unknown>, theme: Theme, label
 	);
 }
 
+/** Render an MCP status/args prefix followed by Markdown-aware text output. */
+function renderMarkdownMCPResult(
+	result: { details?: MCPToolDetails; isError?: boolean },
+	trimmedOutput: string,
+	truncationWarning: string | null,
+	options: RenderResultOptions,
+	theme: Theme,
+	args?: Record<string, unknown>,
+): Component {
+	const markdown = new Markdown(trimmedOutput, 0, 0, getMarkdownTheme(), {
+		color: text => theme.fg("toolOutput", text),
+	});
+	return {
+		render(contentWidth: number): readonly string[] {
+			const lines: string[] = [];
+			const isError = result.isError ?? result.details?.isError ?? false;
+			const title = result.details ? `${result.details.serverName}/${result.details.mcpToolName}` : "MCP";
+			lines.push(
+				renderStatusLine(
+					isError ? { icon: "error", title } : { iconOverride: theme.styledSymbol("tool.mcp", "accent"), title },
+					theme,
+				),
+			);
+
+			if (options.expanded && args && Object.keys(args).length > 0) {
+				lines.push(theme.fg("dim", "Args"));
+				const tree = renderJsonTreeLines(
+					args,
+					theme,
+					JSON_TREE_MAX_DEPTH_EXPANDED,
+					JSON_TREE_MAX_LINES_EXPANDED,
+					JSON_TREE_SCALAR_LEN_EXPANDED,
+				);
+				lines.push(...tree.lines);
+				if (tree.truncated) lines.push(theme.fg("dim", "…"));
+				lines.push("");
+			}
+
+			const rendered = markdown.render(Math.max(1, contentWidth));
+			const maxOutputLines = options.expanded ? 12 : 4;
+			lines.push(...rendered.slice(0, maxOutputLines));
+			if (rendered.length > maxOutputLines) {
+				lines.push(
+					`${theme.fg("dim", `… ${rendered.length - maxOutputLines} more lines`)} ${formatExpandHint(theme, options.expanded, true)}`,
+				);
+			} else if (!options.expanded) {
+				lines.push(formatExpandHint(theme, options.expanded, true));
+			}
+			if (truncationWarning) lines.push(truncationWarning);
+			return lines;
+		},
+		invalidate(): void {},
+	};
+}
+
 /**
  * Render MCP tool result.
  */
@@ -134,6 +190,24 @@ export function renderMCPResult(
 	args?: Record<string, unknown>,
 ): Component {
 	const { expanded } = options;
+	const textContent = result.content?.find(c => c.type === "text")?.text ?? "";
+	const trimmedOutput = stripOutputNotice(textContent, result.details?.meta).trimEnd();
+	const truncationWarning = result.details?.meta?.truncation
+		? formatStyledTruncationWarning(result.details.meta, theme)
+		: null;
+	let parsedOutput: unknown;
+	let isJsonOutput = false;
+	if (trimmedOutput.startsWith("{") || trimmedOutput.startsWith("[")) {
+		try {
+			parsedOutput = JSON.parse(trimmedOutput);
+			isJsonOutput = true;
+		} catch {
+			// Non-JSON text beginning with a bracket is still eligible for Markdown.
+		}
+	}
+	if (trimmedOutput && settings.get("mcp.renderMarkdownResults") && !isJsonOutput) {
+		return renderMarkdownMCPResult(result, trimmedOutput, truncationWarning, options, theme, args);
+	}
 	return new WidthAwareText(
 		contentWidth => {
 			const lines: string[] = [];
@@ -162,64 +236,31 @@ export function renderMCPResult(
 				lines.push(""); // Blank line before output
 			}
 
-			// Output section. The bridge appends a deterministic text block for
-			// structured content so the model receives it. Remove only that exact
-			// generated block here and render the retained structured value as a
-			// JSON tree, while preserving every server-provided text block.
-			const structuredContent = result.details?.structuredContent;
-			const formattedStructured =
-				structuredContent === undefined ? undefined : formatMCPStructuredContent(structuredContent);
-			const textBlocks: string[] = [];
-			for (const item of result.content) {
-				if (item.type === "text" && typeof item.text === "string") {
-					textBlocks.push(item.text);
-				} else if (item.type === "image") {
-					textBlocks.push(`[Image: ${item.mimeType ?? "unknown"}]`);
-				}
-			}
-
-			// Strip the LLM-facing spill notice before parsing/rendering: a spilled
-			// result appends `[Showing… artifact://N]` to the body, which would break
-			// JSON detection and bury the recovery link. Surface it as a styled warning
-			// instead, mirroring the built-in read/bash/ssh/browser renderers.
-			const withoutNotice = stripOutputNotice(textBlocks.join("\n\n"), result.details?.meta);
-			const trimmedOutput = stripStructuredModelSuffix(
-				withoutNotice,
-				formattedStructured,
-				result.details?.meta?.truncation !== undefined,
-			).trimEnd();
-			const truncationWarning = result.details?.meta?.truncation
-				? formatStyledTruncationWarning(result.details.meta, theme)
-				: null;
+			// Output section. The body and spill metadata are normalized before
+			// component selection so the opt-in Markdown path can use its own renderer.
 
 			if (!trimmedOutput && structuredContent === undefined) {
 				lines.push(theme.fg("dim", "(no output)"));
 				return lines.join("\n");
 			}
 
-			let renderedTextAsTree = false;
-			if (
-				trimmedOutput &&
-				structuredContent === undefined &&
-				(trimmedOutput.startsWith("{") || trimmedOutput.startsWith("["))
-			) {
-				try {
-					const parsed: unknown = JSON.parse(trimmedOutput);
-					const maxDepth = expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
-					const maxLines = expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
-					const maxScalarLen = expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
-					const tree = renderMCPJsonTreeLines(parsed, theme, maxDepth, maxLines, maxScalarLen);
-					if (tree.lines.length > 0) {
-						lines.push(...tree.lines);
-						renderedTextAsTree = true;
-						if (!expanded) {
-							lines.push(formatExpandHint(theme, expanded, true));
-						} else if (tree.truncated) {
-							lines.push(theme.fg("dim", "…"));
-						}
+			// Preserve the existing structured JSON renderer regardless of the
+			// Markdown preference; JSON trees remain more useful than styled source.
+			if (isJsonOutput) {
+				const maxDepth = expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
+				const maxLines = expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
+				const maxScalarLen = expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
+				const tree = renderJsonTreeLines(parsedOutput, theme, maxDepth, maxLines, maxScalarLen);
+
+				if (tree.lines.length > 0) {
+					lines.push(...tree.lines);
+					if (!expanded) {
+						lines.push(formatExpandHint(theme, expanded, true));
+					} else if (tree.truncated) {
+						lines.push(theme.fg("dim", "…"));
 					}
-				} catch {
-					// Fall through to raw output.
+					if (truncationWarning) lines.push(truncationWarning);
+					return lines.join("\n");
 				}
 			}
 

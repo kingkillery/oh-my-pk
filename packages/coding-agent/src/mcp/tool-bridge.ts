@@ -3,11 +3,11 @@
  *
  * Converts MCP tool definitions to CustomTool format for the agent.
  */
-import type { AgentToolUpdateCallback } from "@pk-nerdsaver-ai/pi-agent-core";
-import type { TSchema } from "@pk-nerdsaver-ai/pi-ai";
-import { normalizeSchemaForMCP } from "@pk-nerdsaver-ai/pi-ai/utils/schema";
-import { untilAborted } from "@pk-nerdsaver-ai/pi-utils";
-import { INTENT_FIELD } from "@pk-nerdsaver-ai/pi-wire";
+import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type { ImageContent, TextContent, TSchema } from "@oh-my-pi/pi-ai";
+import { normalizeSchemaForMCP } from "@oh-my-pi/pi-ai/utils/schema";
+import { logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { SourceMeta } from "../capability/types";
 import type {
 	CustomTool,
@@ -15,24 +15,24 @@ import type {
 	CustomToolResult,
 	RenderResultOptions,
 } from "../extensibility/custom-tools/types";
+import { resolveLocalUrlToFile } from "../internal-urls/local-protocol";
 import type { Theme } from "../modes/theme/theme";
 import type { OutputMeta } from "../tools/output-meta";
+import { normalizeLocalScheme } from "../tools/path-utils";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
-import { callToolWithMRTR } from "./client";
-import { validateMCPStructuredContent } from "./output-schema-validator";
-import { formatMCPJsonValue, formatMCPStructuredContent, renderMCPCall, renderMCPResult } from "./render";
+import { callTool } from "./client";
+import { renderMCPCall, renderMCPResult } from "./render";
 import type {
-	MCPHostInteraction,
-	MCPInputRequiredResult,
-	MCPJsonValue,
+	MCPAuthChallenge,
+	MCPContent,
 	MCPServerConnection,
 	MCPToolCallParams,
+	MCPToolCallResult,
 	MCPToolDefinition,
 } from "./types";
-import { MCPInputRequiredError } from "./types";
 
-/** Reconnect callback: tears down stale connection, returns new one or null. */
-export type MCPReconnect = () => Promise<MCPServerConnection | null>;
+/** Reconnect callback: tears down a stale connection, optionally authorizing first. */
+export type MCPReconnect = (options?: { authChallenge?: MCPAuthChallenge }) => Promise<MCPServerConnection | null>;
 
 /**
  * Network-level and stale-session errors that warrant a reconnect + single retry.
@@ -113,13 +113,62 @@ function stripHarnessIntent(args: MCPToolArgs, inputSchema: MCPToolDefinition["i
 	return rest;
 }
 
+async function resolveOutboundLocalUrlArgs(
+	value: unknown,
+	context: CustomToolContext,
+	seen: WeakSet<object> = new WeakSet(),
+): Promise<unknown> {
+	if (typeof value === "string") {
+		const normalized = normalizeLocalScheme(value);
+		if (!normalized.startsWith("local://")) return value;
+		const localFile = await resolveLocalUrlToFile(normalized, {
+			cwd: context.sessionManager?.getCwd?.(),
+			settings: context.settings,
+			localProtocolOptions: context.localProtocolOptions,
+		});
+		return localFile?.path ?? value;
+	}
+	if (typeof value !== "object" || value === null) return value;
+	if (seen.has(value)) return value;
+	seen.add(value);
+
+	if (Array.isArray(value)) {
+		let resolved: unknown[] | undefined;
+		for (let index = 0; index < value.length; index++) {
+			const item = value[index];
+			const next = await resolveOutboundLocalUrlArgs(item, context, seen);
+			if (next === item && !resolved) continue;
+			resolved ??= value.slice();
+			resolved[index] = next;
+		}
+		return resolved ?? value;
+	}
+
+	const input = value as Record<string, unknown>;
+	let resolved: Record<string, unknown> | undefined;
+	for (const key in input) {
+		const item = input[key];
+		const next = await resolveOutboundLocalUrlArgs(item, context, seen);
+		if (next === item && !resolved) continue;
+		resolved ??= { ...input };
+		resolved[key] = next;
+	}
+	return resolved ?? value;
+}
+
 /**
  * Normalize raw tool params into the outbound `tools/call` arguments: strip
- * the harness intent field, then drop optional empty placeholders the server
- * declares but doesn't require.
+ * the harness intent field, drop optional empty placeholders the server
+ * declares but doesn't require, then translate session-local files to paths
+ * external MCP servers can read.
  */
-function prepareOutboundArgs(params: unknown, inputSchema: MCPToolDefinition["inputSchema"]): MCPToolArgs {
-	return omitUnusedOptionalArgs(stripHarnessIntent(normalizeToolArgs(params), inputSchema), inputSchema);
+async function prepareOutboundArgs(
+	params: unknown,
+	inputSchema: MCPToolDefinition["inputSchema"],
+	context: CustomToolContext,
+): Promise<MCPToolArgs> {
+	const args = omitUnusedOptionalArgs(stripHarnessIntent(normalizeToolArgs(params), inputSchema), inputSchema);
+	return (await resolveOutboundLocalUrlArgs(args, context)) as MCPToolArgs;
 }
 
 /** Details included in MCP tool results for rendering */
@@ -130,14 +179,10 @@ export interface MCPToolDetails {
 	mcpToolName: string;
 	/** Whether the call resulted in an error */
 	isError?: boolean;
-	/** Raw content blocks from the MCP response, including newer standard block types. */
-	rawContent?: unknown[];
-	/** Advertised output schema used to validate structured content. */
-	outputSchema?: MCPToolDefinition["outputSchema"];
-	/** Structured output returned by the MCP server. */
-	structuredContent?: MCPJsonValue;
-	/** Interim MRTR state retained only for the controlled unsupported-interaction error. */
-	inputRequired?: Omit<MCPInputRequiredResult, "resultType" | "_meta">;
+	/** Raw content from MCP response */
+	rawContent?: MCPContent[];
+	/** Structured metadata from the MCP response */
+	mcpMeta?: Record<string, unknown>;
 	/** Provider ID (e.g., "claude", "mcp-json") */
 	provider?: string;
 	/** Provider display name (e.g., "Claude Code", "MCP Config") */
@@ -146,11 +191,19 @@ export interface MCPToolDetails {
 	meta?: OutputMeta;
 }
 /**
- * Format MCP content for LLM consumption.
+ * Convert MCP content to agent content while retaining image payloads.
  */
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+function formatMCPContent(content: MCPContent[]): Array<TextContent | ImageContent> {
+	const blocks: Array<TextContent | ImageContent> = [];
+	let text = "";
+	const flushText = () => {
+		if (!text) return;
+		blocks.push({ type: "text", text });
+		text = "";
+	};
+	const appendText = (value: string) => {
+		text += text ? `\n\n${value}` : value;
+	};
 
 function isMCPJsonValue(value: unknown, ancestors = new WeakSet<object>()): value is MCPJsonValue {
 	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
@@ -179,34 +232,23 @@ function convertMCPContent(content: readonly unknown[]): CustomToolResult<MCPToo
 		}
 		switch (item.type) {
 			case "text":
-				if (typeof item.text === "string") {
-					converted.push({ type: "text", text: item.text });
-				} else {
-					converted.push({ type: "text", text: formatRetainedContentBlock("Invalid MCP text block", item) });
-				}
+				appendText(item.text);
 				break;
 			case "image":
-				if (typeof item.data === "string" && typeof item.mimeType === "string") {
-					converted.push({ type: "image", data: item.data, mimeType: item.mimeType });
-				} else {
-					converted.push({ type: "text", text: formatRetainedContentBlock("Invalid MCP image block", item) });
-				}
-				break;
-			case "audio":
-				converted.push({ type: "text", text: formatRetainedContentBlock("Audio content", item) });
+				flushText();
+				blocks.push(item);
 				break;
 			case "resource":
-				converted.push({ type: "text", text: formatRetainedContentBlock("Embedded resource", item) });
-				break;
-			case "resource_link":
-				converted.push({ type: "text", text: formatRetainedContentBlock("Resource link", item) });
-				break;
-			default:
-				converted.push({ type: "text", text: formatRetainedContentBlock("MCP content block", item) });
+				appendText(
+					item.resource.text
+						? `[Resource: ${item.resource.uri}]\n${item.resource.text}`
+						: `[Resource: ${item.resource.uri}]`,
+				);
 				break;
 		}
 	}
-	return converted;
+	flushText();
+	return blocks.length > 0 ? blocks : [{ type: "text", text: "" }];
 }
 
 function buildModelContent(
@@ -231,111 +273,26 @@ async function buildResult(
 	outputSchema?: MCPToolDefinition["outputSchema"],
 	provider?: string,
 	providerName?: string,
-): Promise<CustomToolResult<MCPToolDetails>> {
-	if (!isRecord(resultValue)) {
-		return {
-			content: [{ type: "text", text: "MCP protocol error: tools/call returned a non-object result." }],
-			details: { serverName, mcpToolName, isError: true, outputSchema, provider, providerName },
-			isError: true,
-		};
-	}
-
-	if (resultValue.resultType === "input_required") {
-		const inputRequired: MCPToolDetails["inputRequired"] = {
-			requestState: typeof resultValue.requestState === "string" ? resultValue.requestState : undefined,
-			inputRequests: isRecord(resultValue.inputRequests)
-				? (resultValue.inputRequests as MCPInputRequiredResult["inputRequests"])
-				: undefined,
-		};
-		return {
-			content: [
-				{
-					type: "text",
-					text:
-						"MCP protocol error: this tool requires client interaction, but MCP input-required host interaction " +
-						"is not implemented. Retry after the host can collect and return the requested input.",
-				},
-			],
-			details: {
-				serverName,
-				mcpToolName,
-				isError: true,
-				outputSchema,
-				inputRequired,
-				provider,
-				providerName,
-			},
-			isError: true,
-		};
-	}
-
-	const resultType = resultValue.resultType;
-	const invalidResultType = isModernConnection
-		? resultType !== "complete"
-		: resultType !== undefined && resultType !== "complete";
-	if (invalidResultType) {
-		const received =
-			resultType === undefined ? "missing resultType" : `unknown resultType ${JSON.stringify(resultType)}`;
-		return {
-			content: [
-				{
-					type: "text",
-					text: `MCP protocol error: tools/call returned ${received}; ${
-						isModernConnection
-							? 'modern responses must use resultType "complete" or "input_required"'
-							: "the result is not complete"
-					}.`,
-				},
-			],
-			details: {
-				serverName,
-				mcpToolName,
-				isError: true,
-				rawContent: Array.isArray(resultValue.content) ? resultValue.content : undefined,
-				outputSchema,
-				provider,
-				providerName,
-			},
-			isError: true,
-		};
-	}
-
-	const contentBlocks = Array.isArray(resultValue.content) ? resultValue.content : [];
-	const rawStructuredContent = resultValue.structuredContent;
-	const structuredContent =
-		rawStructuredContent === undefined || isMCPJsonValue(rawStructuredContent) ? rawStructuredContent : undefined;
+): CustomToolResult<MCPToolDetails> {
+	const content = formatMCPContent(result.content);
 	const details: MCPToolDetails = {
 		serverName,
 		mcpToolName,
-		isError: resultValue.isError === true,
-		rawContent: contentBlocks,
-		outputSchema,
-		structuredContent,
+		isError: result.isError,
+		rawContent: result.content,
+		mcpMeta: result._meta,
 		provider,
 		providerName,
 	};
-	const invalidStructuredContent =
-		rawStructuredContent !== undefined && structuredContent === undefined
-			? "structuredContent is not a valid JSON value"
-			: undefined;
-	const validationError =
-		invalidStructuredContent ?? (await validateMCPStructuredContent(outputSchema, structuredContent));
-	if (validationError) {
-		return {
-			content: [
-				{ type: "text", text: `MCP protocol error: ${validationError}` },
-				...buildModelContent(contentBlocks, structuredContent),
-			],
-			details: { ...details, isError: true },
-			isError: true,
-		};
+	if (result.isError) {
+		if (content[0]?.type === "text") {
+			content[0] = { type: "text", text: `Error: ${content[0].text}` };
+		} else {
+			content.unshift({ type: "text", text: "Error:" });
+		}
 	}
-
-	const toolResult: CustomToolResult<MCPToolDetails> = {
-		content: buildModelContent(contentBlocks, structuredContent),
-		details,
-	};
-	if (resultValue.isError === true) {
+	const toolResult: CustomToolResult<MCPToolDetails> = { content, details };
+	if (result.isError) {
 		toolResult.isError = true;
 	}
 	return toolResult;
@@ -358,6 +315,51 @@ function buildErrorResult(
 	};
 }
 
+type MCPToolCallAttempt = {
+	connection: MCPServerConnection;
+	result?: MCPToolCallResult;
+	error?: unknown;
+};
+
+function getMcpAuthChallenge(result: MCPToolCallResult): MCPAuthChallenge | undefined {
+	if (!result.isError) return undefined;
+	const values = result._meta?.["mcp/www_authenticate"];
+	if (!Array.isArray(values)) return undefined;
+	const wwwAuthenticate = values.filter((value): value is string => typeof value === "string" && value.trim() !== "");
+	return wwwAuthenticate.length > 0 ? { wwwAuthenticate } : undefined;
+}
+
+async function callToolWithAuthRetry(
+	connection: MCPServerConnection,
+	toolName: string,
+	args: MCPToolArgs,
+	reconnect: MCPReconnect | undefined,
+	signal?: AbortSignal,
+): Promise<MCPToolCallAttempt> {
+	const result = await callTool(connection, toolName, args, { signal });
+	const authChallenge = getMcpAuthChallenge(result);
+	if (!authChallenge || !reconnect) return { connection, result };
+
+	let newConnection: MCPServerConnection | null;
+	try {
+		newConnection = await reconnectWithAbort(reconnect, signal, { authChallenge });
+	} catch (error) {
+		rethrowIfAborted(error, signal);
+		return { connection, error };
+	}
+	if (!newConnection) return { connection, result };
+
+	try {
+		return {
+			connection: newConnection,
+			result: await callTool(newConnection, toolName, args, { signal }),
+		};
+	} catch (error) {
+		rethrowIfAborted(error, signal);
+		return { connection: newConnection, error };
+	}
+}
+
 /** Re-throw abort-related errors so they bypass error-result handling. */
 function rethrowIfAborted(error: unknown, signal?: AbortSignal): void {
 	if (error instanceof ToolAbortError) throw error;
@@ -365,9 +367,13 @@ function rethrowIfAborted(error: unknown, signal?: AbortSignal): void {
 	if (signal?.aborted) throwIfAborted(signal);
 }
 
-async function reconnectWithAbort(reconnect: MCPReconnect, signal?: AbortSignal): Promise<MCPServerConnection | null> {
+async function reconnectWithAbort(
+	reconnect: MCPReconnect,
+	signal?: AbortSignal,
+	options?: { authChallenge?: MCPAuthChallenge },
+): Promise<MCPServerConnection | null> {
 	try {
-		return await untilAborted(signal, reconnect);
+		return await untilAborted(signal, () => reconnect(options));
 	} catch (error) {
 		rethrowIfAborted(error, signal);
 		return null;
@@ -392,6 +398,29 @@ function sanitizeMCPToolNamePart(value: string, fallback: string): string {
 	return sanitized.length > 0 ? sanitized : fallback;
 }
 
+/**
+ * Longest tool name strict validators accept. OpenAI Responses/Completions and
+ * Meta Responses enforce `^[a-zA-Z0-9_-]{1,64}$`; names over 64 chars are
+ * rejected with HTTP 400 `name must be at most 64 characters` (#9130).
+ */
+const MAX_MCP_TOOL_NAME_LENGTH = 64;
+/** Length of the deterministic hash suffix appended when a minted name overflows. */
+const MCP_TOOL_NAME_HASH_LENGTH = 8;
+
+/**
+ * Cap a minted MCP tool name at {@link MAX_MCP_TOOL_NAME_LENGTH}. An overlong
+ * name keeps a readable prefix and gains a deterministic base-36 hash suffix of
+ * the full name, so distinct long names stay unique and the same name is stable
+ * across turns — the model must call the exact registry key, and the hash is
+ * seed-fixed so it never shifts between processes.
+ */
+function capMCPToolNameLength(name: string): string {
+	if (name.length <= MAX_MCP_TOOL_NAME_LENGTH) return name;
+	const hash = Bun.hash(name).toString(36).slice(0, MCP_TOOL_NAME_HASH_LENGTH);
+	const keep = MAX_MCP_TOOL_NAME_LENGTH - hash.length - 1;
+	return `${name.slice(0, keep)}_${hash}`;
+}
+
 export function createMCPToolName(serverName: string, toolName: string): string {
 	const sanitizedServerName = sanitizeMCPToolNamePart(serverName, "server");
 	const sanitizedToolName = sanitizeMCPToolNamePart(toolName, "tool");
@@ -404,7 +433,67 @@ export function createMCPToolName(serverName: string, toolName: string): string 
 		normalizedToolName = sanitizedToolName.slice(prefixWithUnderscore.length);
 	}
 
-	return `mcp__${sanitizedServerName}_${normalizedToolName}`;
+	return capMCPToolNameLength(`mcp__${sanitizedServerName}_${normalizedToolName}`);
+}
+
+export interface MCPToolOriginSource {
+	readonly name: string;
+	readonly mcpServerName?: unknown;
+	readonly mcpToolName?: unknown;
+}
+
+/** Stable identity for a tool's original MCP route, before its public name was normalized. */
+export function getMCPToolOriginKey(tool: MCPToolOriginSource): string | undefined {
+	if (typeof tool.mcpServerName !== "string" || typeof tool.mcpToolName !== "string") return undefined;
+	return `${tool.mcpServerName}\u0000${tool.mcpToolName}`;
+}
+
+/**
+ * Keeps one MCP tool per minted name and logs collisions between distinct MCP
+ * origins. The winner is chosen by a stable origin key (server name + original
+ * tool name), NOT array order: MCPManager re-appends a reconnecting server's
+ * tools, so insertion order is mutable across reconnects and first-wins would
+ * silently flip ownership of the minted name. Non-MCP tools pass through
+ * unchanged.
+ */
+export function deduplicateMCPToolsByName<T extends MCPToolOriginSource>(tools: readonly T[]): T[] {
+	const deduplicated: T[] = [];
+	const registered = new Map<string, { tool: T; originKey: string; index: number }>();
+
+	for (const tool of tools) {
+		const originKey = getMCPToolOriginKey(tool);
+		if (originKey === undefined) {
+			deduplicated.push(tool);
+			continue;
+		}
+		const existing = registered.get(tool.name);
+		if (!existing) {
+			registered.set(tool.name, { tool, originKey, index: deduplicated.length });
+			deduplicated.push(tool);
+			continue;
+		}
+
+		if (existing.originKey === originKey) continue;
+
+		// Deterministic winner regardless of encounter order across reconnects.
+		const keepExisting = existing.originKey < originKey;
+		const winner = keepExisting ? existing.tool : tool;
+		const loser = keepExisting ? tool : existing.tool;
+		if (!keepExisting) {
+			deduplicated[existing.index] = tool;
+			existing.tool = tool;
+			existing.originKey = originKey;
+		}
+		logger.warn("MCP tool name collision; keeping stable winner", {
+			name: tool.name,
+			keptServer: winner.mcpServerName,
+			keptTool: winner.mcpToolName,
+			ignoredServer: loser.mcpServerName,
+			ignoredTool: loser.mcpToolName,
+		});
+	}
+
+	return deduplicated;
 }
 
 /**
@@ -502,6 +591,13 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 	readonly approval = "write" as const;
 	/** Render completed MCP calls with the result header replacing the pending call header. */
 	readonly mergeCallAndResult = true;
+	/**
+	 * MCP-backed tools opt out of strict structured-output grammar. The server
+	 * owns validation, and strict mode makes OpenAI-family models over-fill
+	 * mutually exclusive optional fields (#4336/#4340). Serializers preserve an
+	 * explicit `false`; an omitted flag would leave nothing to preserve.
+	 */
+	readonly strict = false as const;
 
 	/** Create MCPTool instances for all tools from an MCP server connection */
 	readonly #disposalController = new AbortController();
@@ -573,59 +669,54 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		_ctx: CustomToolContext,
 		signal?: AbortSignal,
 	): Promise<CustomToolResult<MCPToolDetails>> {
-		const { signal: mergedSignal, cleanup } = composeSignals(signal, this.#disposalController.signal);
-		try {
-			throwIfAborted(mergedSignal);
-			const args = prepareOutboundArgs(params, this.tool.inputSchema);
-			const provider = this.connection._source?.provider;
-			const providerName = this.connection._source?.providerName;
+		throwIfAborted(signal);
+		const args = await prepareOutboundArgs(params, this.tool.inputSchema, _ctx);
+		const provider = this.connection._source?.provider;
+		const providerName = this.connection._source?.providerName;
 
-			try {
-				const result = await callToolWithMRTR(this.connection, this.tool.name, args, this.hostInteraction, {
-					signal: mergedSignal,
-				});
-				return await buildResult(
-					result,
-					this.connection.protocol?.era === "modern",
+		try {
+			const attempt = await callToolWithAuthRetry(this.connection, this.tool.name, args, this.reconnect, signal);
+			if (attempt.error !== undefined) {
+				return buildErrorResult(attempt.error, this.connection.name, this.tool.name, provider, providerName);
+			}
+			if (!attempt.result) {
+				return buildErrorResult(
+					new Error("MCP tool call returned no result"),
 					this.connection.name,
 					this.tool.name,
-					this.outputSchema,
 					provider,
 					providerName,
 				);
-			} catch (error) {
-				rethrowIfAborted(error, mergedSignal);
-				if (this.reconnect && !(error instanceof MCPInputRequiredError) && isRetriableConnectionError(error)) {
-					const newConn = await reconnectWithAbort(this.reconnect, mergedSignal);
-					if (newConn) {
-						// Rebind so subsequent calls on this instance use the fresh connection
-						this.connection = newConn;
-						const retryProvider = newConn._source?.provider ?? provider;
-						const retryProviderName = newConn._source?.providerName ?? providerName;
-						try {
-							const result = await callToolWithMRTR(newConn, this.tool.name, args, this.hostInteraction, {
-								signal: mergedSignal,
-							});
-							return await buildResult(
-								result,
-								newConn.protocol?.era === "modern",
-								newConn.name,
-								this.tool.name,
-								this.outputSchema,
-								retryProvider,
-								retryProviderName,
-							);
-						} catch (retryError) {
-							rethrowIfAborted(retryError, mergedSignal);
-							return buildErrorResult(
-								retryError,
-								this.connection.name,
-								this.tool.name,
-								this.outputSchema,
-								retryProvider,
-								retryProviderName,
-							);
-						}
+			}
+			this.connection = attempt.connection;
+			return buildResult(
+				attempt.result,
+				attempt.connection.name,
+				this.tool.name,
+				attempt.connection._source?.provider ?? provider,
+				attempt.connection._source?.providerName ?? providerName,
+			);
+		} catch (error) {
+			rethrowIfAborted(error, signal);
+			if (this.reconnect && isRetriableConnectionError(error)) {
+				const newConn = await reconnectWithAbort(this.reconnect, signal);
+				if (newConn) {
+					// Rebind so subsequent calls on this instance use the fresh connection
+					this.connection = newConn;
+					const retryProvider = newConn._source?.provider ?? provider;
+					const retryProviderName = newConn._source?.providerName ?? providerName;
+					try {
+						const result = await callTool(newConn, this.tool.name, args, { signal });
+						return buildResult(result, newConn.name, this.tool.name, retryProvider, retryProviderName);
+					} catch (retryError) {
+						rethrowIfAborted(retryError, signal);
+						return buildErrorResult(
+							retryError,
+							this.connection.name,
+							this.tool.name,
+							retryProvider,
+							retryProviderName,
+						);
 					}
 				}
 				return buildErrorResult(
@@ -660,6 +751,8 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 	readonly approval = "write" as const;
 	/** Render completed MCP calls with the result header replacing the pending call header. */
 	readonly mergeCallAndResult = true;
+	/** See {@link MCPTool.strict}: MCP servers own validation, so stay non-strict. */
+	readonly strict = false as const;
 
 	readonly #getConnection: () => Promise<MCPServerConnection>;
 	readonly #reconnect: MCPReconnect | undefined;
@@ -749,7 +842,11 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		_ctx: CustomToolContext,
 		signal?: AbortSignal,
 	): Promise<CustomToolResult<MCPToolDetails>> {
-		const { signal: mergedSignal, cleanup } = composeSignals(signal, this.#disposalController.signal);
+		throwIfAborted(signal);
+		const args = await prepareOutboundArgs(params, this.tool.inputSchema, _ctx);
+		const provider = this.#fallbackProvider;
+		const providerName = this.#fallbackProviderName;
+
 		try {
 			throwIfAborted(mergedSignal);
 			const args = prepareOutboundArgs(params, this.tool.inputSchema);
@@ -757,74 +854,36 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 			const providerName = this.#fallbackProviderName;
 
 			try {
-				const connection = await untilAborted(mergedSignal, () => this.#getConnection());
-				throwIfAborted(mergedSignal);
-				try {
-					const result = await callToolWithMRTR(connection, this.tool.name, args, this.#hostInteraction, {
-						signal: mergedSignal,
-					});
-					return await buildResult(
-						result,
-						connection.protocol?.era === "modern",
-						this.serverName,
-						this.tool.name,
-						this.outputSchema,
-						connection._source?.provider ?? provider,
-						connection._source?.providerName ?? providerName,
-					);
-				} catch (callError) {
-					rethrowIfAborted(callError, mergedSignal);
-					if (
-						this.#reconnect &&
-						!(callError instanceof MCPInputRequiredError) &&
-						isRetriableConnectionError(callError)
-					) {
-						const newConn = await reconnectWithAbort(this.#reconnect, mergedSignal);
-						if (newConn) {
-							const retryProvider = newConn._source?.provider ?? provider;
-							const retryProviderName = newConn._source?.providerName ?? providerName;
-							try {
-								const result = await callToolWithMRTR(newConn, this.tool.name, args, this.#hostInteraction, {
-									signal: mergedSignal,
-								});
-								return await buildResult(
-									result,
-									newConn.protocol?.era === "modern",
-									this.serverName,
-									this.tool.name,
-									this.outputSchema,
-									retryProvider,
-									retryProviderName,
-								);
-							} catch (retryError) {
-								rethrowIfAborted(retryError, mergedSignal);
-								return buildErrorResult(
-									retryError,
-									this.serverName,
-									this.tool.name,
-									this.outputSchema,
-									retryProvider,
-									retryProviderName,
-								);
-							}
-						}
-					}
+				const attempt = await callToolWithAuthRetry(connection, this.tool.name, args, this.reconnect, signal);
+				if (attempt.error !== undefined) {
 					return buildErrorResult(
-						callError,
+						attempt.error,
 						this.serverName,
 						this.tool.name,
-						this.outputSchema,
+						attempt.connection._source?.provider ?? provider,
+						attempt.connection._source?.providerName ?? providerName,
+					);
+				}
+				if (!attempt.result) {
+					return buildErrorResult(
+						new Error("MCP tool call returned no result"),
+						this.serverName,
+						this.tool.name,
 						provider,
 						providerName,
 					);
 				}
-			} catch (connError) {
-				// getConnection() failed — server never connected or connection lost.
-				// This is always worth a reconnect attempt for deferred tools, since the
-				// error ("MCP server not connected") isn't a network error from callTool.
-				rethrowIfAborted(connError, mergedSignal);
-				if (this.#reconnect) {
-					const newConn = await reconnectWithAbort(this.#reconnect, mergedSignal);
+				return buildResult(
+					attempt.result,
+					this.serverName,
+					this.tool.name,
+					attempt.connection._source?.provider ?? provider,
+					attempt.connection._source?.providerName ?? providerName,
+				);
+			} catch (callError) {
+				rethrowIfAborted(callError, signal);
+				if (this.reconnect && isRetriableConnectionError(callError)) {
+					const newConn = await reconnectWithAbort(this.reconnect, signal);
 					if (newConn) {
 						try {
 							const result = await callToolWithMRTR(newConn, this.tool.name, args, this.#hostInteraction, {

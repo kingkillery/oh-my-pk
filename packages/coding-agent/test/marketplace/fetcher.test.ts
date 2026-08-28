@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,8 +6,9 @@ import {
 	classifySource,
 	fetchMarketplace,
 	parseMarketplaceCatalog,
-} from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/plugins/marketplace";
-import { removeSyncWithRetries } from "@pk-nerdsaver-ai/pi-utils";
+} from "@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
+import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
 // Fixture lives at test/marketplace/fixtures/valid-marketplace/
 const FIXTURE_DIR = path.join(import.meta.dir, "fixtures", "valid-marketplace");
@@ -229,6 +230,24 @@ describe("fetchMarketplace", () => {
 		await expect(fetchMarketplace(empty, tmpDir)).rejects.toThrow(
 			/\.omp-plugin[\\/]marketplace\.json.*\.claude-plugin[\\/]marketplace\.json/,
 		);
+	});
+
+	it("hides temp clone paths in cloned catalog validation errors", async () => {
+		const cloneSpy = spyOn(vcs, "clone").mockImplementation(async (_url, targetDir) => {
+			fs.mkdirSync(path.join(targetDir, ".claude-plugin"), { recursive: true });
+			fs.writeFileSync(
+				path.join(targetDir, ".claude-plugin", "marketplace.json"),
+				JSON.stringify({ name: "broken-marketplace", plugins: [] }),
+			);
+		});
+
+		try {
+			await expect(fetchMarketplace("kubeshark/kubeshark", tmpDir)).rejects.toThrow(
+				'Cloned repository https://github.com/kubeshark/kubeshark.git: Missing or invalid field "owner" in catalog: .claude-plugin/marketplace.json (source: kubeshark/kubeshark)',
+			);
+		} finally {
+			cloneSpy.mockRestore();
+		}
 	});
 
 	// Network-dependent tests — skip in CI / offline environments.

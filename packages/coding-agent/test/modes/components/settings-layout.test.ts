@@ -70,8 +70,18 @@ describe("settings layout", () => {
 		});
 	});
 
+	it("exposes every accepted snapcompact shape in the settings submenu", () => {
+		const def = getSettingsForTab("context").find(def => def.path === "snapcompact.shape");
+
+		expect(def?.type).toBe("submenu");
+		if (def?.type !== "submenu") throw new Error("snapcompact.shape should render as a submenu");
+		const values = def.options.map(option => option.value);
+		expect(values).toContain("silver16-bw");
+		expect(values).toEqual([...SETTINGS_SCHEMA["snapcompact.shape"].values]);
+	});
+
 	it("hides advisor dependent settings when advisor is disabled", () => {
-		const advisorDependentPaths: SettingPath[] = ["advisor.subagents", "advisor.syncBacklog", "advisor.immuneTurns"];
+		const advisorDependentPaths: SettingPath[] = ["advisor.syncBacklog", "advisor.immuneTurns"];
 		const advisorDependentPathSet = new Set(advisorDependentPaths);
 		const defs = getSettingsForTab("model").filter(def => advisorDependentPathSet.has(def.path));
 
@@ -87,18 +97,15 @@ describe("settings layout", () => {
 		}
 	});
 
-	it("exposes the on-demand LLM verifier model in task settings", () => {
-		const def = getSettingsForTab("tasks").find(def => def.path === "delegate.verifierModel");
+	it("shows the unexpected-stop classifier setting only in smart mode", () => {
+		const def = getSettingsForTab("providers").find(item => item.path === "providers.unexpectedStopModel");
+		if (!def?.condition) throw new Error("Unexpected Stop Model should be smart-mode only");
 
-		expect(def).toMatchObject({
-			path: "delegate.verifierModel",
-			type: "text",
-			label: "LLM Verifier Model",
-			group: "Subagents",
-		});
-		expect(def?.description).toContain("/verify");
-		expect(def?.description).toContain("verifier extension is enabled");
-		expect(def?.description).toContain("never replaces, tests");
+		expect(def.condition()).toBe(false);
+		Settings.instance.set("features.unexpectedStopDetection", "smart");
+		expect(def.condition()).toBe(true);
+		Settings.instance.set("features.unexpectedStopDetection", "none");
+		expect(def.condition()).toBe(false);
 	});
 
 	it("shows provider request limits as a providers services submenu setting", () => {
@@ -109,6 +116,49 @@ describe("settings layout", () => {
 			type: "providerLimits",
 			tab: "providers",
 			group: "Services",
+		});
+	});
+
+	it("exposes retry fallback chains as editable JSON in the model settings", () => {
+		const def = getSettingsForTab("model").find(item => item.path === "retry.fallbackChains");
+
+		expect(def).toMatchObject({
+			path: "retry.fallbackChains",
+			type: "text",
+			tab: "model",
+			group: "Retry & Fallback",
+			label: "Retry Fallback Chains",
+		});
+		if (!def) throw new Error("retry.fallbackChains setting definition missing");
+
+		const description = def.description.toLowerCase();
+		expect(description).toContain("json");
+		expect(description).toContain("fallback");
+		expect(description).toContain("selector");
+	});
+
+	it("exposes usage-aware fallback as an opt-in advanced policy", () => {
+		const defs = getSettingsForTab("model").filter(def => def.path.startsWith("retry.usage"));
+		expect(defs.map(def => def.path)).toEqual([
+			"retry.usageAwareFallback",
+			"retry.usageReservePct",
+			"retry.usageReservePolicy",
+		]);
+		expect(defs[0]).toMatchObject({ type: "boolean", label: "Usage-Aware Fallback" });
+		expect(defs[1]?.condition?.()).toBe(false);
+		expect(defs[2]?.condition?.()).toBe(false);
+		Settings.instance.set("retry.usageAwareFallback", true);
+		expect(defs[1]?.condition?.()).toBe(true);
+		expect(defs[2]?.condition?.()).toBe(true);
+	});
+
+	it("exposes ask.enabled as a boolean under Available Tools", () => {
+		const def = getSettingsForTab("tools").find(def => def.path === "ask.enabled");
+
+		expect(def).toMatchObject({
+			type: "boolean",
+			label: "Ask",
+			group: "Available Tools",
 		});
 	});
 });

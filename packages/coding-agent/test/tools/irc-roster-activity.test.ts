@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { IrcBus } from "@pk-nerdsaver-ai/pi-coding-agent/irc/bus";
-import { AgentLifecycleManager } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-lifecycle";
-import { AgentRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-registry";
-import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
-import { IrcTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/irc";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { HubTool } from "@oh-my-pi/pi-coding-agent/tools/hub";
 
 // Contract: the work-aware roster (`irc list`) surfaces each peer's role
 // (via displayName) and current activity gist, and a peer with no activity
@@ -23,7 +23,7 @@ function makeToolSession(registry: AgentRegistry, agentId: string): ToolSession 
 }
 
 async function listText(registry: AgentRegistry, selfId: string): Promise<string> {
-	const tool = new IrcTool(makeToolSession(registry, selfId));
+	const tool = new HubTool(makeToolSession(registry, selfId));
 	const result = await tool.execute("call", { op: "list" });
 	return result.content.find(part => part.type === "text")?.text ?? "";
 }

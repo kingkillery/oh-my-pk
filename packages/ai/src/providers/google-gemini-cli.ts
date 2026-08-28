@@ -5,15 +5,14 @@
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { scheduler } from "node:timers/promises";
-import { calculateCost } from "@pk-nerdsaver-ai/pi-catalog/models";
+import { type } from "@oh-my-pi/omptype";
+import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import {
-	ANTIGRAVITY_SYSTEM_INSTRUCTION,
 	getAntigravityModelWireProfile,
 	getAntigravityUserAgent,
 	getGeminiCliHeaders,
-} from "@pk-nerdsaver-ai/pi-catalog/wire/gemini-headers";
-import { extractHttpStatusFromError, fetchWithRetry, readSseJson } from "@pk-nerdsaver-ai/pi-utils";
-import { type } from "arktype";
+} from "@oh-my-pi/pi-catalog/wire/gemini-headers";
+import { extractHttpStatusFromError, fetchWithRetry, readSseJson } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import type {
 	Api,
@@ -31,10 +30,12 @@ import { normalizeSystemPrompts } from "../utils";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { extractGoogleValidationUrl, formatGoogleValidationRequiredMessage } from "../utils/google-validation";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
-import { armPreResponseTimeout, getStreamFirstEventTimeoutMs } from "../utils/idle-iterator";
+import { armPreResponseTimeout, getStreamFirstEventTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
 // Refresh is the sole responsibility of AuthStorage (broker-aware, single-flighted);
 // the stream provider trusts the access token threaded through `options.apiKey`.
 import { normalizeSchemaForCCA } from "../utils/schema";
+import { StreamMarkupHealing, type StreamMarkupHealingEvent } from "../utils/stream-markup-healing";
+import forcedToolDirective from "./google-antigravity-forced-tool.md" with { type: "text" };
 import type { Content, FunctionCallingConfigMode, ThinkingConfig } from "./google-shared";
 import {
 	convertMessages,
@@ -262,6 +263,8 @@ export interface GoogleGeminiCliOptions extends StreamOptions {
 		 */
 		suppress?: { level: GoogleThinkingLevel } | { budget: number };
 	};
+	/** Request that Cloud Code Assist omit human-readable thought summaries while still allowing internal reasoning. */
+	hideThinkingSummary?: boolean;
 	/**
 	 * Upstream wire model id override for collapsed effort-tier variants.
 	 * Serialized as `requestModelId ?? model.requestModelId ?? model.id`.
@@ -312,16 +315,12 @@ const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
 const ANTIGRAVITY_ENDPOINT_FALLBACKS = [ANTIGRAVITY_DAILY_ENDPOINT, ANTIGRAVITY_SANDBOX_ENDPOINT] as const;
 
-export {
-	ANTIGRAVITY_SYSTEM_INSTRUCTION,
-	getAntigravityUserAgent,
-	getGeminiCliHeaders,
-	getGeminiCliUserAgent,
-} from "@pk-nerdsaver-ai/pi-catalog/wire/gemini-headers";
-
 // Retry configuration
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
+const FLASH_FIRST_EVENT_TIMEOUT_MS = 60_000;
+const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 300_000;
+const FIRST_EVENT_TIMEOUT_ERROR = "Cloud Code Assist stream timed out while waiting for the first event";
 const RATE_LIMIT_BUDGET_MS = 5 * 60 * 1000;
 const CLAUDE_THINKING_BETA_HEADER = "interleaved-thinking-2025-05-14";
 const GOOGLE_GEMINI_REFRESH_SKEW_MS = 60_000;
@@ -333,16 +332,6 @@ function isClaudeModel(modelId: string): boolean {
 
 function needsClaudeThinkingBetaHeader(model: Model<"google-gemini-cli">): boolean {
 	return model.provider === "google-antigravity" && isClaudeModel(model.id) && Boolean(model.reasoning);
-}
-
-function shouldInjectAntigravitySystemInstruction(modelId: string): boolean {
-	const normalized = modelId.toLowerCase();
-	return (
-		normalized.includes("claude") ||
-		normalized.includes("gemini") ||
-		normalized.includes("gpt-oss") ||
-		normalized.includes("gpt")
-	);
 }
 
 const optionalCredentialString = type("unknown").pipe(raw => {
@@ -618,17 +607,23 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				headers: requestHeaders,
 			};
 
-			// Direct callers that skip `register-builtins` (which installs the
-			// iterator-level watchdog) need a pre-response timer alongside
-			// `timeout: false`; otherwise a stalled Cloud Code Assist proxy
-			// would hang forever. Floor matches the lazy wrapper's 5min default.
+			// The provider owns the first-event watchdog so a silent successful
+			// response can fail over to the alternate Antigravity endpoint before
+			// anything user-visible has streamed. Flash should not inherit the
+			// five-minute allowance reserved for cold Pro reasoning starts.
 			const firstEventTimeoutMs =
-				options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(undefined, 300_000);
+				options?.streamFirstEventTimeoutMs ??
+				getStreamFirstEventTimeoutMs(
+					undefined,
+					model.id.includes("flash") ? FLASH_FIRST_EVENT_TIMEOUT_MS : DEFAULT_FIRST_EVENT_TIMEOUT_MS,
+				);
 			const callerSignal = options?.signal;
 			const toolNames = new Set(context.tools?.map(t => t.name) ?? []);
 			const isFlashLeakModel = model.id.includes("flash");
 
 			let started = false;
+			// Once any stream event starts, the endpoint is committed downstream.
+			// Failover remains safe only while `started` is false.
 			let sawFinishReason = false;
 			let lastResponseId: string | undefined;
 			const ensureStarted = () => {
@@ -655,7 +650,9 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				sawFinishReason = false;
 			};
 
-			const streamResponse = async (activeResponse: Response): Promise<boolean> => {
+			const streamResponse = async (
+				activeResponse: Response,
+			): Promise<{ meaningful: boolean; strippedPlanningLeak: boolean }> => {
 				if (!activeResponse.body) {
 					throw new AIError.ProviderResponseError("No response body", {
 						provider: model.provider,
@@ -670,15 +667,44 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				let currentBlock: TextContent | ThinkingContent | null = null;
 				const blocks = output.content;
 				const blockIndex = () => blocks.length - 1;
+				const visibleTextHealing = new StreamMarkupHealing({ pattern: "thinking" });
 
 				let isBuffering = false;
 				let textBuffer = "";
 				let bufferedTextSignature: string | undefined;
+				let strippedPlanningLeak = false;
 
-				const emitVisibleText = (delta: string, thoughtSignature?: string) => {
-					if (!delta || !currentBlock || currentBlock.type !== "text") return;
-					currentBlock.text += delta;
-					currentBlock.textSignature = retainThoughtSignature(currentBlock.textSignature, thoughtSignature);
+				const endCurrentBlock = (): void => {
+					if (!currentBlock) return;
+					pushBlockEndEvent(currentBlock, blockIndex(), output, stream);
+					currentBlock = null;
+				};
+
+				const startTextBlock = (): TextContent => {
+					let block = currentBlock;
+					if (block?.type !== "text") {
+						endCurrentBlock();
+						block = startTextOrThinkingBlock(false, output, stream, ensureStarted);
+						currentBlock = block;
+					}
+					return block;
+				};
+
+				const startThinkingBlock = (): ThinkingContent => {
+					let block = currentBlock;
+					if (block?.type !== "thinking") {
+						endCurrentBlock();
+						block = startTextOrThinkingBlock(true, output, stream, ensureStarted);
+						currentBlock = block;
+					}
+					return block;
+				};
+
+				const emitVisibleText = (delta: string, thoughtSignature?: string): void => {
+					if (!delta) return;
+					const block = startTextBlock();
+					block.text += delta;
+					block.textSignature = retainThoughtSignature(block.textSignature, thoughtSignature);
 					stream.push({
 						type: "text_delta",
 						contentIndex: blockIndex(),
@@ -687,11 +713,66 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					});
 				};
 
-				for await (const chunk of readSseJson<CloudCodeAssistResponseChunk>(
-					activeResponse.body!,
-					options?.signal,
-					event => options?.onSseEvent?.({ event: event.event, data: event.data, raw: [...event.raw] }, model),
-				)) {
+				const emitVisibleThinking = (delta: string): void => {
+					if (!delta) return;
+					const block = startThinkingBlock();
+					block.thinking += delta;
+					stream.push({
+						type: "thinking_delta",
+						contentIndex: blockIndex(),
+						delta,
+						partial: output,
+					});
+				};
+
+				const emitHealingEvent = (event: StreamMarkupHealingEvent, thoughtSignature?: string): void => {
+					if (event.type === "text") {
+						emitVisibleText(event.text, thoughtSignature);
+					} else if (event.type === "thinking") {
+						emitVisibleThinking(event.thinking);
+					}
+				};
+
+				const feedVisibleText = (delta: string, thoughtSignature?: string): void => {
+					for (const event of visibleTextHealing.feedEvents(delta)) {
+						emitHealingEvent(event, thoughtSignature);
+					}
+				};
+
+				const flushVisibleText = (thoughtSignature?: string): void => {
+					for (const event of visibleTextHealing.flushEvents()) {
+						emitHealingEvent(event, thoughtSignature);
+					}
+				};
+
+				const retainCurrentBlockThoughtSignature = (thoughtSignature: string): void => {
+					const block = currentBlock;
+					if (!block) return;
+					if (block.type === "thinking") {
+						block.thinkingSignature = retainThoughtSignature(block.thinkingSignature, thoughtSignature);
+					} else {
+						block.textSignature = retainThoughtSignature(block.textSignature, thoughtSignature);
+					}
+				};
+
+				const responseAbortController = new AbortController();
+				const responseSignal = options?.signal
+					? AbortSignal.any([options.signal, responseAbortController.signal])
+					: responseAbortController.signal;
+				const chunks = iterateWithIdleTimeout(
+					readSseJson<CloudCodeAssistResponseChunk>(activeResponse.body, responseSignal, event =>
+						options?.onSseEvent?.({ event: event.event, data: event.data, raw: [...event.raw] }, model),
+					),
+					{
+						firstItemTimeoutMs: firstEventTimeoutMs,
+						errorMessage: FIRST_EVENT_TIMEOUT_ERROR,
+						firstItemErrorMessage: FIRST_EVENT_TIMEOUT_ERROR,
+						onFirstItemTimeout: () =>
+							responseAbortController.abort(new AIError.StreamTimeoutError(FIRST_EVENT_TIMEOUT_ERROR)),
+						abortSignal: options?.signal,
+					},
+				);
+				for await (const chunk of chunks) {
 					if (chunk.error) {
 						const detail = chunk.error.message || chunk.error.status || "unknown error";
 						const message = `Cloud Code Assist stream error: ${detail}`;
@@ -715,20 +796,12 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 						for (const part of candidate.content.parts) {
 							if (part.text !== undefined && part.text !== "") {
 								const isThinking = isThinkingPart(part);
-								if (
-									!currentBlock ||
-									(isThinking && currentBlock.type !== "thinking") ||
-									(!isThinking && currentBlock.type !== "text")
-								) {
-									if (currentBlock) {
-										pushBlockEndEvent(currentBlock, blockIndex(), output, stream);
-									}
-									currentBlock = startTextOrThinkingBlock(isThinking, output, stream, ensureStarted);
-								}
-								if (currentBlock.type === "thinking") {
-									currentBlock.thinking += part.text;
-									currentBlock.thinkingSignature = retainThoughtSignature(
-										currentBlock.thinkingSignature,
+								if (isThinking) {
+									flushVisibleText();
+									const block = startThinkingBlock();
+									block.thinking += part.text;
+									block.thinkingSignature = retainThoughtSignature(
+										block.thinkingSignature,
 										part.thoughtSignature,
 									);
 									stream.push({
@@ -749,45 +822,30 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 										textBuffer = part.text;
 										bufferedTextSignature = part.thoughtSignature;
 									} else {
-										emitVisibleText(part.text, part.thoughtSignature);
+										feedVisibleText(part.text, part.thoughtSignature);
 									}
 
 									if (isBuffering) {
 										const buffered = consumePlanningBuffer(textBuffer, toolNames);
 										if (buffered.kind !== "incomplete") {
-											if (buffered.kind === "leak") {
-												sawLeak = true;
-											}
+											if (buffered.kind === "leak") strippedPlanningLeak = true;
 											const visibleSignature = bufferedTextSignature;
 											isBuffering = false;
 											textBuffer = "";
 											bufferedTextSignature = undefined;
-											emitVisibleText(buffered.visibleText, visibleSignature);
+											feedVisibleText(buffered.visibleText, visibleSignature);
 										}
 									}
 								}
-							} else if (part.text === "" && part.thoughtSignature && currentBlock && !part.functionCall) {
-								if (currentBlock.type === "thinking") {
-									currentBlock.thinkingSignature = retainThoughtSignature(
-										currentBlock.thinkingSignature,
-										part.thoughtSignature,
-									);
-								} else {
-									currentBlock.textSignature = retainThoughtSignature(
-										currentBlock.textSignature,
-										part.thoughtSignature,
-									);
-								}
+							} else if (part.text === "" && part.thoughtSignature && !part.functionCall) {
+								retainCurrentBlockThoughtSignature(part.thoughtSignature);
 							}
 
 							if (part.functionCall) {
-								if (currentBlock) {
-									pushBlockEndEvent(currentBlock, blockIndex(), output, stream);
-									currentBlock = null;
-								}
+								flushVisibleText();
+								endCurrentBlock();
 								isBuffering = false;
 								textBuffer = "";
-
 								const providedId = part.functionCall.id;
 								const needsNewId =
 									!providedId || output.content.some(b => b.type === "toolCall" && b.id === providedId);
@@ -849,26 +907,31 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 
 				if (isBuffering && textBuffer !== "") {
 					const buffered = consumePlanningBuffer(textBuffer, toolNames, true);
-					if (buffered.kind === "leak") {
-						sawLeak = true;
-					}
+
 					if (buffered.kind !== "incomplete") {
-						emitVisibleText(buffered.visibleText, bufferedTextSignature);
+						if (buffered.kind === "leak") strippedPlanningLeak = true;
+						feedVisibleText(buffered.visibleText, bufferedTextSignature);
 					}
 					bufferedTextSignature = undefined;
 					isBuffering = false;
 					textBuffer = "";
 				}
 
-				if (currentBlock) {
-					pushBlockEndEvent(currentBlock, blockIndex(), output, stream);
-				}
+				flushVisibleText(bufferedTextSignature);
+				endCurrentBlock();
 
-				return hasMeaningfulGoogleContent(output) || sawLeak;
+				return {
+					meaningful: hasMeaningfulGoogleContent(output),
+					strippedPlanningLeak,
+				};
 			};
 
 			let receivedContent = false;
-			let sawLeak = false;
+			const hasThinkingOutput = () =>
+				output.content.some(
+					block =>
+						block.type === "thinking" && (block.thinking.trim().length > 0 || Boolean(block.thinkingSignature)),
+				);
 
 			for (let i = 0; i < endpoints.length; i++) {
 				const endpoint = endpoints[i];
@@ -958,21 +1021,49 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 						}
 
 						const streamed = await streamResponse(currentResponse);
-						if (streamed) {
-							receivedContent = true;
+						// Eventless silence may fail over to the alternate Antigravity
+						// endpoint. Once thinking has streamed, the endpoint is already
+						// committed downstream; Advisor mode may accept that silence,
+						// while normal sessions surface it to final-output recovery.
+						const thoughtOnly = hasThinkingOutput();
+						const acceptedSilence =
+							options?.acceptEmptyResponse === true &&
+							!streamed.strippedPlanningLeak &&
+							(isLastEndpoint || thoughtOnly);
+						if (output.stopReason !== "stop" || streamed.meaningful || acceptedSilence) {
+							receivedContent = streamed.meaningful || acceptedSilence;
 							break;
 						}
+
+						// A thought-only STOP is a complete provider response, not a
+						// transiently empty transport. Replaying the identical request
+						// burns another full reasoning pass; let session recovery add
+						// an explicit final-output reminder instead.
+						if (thoughtOnly) break;
 
 						if (emptyAttempt < MAX_EMPTY_STREAM_RETRIES) {
 							resetOutput();
 						}
 					}
 
-					if (!receivedContent) {
-						throw new AIError.ProviderResponseError("Cloud Code Assist API returned an empty response", {
+					if (output.stopReason === "aborted" || output.stopReason === "error") {
+						throw new AIError.ProviderResponseError(output.errorMessage ?? "An unknown error occurred", {
 							provider: model.provider,
-							kind: "empty-body",
+							kind: "output",
 						});
+					}
+
+					if (!receivedContent) {
+						const thoughtOnly = hasThinkingOutput();
+						throw new AIError.ProviderResponseError(
+							thoughtOnly
+								? "Cloud Code Assist API returned a thought-only response without final output"
+								: "Cloud Code Assist API returned an empty response",
+							{
+								provider: model.provider,
+								kind: thoughtOnly ? "empty-output" : "empty-body",
+							},
+						);
 					}
 
 					if (options?.signal?.aborted) {
@@ -1002,10 +1093,15 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					break;
 				} catch (error) {
 					const status = extractHttpStatusFromError(error);
-					if (AIError.isTransientStatus(status)) {
-						if (!isLastEndpoint && !started) {
-							continue;
-						}
+					if (
+						!isLastEndpoint &&
+						!started &&
+						(AIError.isTransientStatus(status) ||
+							(status === undefined &&
+								!(error instanceof AIError.ProviderResponseError && error.kind === "output") &&
+								AIError.retriable(AIError.classify(error))))
+					) {
+						continue;
 					}
 					throw error;
 				}
@@ -1201,7 +1297,7 @@ export function buildRequest(
 	// Thinking config
 	if (options.thinking?.enabled && model.reasoning) {
 		generationConfig.thinkingConfig = {
-			includeThoughts: true,
+			includeThoughts: !options.hideThinkingSummary,
 		};
 		// Gemini 3 models use thinkingLevel, older models use thinkingBudget
 		if (options.thinking.level !== undefined) {
@@ -1236,14 +1332,6 @@ export function buildRequest(
 		};
 	}
 
-	if (isAntigravity && shouldInjectAntigravitySystemInstruction(model.id)) {
-		const existingParts = request.systemInstruction?.parts ?? [];
-		request.systemInstruction = {
-			role: "user",
-			parts: [{ text: ANTIGRAVITY_SYSTEM_INSTRUCTION }, ...existingParts],
-		};
-	}
-
 	if (context.tools && context.tools.length > 0) {
 		const convertedTools = convertTools(context.tools, model);
 		request.tools = isAntigravity ? normalizeAntigravityTools(convertedTools) : convertedTools;
@@ -1263,6 +1351,13 @@ export function buildRequest(
 						allowedFunctionNames: [...choice.allowedFunctionNames],
 					},
 				};
+			}
+			// Cloud Code Assist drops `toolConfig` on Antigravity's Gemini routes:
+			// the backend answers in text under `mode: "ANY"` and still emits calls
+			// under `"NONE"`. Claude routes implement it, so only Gemini needs the
+			// forced choice restated in the transcript.
+			if (isAntigravity && !isClaudeModel(model.id) && request.toolConfig?.functionCallingConfig.mode === "ANY") {
+				contents.push({ role: "user", parts: [{ text: forcedToolDirective }] });
 			}
 		}
 		// Antigravity's default tool mode is VALIDATED (verified for Gemini and

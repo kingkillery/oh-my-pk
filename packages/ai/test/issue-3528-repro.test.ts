@@ -40,21 +40,14 @@
  * This file pins the wire output across the relevant axes.
  */
 import { describe, expect, it } from "bun:test";
-import { renderDemotedThinking } from "@pk-nerdsaver-ai/pi-ai/dialect";
-import { convertMessages } from "@pk-nerdsaver-ai/pi-ai/providers/openai-completions";
+import { renderDemotedThinking } from "@oh-my-pi/pi-ai/dialect";
+import { convertMessages } from "@oh-my-pi/pi-ai/providers/openai-completions";
 import {
 	applyChatCompletionsReasoningParams,
 	type OpenAICompletionsParams,
-} from "@pk-nerdsaver-ai/pi-ai/providers/openai-shared";
-import type {
-	AssistantMessage,
-	Message,
-	Model,
-	ModelSpec,
-	ThinkingContent,
-	UserMessage,
-} from "@pk-nerdsaver-ai/pi-ai/types";
-import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+} from "@oh-my-pi/pi-ai/providers/openai-shared";
+import type { AssistantMessage, Message, Model, ModelSpec, ThinkingContent, UserMessage } from "@oh-my-pi/pi-ai/types";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -291,7 +284,7 @@ describe("llama.cpp warm-prefix preservation (#3528)", () => {
 		const found = findAssistantMessage(wire) as Record<string, unknown> | undefined;
 		expect(found?.reasoning_content).toBeUndefined();
 		expect(found?.content).toBe(
-			`${renderDemotedThinking(target.id, "Cross-vendor reasoning chain that must survive the switch.")}Switched-in answer.`,
+			`${renderDemotedThinking(target.id, "Cross-vendor reasoning chain that must survive the switch.")}\nSwitched-in answer.`,
 		);
 		expect("EvAnthropicOpaqueContinuationBlob==" in (found ?? {})).toBe(false);
 	});

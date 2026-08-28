@@ -4,11 +4,11 @@ import {
 	parseGalleryStates,
 	renderGalleryState,
 	resolveFixture,
-} from "@pk-nerdsaver-ai/pi-coding-agent/cli/gallery-cli";
-import type { GalleryFixture } from "@pk-nerdsaver-ai/pi-coding-agent/cli/gallery-fixtures";
-import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { initTheme, theme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
-import { toolRenderers } from "@pk-nerdsaver-ai/pi-coding-agent/tools/renderers";
+} from "@oh-my-pi/pi-coding-agent/cli/gallery-cli";
+import type { GalleryFixture } from "@oh-my-pi/pi-coding-agent/cli/gallery-fixtures";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -91,9 +91,9 @@ describe("gallery harness", () => {
 
 	it("renders curated failed states as failures", async () => {
 		const cases = [
-			["irc_inbox", "IRC inbox failed: message store unavailable.", "IRC inbox empty"],
-			["irc_list", "IRC list failed: agent hub is unavailable.", "no other agents"],
-			["job", "Subagent exited 1: Redis connection string is missing.", "cancelled"],
+			["hub_inbox", "IRC inbox failed: message store unavailable.", "IRC inbox empty"],
+			["hub_list", "IRC list failed: agent hub is unavailable.", "no other agents"],
+			["hub_jobs", "Subagent exited 1: Redis connection string is missing.", "cancelled"],
 		] as const;
 
 		for (const [name, expected, forbidden] of cases) {

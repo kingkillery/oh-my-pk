@@ -28,23 +28,20 @@ import {
 	type OAuthCredential,
 	type OAuthProvider,
 	type OAuthProviderInfo,
+	PASTE_CODE_LOGIN_PROVIDERS,
 	PROVIDER_REGISTRY,
 	resolveOAuthProvider,
 	SqliteAuthCredentialStore,
-} from "@pk-nerdsaver-ai/pi-ai";
-import { AuthBrokerClient, DEFAULT_AUTH_BROKER_BIND, startAuthBroker } from "@pk-nerdsaver-ai/pi-ai/auth-broker";
-import {
-	$which,
-	APP_NAME,
-	getAgentDbPath,
-	getConfigRootDir,
-	isEnoent,
-	logger,
-	VERSION,
-} from "@pk-nerdsaver-ai/pi-utils";
-import { setTransports as setLoggerTransports } from "@pk-nerdsaver-ai/pi-utils/logger";
+} from "@oh-my-pi/pi-ai";
+import { AuthBrokerClient, DEFAULT_AUTH_BROKER_BIND, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
+import { refreshOAuthToken } from "@oh-my-pi/pi-ai/oauth";
+import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
+import { $which, APP_NAME, getAgentDbPath, getConfigRootDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
+import chalk from "@oh-my-pi/pi-utils/chalk";
+import { setTransports as setLoggerTransports } from "@oh-my-pi/pi-utils/logger";
 import { $ } from "bun";
-import chalk from "chalk";
+import { refreshManagedMcpOAuthCredential } from "../mcp/oauth-credentials";
+import { isManagedMCPOAuthCredentialId, mcpOAuthServerUrlFromCredentialId } from "../mcp/oauth-flow";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
 
 export type AuthBrokerAction = "serve" | "token" | "login" | "logout" | "status" | "import" | "migrate" | "list";
@@ -127,6 +124,34 @@ async function ensureToken(): Promise<string> {
 	return token;
 }
 
+/**
+ * OAuth refresh handler for `omp auth-broker serve`'s {@link AuthStorage}.
+ *
+ * The vault holds provider OAuth rows AND OMP-managed `mcp_oauth:*` rows.
+ * Provider rows refresh through the per-provider registry. MCP rows are
+ * self-describing — the embedded token endpoint and client credentials are the
+ * only refresh material — so they refresh with a generic `refresh_token` grant.
+ * The serve process never loads the MCP manager, so this is the only place that
+ * teaches the broker to refresh MCP tokens; without it
+ * `POST /v1/credential/:id/refresh` fails with "Unknown OAuth provider" and the
+ * background refresher lets MCP access tokens expire (issue #8933).
+ */
+export function refreshBrokerOAuthCredential(
+	provider: string,
+	credential: OAuthCredential,
+	signal?: AbortSignal,
+): Promise<OAuthCredentials> {
+	if (isManagedMCPOAuthCredentialId(provider)) {
+		return refreshManagedMcpOAuthCredential(credential, {
+			serverUrl: mcpOAuthServerUrlFromCredentialId(provider),
+			signal,
+		});
+	}
+	// Non-MCP rows: same per-provider path AuthStorage would take by default
+	// (the serve process registers no custom OAuth providers).
+	return refreshOAuthToken(provider as OAuthProvider, credential);
+}
+
 async function runServe(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	// The broker is a long-running headless service: route structured logs to
 	// stdout so a process supervisor (pm2, journald, k8s) captures them, and
@@ -137,7 +162,10 @@ async function runServe(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	const token = await ensureToken();
 	const dbPath = getAgentDbPath();
 	const store = await SqliteAuthCredentialStore.open(dbPath);
-	const storage = new AuthStorage(store);
+	const storage = new AuthStorage(store, {
+		refreshOAuthCredential: (provider, _credentialId, credential, signal) =>
+			refreshBrokerOAuthCredential(provider, credential, signal),
+	});
 	await storage.reload();
 	const handle = startAuthBroker({
 		storage,
@@ -222,9 +250,29 @@ async function runLocalLogin(provider: OAuthProvider): Promise<void> {
 	const storage = new AuthStorage(store);
 	await storage.reload();
 	try {
+		// Only paste-code providers (fixed non-loopback redirect, e.g. GitLab Duo
+		// Agent's vscode:// URI) get the manual paste fallback. An explicit
+		// `onManualCodeInput` is honored for ANY provider (the storage escape hatch),
+		// so for loopback providers we must not pass it: it would make
+		// `OAuthCallbackFlow` race a readline prompt against the HTTP callback and, if
+		// the callback wins, leave that prompt outstanding (dirty/blocked terminal).
+		// `AuthStorage.login` independently refuses to synthesize the default prompt
+		// for non-paste-code providers, so this is defense-in-depth on the same gate.
+		const usesManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(provider);
 		await storage.login(provider, {
-			onAuth({ url, instructions }) {
-				process.stdout.write(`\nOpen this URL in your browser:\n${url}\n`);
+			onAuth({ url, launchUrl, instructions }) {
+				process.stdout.write("\nOpen this URL in your browser:\n");
+				// Full URL first so the CLI works from any machine, including SSH
+				// sessions where a `launchUrl` (loopback `/launch` on the OMP
+				// host) would resolve against the caller's browser and fail.
+				// Headless capture is unaffected: it reads the first URL line.
+				process.stdout.write(`${url}\n`);
+				if (launchUrl && launchUrl !== url) {
+					// Local shortcut for the machine running OMP. Terminals or
+					// screen-scrapers narrower than the full URL still get an
+					// unbroken copy target here.
+					process.stdout.write(`Local shortcut (this machine only): ${launchUrl}\n`);
+				}
 				if (instructions) process.stdout.write(`${instructions}\n`);
 				process.stdout.write("\n");
 			},
@@ -234,6 +282,13 @@ async function runLocalLogin(provider: OAuthProvider): Promise<void> {
 			onPrompt(p) {
 				return ask(`${p.message}${p.placeholder ? ` (${p.placeholder})` : ""}:`);
 			},
+			...(usesManualInput
+				? {
+						onManualCodeInput() {
+							return ask("Paste the authorization code (or full redirect URL):");
+						},
+					}
+				: undefined),
 		});
 		process.stdout.write(`\nCredentials saved to ${getAgentDbPath()}\n`);
 	} finally {
@@ -645,19 +700,25 @@ interface MigrateSkip {
 
 function credentialIdentity(provider: string, credential: AuthCredential): string {
 	if (credential.type === "api_key") return "(api key)";
-	return credential.email ?? credential.accountId ?? credential.projectId ?? `<${provider} oauth>`;
+	const base = credential.email ?? credential.accountId ?? credential.projectId ?? `<${provider} oauth>`;
+	return credential.orgId ? `${base} (${credential.orgName ?? credential.orgId})` : base;
 }
 
 /**
  * Build the set of "identities already on the broker" so re-runs are idempotent.
- * For OAuth, identity = email|accountId|projectId. For api_key, we collapse
- * to a single marker per provider (broker has no concept of "multiple api keys
- * per provider with different identities"; upsert would coalesce them).
+ * For OAuth, identity = email|accountId|projectId, each org-qualified when the
+ * row carries an organization (one Anthropic email can hold a Team seat AND a
+ * personal Max plan — those must migrate as two rows). A row with NO base
+ * identity but an orgId (login recovered neither email nor account) is marked
+ * by the org alone, so re-running migrate does not re-upload a stale refresh
+ * token over the broker's newer one. For api_key, we collapse to a single
+ * marker per provider (broker has no concept of "multiple api keys per
+ * provider with different identities"; upsert would coalesce them).
  */
 function indexBrokerSnapshot(snapshot: {
 	credentials: Array<{
 		provider: string;
-		credential: { type: string; email?: string; accountId?: string; projectId?: string };
+		credential: { type: string; email?: string; accountId?: string; projectId?: string; orgId?: string };
 	}>;
 }): Map<string, Set<string>> {
 	const out = new Map<string, Set<string>>();
@@ -666,9 +727,18 @@ function indexBrokerSnapshot(snapshot: {
 		if (entry.credential.type === "api_key") {
 			ids.add("@api_key");
 		} else {
-			if (entry.credential.email) ids.add(`email:${entry.credential.email}`);
-			if (entry.credential.accountId) ids.add(`accountId:${entry.credential.accountId}`);
-			if (entry.credential.projectId) ids.add(`projectId:${entry.credential.projectId}`);
+			const orgSuffix = entry.credential.orgId ? `|org:${entry.credential.orgId}` : "";
+			if (entry.credential.email) ids.add(`email:${entry.credential.email}${orgSuffix}`);
+			if (entry.credential.accountId) ids.add(`accountId:${entry.credential.accountId}${orgSuffix}`);
+			if (entry.credential.projectId) ids.add(`projectId:${entry.credential.projectId}${orgSuffix}`);
+			if (
+				!entry.credential.email &&
+				!entry.credential.accountId &&
+				!entry.credential.projectId &&
+				entry.credential.orgId
+			) {
+				ids.add(`org:${entry.credential.orgId}`);
+			}
 		}
 		out.set(entry.provider, ids);
 	}
@@ -679,9 +749,13 @@ function brokerAlreadyHas(existing: Map<string, Set<string>>, provider: string, 
 	const ids = existing.get(provider);
 	if (!ids) return false;
 	if (credential.type === "api_key") return ids.has("@api_key");
-	if (credential.email && ids.has(`email:${credential.email}`)) return true;
-	if (credential.accountId && ids.has(`accountId:${credential.accountId}`)) return true;
-	if (credential.projectId && ids.has(`projectId:${credential.projectId}`)) return true;
+	const orgSuffix = credential.orgId ? `|org:${credential.orgId}` : "";
+	if (credential.email && ids.has(`email:${credential.email}${orgSuffix}`)) return true;
+	if (credential.accountId && ids.has(`accountId:${credential.accountId}${orgSuffix}`)) return true;
+	if (credential.projectId && ids.has(`projectId:${credential.projectId}${orgSuffix}`)) return true;
+	if (!credential.email && !credential.accountId && !credential.projectId && credential.orgId) {
+		return ids.has(`org:${credential.orgId}`);
+	}
 	return false;
 }
 

@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { SessionSelectorComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/session-selector";
-import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
-import type { SessionInfo } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-listing";
+import { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
 
 beforeAll(async () => {
 	await initTheme();
@@ -88,6 +88,32 @@ describe("SessionSelectorComponent mouse", () => {
 		selector.handleInput(wheel("down"));
 		selector.handleInput("\n");
 		expect(picked?.id).toBe("cccc");
+	});
+
+	it("ignores follow-up keys while locked, then accepts a retry after unlock", () => {
+		const session = makeSession("aaaa", "Alpha session");
+		let selections = 0;
+		let cancellations = 0;
+		const selector = new SessionSelectorComponent(
+			[session],
+			() => {
+				selections += 1;
+			},
+			() => {
+				cancellations += 1;
+			},
+			() => {},
+		);
+
+		selector.lockInput();
+		selector.handleInput("\n");
+		selector.handleInput("\x1b");
+
+		expect(selections).toBe(0);
+		expect(cancellations).toBe(0);
+		selector.unlockInput();
+		selector.handleInput("\n");
+		expect(selections).toBe(1);
 	});
 
 	it("ignores a click on the pinned footer (never resumes a hidden session)", () => {

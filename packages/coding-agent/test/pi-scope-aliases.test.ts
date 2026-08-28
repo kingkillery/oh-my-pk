@@ -8,9 +8,8 @@
  *
  * Reported failures the test covers:
  *   - `@juicesharp/rpiv-ask-user-question` ⇒ `@earendil-works/pi-tui`
- *   - `@pk-nerdsaver-ai/swarm-extension`         ⇒ `@pk-nerdsaver-ai/pi-utils`
- *   - `@plannotator/pi-extension`         ⇒ `@pk-nerdsaver-ai/pi-agent-core`
- *   - `@runfusion/fusion`                 ⇒ `@pk-nerdsaver-ai/pi-coding-agent/...`
+ *   - `@plannotator/pi-extension`         ⇒ `@oh-my-pi/pi-agent-core`
+ *   - `@runfusion/fusion`                 ⇒ `@oh-my-pi/pi-coding-agent/...`
  *
  * Plus the two upstream-only surfaces that turned up via real-plugin E2E:
  *   - `Key` runtime helper from `pi-tui` (used by plannotator + rpiv-*).

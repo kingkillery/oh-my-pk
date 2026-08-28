@@ -7,6 +7,8 @@ const VALID_SECTIONS: DashboardSection[] = [
 	"requests",
 	"errors",
 	"models",
+	"providers",
+	"tools",
 	"costs",
 	"behavior",
 	"projects",

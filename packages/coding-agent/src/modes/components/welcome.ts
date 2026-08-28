@@ -44,20 +44,19 @@ const NEW_GLOW_PERIOD_MS = 1500;
  *  affordance surfaces this many times as often. */
 const NEW_TIP_WEIGHT = 4;
 
-/** Per-tip selection weights, parallel to {@link TIPS}. */
-const TIP_WEIGHTS: readonly number[] = TIPS.map(tip => (NEW_TIP_MARKER.test(tip) ? NEW_TIP_WEIGHT : 1));
-const TIP_WEIGHT_TOTAL = TIP_WEIGHTS.reduce((sum, weight) => sum + weight, 0);
-
-/** Pick a tip at random, biased toward "[NEW]" tips by {@link NEW_TIP_WEIGHT}.
- *  Returns "" when no tips are embedded. */
-function pickWeightedTip(): string {
-	if (TIPS.length === 0) return "";
-	let r = Math.random() * TIP_WEIGHT_TOTAL;
-	for (let i = 0; i < TIPS.length; i++) {
-		r -= TIP_WEIGHTS[i] ?? 1;
-		if (r < 0) return TIPS[i] ?? "";
+/** Pick a tip from `tips`, biased toward "[NEW]" tips by {@link NEW_TIP_WEIGHT};
+ *  `r` is a uniform sample in [0, 1). Returns "" when `tips` is empty.
+ *  Exported for tests. */
+export function pickWeightedTip(tips: readonly string[], r: number): string {
+	if (tips.length === 0) return "";
+	const weights = tips.map(tip => (NEW_TIP_MARKER.test(tip) ? NEW_TIP_WEIGHT : 1));
+	const total = weights.reduce((sum, weight) => sum + weight, 0);
+	let acc = r * total;
+	for (let i = 0; i < tips.length; i++) {
+		acc -= weights[i] ?? 1;
+		if (acc < 0) return tips[i] ?? "";
 	}
-	return TIPS[TIPS.length - 1] ?? "";
+	return tips[tips.length - 1] ?? "";
 }
 
 type ColorEncoding = "ansi-16m" | "ansi-256";
@@ -142,6 +141,7 @@ export interface LspServerInfo {
 export class WelcomeComponent implements Component {
 	#animStart: number | null = null;
 	#animTimer: Timer | null = null;
+	#requestRender: (() => void) | null = null;
 	#selectedTip: string | undefined;
 	// Render cache: the welcome box is the first transcript-area component, so
 	// returning a stable array reference keeps the whole frame prefix stable.
@@ -150,7 +150,7 @@ export class WelcomeComponent implements Component {
 	#cachedLines: string[] | undefined;
 
 	constructor(
-		private readonly version: string,
+		private version: string,
 		private modelName: string,
 		private providerName: string,
 		private recentSessions: RecentSession[] = [],
@@ -161,7 +161,7 @@ export class WelcomeComponent implements Component {
 			if (theme.getSymbolPreset() === "unicode" && Math.random() < 0.1) {
 				this.#selectedTip = "Please use nerdfont 😭.";
 			} else {
-				this.#selectedTip = pickWeightedTip();
+				this.#selectedTip = pickWeightedTip(TIPS, Math.random());
 			}
 		}
 		return this.#selectedTip || undefined;
@@ -171,6 +171,10 @@ export class WelcomeComponent implements Component {
 		this.#cachedWidth = -1;
 		this.#cachedLines = undefined;
 	}
+	/** The intro keeps the welcome block mutable; settling lets it retire to history. */
+	isTranscriptBlockFinalized(): boolean {
+		return this.#animTimer == null;
+	}
 
 	/**
 	 * Play a one-shot intro that sweeps the gradient through every phase
@@ -179,14 +183,15 @@ export class WelcomeComponent implements Component {
 	 */
 	playIntro(requestRender: () => void): void {
 		this.#stopAnimation();
+		this.#requestRender = requestRender;
 		this.#animStart = performance.now();
-		requestRender();
+		this.#requestRender();
 		this.#animTimer = setInterval(() => {
 			const elapsed = performance.now() - (this.#animStart ?? 0);
 			if (elapsed >= INTRO_MS) {
 				this.#stopAnimation();
 			}
-			requestRender();
+			this.#requestRender?.();
 		}, INTRO_TICK_MS);
 	}
 
@@ -196,7 +201,30 @@ export class WelcomeComponent implements Component {
 			this.#animTimer = null;
 		}
 		this.#animStart = null;
+		this.#requestRender = null;
 		// The settled (resting) frame differs from the last intro frame.
+		this.invalidate();
+	}
+
+	/**
+	 * Redirect a running intro's render callback to a new target when a host
+	 * remounts this component mid-animation.
+	 * Returns true while the intro is still animating; false = no-op (settled).
+	 */
+	retargetIntro(requestRender: () => void): boolean {
+		if (this.#animTimer == null) return false;
+		this.#requestRender = requestRender;
+		return true;
+	}
+
+	/** Stop the intro immediately and settle on the resting frame. Safe when idle. */
+	stopIntro(): void {
+		this.#stopAnimation();
+	}
+
+	/** Update the version embedded in the welcome border title. */
+	setVersion(version: string): void {
+		this.version = version;
 		this.invalidate();
 	}
 
@@ -243,13 +271,14 @@ export class WelcomeComponent implements Component {
 		const preferredLeftCol = 26;
 		const minLeftCol = 12; // logo width
 		const minRightCol = 20;
-		const leftMinContentWidth = Math.max(
-			minLeftCol,
-			visibleWidth("Welcome back!"),
-			visibleWidth(this.modelName),
-			visibleWidth(this.providerName),
+		// Dynamic model/provider labels are truncated inside the fixed column.
+		// Letting them influence the responsive breakpoint changes the box height
+		// when authoritative session data replaces the empty prepaint labels.
+		const leftMinContentWidth = Math.max(minLeftCol, visibleWidth("Welcome back!"));
+		const desiredLeftCol = Math.max(
+			Math.min(preferredLeftCol, Math.max(minLeftCol, Math.floor(dualContentWidth * 0.35))),
+			leftMinContentWidth,
 		);
-		const desiredLeftCol = Math.min(preferredLeftCol, Math.max(minLeftCol, Math.floor(dualContentWidth * 0.35)));
 		const dualLeftCol =
 			dualContentWidth >= minRightCol + 1
 				? Math.min(desiredLeftCol, dualContentWidth - minRightCol)
@@ -451,19 +480,18 @@ export class WelcomeComponent implements Component {
 	}
 }
 
-export const PK_LOGO = ["████▄ ██  ██", "██ ██ ██ ██ ", "████▀ ████  ", "██    ██ ██ ", "██    ██  ██"];
+/** Block-grid brand mark shared by the welcome and setup surfaces. */
+export const PI_LOGO = ["████████████", "   ██  ██   ", "   ██  ██   ", "   ▒▒  ██   ", "       ██   "];
 
 /** Multi-stop palette for the diagonal gradient. */
 const GRADIENT_STOPS: ReadonlyArray<readonly [number, number, number]> = [
-	[255, 92, 200], // hot pink
-	[200, 110, 255], // violet
-	[120, 130, 255], // periwinkle
-	[60, 200, 255], // bright cyan
-	[120, 255, 220], // mint
+	[248, 79, 204], // oklch(0.7 0.24 340)
+	[147, 98, 244], // oklch(0.62 0.21 295)
+	[0, 219, 228], // oklch(0.81 0.14 200)
 ];
 
 /** 256-color ramp fallback when truecolor isn't available. */
-const GRADIENT_RAMP_256 = [199, 171, 135, 99, 75, 51, 87];
+const GRADIENT_RAMP_256 = [206, 170, 134, 99, 69, 74, 44];
 
 /** Half-width of the shine highlight band, expressed in gradient-t units. */
 const SHINE_HALF_WIDTH = 0.18;
@@ -519,7 +547,7 @@ export function gradientEscape(t: number, shine?: ShineConfig): string {
 }
 
 /**
- * Apply a multi-stop diagonal gradient (bottom-left → top-right) plus an
+ * Apply a multi-stop diagonal gradient (top-left → bottom-right) plus an
  * optional sliding shine band across multi-line art. `phase` (0..1) shifts the
  * gradient along the diagonal, wrapping at 1. When `shine` is provided, a soft
  * white highlight is composited on top, centered at `shine.pos`.
@@ -528,9 +556,9 @@ export function gradientLogo(lines: readonly string[], phase = 0, shine?: ShineC
 	const reset = "\x1b[0m";
 	const rows = lines.length;
 	const cols = Math.max(...lines.map(l => l.length));
-	// span+1 so `base` stays strictly < 1: avoids the wrap-around at the
-	// far corner mapping back to t=0 (hot pink) on the resting frame.
-	const span = Math.max(1, cols + rows - 1);
+	const xSpan = Math.max(1, cols - 1);
+	const ySpan = Math.max(1, rows - 1);
+	const normalizedPhase = ((phase % 1) + 1) % 1;
 	return lines.map((line, y) => {
 		let result = "";
 		for (let x = 0; x < line.length; x++) {
@@ -539,9 +567,10 @@ export function gradientLogo(lines: readonly string[], phase = 0, shine?: ShineC
 				result += char;
 				continue;
 			}
-			// Diagonal: bottom-left (x=0, y=rows-1) → top-right (x=cols-1, y=0)
-			const base = (x + (rows - 1 - y)) / span;
-			const t = (((base + phase) % 1) + 1) % 1;
+			// SVG's (0,0) → (1,1) gradient projects both normalized axes
+			// equally: top-right and bottom-left land on the purple midpoint.
+			const base = (x / xSpan + y / ySpan) / 2;
+			const t = normalizedPhase === 0 ? base : (base + normalizedPhase) % 1;
 			result += gradientEscape(t, shine) + char + reset;
 		}
 		return result;

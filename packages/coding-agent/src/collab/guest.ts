@@ -9,27 +9,32 @@
  * ecosystem is mirrored too: agent snapshots populate a local AgentRegistry
  * (Agent Hub), EventBus traffic (observer HUD) is republished, and hub
  * actions (chat/kill/revive/transcript reads) round-trip over the wire.
+ * Host ask dialogs (`ui-request` select/editor) present through the same
+ * hook selector/editor seam and answer with `ui-response`; `ui-request-end`
+ * dismisses a pending presentation without responding.
  * Everything renders through the same components, so ctrl+o, theming, and
  * transcript behavior are native by construction.
  */
 import * as path from "node:path";
-import type { ThinkingLevel } from "@pk-nerdsaver-ai/pi-agent-core";
-import type { ImageContent } from "@pk-nerdsaver-ai/pi-ai";
-import { getConfigRootDir, logger } from "@pk-nerdsaver-ai/pi-utils";
-import type { AgentHubRemote } from "../modes/components/agent-hub";
+import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { getConfigRootDir, logger } from "@oh-my-pi/pi-utils";
+import type { AgentHubRemote, AgentHubRemoteTranscript } from "../modes/components/agent-hub";
 import type { InteractiveModeContext } from "../modes/types";
 import { AgentRegistry } from "../registry/agent-registry";
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { SessionEntry } from "../session/session-entries";
 import { shouldDisableReasoning, toReasoningEffort } from "../thinking";
+import { emitSubagentFrame } from "../utils/event-bus";
 import { setSessionTerminalTitle } from "../utils/title-generator";
 import { importRoomKey } from "./crypto";
-import { collabDisplayName } from "./host";
+import { collabDisplayName } from "./display-name";
 import {
 	type AgentSnapshot,
 	COLLAB_PROTO,
 	type CollabFrame,
 	type CollabSessionState,
+	type CollabUiRequest,
 	parseCollabLink,
 } from "./protocol";
 import { CollabSocket } from "./relay-client";
@@ -50,10 +55,108 @@ export const COLLAB_GUEST_ALLOWED_COMMANDS: Record<string, true> = {
 	exit: true,
 	quit: true,
 };
+/**
+ * How long the guest waits for the host's small `welcome` frame before giving
+ * up on the join. The welcome carries metadata only (`entryCount`, header,
+ * state, agents), so it lands well under one second on any working relay.
+ */
 const WELCOME_TIMEOUT_MS = 30_000;
+/**
+ * How long the guest waits between `snapshot-chunk` frames during the initial
+ * sync. Resets on each chunk arrival, so a multi-MB snapshot only fails when
+ * the relay genuinely stalls — not because the total wall-clock crossed the
+ * welcome budget. The default relay sustains ~350 KB/s; a 512 KB chunk lands
+ * in under two seconds with comfortable headroom.
+ */
+const SNAPSHOT_PROGRESS_TIMEOUT_MS = 30_000;
 const TRANSCRIPT_TIMEOUT_MS = 20_000;
 
 type WelcomeFrame = Extract<CollabFrame, { t: "welcome" }>;
+type SnapshotChunkFrame = Extract<CollabFrame, { t: "snapshot-chunk" }>;
+
+/** Accumulator for an in-flight chunked welcome — see {@link CollabGuestLink}. */
+interface PendingSnapshot {
+	header: WelcomeFrame["header"];
+	state: WelcomeFrame["state"];
+	agents: AgentSnapshot[];
+	readOnly: boolean;
+	entryCount: number;
+	entries: SessionEntry[];
+	isResync: boolean;
+}
+
+/** Minimal context surface the idle-state reconciler mutates. */
+export interface GuestIdleReconcilerCtx {
+	statusLine: { markActivityEnd: () => void };
+	statusContainer: Pick<InteractiveModeContext["statusContainer"], "disposeChildren">;
+	loadingAnimation: { stop: () => void } | undefined;
+}
+
+/**
+ * Close the guest UI state held open by an earlier `agent_start` whose
+ * matching `agent_end` never reached us — most often because a reconnect
+ * dropped the event mid-stream. Reached via {@link reconcileGuestSnapshotHostState}
+ * (the live `state`-frame and welcome/resync reconciler) when the host reports `isStreaming === false`:
+ * folds the in-flight active-time window into the per-session meter (so
+ * `time_spent` stops ticking) and stops the `Working…` loader if one is
+ * still animating. No-op when the host is still streaming.
+ *
+ * Exported for direct unit testing; mutates the loader field on `ctx` so
+ * the same loader is not stopped twice on subsequent reconciliations.
+ */
+export function reconcileGuestIdleHostState(ctx: GuestIdleReconcilerCtx, isStreaming: boolean): void {
+	if (isStreaming) return;
+	ctx.statusLine.markActivityEnd();
+	if (ctx.loadingAnimation) {
+		ctx.loadingAnimation.stop();
+		ctx.loadingAnimation = undefined;
+		ctx.statusContainer.disposeChildren();
+	}
+}
+
+/** Reconcile a welcome/resync snapshot's host activity state into the guest meter. */
+export interface GuestSnapshotActivityReconcilerCtx extends GuestIdleReconcilerCtx {
+	statusLine: GuestIdleReconcilerCtx["statusLine"] & { markActivityStart: () => void };
+	/**
+	 * Start (or re-attach) the live "Working…" loader. Mirrors
+	 * `InteractiveModeContext.ensureLoadingAnimation`, which is what
+	 * `EventController` calls on `agent_start`. Required so a guest that
+	 * missed an earlier `agent_start` (a reconnect dropped it mid-stream)
+	 * starts its spinner when the host later reports it is streaming.
+	 */
+	ensureLoadingAnimation: InteractiveModeContext["ensureLoadingAnimation"];
+	autoCompactionLoader: InteractiveModeContext["autoCompactionLoader"];
+	retryLoader: InteractiveModeContext["retryLoader"];
+}
+
+/** Status-area state which cannot outlive removal of its child components. */
+export interface GuestTransientStatusCtx {
+	statusContainer: Pick<InteractiveModeContext["statusContainer"], "clear">;
+	autoCompactionLoader: InteractiveModeContext["autoCompactionLoader"];
+	retryLoader: InteractiveModeContext["retryLoader"];
+}
+
+/** Stop and forget status-area loaders before detaching their components. */
+export function clearGuestTransientStatus(ctx: GuestTransientStatusCtx): void {
+	if (ctx.autoCompactionLoader) {
+		ctx.autoCompactionLoader.stop();
+		ctx.autoCompactionLoader = undefined;
+	}
+	if (ctx.retryLoader) {
+		ctx.retryLoader.stop();
+		ctx.retryLoader = undefined;
+	}
+	ctx.statusContainer.clear();
+}
+
+export function reconcileGuestSnapshotHostState(ctx: GuestSnapshotActivityReconcilerCtx, isStreaming: boolean): void {
+	if (isStreaming) {
+		ctx.statusLine.markActivityStart();
+		if (!ctx.autoCompactionLoader && !ctx.retryLoader) ctx.ensureLoadingAnimation();
+		return;
+	}
+	reconcileGuestIdleHostState(ctx, false);
+}
 
 export class CollabGuestLink {
 	#ctx: InteractiveModeContext;
@@ -63,10 +166,24 @@ export class CollabGuestLink {
 	#returnSessionFile: string | null = null;
 	/** Frames apply strictly in arrival order through this chain. */
 	#applyChain: Promise<void> = Promise.resolve();
+	/** True after the initial snapshot has been written to disk and resumed. */
 	#welcomed = false;
 	#left = false;
-	/** Welcome whose snapshot-chunk train is still in flight (#3144). */
-	#pendingSnapshot?: { frame: WelcomeFrame; entries: SessionEntry[] };
+	/**
+	 * Buffer for the in-flight chunked welcome. Set by the small `welcome`
+	 * frame, accumulated by every `snapshot-chunk`, drained when the final
+	 * chunk lands (or the snapshot-progress timer fires).
+	 */
+	#pendingSnapshot: PendingSnapshot | null = null;
+	/**
+	 * Fires `firstWelcome.reject` from a stalled welcome/snapshot during the
+	 * initial join. Set in {@link join}, cleared on resolve/reject; arming a
+	 * timer after that point is a no-op so reconnect-time stalls fall through
+	 * to the normal socket close handling instead of aborting the live session.
+	 */
+	#joinReject: ((err: Error) => void) | null = null;
+	#welcomeTimer: Timer | null = null;
+	#snapshotProgressTimer: Timer | null = null;
 	/** base64url write token from a full link; absent when joined via a view link. */
 	#writeToken: string | undefined;
 	/** True when the host marked this peer read-only (view link). */
@@ -78,7 +195,9 @@ export class CollabGuestLink {
 	readonly agentRegistry = new AgentRegistry();
 	/** Per-agent `hasSessionFile` from the last snapshot; gates remote transcript fetches. */
 	#agentHasTranscript = new Map<string, boolean>();
-	#pendingTranscripts = new Map<number, (r: { text: string; newSize: number } | null) => void>();
+	#pendingTranscripts = new Map<number, (r: AgentHubRemoteTranscript | null) => void>();
+	/** Host `ui-request`s presented (or queued) locally, keyed by reqId; aborting dismisses. */
+	#pendingUiRequests = new Map<number, AbortController>();
 	#nextReqId = 1;
 	readonly #hubRemote: AgentHubRemote = {
 		chat: (id, text) => {
@@ -99,7 +218,7 @@ export class CollabGuestLink {
 				return Promise.resolve(null);
 			}
 			const reqId = this.#nextReqId++;
-			const { promise, resolve } = Promise.withResolvers<{ text: string; newSize: number } | null>();
+			const { promise, resolve } = Promise.withResolvers<AgentHubRemoteTranscript | null>();
 			const timer = setTimeout(() => {
 				this.#pendingTranscripts.delete(reqId);
 				resolve(null);
@@ -149,11 +268,23 @@ export class CollabGuestLink {
 		const firstWelcome = Promise.withResolvers<void>();
 		const welcomeSeen = Promise.withResolvers<void>();
 		let joined = false;
+		this.#joinReject = err => firstWelcome.reject(err);
+
+		const finishJoin = (): void => {
+			if (joined) return;
+			joined = true;
+			firstWelcome.resolve();
+		};
 
 		socket.onOpen = () => {
 			// (Re)connect: re-introduce ourselves; the host answers with a fresh
-			// welcome which (re)syncs the replica.
+			// welcome which (re)syncs the replica. Discard any partially-streamed
+			// snapshot from a prior connection: the host will resend the full
+			// chunk train.
 			this.#welcomed = false;
+			this.#pendingSnapshot = null;
+			this.#clearSnapshotProgressTimer();
+			this.#armWelcomeTimer();
 			socket.send({
 				t: "hello",
 				proto: COLLAB_PROTO,
@@ -182,31 +313,41 @@ export class CollabGuestLink {
 			this.#applyChain = this.#applyChain
 				.then(async () => {
 					if (frame.t === "welcome") {
-						// The small welcome clears the first-welcome timeout on
-						// arrival — the multi-MB transcript follows in the
-						// snapshot-chunk train and must not spend it (#3144).
-						welcomeSeen.resolve();
+						this.#clearWelcomeTimer();
+						this.#beginWelcome(frame, joined);
 						if (frame.entryCount === 0) {
-							await completeSnapshot(frame, []);
-							return;
+							await this.#finalizeSnapshot();
+							finishJoin();
 						}
-						this.#pendingSnapshot = { frame, entries: [] };
 						return;
 					}
 					if (frame.t === "snapshot-chunk") {
-						const pending = this.#pendingSnapshot;
-						if (!pending) return;
-						pending.entries.push(...frame.entries);
-						if (frame.final) {
-							this.#pendingSnapshot = undefined;
-							await completeSnapshot(pending.frame, pending.entries);
+						const ready = this.#accumulateSnapshotChunk(frame);
+						if (ready) {
+							await this.#finalizeSnapshot();
+							finishJoin();
 						}
+						return;
+					}
+					if (frame.t === "error" && !this.#welcomed && !this.#left) {
+						// Pre-welcome errors are the host's targeted reply to our
+						// hello (e.g. protocol mismatch): no welcome will follow.
+						// Fail the join with the host's message instead of hanging
+						// until the welcome timeout.
+						this.#clearWelcomeTimer();
+						if (joined) this.#ctx.showError(`Collab host: ${frame.message}`);
+						else firstWelcome.reject(new Error(frame.message));
 						return;
 					}
 					if (!this.#welcomed || this.#left) return;
 					this.#applyFrame(frame);
 				})
-				.catch(err => logger.warn("collab guest frame apply failed", { type: frame.t, error: String(err) }));
+				.catch(err => {
+					logger.warn("collab guest frame apply failed", { type: frame.t, error: String(err) });
+					if (!joined && (frame.t === "welcome" || frame.t === "snapshot-chunk")) {
+						firstWelcome.reject(err instanceof Error ? err : new Error(String(err)));
+					}
+				});
 		};
 		socket.onControl = msg => {
 			if (this.#left) return;
@@ -217,6 +358,8 @@ export class CollabGuestLink {
 			}
 		};
 		socket.onClose = (reason, willReconnect) => {
+			this.#clearWelcomeTimer();
+			this.#clearSnapshotProgressTimer();
 			this.#flushPendingTranscripts();
 			if (this.#left) return;
 			if (!joined) {
@@ -231,18 +374,12 @@ export class CollabGuestLink {
 			void this.#restoreLocalSession();
 		};
 		socket.connect();
+		// Cover the connect phase too: if the relay blackholes the WebSocket
+		// handshake (no onOpen, no onClose), onOpen never arms the welcome timer,
+		// so without this the join would hang forever. onOpen re-arms (resetting
+		// the budget) once the socket actually opens.
+		this.#armWelcomeTimer();
 
-		const timeout = setTimeout(
-			() => firstWelcome.reject(new Error("timed out waiting for the host's welcome")),
-			WELCOME_TIMEOUT_MS,
-		);
-		// The timeout guards only the wait for the (small) welcome frame — the
-		// chunked transcript that follows may legitimately take longer (#3144).
-		void welcomeSeen.promise.then(() => clearTimeout(timeout));
-		// Registered before the first welcome applies so registry consumers
-		// (running-subagents badge) already resolve the guest mirror registry
-		// while the snapshot's agent list lands.
-		this.#ctx.collabGuest = this;
 		try {
 			await firstWelcome.promise;
 		} catch (err) {
@@ -252,8 +389,13 @@ export class CollabGuestLink {
 			this.#socket = null;
 			throw err;
 		} finally {
-			clearTimeout(timeout);
+			this.#joinReject = null;
+			this.#clearWelcomeTimer();
+			this.#clearSnapshotProgressTimer();
 		}
+
+		this.#ctx.collabGuest = this;
+		this.#ctx.syncRunningSubagentBadge();
 	}
 
 	/** User-initiated leave (or post-disconnect cleanup): restore the previous session. */
@@ -273,35 +415,115 @@ export class CollabGuestLink {
 		this.#socket?.send({ t: "abort" });
 	}
 
-	/** Write the assembled snapshot to the replica file and (re)load it through the resume machinery. */
-	async #applyWelcome(frame: WelcomeFrame, entries: SessionEntry[], isResync: boolean): Promise<void> {
+	/**
+	 * Latch the welcome metadata and prime the snapshot accumulator. The
+	 * heavy resume work (file write, `switchSession`, render) only happens in
+	 * {@link #finalizeSnapshot}, so the small welcome frame clears the join
+	 * timeout immediately even when the transcript still has to stream in.
+	 */
+	#beginWelcome(frame: WelcomeFrame, isResync: boolean): void {
 		if (this.#left) return;
+		this.#pendingSnapshot = {
+			header: frame.header,
+			state: frame.state,
+			agents: frame.agents,
+			readOnly: frame.readOnly === true,
+			entryCount: frame.entryCount,
+			entries: [],
+			isResync,
+		};
+		this.#armSnapshotProgressTimer();
+	}
+
+	/**
+	 * Append a chunk to the pending snapshot. Returns `true` when the
+	 * accumulator has gathered every entry the welcome promised, or the host
+	 * tagged this chunk as `final`. The caller is responsible for invoking
+	 * {@link #finalizeSnapshot} on the same applyChain microtask.
+	 */
+	#accumulateSnapshotChunk(frame: SnapshotChunkFrame): boolean {
+		const pending = this.#pendingSnapshot;
+		if (!pending) {
+			logger.debug("collab guest dropping orphan snapshot-chunk");
+			return false;
+		}
+		pending.entries.push(...frame.entries);
+		const complete = frame.final || pending.entries.length >= pending.entryCount;
+		if (complete) {
+			this.#clearSnapshotProgressTimer();
+		} else {
+			this.#armSnapshotProgressTimer();
+		}
+		return complete;
+	}
+
+	/** Write the accumulated welcome snapshot to the replica file and (re)load it through the resume machinery. */
+	async #finalizeSnapshot(): Promise<void> {
+		const pending = this.#pendingSnapshot;
+		this.#pendingSnapshot = null;
+		this.#clearSnapshotProgressTimer();
+		if (!pending || this.#left) return;
 		const replicaPath = path.join(getConfigRootDir(), "collab", `${this.#roomId}.jsonl`);
-		const lines = [frame.header, ...entries].map(entry => JSON.stringify(entry)).join("\n");
+		const lines = [pending.header, ...pending.entries].map(entry => JSON.stringify(entry)).join("\n");
 		await Bun.write(replicaPath, `${lines}\n`);
 
-		// Resume sequence (selector-controller.handleResumeSession) minus
-		// applyCwdChange: the guest process never chdirs to a host path. The
-		// SessionManager still adopts the header cwd for display/relativization.
+		// Resume through AgentSession without adopting the host's cwd.
+		const switched = await this.#ctx.session.switchSession(replicaPath, { preserveLocalCwd: true });
+		if (switched === false) {
+			throw new Error("Collab replica activation was cancelled");
+		}
 		this.#clearTransientUi();
 		this.#clearAgentMirror();
-		this.#ctx.syncRunningSubagentBadge?.();
-		await this.#ctx.session.switchSession(replicaPath);
-		this.state = frame.state;
-		this.#applyHostState(frame.state);
+		this.state = pending.state;
+		reconcileGuestSnapshotHostState(this.#ctx, pending.state.isStreaming);
+		this.#applyHostState(pending.state);
 		this.#ctx.resetObserverRegistry();
-		this.#applyAgentSnapshots(frame.agents);
-		this.#ctx.syncRunningSubagentBadge?.();
+		this.#applyAgentSnapshots(pending.agents);
+		this.#ctx.syncRunningSubagentBadge();
 		this.#assistantStreamSynced = false;
-		setSessionTerminalTitle(frame.state.sessionName ?? frame.header.title, frame.state.cwd);
-		this.#ctx.chatContainer.clear();
-		this.#ctx.renderInitialMessages({ clearTerminalHistory: true });
+		setSessionTerminalTitle(pending.state.sessionName ?? pending.header.title, pending.state.cwd);
+		this.#ctx.chatContainer.disposeChildren();
+		await this.#ctx.renderInitialMessages({ clearTerminalHistory: true });
 		await this.#ctx.reloadTodos();
 		this.#updateStatusSegment();
-		this.#readOnly = frame.readOnly === true;
+		this.#readOnly = pending.readOnly;
 		this.#welcomed = true;
 		const suffix = this.#readOnly ? " (read-only)" : "";
-		this.#ctx.showStatus(isResync ? `Reconnected to collab session${suffix}` : `Joined collab session${suffix}`);
+		this.#ctx.showStatus(
+			pending.isResync ? `Reconnected to collab session${suffix}` : `Joined collab session${suffix}`,
+		);
+	}
+
+	#armWelcomeTimer(): void {
+		if (this.#joinReject === null) return;
+		this.#clearWelcomeTimer();
+		this.#welcomeTimer = setTimeout(() => {
+			this.#welcomeTimer = null;
+			this.#joinReject?.(new Error("timed out waiting for the host's welcome"));
+		}, WELCOME_TIMEOUT_MS);
+	}
+
+	#clearWelcomeTimer(): void {
+		if (this.#welcomeTimer !== null) {
+			clearTimeout(this.#welcomeTimer);
+			this.#welcomeTimer = null;
+		}
+	}
+
+	#armSnapshotProgressTimer(): void {
+		if (this.#joinReject === null) return;
+		this.#clearSnapshotProgressTimer();
+		this.#snapshotProgressTimer = setTimeout(() => {
+			this.#snapshotProgressTimer = null;
+			this.#joinReject?.(new Error("timed out waiting for the host's session snapshot"));
+		}, SNAPSHOT_PROGRESS_TIMEOUT_MS);
+	}
+
+	#clearSnapshotProgressTimer(): void {
+		if (this.#snapshotProgressTimer !== null) {
+			clearTimeout(this.#snapshotProgressTimer);
+			this.#snapshotProgressTimer = null;
+		}
 	}
 
 	#applyFrame(frame: CollabFrame): void {
@@ -313,6 +535,14 @@ export class CollabGuestLink {
 				this.#ctx.sessionManager.ingestReplicatedEntry(frame.entry);
 				if (frame.entry.type === "message") {
 					this.#ctx.session.agent.replaceMessages([...this.#ctx.session.messages, frame.entry.message]);
+				} else if (frame.entry.type === "compaction" || frame.entry.type === "branch_summary") {
+					// Compaction/branch entries rewrite the host's model context: the
+					// pre-boundary transcript collapses behind a summary. Appending
+					// the entry alone leaves the replica holding the stale full
+					// history, so rebuild the message array from the ingested entries
+					// exactly as the host does after appendCompaction/branchWithSummary
+					// (session-maintenance.ts, agent-session.ts).
+					this.#ctx.session.agent.replaceMessages(this.#ctx.session.buildDisplaySessionContext().messages);
 				}
 				break;
 			}
@@ -324,30 +554,32 @@ export class CollabGuestLink {
 				this.#applyHostState(frame.state);
 				setSessionTerminalTitle(frame.state.sessionName, frame.state.cwd);
 				this.#updateStatusSegment();
-				// Reconciler: events normally drive the loader; clear a stale one if
-				// the host reports idle (e.g. events lost across a reconnect).
-				if (!frame.state.isStreaming && this.#ctx.loadingAnimation) {
-					this.#ctx.loadingAnimation.stop();
-					this.#ctx.loadingAnimation = undefined;
-				}
+				reconcileGuestSnapshotHostState(this.#ctx, frame.state.isStreaming);
 				this.#ctx.statusLine.invalidate();
 				this.#ctx.ui.requestRender();
 				break;
 			}
 			case "bus":
 				// Mirrored host EventBus traffic (task subagent lifecycle/progress)
-				// feeding the observer HUD and Agent Hub progress columns.
-				this.#ctx.eventBus?.emit(frame.channel, frame.data);
+				// feeding the observer HUD and Agent Hub progress columns. The
+				// observer registry listens on the shared observability bus.
+				emitSubagentFrame(this.#ctx.eventBus, this.#ctx.subagentEventBus, frame.channel, frame.data);
 				break;
 			case "agents":
 				this.#applyAgentSnapshots(frame.agents);
-				this.#ctx.syncRunningSubagentBadge?.();
+				this.#ctx.syncRunningSubagentBadge();
+				break;
+			case "ui-request":
+				this.#presentUiRequest(frame.request);
+				break;
+			case "ui-request-end":
+				this.#endUiRequest(frame.reqId);
 				break;
 			case "transcript": {
 				const resolve = this.#pendingTranscripts.get(frame.reqId);
 				if (resolve) {
 					this.#pendingTranscripts.delete(frame.reqId);
-					resolve(frame.error ? null : { text: frame.text, newSize: frame.newSize });
+					resolve({ text: frame.text, newSize: frame.newSize, error: frame.error });
 				}
 				break;
 			}
@@ -456,8 +688,75 @@ export class CollabGuestLink {
 		this.#pendingTranscripts.clear();
 	}
 
+	/**
+	 * Surface a host `ui-request` (ask select/editor) through the local
+	 * hook-dialog seam. The dialog settles on user submit/cancel — both send a
+	 * `ui-response` (cancel carries `value: undefined`, mirroring the web
+	 * client's Cancel button) — or when {@link #endUiRequest} aborts it because
+	 * the host settled the request elsewhere; that path must NOT respond.
+	 */
+	#presentUiRequest(request: CollabUiRequest): void {
+		// The host only targets writable peers; drop defensively on a read-only link.
+		if (this.#readOnly || this.#pendingUiRequests.has(request.reqId)) return;
+		const abort = new AbortController();
+		this.#pendingUiRequests.set(request.reqId, abort);
+		const dialog =
+			request.kind === "select"
+				? this.#ctx.showHookSelector(request.title, request.options, {
+						signal: abort.signal,
+						initialIndex: request.initialIndex,
+						selectionMarker: request.selectionMarker,
+						checkedIndices: request.checkedIndices,
+						markableCount: request.markableCount,
+						helpText: request.helpText,
+					})
+				: this.#ctx.showHookEditor(request.title, request.prefill, { signal: abort.signal });
+		dialog
+			.then(value => {
+				// Identity check: only the presentation that still owns the reqId
+				// may respond. An abort from #endUiRequest / #clearUiRequests
+				// removes (or replaces, on resync replay) the entry before this
+				// microtask runs, so a dismissed dialog stays silent.
+				if (this.#pendingUiRequests.get(request.reqId) !== abort) return;
+				this.#pendingUiRequests.delete(request.reqId);
+				this.#socket?.send({ t: "ui-response", reqId: request.reqId, value });
+			})
+			.catch(err => {
+				if (this.#pendingUiRequests.get(request.reqId) === abort) {
+					this.#pendingUiRequests.delete(request.reqId);
+				}
+				logger.warn("collab guest ui-request presentation failed", {
+					reqId: request.reqId,
+					error: String(err),
+				});
+			});
+	}
+
+	/** Host settled the request (answered elsewhere or aborted): dismiss without responding. */
+	#endUiRequest(reqId: number): void {
+		const abort = this.#pendingUiRequests.get(reqId);
+		if (!abort) return;
+		this.#pendingUiRequests.delete(reqId);
+		abort.abort();
+	}
+
+	/**
+	 * Dismiss every locally presented `ui-request` without responding: on
+	 * resync the host replays the ones still pending, and on leave they are no
+	 * longer ours to answer. Queued dialogs abort before the presented one
+	 * (reverse insertion order) so settling the active dialog cannot flash the
+	 * next queued one onto the surface first.
+	 */
+	#clearUiRequests(): void {
+		if (this.#pendingUiRequests.size === 0) return;
+		const aborts = [...this.#pendingUiRequests.values()];
+		this.#pendingUiRequests.clear();
+		for (const abort of aborts.reverse()) abort.abort();
+	}
+
 	#clearTransientUi(): void {
-		this.#ctx.statusContainer.clear();
+		this.#clearUiRequests();
+		clearGuestTransientStatus(this.#ctx);
 		this.#ctx.pendingMessagesContainer.clear();
 		this.#ctx.compactionQueuedMessages = [];
 		this.#ctx.streamingComponent = undefined;
@@ -477,7 +776,7 @@ export class CollabGuestLink {
 		this.#ctx.statusLine.setCollabStatus(null);
 		this.#flushPendingTranscripts();
 		this.#clearAgentMirror();
-		this.#ctx.syncRunningSubagentBadge?.();
+		this.#ctx.syncRunningSubagentBadge();
 		this.#ctx.resetObserverRegistry();
 		this.#clearTransientUi();
 		// Replica file stays on disk: it is a valid session file outside the
@@ -489,10 +788,10 @@ export class CollabGuestLink {
 		await this.#ctx.session.newSession();
 		setSessionTerminalTitle(this.#ctx.sessionManager.getSessionName(), this.#ctx.sessionManager.getCwd());
 		this.#ctx.statusLine.invalidate();
-		this.#ctx.statusLine.setSessionStartTime(Date.now());
-		this.#ctx.updateEditorTopBorder();
+		this.#ctx.statusLine.resetActiveTime();
+		this.#ctx.ui.requestRender();
 		this.#ctx.updateEditorBorderColor();
-		this.#ctx.renderInitialMessages({ clearTerminalHistory: true });
+		await this.#ctx.renderInitialMessages({ clearTerminalHistory: true });
 		await this.#ctx.reloadTodos();
 		this.#ctx.ui.requestRender(true, { clearScrollback: true });
 	}

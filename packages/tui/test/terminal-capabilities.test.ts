@@ -4,7 +4,9 @@ import {
 	getTerminalInfo,
 	hyperlinksUserOverride,
 	ImageProtocol,
+	isPaseoEmbedder,
 	NotifyProtocol,
+	resolveImageProtocol,
 	resolveWarpImageProtocol,
 	shouldEnableHyperlinksByDefault,
 	shouldEnableSynchronizedOutputByDefault,
@@ -14,6 +16,18 @@ import {
 describe("detectTerminalId", () => {
 	it("recognizes Warp before the true-color fallback", () => {
 		expect(detectTerminalId({ TERM_PROGRAM: "WarpTerminal", COLORTERM: "truecolor" })).toBe("warp");
+	});
+});
+
+describe("detectTerminalId", () => {
+	it("recognizes Warp before the true-color fallback", () => {
+		expect(detectTerminalId({ TERM_PROGRAM: "WarpTerminal", COLORTERM: "truecolor" })).toBe("warp");
+	});
+
+	it("falls back to trueColor on VTE/Ptyxis environments — VTE OSC 9 is ConEmu progress, not a notification protocol", () => {
+		const env = { TERM: "xterm-256color", TERM_PROGRAM: "", COLORTERM: "truecolor", VTE_VERSION: "8400" };
+
+		expect(detectTerminalId(env)).toBe("trueColor");
 	});
 });
 
@@ -75,6 +89,7 @@ describe("shouldEnableSynchronizedOutputByDefault", () => {
 		expect(shouldEnableSynchronizedOutputByDefault({ TMUX: "1" }, "kitty")).toBe(false);
 		expect(shouldEnableSynchronizedOutputByDefault({ ZELLIJ: "0" }, "ghostty")).toBe(false);
 		expect(shouldEnableSynchronizedOutputByDefault({ STY: "x" }, "wezterm")).toBe(false);
+		expect(shouldEnableSynchronizedOutputByDefault({ CMUX_WORKSPACE_ID: "workspace" }, "wezterm")).toBe(false);
 		expect(shouldEnableSynchronizedOutputByDefault({ TERM: "tmux-256color" }, "iterm2")).toBe(false);
 		expect(shouldEnableSynchronizedOutputByDefault({ TERM: "screen-256color" }, "kitty")).toBe(false);
 	});
@@ -135,7 +150,7 @@ describe("Warp terminal capabilities", () => {
 			cmd: [
 				process.execPath,
 				"--eval",
-				`import { ImageProtocol, TERMINAL, TERMINAL_ID } from "@pk-nerdsaver-ai/pi-tui/terminal-capabilities";
+				`import { ImageProtocol, TERMINAL, TERMINAL_ID } from "@oh-my-pi/pi-tui/terminal-capabilities";
 console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProtocol, expected: ImageProtocol.Kitty }));`,
 			],
 			env,
@@ -152,16 +167,21 @@ console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProto
 		expect(exitCode).toBe(0);
 		const resolved = JSON.parse(stdout) as { id: string; imageProtocol: string | null; expected: string };
 		expect(resolved.id).toBe("warp");
-		expect(resolved.imageProtocol).toBe(resolved.expected);
+		// Warp for Windows lacks Kitty graphics support.
+		expect(resolved.imageProtocol).toBe(process.platform === "win32" ? null : resolved.expected);
 	});
 
 	it("is Kitty-capable with true color but no OSC 8 hyperlinks", () => {
 		const warp = getTerminalInfo("warp");
-		expect(warp.imageProtocol).toBe(ImageProtocol.Kitty);
+		// Warp lacks Kitty graphics on Windows hosts, including WSL.
+		const windowsHost =
+			process.platform === "win32" ||
+			(process.platform === "linux" && Boolean(Bun.env.WSL_DISTRO_NAME || Bun.env.WSL_INTEROP));
+		expect(warp.imageProtocol).toBe(windowsHost ? null : ImageProtocol.Kitty);
 		expect(warp.trueColor).toBe(true);
 		expect(warp.hyperlinks).toBe(false);
-		expect(warp.notifyProtocol).toBe(NotifyProtocol.Bell);
-		expect(warp.textSizing).toBe(false);
+		expect(warp.notifyProtocol).toBe(NotifyProtocol.Osc9);
+		expect(warp.supportsTextSizing).toBe(false);
 	});
 
 	it("uses Kitty images on macOS/Linux and disables them on Windows", () => {
@@ -169,16 +189,16 @@ console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProto
 		const linux = getTerminalInfo("warp", "linux", {});
 		const windows = getTerminalInfo("warp", "win32", {});
 
-		expect(resolveWarpImageProtocol("darwin")).toBe(ImageProtocol.Kitty);
-		expect(resolveWarpImageProtocol("linux")).toBe(ImageProtocol.Kitty);
-		expect(resolveWarpImageProtocol("win32")).toBeNull();
+		expect(resolveWarpImageProtocol("darwin", {})).toBe(ImageProtocol.Kitty);
+		expect(resolveWarpImageProtocol("linux", {})).toBe(ImageProtocol.Kitty);
+		expect(resolveWarpImageProtocol("win32", {})).toBeNull();
 		expect(mac.imageProtocol).toBe(ImageProtocol.Kitty);
 		expect(linux.imageProtocol).toBe(ImageProtocol.Kitty);
 		expect(windows.imageProtocol).toBeNull();
 		expect(linux.trueColor).toBe(true);
 		expect(linux.hyperlinks).toBe(false);
 		expect(linux.deccara).toBe(false);
-		expect(linux.textSizing).toBe(false);
+		expect(linux.supportsTextSizing).toBe(false);
 	});
 
 	it("treats WSL as the Windows host so Kitty APC garbage never reaches Warp for Windows", () => {
@@ -197,6 +217,100 @@ console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProto
 		expect(shouldEnableSynchronizedOutputByDefault({}, "warp")).toBe(false);
 		expect(shouldEnableHyperlinksByDefault({}, "warp")).toBe(false);
 		expect(shouldEnableHyperlinksByDefault({ PI_FORCE_HYPERLINKS: "1" }, "warp")).toBe(true);
+	});
+});
+
+/**
+ * Build a child-process env for the TERMINAL resolution subprocesses: inherits
+ * the runner's environment, strips every terminal-identification marker and
+ * image-protocol pin, then applies the caller's overrides. Keeps the suite
+ * independent of which terminal it runs inside (full-suite safe).
+ */
+function subprocessEnv(overrides: Record<string, string | undefined>): Record<string, string | undefined> {
+	const env: Record<string, string | undefined> = { ...Bun.env };
+	for (const key of [
+		"PI_FORCE_IMAGE_PROTOCOL",
+		"PASEO_TERMINAL_ID",
+		"KITTY_WINDOW_ID",
+		"GHOSTTY_RESOURCES_DIR",
+		"WEZTERM_PANE",
+		"ITERM_SESSION_ID",
+		"VSCODE_PID",
+		"ALACRITTY_WINDOW_ID",
+	]) {
+		delete env[key];
+	}
+	return { ...env, ...overrides };
+}
+
+describe("Paseo embedder carve-out", () => {
+	it("detects Paseo via PASEO_TERMINAL_ID", () => {
+		expect(isPaseoEmbedder({})).toBe(false);
+		expect(isPaseoEmbedder({ PASEO_TERMINAL_ID: "term-1" })).toBe(true);
+	});
+
+	it("drops the multiplexer-restored Kitty fallback inside Paseo", () => {
+		// Regression (getpaseo/paseo#3850): tmux inside a Paseo pane resolves to
+		// base (null static protocol) and TERM=tmux-* would restore Kitty via
+		// the fallback — the embedder carve-out must win over the fallback.
+		expect(resolveImageProtocol("base", { TERM: "tmux-256color", PASEO_TERMINAL_ID: "term-1" }, true)).toBeNull();
+		expect(resolveImageProtocol("base", { TERM: "tmux-256color" }, true)).toBe(ImageProtocol.Kitty);
+	});
+
+	it("drops Kitty graphics when Paseo hosts the terminal", async () => {
+		const env = subprocessEnv({ TERM_PROGRAM: "kitty", PASEO_TERMINAL_ID: "term-1" });
+
+		const proc = Bun.spawn({
+			cmd: [
+				process.execPath,
+				"--eval",
+				`import { ImageProtocol, TERMINAL, TERMINAL_ID } from "@oh-my-pi/pi-tui/terminal-capabilities";
+console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProtocol, expected: ImageProtocol.Kitty }));`,
+			],
+			env,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+
+		expect(stderr).toBe("");
+		expect(exitCode).toBe(0);
+		const resolved = JSON.parse(stdout) as { id: string; imageProtocol: string | null };
+		expect(resolved.id).toBe("kitty");
+		// Paseo's xterm.js renderer implements neither Kitty graphics nor
+		// Unicode placeholders (getpaseo/paseo#3850).
+		expect(resolved.imageProtocol).toBeNull();
+	});
+
+	it("keeps Kitty graphics for a real kitty without PASEO_TERMINAL_ID", async () => {
+		const env = subprocessEnv({ TERM_PROGRAM: "kitty" });
+
+		const proc = Bun.spawn({
+			cmd: [
+				process.execPath,
+				"--eval",
+				`import { ImageProtocol, TERMINAL, TERMINAL_ID } from "@oh-my-pi/pi-tui/terminal-capabilities";
+console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProtocol, expected: ImageProtocol.Kitty }));`,
+			],
+			env,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+
+		expect(stderr).toBe("");
+		expect(exitCode).toBe(0);
+		const resolved = JSON.parse(stdout) as { id: string; imageProtocol: string | null; expected: string };
+		expect(resolved.id).toBe("kitty");
+		expect(resolved.imageProtocol).toBe(resolved.expected);
 	});
 });
 

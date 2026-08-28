@@ -12,9 +12,9 @@
  * carry subsystem-specific message types — lives in the per-subsystem
  * `types.ts` files and is documented there.
  */
-import type { AgentMessage } from "@pk-nerdsaver-ai/pi-agent-core";
-import type { CompactionPreparation, CompactionResult } from "@pk-nerdsaver-ai/pi-agent-core/compaction";
-import type { ImageContent, TextContent, ToolResultMessage } from "@pk-nerdsaver-ai/pi-ai";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { CompactionPreparation, CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
+import type { AssistantRetryRecovery, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { Rule } from "../capability/rule";
 import type { Goal, GoalModeState } from "../goals/state";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry } from "../session/session-entries";
@@ -102,6 +102,8 @@ export interface SessionStopEvent {
 	session_id: string;
 	session_file?: string;
 	stop_hook_active: boolean;
+	/** Cancels handler waiting when the active settle pass is aborted. */
+	signal: AbortSignal;
 }
 
 /** Preparation data for tree navigation (used by session_before_tree event) */
@@ -191,6 +193,12 @@ export interface AgentStartEvent {
 export interface AgentEndEvent {
 	type: "agent_end";
 	messages: AgentMessage[];
+	/**
+	 * When true, the session has already scheduled an automatic continuation
+	 * (auto-retry, empty/unexpected-stop retry, etc.). Subscribers must not
+	 * treat this as a user-visible terminal settle.
+	 */
+	willContinue?: boolean;
 }
 
 /** Fired at the start of each turn */
@@ -216,15 +224,13 @@ export interface TurnEndEvent {
 export interface AutoCompactionStartEvent {
 	type: "auto_compaction_start";
 	reason: "threshold" | "overflow" | "idle" | "incomplete";
-	/** @deprecated Never emitted anymore; kept so existing listener switch cases still compile. */
-	action: "context-full" | "handoff" | "shake" | "snapcompact";
+	action: "context-full" | "remote" | "handoff" | "shake" | "snapcompact";
 }
 
 /** Fired when auto-compaction ends */
 export interface AutoCompactionEndEvent {
 	type: "auto_compaction_end";
-	/** @deprecated Never emitted anymore; kept so existing listener switch cases still compile. */
-	action: "context-full" | "handoff" | "shake" | "snapcompact";
+	action: "context-full" | "remote" | "handoff" | "shake" | "snapcompact";
 	result: CompactionResult | undefined;
 	aborted: boolean;
 	willRetry: boolean;
@@ -243,12 +249,36 @@ export interface AutoRetryStartEvent {
 	errorId?: number;
 }
 
+/** Persisted retry error whose transcript presentation changed when the retry saga settled. */
+export interface RetryErrorUpdate {
+	entryId: string;
+	persistenceKey?: string;
+	note: string;
+	retryRecovery: AssistantRetryRecovery;
+}
+
 /** Fired when auto-retry ends */
 export interface AutoRetryEndEvent {
 	type: "auto_retry_end";
 	success: boolean;
 	attempt: number;
 	finalError?: string;
+	retryErrors?: RetryErrorUpdate[];
+}
+
+/** Fired when auto-retry switches to a configured fallback model/provider. */
+export interface RetryFallbackAppliedEvent {
+	type: "retry_fallback_applied";
+	from: string;
+	to: string;
+	role: string;
+}
+
+/** Fired when a request succeeds on the fallback model applied by auto-retry. */
+export interface RetryFallbackSucceededEvent {
+	type: "retry_fallback_succeeded";
+	model: string;
+	role: string;
 }
 
 // ============================================================================
@@ -275,13 +305,30 @@ export interface TodoReminderEvent {
 
 /**
  * Return type for `tool_call` handlers.
- * Allows handlers to block tool execution.
+ * Allows handlers to block tool execution or revise the input the tool runs with.
  */
 export interface ToolCallEventResult {
 	/** If true, block the tool from executing */
 	block?: boolean;
 	/** Reason for blocking (returned to LLM as error) */
 	reason?: string;
+	/**
+	 * Replacement input the tool executes with, instead of the original arguments. Ignored when
+	 * `block` is true. This is the raw execution input passed to the tool's `execute` (the handler
+	 * owns its correctness) — not the normalized `event.input` view, which may carry derived
+	 * gate-only fields (e.g. hashline `edit` `path`/`paths`) that are not real parameters. When
+	 * multiple handlers set `input`, the last one wins; handlers do not observe each other's
+	 * revisions (each sees the original `event.input`). Not applied to `computer` tool calls.
+	 *
+	 * For model-issued tool calls the event fires at arg-prep time in the agent loop, before
+	 * concurrency scheduling, `tool_execution_start`, and the approval gate: the revision is
+	 * revalidated against the tool schema and becomes what the loop schedules, displays, persists,
+	 * and executes — the user always approves what actually runs. For dispatches the loop never
+	 * sees (nested `write xd://` device calls, Cursor direct execution) the tool wrapper applies
+	 * the revision before its own approval gate; a revised nested xd:// input forfeits the outer
+	 * write gate's approval and faces the full prompt again.
+	 */
+	input?: Record<string, unknown>;
 }
 
 /**

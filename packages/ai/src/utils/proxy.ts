@@ -1,7 +1,21 @@
 import * as net from "node:net";
 import * as tls from "node:tls";
-import * as AIError from "../error";
+import * as logger from "@oh-my-pi/pi-utils/logger";
+import { AbortError } from "../error/abort";
+import { StreamTimeoutError, ValidationError } from "../error/validation";
 import type { FetchImpl } from "../types";
+
+/**
+ * Host:port of a proxy URL for logging. Proxy URLs can carry basic-auth
+ * credentials, so never log the raw value.
+ */
+function proxyLogTarget(proxyUrl: string): string {
+	try {
+		return new URL(proxyUrl).host;
+	} catch {
+		return "<unparseable>";
+	}
+}
 
 /**
  * Checks if a host is local or cloud metadata, which should always bypass the proxy
@@ -61,7 +75,7 @@ export function shouldBypassProxy(urlObj: URL): boolean {
 		.map(r => r.trim())
 		.filter(Boolean);
 	const targetHost = urlObj.hostname.toLowerCase();
-	const targetPort = urlObj.port || (urlObj.protocol === "https:" ? "443" : "80");
+	const targetPort = urlObj.port || (urlObj.protocol === "https:" || urlObj.protocol === "wss:" ? "443" : "80");
 
 	for (const rule of rules) {
 		if (rule === "*") {
@@ -126,19 +140,41 @@ export function getProxyForProvider(provider: string): string | undefined {
 	const envKey = `PI_PROXY_${normalized}`;
 	const value = Bun.env[envKey] || Bun.env.PI_PROXY;
 	proxyCache.set(provider, value);
+	// Once per provider per process: a silently unproxied provider request is
+	// otherwise indistinguishable from a proxied one until the region block
+	// answers 403.
+	logger.debug("provider proxy resolved", {
+		provider,
+		source: Bun.env[envKey] ? envKey : value ? "PI_PROXY" : "none",
+		proxy: value ? proxyLogTarget(value) : undefined,
+	});
 	return value;
 }
 
+/** Resolves provider-specific and standard proxy variables for a target URL, honoring NO_PROXY. */
+export function getProxyForUrl(provider: string, url: URL): string | undefined {
+	if (shouldBypassProxy(url)) return undefined;
+	const protocolProxy =
+		url.protocol === "https:" || url.protocol === "wss:"
+			? Bun.env.HTTPS_PROXY || Bun.env.https_proxy
+			: Bun.env.HTTP_PROXY || Bun.env.http_proxy;
+	return getProxyForProvider(provider) || protocolProxy || Bun.env.ALL_PROXY || Bun.env.all_proxy || undefined;
+}
+
 /**
- * Wraps a fetch implementation to inject proxy options for non-local hosts.
+ * Wraps `fetchImpl` so non-local requests tunnel through `proxyUrl`.
+ * A caller-supplied `init.proxy` always wins, so stacked wrappers keep the
+ * innermost (most specific) proxy decision.
  */
-export function wrapFetchForProxy(fetchImpl: FetchImpl, provider: string): FetchImpl {
-	const proxyUrl = getProxyForProvider(provider);
+function wrapFetchWithProxyUrl(fetchImpl: FetchImpl, proxyUrl: string | undefined): FetchImpl {
 	if (!proxyUrl) {
 		return fetchImpl;
 	}
 
 	const wrapped = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+		if ((init as { proxy?: unknown } | undefined)?.proxy) {
+			return fetchImpl(input, init);
+		}
 		const urlStr = input instanceof Request ? input.url : input.toString();
 		let urlObj: URL;
 		try {
@@ -149,6 +185,14 @@ export function wrapFetchForProxy(fetchImpl: FetchImpl, provider: string): Fetch
 		}
 
 		if (shouldBypassProxy(urlObj)) {
+			// A NO_PROXY rule silencing a configured proxy is otherwise invisible
+			// until the unproxied egress is refused; local hosts are routine.
+			if (!isLocalOrMetadataHost(urlObj.hostname)) {
+				logger.debug("proxy bypassed by NO_PROXY", {
+					host: urlObj.host,
+					noProxy: Bun.env.NO_PROXY || Bun.env.no_proxy,
+				});
+			}
 			return fetchImpl(input, init);
 		}
 
@@ -163,10 +207,85 @@ export function wrapFetchForProxy(fetchImpl: FetchImpl, provider: string): Fetch
 }
 
 /**
+ * Wraps a fetch implementation to inject proxy options for non-local hosts.
+ */
+export function wrapFetchForProxy(fetchImpl: FetchImpl, provider: string): FetchImpl {
+	return wrapFetchWithProxyUrl(fetchImpl, getProxyForProvider(provider));
+}
+
+let globalProxyFetchInstalled = false;
+
+/** Test seam: re-arms {@link installGlobalProxyFetch}. */
+export function __resetGlobalProxyFetch(): void {
+	globalProxyFetchInstalled = false;
+}
+
+/**
+ * Routes the process-wide `globalThis.fetch` through `PI_PROXY`.
+ *
+ * Bun's native fetch resolves `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` by
+ * itself but knows nothing about `PI_PROXY`. Provider *streams* get their proxy
+ * from {@link wrapFetchForProxy}; every other provider-bound request — OAuth
+ * token refresh and login, usage probes, model discovery — goes out through the
+ * bare global `fetch` and would silently ignore `PI_PROXY`. That asymmetry is
+ * fatal wherever a provider geo-blocks its token endpoint: the stream is
+ * proxied, the refresh is not, and the credential dies with a 403.
+ *
+ * A per-request `proxy` (including `PI_PROXY_<PROVIDER>` injected by
+ * {@link wrapFetchForProxy}) still wins, and loopback / private-range /
+ * `NO_PROXY` targets bypass, so local model servers and MCP hosts are
+ * untouched. Idempotent; a no-op when `PI_PROXY` is unset.
+ */
+export function installGlobalProxyFetch(): void {
+	if (globalProxyFetchInstalled) return;
+	const proxyUrl = Bun.env.PI_PROXY?.trim();
+	// One line naming every proxy-relevant variable this process can see: a
+	// missing PI_PROXY and a NO_PROXY rule that silences it are otherwise
+	// indistinguishable from a working proxy that the peer rejected.
+	const env = {
+		PI_PROXY: proxyUrl ? proxyLogTarget(proxyUrl) : undefined,
+		PI_PROXY_ANTHROPIC: Bun.env.PI_PROXY_ANTHROPIC ? proxyLogTarget(Bun.env.PI_PROXY_ANTHROPIC) : undefined,
+		HTTPS_PROXY: Bun.env.HTTPS_PROXY || Bun.env.https_proxy ? "set" : undefined,
+		ALL_PROXY: Bun.env.ALL_PROXY || Bun.env.all_proxy ? "set" : undefined,
+		NO_PROXY: Bun.env.NO_PROXY || Bun.env.no_proxy,
+	};
+	if (!proxyUrl) {
+		logger.debug("global proxy fetch not installed", {
+			reason: "PI_PROXY unset",
+			env,
+		});
+		return;
+	}
+	globalProxyFetchInstalled = true;
+	globalThis.fetch = wrapFetchWithProxyUrl(globalThis.fetch, proxyUrl) as typeof globalThis.fetch;
+	logger.debug("global proxy fetch installed", {
+		proxy: proxyLogTarget(proxyUrl),
+		env,
+	});
+}
+
+export interface ConnectProxiedSocketOptions {
+	/** Caller cancellation for the proxy TCP/TLS handshake and CONNECT tunnel. */
+	signal?: AbortSignal;
+	/** Maximum wall-clock time to establish the final TLS tunnel. Disabled when absent or non-positive. */
+	timeoutMs?: number;
+	/** Target TLS profile. Cursor defaults to HTTP/2 when this is absent. */
+	tls?: tls.ConnectionOptions;
+}
+
+/**
  * Tunnel a socket connection through an HTTP CONNECT proxy.
  * This is used specifically to wrap Node's `http2.connect(baseUrl, { createConnection })` for Cursor.
  */
-export async function connectProxiedSocket(proxyUrlStr: string, targetUrlStr: string): Promise<tls.TLSSocket> {
+export async function connectProxiedSocket(
+	proxyUrlStr: string,
+	targetUrlStr: string,
+	options?: ConnectProxiedSocketOptions,
+): Promise<tls.TLSSocket> {
+	if (options?.signal?.aborted) {
+		throw new AbortError("Proxy tunnel aborted");
+	}
+
 	const proxyUrl = new URL(proxyUrlStr);
 	const targetUrl = new URL(targetUrlStr);
 
@@ -179,23 +298,94 @@ export async function connectProxiedSocket(proxyUrlStr: string, targetUrlStr: st
 
 	const { promise, resolve, reject } = Promise.withResolvers<tls.TLSSocket>();
 
-	let rawSocket: net.Socket;
-	if (useProxySsl) {
-		rawSocket = tls.connect({
-			host: proxyHost,
-			port: proxyPort,
-		});
-	} else {
-		rawSocket = net.connect({
-			host: proxyHost,
-			port: proxyPort,
-		});
-	}
-
-	rawSocket.once("error", reject);
-
 	const readyEvent = useProxySsl ? "secureConnect" : "connect";
-	rawSocket.once(readyEvent, () => {
+	let rawSocket: net.Socket | undefined;
+	let tunnelSocket: tls.TLSSocket | undefined;
+	let timeout: NodeJS.Timeout | undefined;
+	let responseData = "";
+	let settled = false;
+
+	const cleanup = (): void => {
+		if (timeout) {
+			clearTimeout(timeout);
+			timeout = undefined;
+		}
+		options?.signal?.removeEventListener("abort", onAbort);
+		rawSocket?.off("error", onRawError);
+		rawSocket?.off(readyEvent, onProxyReady);
+		rawSocket?.off("data", onProxyData);
+		tunnelSocket?.off("secureConnect", onTunnelReady);
+		tunnelSocket?.off("error", onTunnelError);
+	};
+	const destroyInProgress = (): void => {
+		tunnelSocket?.destroy();
+		rawSocket?.destroy();
+	};
+	const rejectOnce = (error: Error): void => {
+		if (settled) return;
+		settled = true;
+		cleanup();
+		destroyInProgress();
+		logger.debug("proxy tunnel failed", {
+			proxy: `${proxyHost}:${proxyPort}`,
+			target: `${targetHost}:${targetPort}`,
+			error: String(error),
+			code: "code" in error ? String(error.code) : undefined,
+		});
+		reject(error);
+	};
+	const resolveOnce = (socket: tls.TLSSocket): void => {
+		if (settled) return;
+		settled = true;
+		cleanup();
+		resolve(socket);
+	};
+	const onAbort = (): void => rejectOnce(new AbortError("Proxy tunnel aborted"));
+	const onRawError = (error: Error): void => rejectOnce(error);
+	const onTunnelError = (error: Error): void => rejectOnce(error);
+	const onTunnelReady = (): void => {
+		if (!tunnelSocket) return;
+		logger.debug("proxy tunnel established", {
+			proxy: `${proxyHost}:${proxyPort}`,
+			target: `${targetHost}:${targetPort}`,
+			peer: `${rawSocket?.remoteAddress ?? "?"}:${rawSocket?.remotePort ?? "?"}`,
+			localPort: rawSocket?.localPort,
+			alpn: tunnelSocket.alpnProtocol,
+			authorized: tunnelSocket.authorized,
+		});
+		resolveOnce(tunnelSocket);
+	};
+	const onProxyData = (chunk: Buffer): void => {
+		if (!rawSocket) return;
+		responseData += chunk.toString("binary");
+		if (!responseData.includes("\r\n\r\n")) return;
+
+		rawSocket.off("data", onProxyData);
+		rawSocket.off("error", onRawError);
+
+		const firstLine = responseData.split("\r\n")[0];
+		logger.debug("proxy tunnel CONNECT reply", {
+			proxy: `${proxyHost}:${proxyPort}`,
+			target: `${targetHost}:${targetPort}`,
+			reply: firstLine,
+		});
+		if (!firstLine.includes(" 200 ")) {
+			rejectOnce(new ValidationError(`Proxy tunnel failed: ${firstLine}`));
+			return;
+		}
+
+		const tlsOptions = options?.tls;
+		tunnelSocket = tls.connect({
+			...tlsOptions,
+			socket: rawSocket,
+			servername: tlsOptions?.servername ?? targetHost,
+			ALPNProtocols: tlsOptions?.ALPNProtocols ?? ["h2"],
+		});
+		tunnelSocket.once("secureConnect", onTunnelReady);
+		tunnelSocket.once("error", onTunnelError);
+	};
+	const onProxyReady = (): void => {
+		if (!rawSocket) return;
 		let connectReq = `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n` + `Host: ${targetHost}:${targetPort}\r\n`;
 
 		if (proxyUrl.username || proxyUrl.password) {
@@ -207,34 +397,34 @@ export async function connectProxiedSocket(proxyUrlStr: string, targetUrlStr: st
 		connectReq += "\r\n";
 
 		rawSocket.write(connectReq);
+		rawSocket.on("data", onProxyData);
+		logger.debug("proxy tunnel CONNECT sent", {
+			proxy: `${proxyHost}:${proxyPort}`,
+			target: `${targetHost}:${targetPort}`,
+			peer: `${rawSocket.remoteAddress ?? "?"}:${rawSocket.remotePort ?? "?"}`,
+		});
+	};
 
-		let responseData = "";
-		const onData = (chunk: Buffer) => {
-			responseData += chunk.toString("binary");
-			if (responseData.includes("\r\n\r\n")) {
-				rawSocket.off("data", onData);
-				rawSocket.off("error", reject);
+	options?.signal?.addEventListener("abort", onAbort, { once: true });
+	if (options?.timeoutMs !== undefined && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0) {
+		const timeoutMs = Math.trunc(options.timeoutMs);
+		timeout = setTimeout(() => {
+			rejectOnce(new StreamTimeoutError(`Proxy tunnel timed out after ${timeoutMs}ms`));
+		}, timeoutMs);
+		timeout.unref?.();
+	}
 
-				const firstLine = responseData.split("\r\n")[0];
-				if (firstLine.includes(" 200 ")) {
-					const tlsSocket = tls.connect({
-						socket: rawSocket,
-						servername: targetHost,
-						ALPNProtocols: ["h2"],
-					});
-
-					tlsSocket.once("secureConnect", () => {
-						resolve(tlsSocket);
-					});
-					tlsSocket.once("error", reject);
-				} else {
-					rawSocket.destroy();
-					reject(new AIError.ValidationError(`Proxy tunnel failed: ${firstLine}`));
-				}
-			}
-		};
-		rawSocket.on("data", onData);
-	});
+	rawSocket = useProxySsl
+		? tls.connect({
+				host: proxyHost,
+				port: proxyPort,
+			})
+		: net.connect({
+				host: proxyHost,
+				port: proxyPort,
+			});
+	rawSocket.once("error", onRawError);
+	rawSocket.once(readyEvent, onProxyReady);
 
 	return promise;
 }

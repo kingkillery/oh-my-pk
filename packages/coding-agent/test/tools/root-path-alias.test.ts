@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { ToolChoiceQueue } from "@pk-nerdsaver-ai/pi-coding-agent/session/tool-choice-queue";
-import { createTools, type ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
-import { resolveToCwd } from "@pk-nerdsaver-ai/pi-coding-agent/tools/path-utils";
-import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-queue";
+import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 function createTestSession(cwd: string, overrides: Partial<ToolSession> = {}): ToolSession {
 	return {
@@ -14,7 +14,7 @@ function createTestSession(cwd: string, overrides: Partial<ToolSession> = {}): T
 		hasUI: false,
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
-		settings: Settings.isolated(),
+		settings: Settings.isolated({ "astGrep.enabled": true, "astEdit.enabled": true, "tools.xdev": false }),
 		...overrides,
 	};
 }
@@ -71,7 +71,7 @@ describe("tool path root alias", () => {
 
 		const result = await tool.execute("search-root-alias", {
 			pattern: "root-alias-needle",
-			paths: ["/"],
+			path: "/",
 		});
 		const details = result.details as { scopePath?: string } | undefined;
 
@@ -100,7 +100,7 @@ describe("tool path root alias", () => {
 		if (!tool) throw new Error("Missing find tool");
 
 		const result = await tool.execute("find-root-alias", {
-			paths: ["/"],
+			path: "/",
 		});
 		const details = result.details as { scopePath?: string } | undefined;
 		const text = getText(result);
@@ -118,7 +118,7 @@ describe("tool path root alias", () => {
 
 		const result = await tool.execute("ast-grep-root-alias", {
 			pat: "rootAliasSymbol",
-			paths: ["/**/*.ts"],
+			path: "/**/*.ts",
 		});
 		const details = result.details as { scopePath?: string } | undefined;
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import type { Context, ImageContent, TextContent } from "@pk-nerdsaver-ai/pi-ai";
-import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
-import { clampProviderContextImages } from "@pk-nerdsaver-ai/pi-coding-agent/session/provider-image-budget";
+import type { Context, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { clampProviderContextImages } from "@oh-my-pi/pi-coding-agent/session/provider-image-budget";
 
 const UMANS_MODEL = buildModel({
 	id: "umans-glm-5.2",
@@ -89,6 +89,52 @@ describe("provider context image budgets", () => {
 		expect(imageData(clamped)).toEqual(Array.from({ length: 10 }, (_, index) => `image-${index + 1}`));
 		expect(firstMessage?.role).toBe("toolResult");
 		expect(firstMessage?.content).toEqual([text("[image omitted: provider image limit]")]);
+	});
+
+	it("invalidates native replay payloads when user or developer images are clamped", () => {
+		const userPayload = {
+			type: "openaiResponsesHistory" as const,
+			items: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "user-native" }] }],
+		};
+		const developerPayload = {
+			type: "openaiResponsesHistory" as const,
+			items: [{ type: "message", role: "developer", content: [{ type: "input_image", image_url: "dev-native" }] }],
+		};
+		const context: Context = {
+			systemPrompt: [],
+			tools: [],
+			messages: [
+				{ role: "user", content: [image("user-image")], providerPayload: userPayload, timestamp: 0 },
+				{ role: "developer", content: [image("developer-image")], providerPayload: developerPayload, timestamp: 1 },
+				...Array.from({ length: 10 }, (_, index) => ({
+					role: "user" as const,
+					content: [image(`kept-image-${index}`)],
+					timestamp: index + 2,
+				})),
+			],
+		};
+
+		const clamped = clampProviderContextImages(context, UMANS_MODEL);
+		const clampedUser = clamped.messages[0];
+		const clampedDeveloper = clamped.messages[1];
+		const originalUser = context.messages[0];
+		const originalDeveloper = context.messages[1];
+
+		expect(clampedUser?.role).toBe("user");
+		expect(clampedDeveloper?.role).toBe("developer");
+		if (
+			clampedUser?.role !== "user" ||
+			clampedDeveloper?.role !== "developer" ||
+			originalUser?.role !== "user" ||
+			originalDeveloper?.role !== "developer"
+		) {
+			throw new Error("Expected clamped user and developer messages");
+		}
+		expect(clampedUser.providerPayload).toBeUndefined();
+		expect(clampedDeveloper.providerPayload).toBeUndefined();
+		expect(originalUser.providerPayload).toBe(userPayload);
+		expect(originalDeveloper.providerPayload).toBe(developerPayload);
+		expect(imageData(clamped)).toEqual(Array.from({ length: 10 }, (_, index) => `kept-image-${index}`));
 	});
 
 	it("preserves context identity when the provider cap is not exceeded", () => {

@@ -1,10 +1,17 @@
-import { beforeAll, describe, expect, it, vi } from "bun:test";
-import { SelectorController } from "@pk-nerdsaver-ai/pi-coding-agent/modes/controllers/selector-controller";
-import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
+import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import type { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
+import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 
 beforeAll(async () => {
 	await initTheme();
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 interface EditorSlot {
@@ -57,23 +64,6 @@ describe("SelectorController.focusActiveEditorArea", () => {
 		expect(setFocus).toHaveBeenCalledWith(editor);
 	});
 
-	it("focuses the mounted editor between passive composer decorations so printable input reaches it", () => {
-		const handleInput = vi.fn();
-		const modeBar = { id: "mode-bar" };
-		const editor = { id: "editor", handleInput };
-		const diagnostics = { id: "diagnostics" };
-		// Mirrors the normal composer mount order: mode bar, editor, diagnostics.
-		const slot = createEditorSlot(modeBar, editor, diagnostics);
-		const { ctx, setFocus } = createCtx(slot, editor);
-
-		new SelectorController(ctx).focusActiveEditorArea();
-
-		const focused = setFocus.mock.calls[0]?.[0] as { handleInput: (input: string) => void };
-		focused.handleInput("x");
-		expect(setFocus).toHaveBeenCalledWith(editor);
-		expect(handleInput).toHaveBeenCalledWith("x");
-	});
-
 	it("focuses the active hook-selector-style prompt when the slot holds it instead of the editor", () => {
 		const editor = { id: "editor" };
 		const approvalPrompt = { id: "approval-prompt" };
@@ -98,5 +88,71 @@ describe("SelectorController.focusActiveEditorArea", () => {
 
 		expect(setFocus).toHaveBeenCalledTimes(1);
 		expect(setFocus).toHaveBeenCalledWith(editor);
+	});
+});
+
+describe("SelectorController session replacement overlay", () => {
+	it("keeps the fullscreen selector visible until the resumed transcript is ready", async () => {
+		const session: SessionInfo = {
+			path: "/tmp/resume.jsonl",
+			id: "resume",
+			cwd: "/tmp",
+			title: "Resume target",
+			created: new Date("2026-01-01T00:00:00Z"),
+			modified: new Date("2026-01-02T00:00:00Z"),
+			messageCount: 2,
+			size: 1,
+			firstMessage: "first",
+			allMessagesText: "first second",
+		};
+		vi.spyOn(SessionManager, "list").mockResolvedValue([session]);
+
+		const overlayHidden = Promise.withResolvers<void>();
+		const hide = vi.fn(() => overlayHidden.resolve());
+		let selector: SessionSelectorComponent | undefined;
+		const editor = { id: "editor" };
+		const editorContainer = createEditorSlot(editor);
+		const ctx = {
+			editor,
+			editorContainer,
+			sessionManager: {
+				getCwd: () => "/tmp",
+				getSessionDir: () => "/tmp",
+			},
+			ui: {
+				showOverlay: vi.fn(component => {
+					selector = component as SessionSelectorComponent;
+					return { hide, setHidden: vi.fn(), isHidden: () => false };
+				}),
+				setFocus: vi.fn(),
+				requestRender: vi.fn(),
+				terminal: { rows: 24 },
+			},
+		} as unknown as InteractiveModeContext;
+		const controller = new SelectorController(ctx);
+		const resumeStarted = Promise.withResolvers<void>();
+		const resumed = Promise.withResolvers<boolean>();
+		const handleResume = vi.spyOn(controller, "handleResumeSession").mockImplementation(() => {
+			resumeStarted.resolve();
+			return resumed.promise;
+		});
+		await controller.showSessionSelector();
+		expect(selector).toBeDefined();
+		selector!.handleInput("\n");
+		await resumeStarted.promise;
+
+		expect(handleResume).toHaveBeenCalledWith(session.path);
+		expect(hide).not.toHaveBeenCalled();
+
+		// The selector remains mounted until resume finishes, but it must not accept
+		// a second selection or cancel the overlay during that interval.
+		selector!.handleInput("\n");
+		selector!.handleInput("\x1b");
+		expect(handleResume).toHaveBeenCalledTimes(1);
+		expect(hide).not.toHaveBeenCalled();
+
+		resumed.resolve(true);
+		await overlayHidden.promise;
+		expect(hide).toHaveBeenCalledTimes(1);
 	});
 });

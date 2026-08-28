@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { type Component, type RenderTimer, TUI } from "@pk-nerdsaver-ai/pi-tui";
+import { type Component, type RenderTimer, TUI } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
 class InputProbe implements Component {
@@ -42,6 +42,25 @@ class DeferredRenderScheduler {
 }
 
 describe("TUI input/render scheduling", () => {
+	it("can commit a priority frame without waiting for queued immediates", () => {
+		const term = new VirtualTerminal(20, 4);
+		const scheduler = new DeferredRenderScheduler();
+		const events: string[] = [];
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		tui.addChild(new InputProbe(events));
+
+		try {
+			tui.start();
+			tui.renderNow();
+			expect(events).toEqual(["render"]);
+
+			for (const immediate of scheduler.immediates.splice(0)) immediate();
+			expect(events).toEqual(["render"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("can process terminal input before a deferred ordinary repaint", () => {
 		const term = new VirtualTerminal(20, 4);
 		const scheduler = new DeferredRenderScheduler();

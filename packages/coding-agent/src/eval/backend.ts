@@ -1,6 +1,7 @@
 import { buildEvalUrlRoots, type LocalProtocolOptions } from "../internal-urls";
 import type { ToolSession } from "../tools";
-import type { EvalCancellationCause, EvalDisplayOutput, EvalLanguage, EvalStatusEvent } from "./types";
+import type { BackendProbeOptions } from "./probe";
+import type { EvalDisplayOutput, EvalLanguage, EvalStatusEvent } from "./types";
 
 /** Per-cell execute() options. */
 export interface ExecutorBackendExecOptions {
@@ -15,10 +16,10 @@ export interface ExecutorBackendExecOptions {
 	 * driven entirely by `signal`, which the eval tool arms as a watchdog that
 	 * pauses on bridge timeout-control status events and fires a `TimeoutError`
 	 * reason only while the Python/JS runtime owns control. Backends use this
-	 * value only for timeout-annotation text and as cold-start headroom; they MUST
-	 * NOT derive a competing wall-clock timer from it.
+	 * value only for timeout-annotation text and as cold-start headroom; undefined
+	 * disables the cell timeout. Backends MUST NOT derive a competing wall-clock timer from it.
 	 */
-	idleTimeoutMs: number;
+	idleTimeoutMs?: number;
 	reset: boolean;
 	onChunk: (chunk: string) => void;
 	/**
@@ -66,8 +67,8 @@ export interface ExecutorBackend {
 	readonly label: string;
 	/** Source language identifier passed to the syntax highlighter (e.g. "python", "javascript"). */
 	readonly highlightLang: string;
-	/** Cheap availability check. Used by fallback resolution. */
-	isAvailable(session: ToolSession): Promise<boolean>;
+	/** Cheap availability check. Used by fallback resolution and bounded by the caller's probe options. */
+	isAvailable(session: ToolSession, opts?: BackendProbeOptions): Promise<boolean>;
 	/** Execute one cell. Caller invokes once per cell and aggregates results. */
 	execute(code: string, opts: ExecutorBackendExecOptions): Promise<ExecutorBackendResult>;
 }

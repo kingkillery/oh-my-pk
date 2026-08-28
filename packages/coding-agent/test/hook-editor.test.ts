@@ -1,10 +1,10 @@
 import { afterEach, beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
-import { KeybindingsManager } from "@pk-nerdsaver-ai/pi-coding-agent/config/keybindings";
-import { HookEditorComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/hook-editor";
-import { ExtensionUiController } from "@pk-nerdsaver-ai/pi-coding-agent/modes/controllers/extension-ui-controller";
-import { getThemeByName, setThemeInstance } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
-import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
-import { setKeybindings, type TUI } from "@pk-nerdsaver-ai/pi-tui";
+import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
+import { HookEditorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/hook-editor";
+import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { CURSOR_MARKER, isFocusable, setKeybindings, type TUI } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
 	const theme = await getThemeByName("dark");
@@ -353,7 +353,7 @@ describe("HookEditorComponent prompt-style mode", () => {
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 
-	it("renders prompt-style editor with legacy ask chrome", () => {
+	it("renders prompt-style editor with rounded overlay chrome", () => {
 		const component = new HookEditorComponent(createTui(), "Prompt", undefined, vi.fn(), vi.fn(), {
 			promptStyle: true,
 		});
@@ -361,12 +361,24 @@ describe("HookEditorComponent prompt-style mode", () => {
 		const rendered = renderText(component);
 		const lines = renderLines(component);
 
-		expect(lines[0]).toMatch(/^─+$/);
-		expect(lines.at(-1)).toMatch(/^─+$/);
-		expect(lines[4]?.startsWith("> ")).toBe(true);
-		expect(rendered).toContain(" enter or ctrl+q submit  esc cancel");
+		expect(lines[0]).toMatch(/^╭─ Prompt .*╮$/);
+		expect(lines.at(-1)).toMatch(/^╰.*╯$/);
+		expect(lines.some(line => line.includes("> "))).toBe(true);
+		expect(rendered).toContain("enter or ctrl+q submit  esc cancel");
 		expect(rendered).not.toContain("shift+enter newline");
 		expect(rendered).toContain("ctrl+g external editor");
+	});
+
+	it("anchors the hardware cursor while entering an Other response", () => {
+		const component = new HookEditorComponent(createTui(), "Prompt", undefined, vi.fn(), vi.fn(), {
+			promptStyle: true,
+		});
+		if (!isFocusable(component)) throw new Error("Hook editor must forward focus to its inner editor");
+
+		component.focused = true;
+		component.setUseTerminalCursor?.(true);
+
+		expect(component.render(120).some(line => line.includes(CURSOR_MARKER))).toBe(true);
 	});
 
 	it("keeps the prompt gutter visible after typing in prompt-style mode", () => {
@@ -379,8 +391,9 @@ describe("HookEditorComponent prompt-style mode", () => {
 		}
 
 		const lines = renderLines(component);
-		expect(lines[4]?.startsWith("> hello")).toBe(true);
-		expect(lines[4]?.startsWith("hello")).toBe(false);
+
+		expect(lines.some(line => line.includes("> hello"))).toBe(true);
+		expect(lines.some(line => line.includes("hello") && !line.includes(">"))).toBe(false);
 	});
 
 	it("aligns wrapped prompt-style continuation rows under the text column", () => {
@@ -389,9 +402,11 @@ describe("HookEditorComponent prompt-style mode", () => {
 		});
 
 		const lines = renderLines(component, 12);
-		expect(lines[4]).toBe("> abcdefghij");
-		expect(lines[5]?.startsWith("  klm")).toBe(true);
-		expect(lines[5]?.startsWith(">")).toBe(false);
+
+		expect(lines.some(line => line.includes("> abcdef"))).toBe(true);
+		const continuation = lines.find(line => line.includes("ghijkl"));
+		expect(continuation).toBeDefined();
+		expect(continuation).not.toContain(">");
 	});
 
 	it("cancels on Escape", () => {
@@ -423,6 +438,22 @@ describe("HookEditorComponent prompt-style mode", () => {
 
 		expect(onCancel).toHaveBeenCalledTimes(1);
 		expect(onSubmit).not.toHaveBeenCalled();
+	});
+
+	it("renders the title in the border, detail lines, hint, and prompt gutter", () => {
+		const title = "◆ Other (type your own)\nEnter your response:";
+		const component = new HookEditorComponent(createTui(), title, "不太清楚，", vi.fn(), vi.fn(), {
+			promptStyle: true,
+		});
+		const lines = renderLines(component);
+
+		// First title line insets into the top border row.
+		expect(lines[0]).toContain("Other (type your own)");
+		// Remaining title lines, gutter, and hint are body rows.
+		const content = component.renderContent(80).map(line => Bun.stripANSI(line));
+		expect(content.some(line => line.startsWith("Enter your response:"))).toBe(true);
+		expect(content.some(line => line.startsWith("> "))).toBe(true);
+		expect(content.some(line => line.includes("esc cancel"))).toBe(true);
 	});
 });
 
@@ -564,6 +595,22 @@ describe("ExtensionUiController dialog serialization", () => {
 		expect(await promiseA).toBeUndefined();
 		expect(ctx.hookSelector).toBeUndefined();
 		expect(remountEditorComposer).toHaveBeenCalledTimes(1);
+		expect(editorContainer.children).toEqual([editor]);
+	});
+	it("dismisses a confirmation and restores the editor when its signal aborts", async () => {
+		const { ctx, editor, editorContainer } = createControllerContext();
+		const controller = new ExtensionUiController(ctx);
+		const abortController = new AbortController();
+
+		const result = controller.showHookConfirm("High-risk command", "Allow this command?", {
+			signal: abortController.signal,
+		});
+		expect(ctx.hookSelector).toBeDefined();
+
+		abortController.abort();
+
+		expect(await result).toBe(false);
+		expect(ctx.hookSelector).toBeUndefined();
 		expect(editorContainer.children).toEqual([editor]);
 	});
 });

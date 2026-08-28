@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import "./setup";
+
 import {
 	embed,
 	resetEmbeddingProviderForTests,
 	setEmbeddingProviderForTests,
-} from "@pk-nerdsaver-ai/pi-mnemopi/core/embeddings";
-import { withMnemopiRuntimeOptions } from "@pk-nerdsaver-ai/pi-mnemopi/core/runtime-options";
+} from "@oh-my-pi/pi-mnemopi/core/embeddings";
+import { withMnemopiRuntimeOptions } from "@oh-my-pi/pi-mnemopi/core/runtime-options";
 
 /**
  * Regression coverage for issue #3126: `MnemopiSessionState.retainMessages`

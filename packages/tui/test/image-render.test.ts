@@ -20,6 +20,7 @@ const BASE64_DUMMY = "AA==";
 const SQUARE_DIMENSIONS = { widthPx: 100, heightPx: 100 };
 const BASE64_ONE_PIXEL_PNG =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==";
+const ORIGINAL_TMUX = Bun.env.TMUX;
 
 function parseKittyParam(sequence: string, key: "c" | "r" | "C"): number | null {
 	const match = sequence.match(new RegExp(`${key}=(\\d+)`));
@@ -38,6 +39,7 @@ describe("terminal image rendering", () => {
 	const originalGraphics = { ...getKittyGraphics() };
 
 	beforeEach(() => {
+		delete Bun.env.TMUX;
 		originalCellDims = { ...getCellDimensions() };
 		setCellDimensions({ widthPx: 10, heightPx: 10 });
 		terminal.imageProtocol = null;
@@ -48,6 +50,8 @@ describe("terminal image rendering", () => {
 		setCellDimensions(originalCellDims);
 		terminal.imageProtocol = originalProtocol;
 		setKittyGraphics(originalGraphics);
+		if (ORIGINAL_TMUX === undefined) delete Bun.env.TMUX;
+		else Bun.env.TMUX = ORIGINAL_TMUX;
 	});
 
 	it("fits Kitty images within max width and max height while preserving aspect ratio", () => {
@@ -176,6 +180,9 @@ describe("terminal image rendering", () => {
 		});
 
 		expect(result).not.toBeNull();
+		// SIXEL height is rounded DOWN to a multiple of 6 (band size) so it
+		// never exceeds the caller's maxHeightCells cap. With 10px cells and
+		// maxHeightCells=2, targetHeightPx=18 (not 20), rows=2 — within cap.
 		expect(result?.rows).toBe(2);
 		expect((result?.sequence ?? "").startsWith("\x1bP")).toBe(true);
 	});
@@ -251,5 +258,32 @@ describe("Windows Terminal Preview SIXEL detection", () => {
 				"linux",
 			),
 		).toBe(false);
+	});
+});
+
+describe("isImageLine — composed placeholder rows", () => {
+	const originalProtocol = TERMINAL.imageProtocol;
+	afterEach(() => {
+		terminal.imageProtocol = originalProtocol;
+	});
+
+	it("keeps deeply prefixed Kitty placeholder rows on the verbatim image-line path", () => {
+		terminal.imageProtocol = ImageProtocol.Kitty;
+		// Composer attachment chip interior row: border SGR + │ + reset + pad +
+		// image-id fg + placement-id underline put the first placeholder cell at
+		// code unit 63 — past the old 64-unit needle window, which silently sent
+		// the row through SGR coalescing/truncation instead of verbatim output.
+		const cells = "\u{10eeee}\u030d\u0305".repeat(9);
+		const chipRow = `\x1b[38;2;255;179;102m│\x1b[39m \x1b[38;2;122;231;55m\x1b[58:2::122:231:55m${cells}\x1b[39;59m  \x1b[38;2;255;179;102m│\x1b[39m`;
+		expect(TERMINAL.isImageLine(chipRow)).toBe(true);
+		// Second card in the band: the needle sits hundreds of units in.
+		const secondCard = `${chipRow}  ${chipRow}`;
+		expect(TERMINAL.isImageLine(secondCard.slice(chipRow.length + 2))).toBe(true);
+		expect(TERMINAL.isImageLine(secondCard)).toBe(true);
+	});
+
+	it("still rejects plain styled text rows", () => {
+		terminal.imageProtocol = ImageProtocol.Kitty;
+		expect(TERMINAL.isImageLine("\x1b[38;2;255;179;102m│\x1b[39m plain text row")).toBe(false);
 	});
 });

@@ -1,21 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import * as path from "node:path";
-import { Agent, type AgentMessage } from "@pk-nerdsaver-ai/pi-agent-core";
-import type { Message } from "@pk-nerdsaver-ai/pi-ai";
-import { inferCopilotInitiator } from "@pk-nerdsaver-ai/pi-ai/providers/github-copilot-headers";
-import { createMockModel } from "@pk-nerdsaver-ai/pi-ai/providers/mock";
-import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
-import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
-import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import type { ExtensionRunner } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions";
-import { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
-import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
-import { convertToLlm } from "@pk-nerdsaver-ai/pi-coding-agent/session/messages";
-import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
-import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
+import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { Message } from "@oh-my-pi/pi-ai";
+import { inferCopilotInitiator } from "@oh-my-pi/pi-ai/providers/github-copilot-headers";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 
 describe("AgentSession before_agent_start attribution fallback", () => {
-	let tempDir: TempDir;
 	let session: AgentSession;
 	let modelRegistry: ModelRegistry;
 	let authStorage: AuthStorage | undefined;
@@ -23,8 +20,7 @@ describe("AgentSession before_agent_start attribution fallback", () => {
 	const injectedText = "before-agent-start injected message";
 
 	beforeEach(async () => {
-		tempDir = TempDir.createSync("@pi-before-agent-start-attribution-");
-		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
+		authStorage = await AuthStorage.create(":memory:");
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 	});
@@ -36,7 +32,6 @@ describe("AgentSession before_agent_start attribution fallback", () => {
 		}
 		authStorage?.close();
 		authStorage = undefined;
-		tempDir.removeSync();
 	});
 
 	function createSession() {

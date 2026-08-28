@@ -2,13 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolContext } from "@pk-nerdsaver-ai/pi-agent-core";
-import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
-import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { createAgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
-import type { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
-import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
-import { Snowflake } from "@pk-nerdsaver-ai/pi-utils";
+import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { Snowflake } from "@oh-my-pi/pi-utils";
 
 // Exercises the real per-tool approval gate (ExtensionToolWrapper) for read/grep/write,
 // proving an `ssh://` target is exec-tier (prompts / is denied without a UI) while the
@@ -99,7 +99,7 @@ describe("ssh:// tools are exec-gated through the production approval wrapper", 
 		).rejects.toThrow(APPROVAL_RE);
 		const ok = await tool("grep").execute(
 			"s-local",
-			{ pattern: "hello", paths: ["."] },
+			{ pattern: "hello", path: "." },
 			undefined,
 			undefined,
 			ctx("always-ask"),

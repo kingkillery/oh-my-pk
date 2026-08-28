@@ -41,7 +41,7 @@ console.log();
 import type { ExtensionAPI } from "@pk-nerdsaver-ai/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
-	const { z } = pi.zod;
+	const z = pi.zod;
 
 	pi.on("agent_start", async () => {
 		console.log("[Extension] Agent starting");

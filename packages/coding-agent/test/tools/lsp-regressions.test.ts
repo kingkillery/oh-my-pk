@@ -1,27 +1,38 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { RenderResultOptions } from "@pk-nerdsaver-ai/pi-agent-core";
-import { preloadPluginRoots } from "@pk-nerdsaver-ai/pi-coding-agent/discovery/helpers";
-import { LspTool } from "@pk-nerdsaver-ai/pi-coding-agent/lsp";
-import * as lspClient from "@pk-nerdsaver-ai/pi-coding-agent/lsp/client";
-import * as lspConfig from "@pk-nerdsaver-ai/pi-coding-agent/lsp/config";
-import { getServersForFile, type LspConfig, loadConfig } from "@pk-nerdsaver-ai/pi-coding-agent/lsp/config";
-import { applyTextEditsToString, applyWorkspaceEdit } from "@pk-nerdsaver-ai/pi-coding-agent/lsp/edits";
-import { renderCall, renderResult } from "@pk-nerdsaver-ai/pi-coding-agent/lsp/render";
-import type {
-	CodeAction,
-	CreateFile,
-	DeleteFile,
-	Diagnostic,
-	LspClient,
-	RenameFile,
-	ServerConfig,
-	SymbolInformation,
-	TextDocumentEdit,
-	WorkspaceEdit,
-} from "@pk-nerdsaver-ai/pi-coding-agent/lsp/types";
+import type { AgentToolResult, RenderResultOptions } from "@oh-my-pi/pi-agent-core";
+import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { preloadPluginRoots } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
+import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
+import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
+import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
+import { getServersForFile, type LspConfig, loadConfig } from "@oh-my-pi/pi-coding-agent/lsp/config";
+import {
+	applyTextEditsToString,
+	applyWorkspaceEdit,
+	type ExecutedWorkspaceChange,
+	sortAndValidateTextEdits,
+} from "@oh-my-pi/pi-coding-agent/lsp/edits";
+import { renderCall, renderResult } from "@oh-my-pi/pi-coding-agent/lsp/render";
+import { configCache, getConfig } from "@oh-my-pi/pi-coding-agent/lsp/servers";
+import {
+	type CodeAction,
+	type CreateFile,
+	type DeleteFile,
+	type Diagnostic,
+	type LspClient,
+	type LspToolDetails,
+	lspSchema,
+	type RenameFile,
+	type ServerConfig,
+	type SymbolInformation,
+	type TextDocumentEdit,
+	type WorkspaceEdit,
+} from "@oh-my-pi/pi-coding-agent/lsp/types";
 import {
 	applyCodeAction,
 	collectGlobMatches,
@@ -33,14 +44,24 @@ import {
 	resolveDiagnosticTargets,
 	resolveSymbolColumn,
 	uriToFile,
-} from "@pk-nerdsaver-ai/pi-coding-agent/lsp/utils";
-import { getThemeByName } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
-import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
-import { clampTimeout } from "@pk-nerdsaver-ai/pi-coding-agent/tools/tool-timeouts";
-import * as piUtils from "@pk-nerdsaver-ai/pi-utils";
-import { sanitizeText, TempDir } from "@pk-nerdsaver-ai/pi-utils";
+} from "@oh-my-pi/pi-coding-agent/lsp/utils";
+import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { clampTimeout } from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
+import * as piUtils from "@oh-my-pi/pi-utils";
+import { sanitizeText, TempDir } from "@oh-my-pi/pi-utils";
+import type { Subprocess } from "bun";
 import DEFAULTS from "../../src/lsp/defaults.json" with { type: "json" };
+import { renderResult as renderLocalResult } from "../../src/lsp/render";
 import { getLanguageFromPath } from "../../src/utils/lang-from-path";
+
+const lspTestSettings = Settings.isolated();
+
+/** Minimal LSP tool session: production always supplies `settings`; these tests only need cwd + a default settings stub. */
+function makeLspSession(cwd: string): ToolSession {
+	return { cwd, settings: lspTestSettings } as ToolSession;
+}
 
 interface RpcMessage {
 	jsonrpc?: string;
@@ -58,13 +79,23 @@ interface FakeLspServer {
 	send(message: RpcMessage): void;
 	/** Resolve the process `exited` promise and close stdout. */
 	exit(code?: number): void;
+	/** Fail stdout without exiting the process. */
+	failStdout(error: Error): void;
 	/** Whether the client invoked `proc.kill()` (production's hard-kill fallback). */
 	readonly killed: boolean;
+	/** Number of subprocesses spawned through this fake. */
+	readonly spawnCount: number;
 	/** Resolve once a received message matches `predicate` (already-seen or future). */
 	waitFor(predicate: (message: RpcMessage) => boolean, timeoutMs?: number): Promise<RpcMessage>;
 }
 
 type FakeLspHandler = (message: RpcMessage, server: FakeLspServer) => void | Promise<void>;
+
+interface FakeLspOptions {
+	killResolvesExit?: boolean;
+	stderr?: string;
+	stdoutClosesBeforeExit?: boolean;
+}
 
 // In-memory LSP transport fake. Replaces the real subprocess (`ptree.spawn`)
 // with an in-process JSON-RPC peer so the initialize / shutdown / exit and
@@ -72,7 +103,7 @@ type FakeLspHandler = (message: RpcMessage, server: FakeLspServer) => void | Pro
 // no real-clock latency. Installed by spying on the shared `ptree` namespace
 // object (NOT `mock.module`, which would leak across files); the suite's
 // `afterEach` `vi.restoreAllMocks()` removes it.
-function installFakeLsp(handler: FakeLspHandler): FakeLspServer {
+function installFakeLsp(handler: FakeLspHandler, options?: FakeLspOptions): FakeLspServer {
 	const encoder = new TextEncoder();
 	const received: RpcMessage[] = [];
 	const waiters: Array<{
@@ -82,6 +113,8 @@ function installFakeLsp(handler: FakeLspHandler): FakeLspServer {
 	}> = [];
 	let exitCode: number | null = null;
 	let killed = false;
+	let spawnCount = 0;
+	let stdoutStopped = false;
 	let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
 	const { promise: exited, resolve: resolveExited } = Promise.withResolvers<number>();
 
@@ -99,16 +132,34 @@ function installFakeLsp(handler: FakeLspHandler): FakeLspServer {
 	const server: FakeLspServer = {
 		received,
 		send(message) {
-			if (controller && exitCode === null) controller.enqueue(frame(message));
+			if (controller && exitCode === null && !stdoutStopped) controller.enqueue(frame(message));
 		},
 		exit(code = 0) {
 			if (exitCode !== null) return;
+			if (!stdoutStopped) {
+				stdoutStopped = true;
+				controller?.close();
+			}
+			if (options?.stdoutClosesBeforeExit) {
+				queueMicrotask(() => {
+					exitCode = code;
+					resolveExited(code);
+				});
+				return;
+			}
 			exitCode = code;
-			controller?.close();
 			resolveExited(code);
+		},
+		failStdout(error) {
+			if (stdoutStopped) return;
+			stdoutStopped = true;
+			controller?.error(error);
 		},
 		get killed() {
 			return killed;
+		},
+		get spawnCount() {
+			return spawnCount;
 		},
 		waitFor(predicate, timeoutMs = 1_000) {
 			const existing = received.find(predicate);
@@ -174,16 +225,110 @@ function installFakeLsp(handler: FakeLspHandler): FakeLspServer {
 			end: async () => 0,
 		},
 		stdout,
-		peekStderr: () => "",
+		peekStderr: () => options?.stderr ?? "",
 		kill() {
 			killed = true;
-			server.exit(0);
+			if (options?.killResolvesExit !== false) server.exit(0);
 		},
 	} as unknown as LspClient["proc"];
 
-	vi.spyOn(piUtils.ptree, "spawn").mockReturnValue(proc);
+	vi.spyOn(piUtils.ptree, "spawn").mockImplementation((() => {
+		spawnCount++;
+		return proc as unknown as piUtils.ptree.ChildProcess<"pipe">;
+	}) as typeof piUtils.ptree.spawn);
 	return server;
 }
+
+/** LSP fake that completes initialize and graceful shutdown handshakes. */
+function installHandshakeLsp(): FakeLspServer {
+	return installFakeLsp((message, server) => {
+		if (message.method === "initialize") {
+			server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+		} else if (message.method === "shutdown") {
+			server.send({ jsonrpc: "2.0", id: message.id, result: null });
+		} else if (message.method === "exit") {
+			server.exit(0);
+		}
+	});
+}
+
+type BunSpawnOptions = Bun.SpawnOptions.SpawnOptions<
+	Bun.SpawnOptions.Writable,
+	Bun.SpawnOptions.Readable,
+	Bun.SpawnOptions.Readable
+>;
+
+interface BunSpawnCall {
+	cmd: string[];
+	options?: BunSpawnOptions;
+}
+
+interface BunSpawnOutput {
+	stdout?: string;
+	stderr?: string;
+	exitCode?: number;
+}
+
+function textStream(text: string): ReadableStream<Uint8Array> {
+	const body = new Response(text).body;
+	if (!body) {
+		throw new Error("Failed to create text stream");
+	}
+	return body;
+}
+
+function completedProcess(stdout = "", stderr = "", exitCode = 0): Subprocess {
+	return {
+		pid: 12_345,
+		stdout: textStream(stdout),
+		stderr: textStream(stderr),
+		exited: Promise.resolve(exitCode),
+		kill: () => {},
+	} as Subprocess;
+}
+
+function recordBunSpawn(calls: BunSpawnCall[], outputForCommand: (cmd: string[]) => BunSpawnOutput = () => ({})): void {
+	vi.spyOn(Bun, "spawn").mockImplementation(((cmd: string[], options?: BunSpawnOptions) => {
+		const recordedCmd = [...cmd];
+		calls.push({ cmd: recordedCmd, options });
+		const output = outputForCommand(recordedCmd);
+		return completedProcess(output.stdout, output.stderr, output.exitCode);
+	}) as typeof Bun.spawn);
+}
+
+function textResult(result: AgentToolResult<LspToolDetails>): string {
+	return result.content
+		.filter(block => block.type === "text")
+		.map(block => block.text)
+		.join("\n");
+}
+
+/**
+ * `loadConfig` walks the user config directories (~/.omp/agent, ~/.pi/agent,
+ * ~/.claude), which resolve from os.homedir(). A developer with a real
+ * lsp.json there flips loadConfig off its auto-detect path onto the override
+ * path, where their rootMarkers replace the packaged ones — so these tests
+ * would assert against that machine's config instead of the defaults. Point
+ * HOME at an empty directory so every case sees a pristine environment.
+ */
+let lspHomeOverride: string | undefined;
+let lspOriginalHome: string | undefined;
+
+beforeEach(() => {
+	lspOriginalHome = process.env.HOME;
+	lspHomeOverride = fs.mkdtempSync(path.join(os.tmpdir(), "omp-lsp-test-home-"));
+	process.env.HOME = lspHomeOverride;
+	// Bun's os.homedir() reads the passwd entry rather than $HOME, so the env
+	// var alone does not redirect the config walk.
+	vi.spyOn(os, "homedir").mockReturnValue(lspHomeOverride);
+});
+
+afterEach(() => {
+	if (lspOriginalHome === undefined) delete process.env.HOME;
+	else process.env.HOME = lspOriginalHome;
+	if (lspHomeOverride) fs.rmSync(lspHomeOverride, { recursive: true, force: true });
+	lspHomeOverride = undefined;
+});
 
 describe("lsp regressions", () => {
 	afterEach(() => {
@@ -196,13 +341,139 @@ describe("lsp regressions", () => {
 		expect(hasGlobPattern("src/main.ts")).toBe(false);
 	});
 
-	it("clamps LSP timeout to configured bounds", () => {
+	it("supports long LSP timeouts up to the advertised ceiling", () => {
 		expect(clampTimeout("lsp")).toBe(20);
 		expect(clampTimeout("lsp", 1)).toBe(5);
-		expect(clampTimeout("lsp", 1000)).toBe(60);
+		expect(clampTimeout("lsp", 120)).toBe(120);
+		expect(clampTimeout("lsp", 1000)).toBe(300);
+		expect(arkToWireSchema(lspSchema)).toMatchObject({
+			properties: {
+				timeout: {
+					description: "Timeout in seconds (default 20; range 5–300).",
+					maximum: 300,
+					minimum: 5,
+				},
+			},
+		});
 	});
 
-	it("sends the LSP exit notification after shutdown completes", async () => {
+	it("keeps equivalent LSP configs shared but isolates distinct process and initialization semantics", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-client-identity-");
+		try {
+			installHandshakeLsp();
+			const base: ServerConfig = {
+				command: "fake-lsp",
+				args: ["--mode", "base"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				initOptions: { nested: { beta: 2, alpha: 1 } },
+				settings: { diagnostics: { enabled: true, severity: "warning" } },
+			};
+			const baseClient = await lspClient.getOrCreateClient(base, tempDir.path(), 1_000);
+
+			// Object insertion order is not semantic: a canonical-equivalent config
+			// must still share the same process.
+			const equivalent = await lspClient.getOrCreateClient(
+				{
+					...base,
+					initOptions: { nested: { alpha: 1, beta: 2 } },
+					settings: { diagnostics: { severity: "warning", enabled: true } },
+				},
+				tempDir.path(),
+				1_000,
+			);
+			expect(equivalent).toBe(baseClient);
+
+			installHandshakeLsp();
+			const differentArgs = await lspClient.getOrCreateClient(
+				{ ...base, args: ["--mode", "other"] },
+				tempDir.path(),
+				1_000,
+			);
+			installHandshakeLsp();
+			const differentInit = await lspClient.getOrCreateClient(
+				{ ...base, initOptions: { nested: { alpha: 99, beta: 2 } } },
+				tempDir.path(),
+				1_000,
+			);
+			installHandshakeLsp();
+			const differentSettings = await lspClient.getOrCreateClient(
+				{ ...base, settings: { diagnostics: { enabled: false, severity: "warning" } } },
+				tempDir.path(),
+				1_000,
+			);
+			const languageServer = installHandshakeLsp();
+			const differentLanguage = await lspClient.getOrCreateClient(
+				{ ...base, languageId: "typescriptreact" },
+				tempDir.path(),
+				1_000,
+			);
+			const filePath = path.join(tempDir.path(), "component.ts");
+			await Bun.write(filePath, "export const component = true;\n");
+			await lspClient.ensureFileOpen(differentLanguage, filePath);
+			const didOpen = await languageServer.waitFor(message => message.method === "textDocument/didOpen");
+			expect(didOpen.params).toMatchObject({ textDocument: { languageId: "typescriptreact" } });
+
+			expect(differentArgs).not.toBe(baseClient);
+			expect(differentInit).not.toBe(baseClient);
+			expect(differentSettings).not.toBe(baseClient);
+			expect(differentLanguage).not.toBe(baseClient);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("uses a custom server languageId for disk and in-memory document opens", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-language-id-");
+		const filePath = path.join(tempDir.path(), "foo.gd");
+		const syncedFilePath = path.join(tempDir.path(), "unsaved.gd");
+		try {
+			await Bun.write(
+				path.join(tempDir.path(), ".omp", "lsp.json"),
+				JSON.stringify({
+					servers: {
+						"fake-gd": {
+							command: process.execPath,
+							fileTypes: [".gd"],
+							languageId: "gdscript",
+							rootMarkers: [".omp"],
+						},
+					},
+				}),
+			);
+			await Bun.write(filePath, "extends Node\n");
+
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const config = loadConfig(tempDir.path());
+			const serverConfig = getServersForFile(config, filePath)[0]?.[1];
+			if (!serverConfig) throw new Error("Custom GDScript server was not loaded");
+
+			const client = await lspClient.getOrCreateClient(serverConfig, tempDir.path(), 1_000);
+			await lspClient.ensureFileOpen(client, filePath);
+			const diskOpen = await server.waitFor(message => message.method === "textDocument/didOpen");
+			expect(diskOpen.params).toMatchObject({ textDocument: { languageId: "gdscript" } });
+
+			await lspClient.syncContent(client, syncedFilePath, "extends Resource\n");
+			const syncedOpen = await server.waitFor(
+				message => message.method === "textDocument/didOpen" && message !== diskOpen,
+			);
+			expect(syncedOpen.params).toMatchObject({ textDocument: { languageId: "gdscript" } });
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("sends the LSP exit notification and releases the idle checker after shutdown", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-shutdown-");
 		try {
 			const server = installFakeLsp((message, srv) => {
@@ -234,13 +505,126 @@ describe("lsp regressions", () => {
 			expect(shutdownIndex).toBeGreaterThanOrEqual(0);
 			expect(exitIndex).toBeGreaterThan(shutdownIndex);
 			expect(server.killed).toBe(false);
+
+			const clientModule = new URL("../../src/lsp/client.ts", import.meta.url).href;
+			const shutdownProbe = Bun.spawn(
+				[
+					process.execPath,
+					"-e",
+					`import { setIdleTimeout, shutdownAll } from ${JSON.stringify(clientModule)}; setIdleTimeout(60_000); await shutdownAll();`,
+				],
+				{ stdout: "ignore", stderr: "inherit" },
+			);
+			// Real time is required because fake timers cannot advance a separate Bun process.
+			// The process exit itself proves shutdown released the event loop.
+			const probeExit = await Promise.race([shutdownProbe.exited, Bun.sleep(5_000).then(() => null)]);
+			if (probeExit === null) {
+				shutdownProbe.kill();
+				await shutdownProbe.exited;
+			}
+			expect(probeExit).toBe(0);
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
 		}
 	});
 
-	it("advertises workspace folder support during LSP initialization", async () => {
+	it("rearms the idle checker from cached config after global shutdown", async () => {
+		const cwd = "/cached-lsp-config";
+		const intervalSpy = vi.spyOn(globalThis, "setInterval");
+		configCache.set(cwd, { servers: {}, idleTimeoutMs: 60_000 });
+		try {
+			lspClient.setIdleTimeout(60_000);
+			expect(intervalSpy).toHaveBeenCalledTimes(1);
+
+			await lspClient.shutdownAll();
+			getConfig(cwd);
+
+			expect(intervalSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			lspClient.setIdleTimeout(null);
+			configCache.delete(cwd);
+		}
+	});
+
+	it("returns an already-starting client without creating a second client", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-pending-client-");
+		const initialize = Promise.withResolvers<void>();
+		try {
+			const server = installFakeLsp(async (message, srv) => {
+				if (message.method === "initialize") {
+					await initialize.promise;
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const config: ServerConfig = {
+				command: "fake-pending-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+			};
+
+			const startingClient = lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			await server.waitFor(message => message.method === "initialize");
+			const existingClient = lspClient.getActiveOrPendingClient(config, tempDir.path());
+			let settled = false;
+			void existingClient.then(() => {
+				settled = true;
+			});
+			await Bun.sleep(0);
+			expect(settled).toBe(false);
+
+			initialize.resolve();
+			expect(await existingClient).toBe(await startingClient);
+			expect(server.received.filter(message => message.method === "initialize")).toHaveLength(1);
+		} finally {
+			initialize.resolve();
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("stops waiting for a pending client on caller abort without cancelling its initialization", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-pending-abort-");
+		const initialize = Promise.withResolvers<void>();
+		try {
+			const server = installFakeLsp(async (message, srv) => {
+				if (message.method === "initialize") {
+					await initialize.promise;
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const config: ServerConfig = {
+				command: "fake-abort-pending-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+			};
+
+			const startingClient = lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			await server.waitFor(message => message.method === "initialize");
+			const controller = new AbortController();
+			const waitingClient = lspClient.getActiveOrPendingClient(config, tempDir.path(), controller.signal);
+			controller.abort();
+			await expect(waitingClient).rejects.toThrow();
+
+			initialize.resolve();
+			expect(await startingClient).toBeDefined();
+			expect(server.received.filter(message => message.method === "initialize")).toHaveLength(1);
+		} finally {
+			initialize.resolve();
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("advertises workspace folder support and abort-on-failure workspace edits during LSP initialization", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-workspace-folders-");
 		try {
 			const server = installFakeLsp((message, srv) => {
@@ -263,14 +647,47 @@ describe("lsp regressions", () => {
 
 			const init = server.received.find(message => message.method === "initialize");
 			const params = init?.params as {
-				capabilities?: { workspace?: { workspaceFolders?: unknown } };
+				capabilities?: {
+					workspace?: { workspaceFolders?: unknown; workspaceEdit?: { failureHandling?: unknown } };
+				};
 				workspaceFolders?: unknown;
 			};
 
 			expect(params.capabilities?.workspace?.workspaceFolders).toBe(true);
+			expect(params.capabilities?.workspace?.workspaceEdit?.failureHandling).toBe("abort");
 			expect(params.workspaceFolders).toEqual([
 				{ uri: fileToUri(tempDir.path()), name: path.basename(tempDir.path()) },
 			]);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not advertise unsupported snippet text edits", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-snippet-capability-");
+		try {
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+
+			const config: ServerConfig = {
+				command: "fake-lsp",
+				fileTypes: ["rs"],
+				rootMarkers: [],
+			};
+
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+
+			const init = server.received.find(message => message.method === "initialize");
+			const params = init?.params as { capabilities?: { experimental?: { snippetTextEdit?: boolean } } };
+			expect(params.capabilities?.experimental?.snippetTextEdit).toBeUndefined();
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
@@ -303,6 +720,166 @@ describe("lsp regressions", () => {
 
 			expect(response.error).toBeUndefined();
 			expect(response.result).toEqual([{ uri: fileToUri(tempDir.path()), name: path.basename(tempDir.path()) }]);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("sends initial workspace configuration after initialized before semantic requests (#5276)", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-initial-config-");
+		let receivedInitialConfiguration = false;
+		try {
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: { hoverProvider: true } } });
+				} else if (message.method === "workspace/didChangeConfiguration") {
+					receivedInitialConfiguration = true;
+				} else if (message.method === "textDocument/hover" && receivedInitialConfiguration) {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { contents: "configured hover" } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const settings = {
+				"typescript-language-server": {
+					preferences: {
+						includePackageJsonAutoImports: "on",
+						importModuleSpecifierPreference: "non-relative",
+					},
+					inlayHints: {
+						includeInlayEnumMemberValueHints: true,
+						includeInlayParameterNameHints: "all",
+					},
+				},
+			};
+			const config: ServerConfig = {
+				command: "fake-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				settings,
+			};
+
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			const result = await lspClient.sendRequest(
+				client,
+				"textDocument/hover",
+				{
+					textDocument: { uri: fileToUri(path.join(tempDir.path(), "src", "configured.ts")) },
+					position: { line: 0, character: 0 },
+				},
+				undefined,
+				50,
+			);
+
+			expect(result).toEqual({ contents: "configured hover" });
+			const methods = server.received.map(message => message.method);
+			expect(methods.slice(0, 4)).toEqual([
+				"initialize",
+				"initialized",
+				"workspace/didChangeConfiguration",
+				"textDocument/hover",
+			]);
+			expect(server.received[2].params).toEqual({ settings: config.settings });
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("answers missing workspace configuration sections with null in request order", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-configuration-null-");
+		try {
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "initialized") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: 5745,
+						method: "workspace/configuration",
+						params: {
+							items: [
+								{ section: "razor.format.attribute_indent_style" },
+								{ section: "html.auto_closing_tags" },
+								{},
+							],
+						},
+					});
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const config: ServerConfig = {
+				command: "fake-lsp",
+				fileTypes: ["cs"],
+				rootMarkers: [],
+				settings: { "html.auto_closing_tags": true },
+			};
+
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			const response = await server.waitFor(message => message.id === 5745 && message.method === undefined);
+
+			expect(response.result).toEqual([null, true, null]);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("keeps the session alive when configuration is pulled after didChangeConfiguration", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-configuration-session-");
+		let configurationAccepted = false;
+		try {
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: { hoverProvider: true } } });
+				} else if (message.method === "workspace/didChangeConfiguration") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: "roslyn-config",
+						method: "workspace/configuration",
+						params: { items: [{ section: "razor.format.attribute_indent_style" }] },
+					});
+				} else if (message.id === "roslyn-config" && message.method === undefined) {
+					if (Array.isArray(message.result) && message.result[0] === null) {
+						configurationAccepted = true;
+					} else {
+						srv.exit(-6);
+					}
+				} else if (message.method === "textDocument/hover" && configurationAccepted) {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { contents: "string C.Target" } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const config: ServerConfig = {
+				command: "fake-lsp",
+				fileTypes: ["cs"],
+				rootMarkers: [],
+			};
+
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			await server.waitFor(message => message.id === "roslyn-config" && message.method === undefined);
+			const result = await lspClient.sendRequest(
+				client,
+				"textDocument/hover",
+				{
+					textDocument: { uri: fileToUri(path.join(tempDir.path(), "Target.cs")) },
+					position: { line: 0, character: 6 },
+				},
+				undefined,
+				50,
+			);
+
+			expect(result).toEqual({ contents: "string C.Target" });
+			expect(configurationAccepted).toBe(true);
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
@@ -557,7 +1134,7 @@ describe("lsp regressions", () => {
 
 			const events: string[] = [];
 			let statusRequests = 0;
-			installFakeLsp((message, srv) => {
+			const fakeServer = installFakeLsp((message, srv) => {
 				if (message.method === "initialize") {
 					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: { definitionProvider: true } } });
 					srv.send({
@@ -621,7 +1198,7 @@ describe("lsp regressions", () => {
 			});
 			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["rust-analyzer", server]]);
 
-			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const tool = new LspTool(makeLspSession(tempDir.path()));
 			const result = await tool.execute("rust-wait-test", {
 				action: "definition",
 				file: sourcePath,
@@ -637,6 +1214,12 @@ describe("lsp regressions", () => {
 			expect(output).toContain("Found 1 definition(s)");
 			expect(events[0]).toBe("open");
 			expect(events.filter(line => line === "status").length).toBeGreaterThanOrEqual(3);
+			const firstStatusRequest = fakeServer.received.find(
+				message => message.method === "rust-analyzer/analyzerStatus",
+			);
+			if (!firstStatusRequest) throw new Error("Expected the timed-out analyzer status request");
+			const cancellation = await fakeServer.waitFor(message => message.method === "$/cancelRequest");
+			expect(cancellation.params).toEqual({ id: firstStatusRequest.id });
 		} finally {
 			vi.restoreAllMocks();
 			await lspClient.shutdownAll();
@@ -690,7 +1273,7 @@ describe("lsp regressions", () => {
 			});
 			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["rust-analyzer", server]]);
 
-			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const tool = new LspTool(makeLspSession(tempDir.path()));
 			const result = await tool.execute("rust-standalone-test", {
 				action: "definition",
 				file: sourcePath,
@@ -907,7 +1490,6 @@ describe("lsp regressions", () => {
 
 	it("sanitizes symbol metadata in renderer output", async () => {
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		const uiTheme = theme!;
 		const renderOptions: RenderResultOptions = { expanded: false, isPartial: false };
 
@@ -945,7 +1527,6 @@ describe("lsp regressions", () => {
 
 	it("sanitizes tabs in rendered diagnostic output", async () => {
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		const uiTheme = theme!;
 		const renderOptions: RenderResultOptions = { expanded: false, isPartial: false };
 
@@ -966,6 +1547,118 @@ describe("lsp regressions", () => {
 		expect(resultText).not.toContain("\t");
 		expect(resultText.replace(/\s+/g, " ")).toContain("too many arguments in call");
 	});
+
+	it("sanitizes expanded generic error output (#7041)", async () => {
+		const theme = await getThemeByName("dark");
+		const result = renderLocalResult(
+			{
+				content: [{ type: "text", text: `Error:\nserver\tstderr ${"x".repeat(200)}` }],
+			},
+			{ expanded: true, isPartial: false },
+			theme!,
+		);
+
+		const lines = sanitizeText(result.render(300).join("\n")).split("\n");
+		expect(lines.join("\n")).not.toContain("\t");
+		expect(lines.join("\n")).not.toContain("x".repeat(100));
+	});
+
+	for (const dynamicRegistration of [false, true]) {
+		it(`reports pull diagnostics advertised through ${dynamicRegistration ? "dynamic registration" : "server capabilities"}`, async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-pull-diags-");
+			try {
+				const targetFile = path.join(tempDir.path(), "target.ts");
+				await Bun.write(targetFile, "const broken: string = 42;\n");
+				const diagnostic: Diagnostic = {
+					message: "Type 'number' is not assignable to type 'string'.",
+					severity: 1,
+					code: 2322,
+					source: "ts",
+					range: {
+						start: { line: 0, character: 6 },
+						end: { line: 0, character: 12 },
+					},
+				};
+
+				const fakeServer = installFakeLsp((message, server) => {
+					if (message.method === "initialize") {
+						server.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							result: { capabilities: dynamicRegistration ? {} : { diagnosticProvider: true } },
+						});
+						server.send({
+							jsonrpc: "2.0",
+							method: "$/progress",
+							params: { token: "workspace", value: { kind: "begin" } },
+						});
+						server.send({
+							jsonrpc: "2.0",
+							method: "$/progress",
+							params: { token: "workspace", value: { kind: "end" } },
+						});
+					} else if (dynamicRegistration && message.method === "initialized") {
+						server.send({
+							jsonrpc: "2.0",
+							id: "register-diagnostics",
+							method: "client/registerCapability",
+							params: {
+								registrations: [
+									{
+										id: "pull-diagnostics",
+										method: "textDocument/diagnostic",
+										registerOptions: {},
+									},
+								],
+							},
+						});
+					} else if (message.method === "textDocument/diagnostic") {
+						server.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							result: { kind: "full", items: [diagnostic] },
+						});
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						server.exit(0);
+					}
+				});
+
+				const serverConfig: ServerConfig = {
+					command: "fake-lsp",
+					fileTypes: ["ts"],
+					rootMarkers: [],
+				};
+				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+					servers: { "fake-lsp": serverConfig },
+					idleTimeoutMs: undefined,
+				});
+				vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["fake-lsp", serverConfig]]);
+
+				const tool = new LspTool(makeLspSession(tempDir.path()));
+				const result = await tool.execute(`pull-diagnostics-${dynamicRegistration}`, {
+					action: "diagnostics",
+					file: targetFile,
+					timeout: 20,
+				});
+				const initialize = fakeServer.received.find(message => message.method === "initialize");
+
+				expect(initialize).toMatchObject({
+					params: {
+						capabilities: {
+							textDocument: { diagnostic: { dynamicRegistration: true } },
+						},
+					},
+				});
+				expect(fakeServer.received.map(message => message.method)).toContain("textDocument/diagnostic");
+				expect(textResult(result)).toContain("Type 'number' is not assignable to type 'string'.");
+			} finally {
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		}, 15_000);
+	}
 
 	it("does not reuse stale file diagnostics after another URI publishes", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-stale-diags-");
@@ -1023,19 +1716,26 @@ describe("lsp regressions", () => {
 			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["test-lsp", server]]);
 			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
 
-			setTimeout(() => {
-				client.diagnostics.set(otherUri, { diagnostics: [otherDiagnostic], version: 1 });
-				client.diagnosticsVersion += 1;
-			}, 20);
-			setTimeout(() => {
-				client.diagnostics.set(targetUri, {
-					diagnostics: [],
-					version: client.openFiles.get(targetUri)?.version ?? 2,
-				});
-				client.diagnosticsVersion += 1;
-			}, 80);
+			let poll = 0;
+			vi.spyOn(Bun, "sleep").mockImplementation(async () => {
+				poll++;
+				if (poll === 1) {
+					client.diagnostics.set(otherUri, { diagnostics: [otherDiagnostic], version: 1 });
+					client.diagnosticsVersion += 1;
+					return;
+				}
+				if (poll === 2) {
+					client.diagnostics.set(targetUri, {
+						diagnostics: [],
+						version: client.openFiles.get(targetUri)?.version ?? 2,
+					});
+					client.diagnosticsVersion += 1;
+					return;
+				}
+				throw new Error("waitForDiagnostics polled after the fresh target publish");
+			});
 
-			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const tool = new LspTool(makeLspSession(tempDir.path()));
 			const result = await tool.execute("diag-stale", {
 				action: "diagnostics",
 				file: targetFile,
@@ -1049,6 +1749,228 @@ describe("lsp regressions", () => {
 			expect(output).toBe("OK");
 		} finally {
 			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("reports failure when every applicable diagnostics server fails (#8377)", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-all-servers-fail-");
+		try {
+			const targetFile = path.join(tempDir.path(), "target.ts");
+			await Bun.write(targetFile, "export const target = 1;\n");
+			// The diagnostics renderer prefixes status lines via the global theme,
+			// which production initializes before any tool runs.
+			await initTheme();
+
+			const serverConfig: ServerConfig = {
+				command: "broken-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { broken: serverConfig },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["broken", serverConfig]]);
+			vi.spyOn(lspClient, "getOrCreateClient").mockRejectedValue(new Error("server exited with code 7"));
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("all-servers-fail", {
+				action: "diagnostics",
+				file: targetFile,
+				timeout: 5,
+			});
+
+			// A total server failure must not masquerade as a clean file.
+			expect(result.details?.success).toBe(false);
+			const output = textResult(result);
+			expect(output).not.toBe("OK");
+			expect(output).toContain("all language servers failed");
+			expect(output).toContain("broken");
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("reports failure when every workspace-symbol server fails (#8387)", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-symbol-all-fail-");
+		try {
+			const firstConfig: ServerConfig = { command: "broken-first", fileTypes: ["ts"], rootMarkers: [] };
+			const secondConfig: ServerConfig = { command: "broken-second", fileTypes: ["ts"], rootMarkers: [] };
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { first: firstConfig, second: secondConfig },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async config => {
+				throw new Error(`${config.command} exited`);
+			});
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("workspace-symbol-all-fail", {
+				action: "symbols",
+				file: "*",
+				query: "Target",
+			});
+
+			expect(result.details?.success).toBe(false);
+			const output = textResult(result);
+			expect(output).toContain("all language servers failed");
+			expect(output).toContain("first");
+			expect(output).toContain("second");
+			expect(output).not.toContain('No symbols matching "Target"');
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("treats an empty workspace-symbol response as a successful search (#8387)", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-symbol-empty-");
+		try {
+			const serverConfig: ServerConfig = { command: "empty-lsp", fileTypes: ["ts"], rootMarkers: [] };
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { empty: serverConfig },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue({} as LspClient);
+			vi.spyOn(lspClient, "sendRequest").mockResolvedValue([]);
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("workspace-symbol-empty", {
+				action: "symbols",
+				file: "*",
+				query: "Missing",
+			});
+
+			expect(result.details?.success).toBe(true);
+			expect(result.details?.serverName).toBe("empty");
+			expect(textResult(result)).toBe('No symbols matching "Missing"');
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("keeps workspace-symbol results and reports partial server failures (#8387)", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-symbol-partial-");
+		try {
+			const brokenConfig: ServerConfig = { command: "broken-lsp", fileTypes: ["ts"], rootMarkers: [] };
+			const healthyConfig: ServerConfig = { command: "healthy-lsp", fileTypes: ["ts"], rootMarkers: [] };
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { broken: brokenConfig, healthy: healthyConfig },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async config => {
+				if (config.command === "broken-lsp") throw new Error("server exited with code 7");
+				return {} as LspClient;
+			});
+			vi.spyOn(lspClient, "sendRequest").mockResolvedValue([
+				{
+					name: "TargetSymbol",
+					kind: 12,
+					location: {
+						uri: fileToUri(path.join(tempDir.path(), "target.ts")),
+						range: {
+							start: { line: 0, character: 0 },
+							end: { line: 0, character: 12 },
+						},
+					},
+				},
+			]);
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("workspace-symbol-partial", {
+				action: "symbols",
+				file: "*",
+				query: "Target",
+			});
+
+			expect(result.details?.success).toBe(true);
+			expect(result.details?.serverName).toBe("healthy");
+			const output = textResult(result);
+			expect(output).toContain("TargetSymbol");
+			expect(output).toContain("Server failures:");
+			expect(output).toContain("broken: server exited with code 7");
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("treats a go.work-only root as a Go workspace for workspace diagnostics", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-go-work-only-");
+		const spawnCalls: BunSpawnCall[] = [];
+		recordBunSpawn(spawnCalls, cmd => {
+			if (cmd.join("\0") === "go\0work\0edit\0-json") {
+				return { stdout: JSON.stringify({ Use: [{ DiskPath: "./service" }] }) };
+			}
+			return {};
+		});
+
+		try {
+			const serviceDir = path.join(tempDir.path(), "service");
+			await fs.promises.mkdir(serviceDir, { recursive: true });
+			await Bun.write(path.join(tempDir.path(), "go.work"), ["go 1.22", "", "use ./service", ""].join("\n"));
+			await Bun.write(path.join(serviceDir, "go.mod"), "module example.com/service\n\ngo 1.22\n");
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("go-work-only-diagnostics", {
+				action: "diagnostics",
+				file: "*",
+			});
+
+			const buildCalls = spawnCalls.filter(call => call.cmd[0] === "go" && call.cmd[1] === "build");
+			expect(buildCalls).toHaveLength(1);
+			expect(buildCalls[0]?.cmd).toEqual(["go", "build", "./service/..."]);
+			expect(buildCalls[0]?.options?.cwd).toBe(tempDir.path());
+			const output = textResult(result);
+			expect(output).toContain("Workspace diagnostics (");
+			expect(output).toContain("go build");
+			expect(output).toContain("No issues found");
+			expect(output).not.toContain("Cannot detect project type");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("builds every go.work use module when go.work and go.mod coexist", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-go-work-before-mod-");
+		const spawnCalls: BunSpawnCall[] = [];
+		recordBunSpawn(spawnCalls, cmd => {
+			if (cmd.join("\0") === "go\0work\0edit\0-json") {
+				return {
+					stdout: JSON.stringify({
+						Use: [{ DiskPath: "." }, { DiskPath: "./service" }, { DiskPath: "./tools/helper" }],
+					}),
+				};
+			}
+			return {};
+		});
+
+		try {
+			const serviceDir = path.join(tempDir.path(), "service");
+			const helperDir = path.join(tempDir.path(), "tools", "helper");
+			await fs.promises.mkdir(serviceDir, { recursive: true });
+			await fs.promises.mkdir(helperDir, { recursive: true });
+			await Bun.write(path.join(tempDir.path(), "go.mod"), "module example.com/root\n\ngo 1.22\n");
+			await Bun.write(path.join(serviceDir, "go.mod"), "module example.com/service\n\ngo 1.22\n");
+			await Bun.write(path.join(helperDir, "go.mod"), "module example.com/helper\n\ngo 1.22\n");
+			await Bun.write(
+				path.join(tempDir.path(), "go.work"),
+				["go 1.22", "", "use (", "\t.", "\t./service", "\t./tools/helper", ")", ""].join("\n"),
+			);
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("go-work-module-patterns", {
+				action: "diagnostics",
+				file: "*",
+			});
+
+			const buildCalls = spawnCalls.filter(call => call.cmd[0] === "go" && call.cmd[1] === "build");
+			expect(buildCalls).toHaveLength(1);
+			expect(buildCalls[0]?.cmd.slice(0, 2)).toEqual(["go", "build"]);
+			expect(buildCalls[0]?.cmd.slice(2).sort()).toEqual(["./...", "./service/...", "./tools/helper/..."]);
+			expect(textResult(result)).toContain("Workspace diagnostics (");
+			expect(textResult(result)).toContain("go build");
+		} finally {
 			tempDir.removeSync();
 		}
 	});
@@ -1074,6 +1996,91 @@ describe("lsp regressions", () => {
 		} finally {
 			vi.restoreAllMocks();
 			tempDir.removeSync();
+		}
+	});
+
+	it("detects Ruff in Windows virtualenv Scripts directories", async () => {
+		const originalPlatform = process.platform;
+		Object.defineProperty(process, "platform", { value: "win32", configurable: true, writable: true });
+
+		const tempDir = TempDir.createSync("@omp-lsp-win32-ruff-");
+		const whichSpy = vi.spyOn(Bun, "which").mockReturnValue(null);
+
+		try {
+			await Bun.write(path.join(tempDir.path(), "pyproject.toml"), '[project]\nname = "demo"\n');
+			const scriptsDir = path.join(tempDir.path(), ".venv", "Scripts");
+			await fs.promises.mkdir(scriptsDir, { recursive: true });
+			const localRuff = path.join(scriptsDir, "ruff.exe");
+			await Bun.write(localRuff, "");
+
+			const config = loadConfig(tempDir.path());
+			expect(config.servers.ruff?.resolvedCommand).toBe(localRuff);
+			expect(whichSpy).not.toHaveBeenCalledWith("ruff");
+		} finally {
+			Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true, writable: true });
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("detects Ruff in Windows virtualenv Scripts directories for Ruff-only roots", async () => {
+		const originalPlatform = process.platform;
+		Object.defineProperty(process, "platform", { value: "win32", configurable: true, writable: true });
+		const whichSpy = vi.spyOn(Bun, "which").mockReturnValue(null);
+
+		try {
+			for (const marker of ["ruff.toml", ".ruff.toml"] as const) {
+				const tempDir = TempDir.createSync("@omp-lsp-win32-ruff-marker-");
+				try {
+					await Bun.write(path.join(tempDir.path(), marker), "");
+					const scriptsDir = path.join(tempDir.path(), ".venv", "Scripts");
+					await fs.promises.mkdir(scriptsDir, { recursive: true });
+					const localRuff = path.join(scriptsDir, "ruff.exe");
+					await Bun.write(localRuff, "");
+
+					const config = loadConfig(tempDir.path());
+					expect(config.servers.ruff?.resolvedCommand).toBe(localRuff);
+				} finally {
+					tempDir.removeSync();
+				}
+			}
+			expect(whichSpy).not.toHaveBeenCalledWith("ruff");
+		} finally {
+			Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true, writable: true });
+			vi.restoreAllMocks();
+		}
+	});
+
+	it("detects pyright and pylsp in Windows virtualenv Scripts for Python-only roots", async () => {
+		const originalPlatform = process.platform;
+		Object.defineProperty(process, "platform", { value: "win32", configurable: true, writable: true });
+		const whichSpy = vi.spyOn(Bun, "which").mockReturnValue(null);
+
+		try {
+			const cases: Array<{ marker: string; server: string; binary: string }> = [
+				{ marker: "pyrightconfig.json", server: "pyright", binary: "pyright-langserver.exe" },
+				{ marker: "setup.cfg", server: "pylsp", binary: "pylsp.exe" },
+			];
+			for (const { marker, server, binary } of cases) {
+				const tempDir = TempDir.createSync("@omp-lsp-win32-py-marker-");
+				try {
+					await Bun.write(path.join(tempDir.path(), marker), "");
+					const scriptsDir = path.join(tempDir.path(), ".venv", "Scripts");
+					await fs.promises.mkdir(scriptsDir, { recursive: true });
+					const localBin = path.join(scriptsDir, binary);
+					await Bun.write(localBin, "");
+
+					const config = loadConfig(tempDir.path());
+					expect(config.servers[server]?.resolvedCommand).toBe(localBin);
+				} finally {
+					tempDir.removeSync();
+				}
+			}
+			expect(whichSpy).not.toHaveBeenCalledWith("pyright-langserver");
+			expect(whichSpy).not.toHaveBeenCalledWith("pylsp");
+		} finally {
+			Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true, writable: true });
+			vi.restoreAllMocks();
 		}
 	});
 
@@ -1263,7 +2270,7 @@ describe("lsp regressions", () => {
 				notifications.push({ method, params });
 			});
 
-			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const tool = new LspTool(makeLspSession(tempDir.path()));
 			const result = await tool.execute("rename-file-test", {
 				action: "rename_file",
 				file: sourceFile,
@@ -1297,6 +2304,230 @@ describe("lsp regressions", () => {
 				.map(block => block.text)
 				.join("\n");
 			expect(output).toContain("Renamed");
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("rename_file rejects a snippet edit before writing any file", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-snippet-");
+		try {
+			const sourceFile = path.join(tempDir.path(), "src", "old.ts");
+			const destFile = path.join(tempDir.path(), "src", "new.ts");
+			const plainFile = path.join(tempDir.path(), "src", "plain.ts");
+			const snippetFile = path.join(tempDir.path(), "src", "snippet.ts");
+			await Bun.write(sourceFile, "export const value = 42;\n");
+			await Bun.write(plainFile, "import { value } from './old';\n");
+			await Bun.write(snippetFile, "import { value } from './old';\n");
+
+			const plainUri = fileToUri(plainFile);
+			const snippetUri = fileToUri(snippetFile);
+
+			const server: ServerConfig = { command: "test-lsp", fileTypes: ["ts"], rootMarkers: [] };
+			const client: LspClient = {
+				name: "test-lsp",
+				cwd: tempDir.path(),
+				config: server,
+				proc: {
+					stdin: { write() {}, flush: async () => {} },
+				} as unknown as LspClient["proc"],
+				requestId: 0,
+				diagnostics: new Map(),
+				diagnosticsVersion: 0,
+				openFiles: new Map(),
+				pendingRequests: new Map(),
+				messageBuffer: new Uint8Array(),
+				isReading: false,
+				status: "ready",
+				lastActivity: Date.now(),
+				writeQueue: Promise.resolve(),
+				activeProgressTokens: new Set(),
+				projectLoaded: Promise.resolve(),
+				resolveProjectLoaded: () => {},
+			};
+
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "test-lsp": server },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_client, method) => {
+				if (method === "workspace/willRenameFiles") {
+					return {
+						// plainUri is a valid edit; snippetUri carries insertTextFormat 2.
+						// The plain bucket must NOT be written when the snippet bucket rejects.
+						changes: {
+							[plainUri]: [
+								{
+									range: { start: { line: 0, character: 22 }, end: { line: 0, character: 29 } },
+									newText: "'./new'",
+								},
+							],
+							[snippetUri]: [
+								{
+									range: { start: { line: 0, character: 22 }, end: { line: 0, character: 29 } },
+									newText: "'./new$0'",
+									insertTextFormat: 2,
+								},
+							],
+						},
+					};
+				}
+				return null;
+			});
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue();
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			await expect(
+				tool.execute("rename-snippet-test", {
+					action: "rename_file",
+					file: sourceFile,
+					new_name: destFile,
+					timeout: 5,
+				}),
+			).rejects.toThrow("snippet-formatted LSP edits are unsupported");
+
+			// Nothing was half-applied: the plain bucket is untouched and the
+			// rename never ran.
+			expect(await Bun.file(plainFile).text()).toBe("import { value } from './old';\n");
+			expect(await Bun.file(snippetFile).text()).toBe("import { value } from './old';\n");
+			expect(fs.existsSync(sourceFile)).toBe(true);
+			expect(fs.existsSync(destFile)).toBe(false);
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("rename_file aborts before mutation when willRenameFiles fails on a supporting server", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-file-fail-");
+		try {
+			const sourceFile = path.join(tempDir.path(), "src", "old.ts");
+			const destFile = path.join(tempDir.path(), "src", "new.ts");
+			await Bun.write(sourceFile, "export const value = 42;\n");
+
+			const server: ServerConfig = { command: "test-lsp", fileTypes: ["ts"], rootMarkers: [] };
+			const client: LspClient = {
+				name: "test-lsp",
+				cwd: tempDir.path(),
+				config: server,
+				proc: {
+					stdin: { write() {}, flush: async () => {} },
+				} as unknown as LspClient["proc"],
+				requestId: 0,
+				diagnostics: new Map(),
+				diagnosticsVersion: 0,
+				openFiles: new Map(),
+				pendingRequests: new Map(),
+				messageBuffer: new Uint8Array(),
+				isReading: false,
+				status: "ready",
+				lastActivity: Date.now(),
+				writeQueue: Promise.resolve(),
+				activeProgressTokens: new Set(),
+				projectLoaded: Promise.resolve(),
+				resolveProjectLoaded: () => {},
+			};
+
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "test-lsp": server },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+
+			// A server that supports willRenameFiles but fails with a real error
+			// (not method-not-found). The rename must not proceed.
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_client, method) => {
+				if (method === "workspace/willRenameFiles") {
+					throw new Error("internal error: index not ready");
+				}
+				return null;
+			});
+			const notifySpy = vi.spyOn(lspClient, "sendNotification").mockResolvedValue();
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("rename-file-fail", {
+				action: "rename_file",
+				file: sourceFile,
+				new_name: destFile,
+				timeout: 5,
+			});
+
+			// No filesystem mutation.
+			expect(fs.existsSync(sourceFile)).toBe(true);
+			expect(fs.existsSync(destFile)).toBe(false);
+			// No didRenameFiles notification.
+			expect(notifySpy).not.toHaveBeenCalledWith(expect.anything(), "workspace/didRenameFiles", expect.anything());
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: false });
+			const output = result.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+			expect(output).toContain("aborted rename");
+			expect(output).toContain("index not ready");
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("rename_file skips a server that replies method-not-found and still renames", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-file-mnf-");
+		try {
+			const sourceFile = path.join(tempDir.path(), "src", "old.ts");
+			const destFile = path.join(tempDir.path(), "src", "new.ts");
+			await Bun.write(sourceFile, "export const value = 42;\n");
+
+			const server: ServerConfig = { command: "test-lsp", fileTypes: ["ts"], rootMarkers: [] };
+			const client: LspClient = {
+				name: "test-lsp",
+				cwd: tempDir.path(),
+				config: server,
+				proc: {
+					stdin: { write() {}, flush: async () => {} },
+				} as unknown as LspClient["proc"],
+				requestId: 0,
+				diagnostics: new Map(),
+				diagnosticsVersion: 0,
+				openFiles: new Map(),
+				pendingRequests: new Map(),
+				messageBuffer: new Uint8Array(),
+				isReading: false,
+				status: "ready",
+				lastActivity: Date.now(),
+				writeQueue: Promise.resolve(),
+				activeProgressTokens: new Set(),
+				projectLoaded: Promise.resolve(),
+				resolveProjectLoaded: () => {},
+			};
+
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "test-lsp": server },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_client, method) => {
+				if (method === "workspace/willRenameFiles") {
+					throw new Error("Method not found: -32601");
+				}
+				return null;
+			});
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue();
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("rename-file-mnf", {
+				action: "rename_file",
+				file: sourceFile,
+				new_name: destFile,
+				timeout: 5,
+			});
+
+			// Unsupported server does not block: the path still moves.
+			expect(fs.existsSync(sourceFile)).toBe(false);
+			expect(fs.existsSync(destFile)).toBe(true);
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
 		} finally {
 			vi.restoreAllMocks();
 			tempDir.removeSync();
@@ -1343,7 +2574,7 @@ describe("lsp regressions", () => {
 			});
 			const notifySpy = vi.spyOn(lspClient, "sendNotification").mockResolvedValue();
 
-			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const tool = new LspTool(makeLspSession(tempDir.path()));
 			await tool.execute("rename-file-preview", {
 				action: "rename_file",
 				file: sourceFile,
@@ -1407,7 +2638,7 @@ describe("lsp regressions", () => {
 			});
 			vi.spyOn(lspClient, "sendNotification").mockResolvedValue();
 
-			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const tool = new LspTool(makeLspSession(tempDir.path()));
 			await tool.execute("rename-dir-test", {
 				action: "rename_file",
 				file: srcDir,
@@ -1479,7 +2710,7 @@ describe("lsp regressions", () => {
 				return { expansion: "macro_rules!" };
 			});
 
-			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const tool = new LspTool(makeLspSession(tempDir.path()));
 			const result = await tool.execute("request-test", {
 				action: "request",
 				file: filePath,
@@ -1546,7 +2777,7 @@ describe("lsp regressions", () => {
 				return null;
 			});
 
-			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const tool = new LspTool(makeLspSession(tempDir.path()));
 			await tool.execute("request-payload", {
 				action: "request",
 				query: "workspace/executeCommand",
@@ -1604,7 +2835,7 @@ describe("lsp regressions", () => {
 			});
 			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
 
-			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const tool = new LspTool(makeLspSession(tempDir.path()));
 			const result = await tool.execute("caps-test", {
 				action: "capabilities",
 				timeout: 5,
@@ -1620,6 +2851,113 @@ describe("lsp regressions", () => {
 			expect(output).toContain("rust-analyzer/expandMacro");
 		} finally {
 			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("synchronizes open document overlays after applying a rename workspace edit", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-sync-");
+		const filePath = path.join(tempDir.path(), "main.go");
+		const uri = fileToUri(filePath);
+		let overlay = "";
+		try {
+			await Bun.write(filePath, "package main\nfunc OldName() {}\n");
+			const serverConfig: ServerConfig = {
+				command: "fake-gopls",
+				fileTypes: ["go"],
+				rootMarkers: [],
+				isLinter: true,
+			};
+			installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: { capabilities: { documentSymbolProvider: true, renameProvider: true } },
+					});
+				} else if (message.method === "textDocument/didOpen") {
+					if (
+						typeof message.params === "object" &&
+						message.params !== null &&
+						"textDocument" in message.params &&
+						typeof message.params.textDocument === "object" &&
+						message.params.textDocument !== null &&
+						"text" in message.params.textDocument &&
+						typeof message.params.textDocument.text === "string"
+					) {
+						overlay = message.params.textDocument.text;
+					}
+				} else if (message.method === "textDocument/didChange") {
+					if (
+						typeof message.params === "object" &&
+						message.params !== null &&
+						"contentChanges" in message.params &&
+						Array.isArray(message.params.contentChanges) &&
+						typeof message.params.contentChanges[0] === "object" &&
+						message.params.contentChanges[0] !== null &&
+						"text" in message.params.contentChanges[0] &&
+						typeof message.params.contentChanges[0].text === "string"
+					) {
+						overlay = message.params.contentChanges[0].text;
+					}
+				} else if (message.method === "textDocument/documentSymbol") {
+					const name = overlay.includes("NewName") ? "NewName" : "OldName";
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: [
+							{
+								name,
+								kind: 12,
+								range: { start: { line: 1, character: 0 }, end: { line: 1, character: 17 } },
+								selectionRange: { start: { line: 1, character: 5 }, end: { line: 1, character: 12 } },
+							},
+						],
+					});
+				} else if (message.method === "textDocument/rename") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: {
+							changes: {
+								[uri]: [
+									{
+										range: { start: { line: 1, character: 5 }, end: { line: 1, character: 12 } },
+										newText: "NewName",
+									},
+								],
+							},
+						},
+					});
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-gopls": serverConfig },
+				idleTimeoutMs: undefined,
+			});
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			expect(
+				textResult(await tool.execute("symbols-before-rename", { action: "symbols", file: filePath })),
+			).toContain("OldName");
+			await tool.execute("rename-open-document", {
+				action: "rename",
+				file: filePath,
+				line: 2,
+				symbol: "OldName",
+				new_name: "NewName",
+			});
+			expect(await Bun.file(filePath).text()).toContain("NewName");
+
+			const symbols = await tool.execute("symbols-after-rename", { action: "symbols", file: filePath });
+			expect(textResult(symbols)).toContain("NewName");
+		} finally {
+			configCache.delete(tempDir.path());
+			await lspClient.shutdownAll();
 			tempDir.removeSync();
 		}
 	});
@@ -1657,7 +2995,7 @@ describe("lsp regressions", () => {
 				documentChanges: [childEdit, folderRename],
 			};
 
-			const applied = await applyWorkspaceEdit(workspaceEdit, tempDir.path());
+			const { applied } = await applyWorkspaceEdit(workspaceEdit, tempDir.path());
 
 			// Old folder is gone, new folder holds the edited child.
 			expect(fs.existsSync(srcDir)).toBe(false);
@@ -1713,12 +3051,13 @@ describe("lsp regressions", () => {
 				kind: "rename",
 				oldUri,
 				newUri,
+				options: { overwrite: true },
 			};
 			const workspaceEdit: WorkspaceEdit = {
 				documentChanges: [targetEdit, renameOp],
 			};
 
-			const applied = await applyWorkspaceEdit(workspaceEdit, tempDir.path());
+			const { applied } = await applyWorkspaceEdit(workspaceEdit, tempDir.path());
 
 			// Three steps observable in order: edit on newUri, then rename clobbers it.
 			expect(applied).toHaveLength(2);
@@ -1732,6 +3071,47 @@ describe("lsp regressions", () => {
 		} finally {
 			tempDir.removeSync();
 		}
+	});
+
+	it("dedupes byte-identical non-empty text edits before overlap validation", () => {
+		const edit = {
+			range: { start: { line: 9, character: 55 }, end: { line: 9, character: 62 } },
+			newText: "./megaMenu",
+		};
+
+		expect(sortAndValidateTextEdits([edit, { ...edit }])).toEqual([edit]);
+		expect(
+			applyTextEditsToString("import x from './menu';\n", [
+				{
+					range: { start: { line: 0, character: 15 }, end: { line: 0, character: 21 } },
+					newText: "./megaMenu",
+				},
+				{
+					range: { start: { line: 0, character: 15 }, end: { line: 0, character: 21 } },
+					newText: "./megaMenu",
+				},
+			]),
+		).toBe("import x from './megaMenu';\n");
+	});
+
+	it("rejects unexpected snippet text edits without writing their syntax", () => {
+		expect(() =>
+			applyTextEditsToString("struct S;", [
+				{
+					range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+					newText: "#[derive($0)] ",
+					insertTextFormat: 2,
+				},
+			]),
+		).toThrow("snippet-formatted LSP edits are unsupported");
+	});
+
+	it("keeps byte-identical zero-width inserts because they are not idempotent", () => {
+		const result = applyTextEditsToString("abc", [
+			{ range: { start: { line: 0, character: 1 }, end: { line: 0, character: 1 } }, newText: "X" },
+			{ range: { start: { line: 0, character: 1 }, end: { line: 0, character: 1 } }, newText: "X" },
+		]);
+		expect(result).toBe("aXXbc");
 	});
 
 	it("applies equal-position inserts in array order", () => {
@@ -1854,7 +3234,7 @@ describe("lsp regressions", () => {
 				documentChanges: [createOp, textEdit],
 			};
 
-			const applied = await applyWorkspaceEdit(workspaceEdit, tempDir.path());
+			const { applied } = await applyWorkspaceEdit(workspaceEdit, tempDir.path());
 
 			expect(fs.existsSync(newFilePath)).toBe(true);
 			expect(fs.readFileSync(newFilePath, "utf8")).toBe("export const extracted = 42;\n");
@@ -1866,6 +3246,309 @@ describe("lsp regressions", () => {
 			expect(applied[1]).toContain("Applied 1 edit(s)");
 			expect(applied[1]).toContain("extracted.ts");
 		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("honors CreateFile overwrite and ignoreIfExists options", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-create-options-");
+		try {
+			const filePath = path.join(tempDir.path(), "existing.ts");
+			const uri = fileToUri(filePath);
+			await Bun.write(filePath, "ORIGINAL");
+
+			const ignored = await applyWorkspaceEdit(
+				{
+					documentChanges: [
+						{ kind: "create", uri, options: { overwrite: false, ignoreIfExists: true } } satisfies CreateFile,
+					],
+				},
+				tempDir.path(),
+			);
+			expect(fs.readFileSync(filePath, "utf8")).toBe("ORIGINAL");
+			expect(ignored.applied).toEqual([]);
+			expect(ignored.executed).toEqual([]);
+
+			await applyWorkspaceEdit(
+				{
+					documentChanges: [
+						{ kind: "create", uri, options: { overwrite: true, ignoreIfExists: true } } satisfies CreateFile,
+					],
+				},
+				tempDir.path(),
+			);
+			expect(fs.readFileSync(filePath, "utf8")).toBe("");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("honors RenameFile overwrite and ignoreIfExists options", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-options-");
+		try {
+			const oldPath = path.join(tempDir.path(), "old.ts");
+			const newPath = path.join(tempDir.path(), "new.ts");
+			const oldUri = fileToUri(oldPath);
+			const newUri = fileToUri(newPath);
+			await Bun.write(oldPath, "SOURCE");
+			await Bun.write(newPath, "TARGET");
+
+			const ignored = await applyWorkspaceEdit(
+				{
+					documentChanges: [
+						{
+							kind: "rename",
+							oldUri,
+							newUri,
+							options: { overwrite: false, ignoreIfExists: true },
+						} satisfies RenameFile,
+					],
+				},
+				tempDir.path(),
+			);
+			expect(fs.readFileSync(oldPath, "utf8")).toBe("SOURCE");
+			expect(fs.readFileSync(newPath, "utf8")).toBe("TARGET");
+			expect(ignored.applied).toEqual([]);
+			expect(ignored.executed).toEqual([]);
+
+			await applyWorkspaceEdit(
+				{
+					documentChanges: [
+						{
+							kind: "rename",
+							oldUri,
+							newUri,
+							options: { overwrite: true, ignoreIfExists: true },
+						} satisfies RenameFile,
+					],
+				},
+				tempDir.path(),
+			);
+			expect(fs.existsSync(oldPath)).toBe(false);
+			expect(fs.readFileSync(newPath, "utf8")).toBe("SOURCE");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("keeps overlays open when ignoreIfExists skips a rename", async () => {
+		// A RenameFile with ignoreIfExists:true whose target exists performs no
+		// filesystem mutation, so overlay reconciliation must not close the old
+		// URI's open document or announce Deleted/Created to the server.
+		const tempDir = TempDir.createSync("@omp-lsp-skipped-rename-overlay-");
+		try {
+			const oldPath = path.join(tempDir.path(), "old.ts");
+			const newPath = path.join(tempDir.path(), "new.ts");
+			await Bun.write(oldPath, "SOURCE");
+			await Bun.write(newPath, "TARGET");
+
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const config: ServerConfig = { command: "fake-lsp", fileTypes: ["ts"], rootMarkers: [] };
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			await lspClient.ensureFileOpen(client, oldPath);
+			await server.waitFor(message => message.method === "textDocument/didOpen");
+
+			const applied = await lspClient.applyWorkspaceEditWithLsp(
+				{
+					documentChanges: [
+						{
+							kind: "rename",
+							oldUri: fileToUri(oldPath),
+							newUri: fileToUri(newPath),
+							options: { overwrite: false, ignoreIfExists: true },
+						} satisfies RenameFile,
+					],
+				},
+				tempDir.path(),
+			);
+
+			// Nothing ran, nothing moved, and the overlay survived.
+			expect(applied).toEqual([]);
+			expect(fs.readFileSync(oldPath, "utf8")).toBe("SOURCE");
+			expect(fs.readFileSync(newPath, "utf8")).toBe("TARGET");
+			expect(client.openFiles.has(fileToUri(oldPath))).toBe(true);
+			expect(server.received.filter(message => message.method === "textDocument/didClose")).toEqual([]);
+			expect(server.received.filter(message => message.method === "workspace/didChangeWatchedFiles")).toEqual([]);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("reconciles the executed prefix when a workspace edit fails partway", async () => {
+		// A text edit to an open file inside `src/` is flushed to disk before the
+		// non-recursive delete of `src/` runs (subtree flush), and that delete
+		// throws on the non-empty directory. The error must propagate, but the
+		// already-mutated file's overlay must be refreshed — not left stale.
+		const tempDir = TempDir.createSync("@omp-lsp-partial-edit-overlay-");
+		try {
+			const srcDir = path.join(tempDir.path(), "src");
+			fs.mkdirSync(srcDir);
+			const filePath = path.join(srcDir, "a.ts");
+			await Bun.write(filePath, "export const a = 1;\n");
+
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const config: ServerConfig = { command: "fake-lsp", fileTypes: ["ts"], rootMarkers: [] };
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			await lspClient.ensureFileOpen(client, filePath);
+			await server.waitFor(message => message.method === "textDocument/didOpen");
+
+			const uri = fileToUri(filePath);
+			await expect(
+				lspClient.applyWorkspaceEditWithLsp(
+					{
+						documentChanges: [
+							{
+								textDocument: { uri, version: null },
+								edits: [
+									{
+										range: { start: { line: 0, character: 17 }, end: { line: 0, character: 18 } },
+										newText: "2",
+									},
+								],
+							} satisfies TextDocumentEdit,
+							{ kind: "delete", uri: fileToUri(srcDir), options: { recursive: false } } satisfies DeleteFile,
+						],
+					},
+					tempDir.path(),
+				),
+			).rejects.toThrow();
+
+			// Disk carries the executed edit; the failing delete never ran.
+			expect(fs.readFileSync(filePath, "utf8")).toBe("export const a = 2;\n");
+			expect(fs.existsSync(srcDir)).toBe(true);
+
+			// The overlay was refreshed to the committed content despite the failure.
+			const didChange = await server.waitFor(message => message.method === "textDocument/didChange");
+			expect(didChange.params).toMatchObject({
+				textDocument: { uri },
+				contentChanges: [{ text: "export const a = 2;\n" }],
+			});
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("honors DeleteFile recursive and ignoreIfNotExists options", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-delete-options-");
+		try {
+			const directory = path.join(tempDir.path(), "directory");
+			const uri = fileToUri(directory);
+			fs.mkdirSync(directory);
+			await Bun.write(path.join(directory, "child.ts"), "KEEP");
+
+			const nonRecursive: DeleteFile = { kind: "delete", uri, options: { recursive: false } };
+			await expect(applyWorkspaceEdit({ documentChanges: [nonRecursive] }, tempDir.path())).rejects.toThrow();
+			expect(fs.readFileSync(path.join(directory, "child.ts"), "utf8")).toBe("KEEP");
+
+			const recursive: DeleteFile = { kind: "delete", uri, options: { recursive: true } };
+			await applyWorkspaceEdit({ documentChanges: [recursive] }, tempDir.path());
+			expect(fs.existsSync(directory)).toBe(false);
+
+			const ignored = await applyWorkspaceEdit(
+				{
+					documentChanges: [{ kind: "delete", uri, options: { ignoreIfNotExists: true } } satisfies DeleteFile],
+				},
+				tempDir.path(),
+			);
+			expect(ignored.applied).toEqual([]);
+			expect(ignored.executed).toEqual([]);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not delete the source when a rename target resolves to the same file", async () => {
+		// A case-only rename on a case-insensitive filesystem yields distinct path
+		// strings that resolve to one inode. Reproduce that deterministically on a
+		// case-sensitive filesystem with a symlinked parent directory: `dir/f.ts`
+		// and `dirlink/f.ts` are the same file. The overwrite branch must skip
+		// removing the destination, or it deletes the source before the rename.
+		const tempDir = TempDir.createSync("@omp-lsp-same-file-rename-");
+		try {
+			const realDir = path.join(tempDir.path(), "dir");
+			fs.mkdirSync(realDir);
+			const filePath = path.join(realDir, "f.ts");
+			await Bun.write(filePath, "SOURCE");
+
+			const linkDir = path.join(tempDir.path(), "dirlink");
+			fs.symlinkSync(realDir, linkDir);
+			const aliasPath = path.join(linkDir, "f.ts");
+
+			const renameOp: RenameFile = {
+				kind: "rename",
+				oldUri: fileToUri(filePath),
+				newUri: fileToUri(aliasPath),
+				options: { overwrite: true },
+			};
+			expect(renameOp.oldUri).not.toBe(renameOp.newUri);
+
+			await applyWorkspaceEdit({ documentChanges: [renameOp] }, tempDir.path());
+			expect(fs.existsSync(filePath)).toBe(true);
+			expect(fs.readFileSync(filePath, "utf8")).toBe("SOURCE");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("restores an overwritten rename target when the final rename fails", async () => {
+		// An overwrite rename displaces the existing destination before moving the
+		// source. If the move itself then fails (EXDEV, permissions), the
+		// destination must be restored so the workspace is exactly as it was —
+		// previously the destination was deleted outright and stayed lost.
+		const tempDir = TempDir.createSync("@omp-lsp-rename-restore-");
+		try {
+			const oldPath = path.join(tempDir.path(), "old.ts");
+			const newPath = path.join(tempDir.path(), "new.ts");
+			await Bun.write(oldPath, "SOURCE");
+			await Bun.write(newPath, "TARGET");
+
+			const realRename = fsp.rename;
+			vi.spyOn(fsp, "rename").mockImplementation(async (from, to) => {
+				// Fail only the source→destination move; displacement and
+				// restoration of the destination still go through.
+				if (from === oldPath) {
+					throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+				}
+				return realRename(from, to);
+			});
+
+			const renameOp: RenameFile = {
+				kind: "rename",
+				oldUri: fileToUri(oldPath),
+				newUri: fileToUri(newPath),
+				options: { overwrite: true },
+			};
+			const executed: ExecutedWorkspaceChange[] = [];
+			await expect(
+				applyWorkspaceEdit({ documentChanges: [renameOp] }, tempDir.path(), change => executed.push(change)),
+			).rejects.toThrow("EXDEV");
+
+			// Workspace unchanged: source intact, destination restored, no
+			// displaced temp litter, and no executed op reported.
+			expect(fs.readFileSync(oldPath, "utf8")).toBe("SOURCE");
+			expect(fs.readFileSync(newPath, "utf8")).toBe("TARGET");
+			expect(fs.readdirSync(tempDir.path()).sort()).toEqual(["new.ts", "old.ts"]);
+			expect(executed).toEqual([]);
+		} finally {
+			vi.restoreAllMocks();
 			tempDir.removeSync();
 		}
 	});
@@ -1900,12 +3583,13 @@ describe("lsp regressions", () => {
 			const folderDelete: DeleteFile = {
 				kind: "delete",
 				uri: folderUri,
+				options: { recursive: true },
 			};
 			const workspaceEdit: WorkspaceEdit = {
 				documentChanges: [childEdit, folderDelete],
 			};
 
-			const applied = await applyWorkspaceEdit(workspaceEdit, tempDir.path());
+			const { applied } = await applyWorkspaceEdit(workspaceEdit, tempDir.path());
 
 			// Folder is gone; "Applied" message proves the flush ran before delete.
 			expect(fs.existsSync(srcDir)).toBe(false);
@@ -1941,13 +3625,17 @@ describe("lsp regressions", () => {
 			projectLoaded: Promise.resolve(),
 			resolveProjectLoaded: () => {},
 		};
-		expect(lspClient.sendRequest(client, "test/method", {}, undefined, 25)).rejects.toThrow(/after 25ms/);
+		vi.useFakeTimers();
+		try {
+			const request = lspClient.sendRequest(client, "test/method", {}, undefined, 25);
+			vi.advanceTimersByTime(25);
+			await expect(request).rejects.toThrow(/after 25ms/);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("sendRequest uses the signal as the deadline when no explicit timeout is set", async () => {
-		// With a signal but no explicit timeoutMs, the per-request 30s default
-		// MUST NOT fire — the signal owns the deadline. Otherwise `timeout: 60`
-		// on the LSP tool got truncated to 30000ms.
 		const client: LspClient = {
 			name: "test-lsp",
 			cwd: process.cwd(),
@@ -1967,15 +3655,14 @@ describe("lsp regressions", () => {
 			projectLoaded: Promise.resolve(),
 			resolveProjectLoaded: () => {},
 		};
-		const signal = AbortSignal.timeout(20);
-		expect(lspClient.sendRequest(client, "test/method", {}, signal)).rejects.toThrow();
-		// If the per-request 30s timer had fired, the message would say "after 30000ms".
-		// We assert the negative: the rejection came from the signal, not the timer.
-		try {
-			await lspClient.sendRequest(client, "test/method", {}, AbortSignal.timeout(20));
-		} catch (err) {
-			expect(String(err)).not.toContain("30000ms");
-		}
+		const controller = new AbortController();
+		const reason = new Error("caller deadline");
+		const request = lspClient.sendRequest(client, "test/method", {}, controller.signal);
+		controller.abort(reason);
+
+		// The exact caller reason proves the signal owned the deadline rather than
+		// the per-request 30s fallback.
+		await expect(request).rejects.toBe(reason);
 	});
 
 	it("rename_file skips the LSP loop when no configured server handles the file extension", async () => {
@@ -1994,7 +3681,7 @@ describe("lsp regressions", () => {
 			const notifySpy = vi.spyOn(lspClient, "sendNotification");
 			const getClientSpy = vi.spyOn(lspClient, "getOrCreateClient");
 
-			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const tool = new LspTool(makeLspSession(tempDir.path()));
 			const result = await tool.execute("rename-md", {
 				action: "rename_file",
 				file: sourceFile,
@@ -2018,6 +3705,366 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("rename_file reports an unreadable source as a read failure, not a missing path", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-source-eacces-");
+		try {
+			const sourceFile = path.join(tempDir.path(), "locked.ts");
+			const destFile = path.join(tempDir.path(), "renamed.ts");
+			await Bun.write(sourceFile, "export const a = 1;\n");
+
+			// EACCES is not ENOENT: the file is there, we just can't read it.
+			const realStat = fs.promises.stat;
+			vi.spyOn(fs.promises, "stat").mockImplementation((async (target: fs.PathLike) => {
+				if (target === sourceFile) {
+					throw Object.assign(new Error(`permission denied: ${sourceFile}\tsecret`), {
+						code: "EACCES",
+						path: sourceFile,
+						syscall: "stat",
+					});
+				}
+				return await realStat(target);
+			}) as typeof fs.promises.stat);
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("rename-source-eacces", {
+				action: "rename_file",
+				file: sourceFile,
+				new_name: destFile,
+				timeout: 5,
+			});
+
+			const output = textResult(result);
+			expect(output).toContain("cannot read source path locked.ts: EACCES during stat");
+			expect(output).not.toContain(tempDir.path());
+			expect(output).not.toContain("\t");
+			expect(output).not.toContain("does not exist");
+			expect(result.details).toMatchObject({ action: "rename_file", success: false });
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("rename_file refuses to rename when the destination cannot be inspected", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-dest-eacces-");
+		try {
+			const sourceFile = path.join(tempDir.path(), "old.ts");
+			const destFile = path.join(tempDir.path(), "new.ts");
+			await Bun.write(sourceFile, "export const a = 1;\n");
+
+			// A failed destination probe never established that the path is free,
+			// so treating it as absent would rename onto a file we cannot see.
+			const realLstat = fs.promises.lstat;
+			vi.spyOn(fs.promises, "lstat").mockImplementation((async (target: fs.PathLike) => {
+				if (target === destFile) {
+					throw Object.assign(new Error(`permission denied: ${destFile}\tsecret`), {
+						code: "EACCES",
+						path: destFile,
+						syscall: "lstat",
+					});
+				}
+				return await realLstat(target);
+			}) as typeof fs.promises.lstat);
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("rename-dest-eacces", {
+				action: "rename_file",
+				file: sourceFile,
+				new_name: destFile,
+				timeout: 5,
+			});
+
+			const output = textResult(result);
+			expect(output).toContain("cannot read destination path new.ts: EACCES during lstat");
+			expect(output).not.toContain(tempDir.path());
+			expect(output).not.toContain("\t");
+			expect(result.details).toMatchObject({ action: "rename_file", success: false });
+			expect(fs.existsSync(sourceFile)).toBe(true);
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("rename_file treats a dangling destination symlink as an existing path", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-dangling-dest-");
+		try {
+			const sourceFile = path.join(tempDir.path(), "old.ts");
+			const destFile = path.join(tempDir.path(), "dangling.ts");
+			await Bun.write(sourceFile, "export const a = 1;\n");
+			const sourceStat = await fs.promises.stat(sourceFile);
+			const realLstat = fs.promises.lstat;
+			const lstatSpy = vi.spyOn(fs.promises, "lstat").mockImplementation((async (target: fs.PathLike) => {
+				if (target === destFile) return sourceStat;
+				return await realLstat(target);
+			}) as typeof fs.promises.lstat);
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("rename-dangling-dest", {
+				action: "rename_file",
+				file: sourceFile,
+				new_name: destFile,
+				timeout: 5,
+			});
+
+			expect(textResult(result)).toContain("destination already exists: dangling.ts");
+			expect(lstatSpy).toHaveBeenCalledWith(destFile);
+			expect(fs.existsSync(sourceFile)).toBe(true);
+			expect(fs.existsSync(destFile)).toBe(false);
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("shortens an outside-cwd Windows home path before separator normalization", async () => {
+		if (!lspHomeOverride) throw new Error("Expected isolated home");
+		const cwd = path.join(lspHomeOverride, "project");
+		const sourceFile = path.join(lspHomeOverride, "other", "locked.ts");
+		const destFile = path.join(lspHomeOverride, "other", "renamed.ts");
+		fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+		fs.mkdirSync(cwd, { recursive: true });
+		await Bun.write(sourceFile, "export const a = 1;\n");
+		const realStat = fs.promises.stat;
+		vi.spyOn(fs.promises, "stat").mockImplementation((async (target: fs.PathLike) => {
+			if (target === sourceFile) {
+				throw Object.assign(new Error(`permission denied: ${sourceFile}`), {
+					code: "EACCES",
+					path: sourceFile,
+					syscall: "stat",
+				});
+			}
+			return await realStat(target);
+		}) as typeof fs.promises.stat);
+
+		const result = await new LspTool(makeLspSession(cwd)).execute("rename-home-eacces", {
+			action: "rename_file",
+			file: sourceFile,
+			new_name: destFile,
+			timeout: 5,
+		});
+		const output = textResult(result);
+		expect(output).toContain("cannot read source path ~");
+		expect(output).not.toContain(lspHomeOverride);
+	});
+
+	it("workspace reload replaces a client whose process or initialization config changed", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-identity-");
+		try {
+			const oldServer = installHandshakeLsp();
+			const oldConfig: ServerConfig = {
+				command: "fake-lsp",
+				args: ["--mode", "old"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				initOptions: { generation: 1 },
+				settings: { diagnostics: false },
+			};
+			const oldClient = await lspClient.getOrCreateClient(oldConfig, tempDir.path(), 1_000);
+
+			const newServer = installHandshakeLsp();
+			const newConfig: ServerConfig = {
+				...oldConfig,
+				args: ["--mode", "new"],
+				initOptions: { generation: 2 },
+				settings: { diagnostics: true },
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-lsp": newConfig },
+				idleTimeoutMs: undefined,
+			});
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("reload-client-identity", { action: "reload", file: "*" });
+			const newClient = await lspClient.getActiveOrPendingClient(newConfig, tempDir.path());
+
+			expect(newClient).toBeDefined();
+			expect(newClient).not.toBe(oldClient);
+			expect(oldServer.received.map(message => message.method)).toContain("shutdown");
+			expect(oldServer.received.map(message => message.method)).toContain("exit");
+			expect(newServer.received.map(message => message.method)).toContain("initialize");
+			expect(newServer.received).toContainEqual(
+				expect.objectContaining({
+					method: "workspace/didChangeConfiguration",
+					params: { settings: { diagnostics: true } },
+				}),
+			);
+			const output = textResult(result);
+			expect(output).toContain("Stopped 1 server(s) with superseded configuration: fake-lsp");
+			expect(output).toContain("Reloaded fake-lsp");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("workspace reload blocks fresh client creation until stale teardown finishes", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-fresh-race-");
+		try {
+			const oldServer = installFakeLsp((message, server) => {
+				if (message.method === "initialize") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "exit") {
+					server.exit(0);
+				}
+			});
+			const oldConfig: ServerConfig = {
+				command: "fake-lsp",
+				args: ["--mode", "old"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+			};
+			await lspClient.getOrCreateClient(oldConfig, tempDir.path(), 1_000);
+
+			const newServer = installHandshakeLsp();
+			const newConfig: ServerConfig = { ...oldConfig, args: ["--mode", "new"] };
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-lsp": newConfig },
+				idleTimeoutMs: undefined,
+			});
+			const reload = new LspTool(makeLspSession(tempDir.path())).execute("reload-fresh-race", {
+				action: "reload",
+				file: "*",
+			});
+			const shutdown = await oldServer.waitFor(message => message.method === "shutdown");
+			const spawnCountBefore = newServer.spawnCount;
+			const concurrentFresh = lspClient.getOrCreateClient(newConfig, tempDir.path(), 1_000);
+			expect(newServer.spawnCount).toBe(spawnCountBefore);
+			expect(newServer.received.some(message => message.method === "initialize")).toBe(false);
+
+			oldServer.send({ jsonrpc: "2.0", id: shutdown.id, result: null });
+			const [result, freshClient] = await Promise.all([reload, concurrentFresh]);
+			expect(freshClient.config.args).toEqual(["--mode", "new"]);
+			expect(newServer.received.map(message => message.method)).toContain("initialize");
+			expect(textResult(result)).toContain("Reloaded fake-lsp");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("workspace reload failure keeps fresh client creation blocked", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-failed-teardown-");
+		try {
+			const oldServer = installFakeLsp(
+				(message, server) => {
+					if (message.method === "initialize") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			const oldConfig: ServerConfig = {
+				command: "fake-lsp",
+				args: ["--mode", "old"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+			};
+			await lspClient.getOrCreateClient(oldConfig, tempDir.path(), 1_000);
+
+			const newServer = installHandshakeLsp();
+			const newConfig: ServerConfig = { ...oldConfig, args: ["--mode", "new"] };
+			await expect(lspClient.shutdownStaleClients(tempDir.path(), [newConfig])).rejects.toThrow(
+				"Failed to stop LSP server(s) with superseded configuration",
+			);
+			await expect(lspClient.getOrCreateClient(newConfig, tempDir.path(), 1_000)).rejects.toThrow(
+				"Failed to stop LSP server(s) with superseded configuration",
+			);
+			expect(newServer.spawnCount).toBe(0);
+			oldServer.exit(0);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
+	it("workspace reload waits for a stale pending client before starting its replacement", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-pending-");
+		try {
+			const oldServer = installFakeLsp((message, server) => {
+				if (message.method === "shutdown") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					server.exit(0);
+				}
+			});
+			const oldConfig: ServerConfig = {
+				command: "fake-lsp",
+				args: ["--mode", "old"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+			};
+			const oldClientPromise = lspClient.getOrCreateClient(oldConfig, tempDir.path(), 1_000);
+			const oldOutcome = oldClientPromise.then(
+				() => "resolved",
+				error => String(error),
+			);
+			const initialize = await oldServer.waitFor(message => message.method === "initialize");
+
+			const newServer = installHandshakeLsp();
+			const newConfig: ServerConfig = { ...oldConfig, args: ["--mode", "new"] };
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-lsp": newConfig },
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const reload = tool.execute("reload-pending-client", { action: "reload", file: "*" });
+			const concurrentOldOutcome = lspClient.getOrCreateClient(oldConfig, tempDir.path(), 1_000).then(
+				() => "resolved",
+				error => String(error),
+			);
+			await Bun.sleep(0);
+			expect(newServer.received.some(message => message.method === "initialize")).toBe(false);
+			oldServer.send({ jsonrpc: "2.0", id: initialize.id, result: { capabilities: {} } });
+			expect(await oldOutcome).toContain("superseded during initialization");
+			expect(await concurrentOldOutcome).toContain("superseded during initialization");
+			const result = await reload;
+
+			expect(oldServer.killed).toBe(true);
+			expect(oldServer.received.filter(message => message.method === "initialize")).toHaveLength(1);
+			expect(newServer.received.map(message => message.method)).toContain("initialize");
+			expect(textResult(result)).toContain("Reloaded fake-lsp");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("workspace reload deadline interrupts a stale pending initializer and prevents late publication", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-pending-abort-");
+		try {
+			const oldServer = installFakeLsp(() => {});
+			const oldConfig: ServerConfig = {
+				command: "fake-lsp",
+				args: ["--mode", "old"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+			};
+			const oldClientPromise = lspClient.getOrCreateClient(oldConfig, tempDir.path());
+			const oldOutcome = oldClientPromise.then(
+				() => "resolved",
+				error => String(error),
+			);
+			const initialize = await oldServer.waitFor(message => message.method === "initialize");
+			const newConfig: ServerConfig = { ...oldConfig, args: ["--mode", "new"] };
+			const controller = new AbortController();
+			const reason = new Error("reload cancelled");
+			const cleanup = lspClient.shutdownStaleClients(tempDir.path(), [newConfig], controller.signal);
+			await Bun.sleep(0);
+			controller.abort(reason);
+			await expect(cleanup).rejects.toBeInstanceOf(ToolAbortError);
+
+			// The original caller did not carry the reload signal. Even after its
+			// initialize response arrives, the tombstone prevents stale publish.
+			oldServer.send({ jsonrpc: "2.0", id: initialize.id, result: { capabilities: {} } });
+			expect(await oldOutcome).toContain("superseded during initialization");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload rediscovers LSP servers after an empty config was cached", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-redetect-");
 		try {
@@ -2034,11 +4081,11 @@ describe("lsp regressions", () => {
 			const loadConfigSpy = vi
 				.spyOn(lspConfig, "loadConfig")
 				.mockImplementation(() => configs.shift() ?? configs[0]);
-			const client = { proc: { kill: vi.fn() } } as unknown as LspClient;
+			const client = { proc: { kill: vi.fn() }, config: server } as unknown as LspClient;
 			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
-			vi.spyOn(lspClient, "sendRequest").mockResolvedValue(null);
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
 
-			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const tool = new LspTool(makeLspSession(tempDir.path()));
 			const initial = await tool.execute("reload-redetect-status", { action: "status" });
 			const initialOutput = initial.content
 				.filter(block => block.type === "text")
@@ -2061,7 +4108,7 @@ describe("lsp regressions", () => {
 			expect(loadConfigSpy).toHaveBeenCalledTimes(3);
 			expect(starOutput).toContain("Reloaded test-lsp");
 			expect(omittedOutput).toContain("Reloaded test-lsp");
-			expect(lspClient.getOrCreateClient).toHaveBeenCalledWith(server, tempDir.path());
+			expect(lspClient.getOrCreateClient).toHaveBeenCalledWith(server, tempDir.path(), undefined, expect.anything());
 		} finally {
 			vi.restoreAllMocks();
 			tempDir.removeSync();
@@ -2088,7 +4135,7 @@ describe("lsp regressions", () => {
 			{ name: "typescript-language-server", status: "ready", fileTypes: [".ts"] },
 		]);
 
-		const tool = new LspTool({ cwd: process.cwd() } as ToolSession);
+		const tool = new LspTool(makeLspSession(process.cwd()));
 		const result = await tool.execute("status-test", { action: "status" });
 		const output = result.content
 			.filter(block => block.type === "text")
@@ -2099,9 +4146,9 @@ describe("lsp regressions", () => {
 		expect(output).toContain("typescript-language-server (ready)");
 	});
 
-	it("reload * invalidates the per-cwd config cache so newly written .ompk/lsp.json is observed", async () => {
+	it("reload * invalidates the per-cwd config cache so newly written .omp/lsp.json is observed", async () => {
 		// #3546: `getConfig` caches the first `loadConfig` result per cwd
-		// permanently. Creating `.ompk/lsp.json` after the first LSP call left
+		// permanently. Creating `.omp/lsp.json` after the first LSP call left
 		// the tool stuck on "No language servers configured" until the process
 		// restarted. `reload *` (the user's explicit refresh) must invalidate
 		// that cache so subsequent calls observe the fresh config from disk.
@@ -2129,7 +4176,7 @@ describe("lsp regressions", () => {
 			vi.spyOn(lspClient, "getOrCreateClient").mockRejectedValue(new Error("spawn suppressed in test"));
 			vi.spyOn(lspClient, "getActiveClients").mockReturnValue([]);
 
-			const tool = new LspTool({ cwd } as ToolSession);
+			const tool = new LspTool(makeLspSession(cwd));
 
 			const status1 = await tool.execute("cache-1", { action: "status" });
 			const text1 = status1.content
@@ -2168,6 +4215,627 @@ describe("lsp regressions", () => {
 			tempDir.removeSync();
 		}
 	});
+
+	describe("reload cancellation and truthful teardown (#6369)", () => {
+		// A JSON-RPC error response the client maps to isMethodNotFoundError, so a
+		// rust-analyzer server whose reloadWorkspace is unsupported falls through
+		// to the generic `workspace/didChangeConfiguration` reload.
+		const methodNotFound = (id: RpcMessage["id"]): RpcMessage => ({
+			jsonrpc: "2.0",
+			id,
+			error: { code: -32_601, message: "method not found" },
+		});
+
+		it("propagates cancellation of the reload request instead of reporting Restarted", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-reload-cancel-req-");
+			try {
+				const server = installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						srv.exit(0);
+					}
+					// rust-analyzer/reloadWorkspace is left pending: only the caller
+					// signal decides its fate.
+				});
+				const config: ServerConfig = { command: "rust-analyzer", fileTypes: [".ts"], rootMarkers: [] };
+				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { fake: config }, idleTimeoutMs: undefined });
+
+				const tool = new LspTool(makeLspSession(tempDir.path()));
+				const controller = new AbortController();
+				const pending = tool.execute("reload-cancel-req", { action: "reload", file: "*" }, controller.signal);
+				await server.waitFor(m => m.method === "rust-analyzer/reloadWorkspace");
+				controller.abort(new ToolAbortError());
+
+				// Pre-fix, the bare `catch` swallowed the abort, fell through to the
+				// notification (also aborted), hit the second bare `catch`, killed
+				// the process, and returned "Restarted".
+				await expect(pending).rejects.toBeInstanceOf(ToolAbortError);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("propagates cancellation that arrives during the notification fallback", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-reload-cancel-fallback-");
+			const controller = new AbortController();
+			try {
+				installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "rust-analyzer/reloadWorkspace") {
+						// Fall through to the generic reload, then cancel before it lands.
+						srv.send(methodNotFound(message.id));
+						controller.abort(new ToolAbortError());
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						srv.exit(0);
+					}
+				});
+				const config: ServerConfig = { command: "rust-analyzer", fileTypes: [".ts"], rootMarkers: [] };
+				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { fake: config }, idleTimeoutMs: undefined });
+
+				const tool = new LspTool(makeLspSession(tempDir.path()));
+				const pending = tool.execute("reload-cancel-fb", { action: "reload", file: "*" }, controller.signal);
+
+				await expect(pending).rejects.toBeInstanceOf(ToolAbortError);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("still falls back to the generic reload on method-not-found without killing the server", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-reload-fallback-ok-");
+			try {
+				const server = installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "rust-analyzer/reloadWorkspace") {
+						expect(message.params).toBeUndefined();
+						srv.send(methodNotFound(message.id));
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						srv.exit(0);
+					}
+				});
+				const config: ServerConfig = { command: "rust-analyzer", fileTypes: [".ts"], rootMarkers: [] };
+				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { fake: config }, idleTimeoutMs: undefined });
+
+				const tool = new LspTool(makeLspSession(tempDir.path()));
+				const result = await tool.execute("reload-fallback", { action: "reload", file: "*" });
+
+				expect(textResult(result)).toContain("Reloaded fake");
+				expect(server.killed).toBe(false);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("recognizes -32601 by code even when the server's message text is nonstandard", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-reload-fallback-code-");
+			try {
+				const server = installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "rust-analyzer/reloadWorkspace") {
+						// None of isMethodNotFoundError's message substrings — only the
+						// JSON-RPC code identifies this as method-not-found.
+						srv.send({ jsonrpc: "2.0", id: message.id, error: { code: -32_601, message: "Unknown request" } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						srv.exit(0);
+					}
+				});
+				const config: ServerConfig = { command: "rust-analyzer", fileTypes: [".ts"], rootMarkers: [] };
+				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { fake: config }, idleTimeoutMs: undefined });
+
+				const tool = new LspTool(makeLspSession(tempDir.path()));
+				const result = await tool.execute("reload-fallback-code", { action: "reload", file: "*" });
+
+				expect(textResult(result)).toContain("Reloaded fake");
+				expect(server.killed).toBe(false);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("does not send rust-analyzer/reloadWorkspace to a non-rust server that crashes on it (#8571)", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-reload-non-rust-");
+			try {
+				let sawRustReload = false;
+				const server = installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "rust-analyzer/reloadWorkspace") {
+						// Roslyn crashes the whole process instead of replying -32601
+						// (dotnet/roslyn#84890); the gate must never let us send this.
+						sawRustReload = true;
+						srv.exit(82);
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						srv.exit(0);
+					}
+				});
+				const settings = { csharp: { analysis: { backgroundScope: "fullSolution" } } };
+				const config: ServerConfig = {
+					command: "roslyn-language-server",
+					fileTypes: [".cs"],
+					rootMarkers: [],
+					settings,
+				};
+				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+					servers: { csharp: config },
+					idleTimeoutMs: undefined,
+				});
+
+				const tool = new LspTool(makeLspSession(tempDir.path()));
+				const result = await tool.execute("reload-non-rust", { action: "reload", file: "*" });
+
+				expect(sawRustReload).toBe(false);
+				expect(textResult(result)).toContain("Reloaded csharp");
+				const configurationMessages = server.received.filter(
+					message => message.method === "workspace/didChangeConfiguration",
+				);
+				expect(configurationMessages.at(-1)?.params).toEqual({ settings });
+				expect(server.killed).toBe(false);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("shutdownClientInstance removes the client by identity and confirms process exit", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-teardown-confirm-");
+			try {
+				installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						srv.exit(0);
+					}
+				});
+				const config: ServerConfig = { command: "fake-teardown-confirm", fileTypes: [".ts"], rootMarkers: [] };
+				const client = await lspClient.getOrCreateClient(config, tempDir.path());
+				expect(lspClient.getActiveClients().some(s => s.name === config.command)).toBe(true);
+
+				const exited = await lspClient.shutdownClientInstance(client);
+				expect(exited).toBe(true);
+				expect(lspClient.getActiveClients().some(s => s.name === config.command)).toBe(false);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("shutdownClientInstance reports a failed teardown when the process outlives the kill", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-teardown-delayed-");
+			try {
+				const server = installFakeLsp(
+					(message, srv) => {
+						if (message.method === "initialize") {
+							srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+						} else if (message.method === "shutdown") {
+							srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+						}
+						// `exit` notification and `kill()` never resolve `proc.exited`.
+					},
+					{ killResolvesExit: false },
+				);
+				const config: ServerConfig = { command: "fake-teardown-delayed", fileTypes: [".ts"], rootMarkers: [] };
+				const client = await lspClient.getOrCreateClient(config, tempDir.path());
+
+				const exited = await lspClient.shutdownClientInstance(client);
+				expect(exited).toBe(false);
+				expect(lspClient.getActiveClients().some(s => s.name === config.command)).toBe(true);
+
+				server.exit(0);
+				await Bun.sleep(0);
+				expect(lspClient.getActiveClients().some(s => s.name === config.command)).toBe(false);
+			} finally {
+				vi.restoreAllMocks();
+				tempDir.removeSync();
+			}
+		}, 15_000);
+	});
+	describe("reader exit ordering and initialization backoff (#7041)", () => {
+		it("surfaces the process diagnostic when stdout closes before exit publication", async () => {
+			installFakeLsp(
+				(message, server) => {
+					if (message.method === "initialize") server.exit(23);
+				},
+				{
+					stdoutClosesBeforeExit: true,
+					stderr: "simulated rust-analyzer crash",
+				},
+			);
+			const tempDir = TempDir.createSync("@omp-lsp-quick-exit-");
+			try {
+				const config: ServerConfig = {
+					command: "fake-lsp-quick-exit",
+					fileTypes: [".rs"],
+					rootMarkers: [],
+				};
+
+				await expect(lspClient.getOrCreateClient(config, tempDir.path())).rejects.toThrow(
+					"LSP server exited (code 23): simulated rust-analyzer crash",
+				);
+			} finally {
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("kills and evicts a client whose stdout reader fails while the process is alive", async () => {
+			const server = installFakeLsp((message, fake) => {
+				if (message.method === "initialize") fake.failStdout(new Error("simulated reader failure"));
+			});
+			const tempDir = TempDir.createSync("@omp-lsp-reader-failure-");
+			try {
+				const config: ServerConfig = {
+					command: "fake-lsp-reader-failure",
+					fileTypes: [".ts"],
+					rootMarkers: [],
+				};
+
+				await expect(lspClient.getOrCreateClient(config, tempDir.path())).rejects.toThrow(
+					"LSP connection closed: Error: simulated reader failure",
+				);
+				expect(server.killed).toBe(true);
+				expect(lspClient.getActiveClients().some(client => client.name === config.command)).toBe(false);
+			} finally {
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("keeps ordinary backoff but lets explicit reload retry immediately", async () => {
+			installFakeLsp((message, server) => {
+				if (message.method === "initialize") server.exit(23);
+			});
+			const tempDir = TempDir.createSync("@omp-lsp-reload-init-failure-");
+			const config: ServerConfig = {
+				command: "fake-lsp-reload-init-failure",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+			};
+			try {
+				await expect(lspClient.getOrCreateClient(config, tempDir.path())).rejects.toBeInstanceOf(Error);
+				await expect(lspClient.getOrCreateClient(config, tempDir.path())).rejects.toThrow(
+					"failed to initialize recently",
+				);
+
+				vi.restoreAllMocks();
+				const retryServer = installFakeLsp((message, server) => {
+					if (message.method === "initialize") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "rust-analyzer/reloadWorkspace") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						server.exit(0);
+					}
+				});
+				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+					servers: { fake: config },
+					idleTimeoutMs: undefined,
+				});
+
+				const tool = new LspTool(makeLspSession(tempDir.path()));
+				const result = await tool.execute("reload-init-failure", { action: "reload", file: "*" });
+
+				expect(textResult(result)).toContain("Reloaded fake");
+				expect(retryServer.received.some(message => message.method === "initialize")).toBe(true);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+	});
+
+	// #3962 — LSP cold-start and notification writes must honor the tool's
+	// combined timeout/caller abort signal. Before the fix, a wedged server
+	// hung past the tool's advertised deadline: `initialize` fell back to the
+	// 30s internal timer because no signal was threaded, and notification
+	// writes (`didOpen`/`didChange`/`didSave`) had no timeout at all, so a
+	// stuck `sink.flush()` blocked every later op on the client's write queue.
+	describe("lsp cold-start and notification writes honor caller signal (#3962)", () => {
+		it("aborts a wedged cold-start initialize on the caller signal instead of the 30s internal fallback", async () => {
+			// Server accepts spawn but never answers the `initialize` request.
+			// Pre-fix, `getOrCreateClient` swallowed the signal and only bailed
+			// after the 30s `DEFAULT_REQUEST_TIMEOUT_MS` fallback fired.
+			const server = installFakeLsp(() => {});
+
+			const tempDir = TempDir.createSync("@omp-lsp-init-abort-");
+			try {
+				const controller = new AbortController();
+				const reason = new Error("caller deadline");
+				const config: ServerConfig = {
+					command: "fake-lsp-init-abort",
+					fileTypes: ["ts"],
+					rootMarkers: [],
+				};
+
+				const pending = lspClient.getOrCreateClient(config, tempDir.path(), undefined, controller.signal);
+				await server.waitFor(message => message.method === "initialize");
+				controller.abort(reason);
+				await expect(pending).rejects.toBe(reason);
+			} finally {
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("does not negative-cache caller-aborted initialize attempts", async () => {
+			const server = installFakeLsp(() => {});
+
+			const tempDir = TempDir.createSync("@omp-lsp-init-abort-cache-");
+			try {
+				const controller = new AbortController();
+				const config: ServerConfig = {
+					command: "fake-lsp-init-abort-cache",
+					fileTypes: ["ts"],
+					rootMarkers: [],
+				};
+
+				const pending = lspClient.getOrCreateClient(config, tempDir.path(), undefined, controller.signal);
+				await server.waitFor(message => message.method === "initialize");
+				controller.abort();
+				await expect(pending).rejects.toBeInstanceOf(Error);
+
+				const probeSignal = AbortSignal.abort(new Error("probe only"));
+				await expect(
+					lspClient.getOrCreateClient(config, tempDir.path(), undefined, probeSignal),
+				).rejects.not.toThrow("failed to initialize recently");
+			} finally {
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("does not tear down when a caller aborts before its queued write reaches flush", async () => {
+			const firstFlush = Promise.withResolvers<number>();
+			const writes: Array<string | Uint8Array> = [];
+			const kill = vi.fn();
+			const client: LspClient = {
+				name: "fake-lsp-queued-abort:/tmp",
+				cwd: "/tmp",
+				config: { command: "fake-lsp-queued-abort", fileTypes: ["ts"], rootMarkers: [] },
+				proc: {
+					exited: new Promise<number>(() => {}),
+					exitCode: null,
+					stdin: {
+						write(chunk: string | Uint8Array) {
+							writes.push(chunk);
+							return typeof chunk === "string" ? Buffer.byteLength(chunk, "utf-8") : chunk.byteLength;
+						},
+						flush: () => firstFlush.promise,
+					},
+					stdout: new ReadableStream<Uint8Array>(),
+					peekStderr: () => "",
+					kill,
+				} as unknown as LspClient["proc"],
+				requestId: 0,
+				diagnostics: new Map(),
+				diagnosticsVersion: 0,
+				openFiles: new Map(),
+				pendingRequests: new Map(),
+				messageBuffer: new Uint8Array(0),
+				isReading: false,
+				status: "ready",
+				lastActivity: Date.now(),
+				writeQueue: Promise.resolve(),
+				activeProgressTokens: new Set(),
+				projectLoaded: Promise.resolve(),
+				resolveProjectLoaded: () => {},
+			};
+
+			const first = lspClient.sendNotification(client, "workspace/didChangeConfiguration", { settings: {} });
+			await Bun.sleep(0);
+
+			const controller = new AbortController();
+			const second = lspClient.sendNotification(client, "textDocument/didOpen", {}, controller.signal);
+			controller.abort();
+			await Bun.sleep(0);
+
+			expect(kill).not.toHaveBeenCalled();
+			firstFlush.resolve(0);
+			await first;
+			await expect(second).rejects.toBeInstanceOf(Error);
+			expect(kill).not.toHaveBeenCalled();
+			expect(writes).toHaveLength(1);
+		});
+
+		it("surfaces an asynchronous stdin write rejection instead of resolving the notification", async () => {
+			const epipe = Object.assign(new Error("EPIPE: broken pipe, write"), {
+				code: "EPIPE",
+				syscall: "write",
+			});
+			const client: LspClient = {
+				name: "fake-lsp-write-epipe:/tmp",
+				cwd: "/tmp",
+				config: { command: "fake-lsp-write-epipe", fileTypes: ["ts"], rootMarkers: [] },
+				proc: {
+					exited: Promise.withResolvers<number>().promise,
+					exitCode: null,
+					stdin: {
+						write: () => Promise.reject(epipe),
+						flush: () => 0,
+					},
+					stdout: new ReadableStream<Uint8Array>(),
+					peekStderr: () => "",
+					kill() {},
+				} as unknown as LspClient["proc"],
+				requestId: 0,
+				diagnostics: new Map(),
+				diagnosticsVersion: 0,
+				openFiles: new Map(),
+				pendingRequests: new Map(),
+				messageBuffer: new Uint8Array(0),
+				isReading: false,
+				status: "ready",
+				lastActivity: Date.now(),
+				writeQueue: Promise.resolve(),
+				activeProgressTokens: new Set(),
+				projectLoaded: Promise.resolve(),
+				resolveProjectLoaded: () => {},
+			};
+
+			await expect(
+				lspClient.sendNotification(client, "workspace/didChangeWatchedFiles", {
+					changes: [{ uri: "file:///tmp/example.ts", type: 2 }],
+				}),
+			).rejects.toBe(epipe);
+		});
+
+		it("bounds a wedged notification flush on the caller signal and tears down the client", async () => {
+			// Custom fake: stdin.flush is gated by a controllable promise so we
+			// can simulate a server that stopped draining stdin AFTER init has
+			// completed. Pre-fix, `sendNotification` had no signal and the
+			// stuck flush wedged the write queue permanently.
+			const encoder = new TextEncoder();
+			const { promise: exited, resolve: resolveExited } = Promise.withResolvers<number>();
+			let stdoutController: ReadableStreamDefaultController<Uint8Array> | null = null;
+			let exitCode: number | null = null;
+			let killed = false;
+			let flushGate: Promise<void> = Promise.resolve();
+			let onFlush: (() => void) | undefined;
+
+			const frame = (message: RpcMessage): Uint8Array => {
+				const content = JSON.stringify(message);
+				return encoder.encode(`Content-Length: ${Buffer.byteLength(content, "utf-8")}\r\n\r\n${content}`);
+			};
+
+			const stdout = new ReadableStream<Uint8Array>({
+				start(c) {
+					stdoutController = c;
+				},
+			});
+
+			let pendingBytes = Buffer.alloc(0);
+			let chain: Promise<void> = Promise.resolve();
+			const feed = (raw: string | Uint8Array): void => {
+				const chunk = typeof raw === "string" ? Buffer.from(raw, "utf-8") : Buffer.from(raw);
+				pendingBytes = pendingBytes.length === 0 ? chunk : Buffer.concat([pendingBytes, chunk]);
+				chain = chain.then(async () => {
+					while (true) {
+						const headerEnd = pendingBytes.indexOf("\r\n\r\n");
+						if (headerEnd === -1) break;
+						const match = /Content-Length: (\d+)/i.exec(pendingBytes.toString("utf-8", 0, headerEnd));
+						if (!match) {
+							pendingBytes = pendingBytes.subarray(headerEnd + 4);
+							continue;
+						}
+						const start = headerEnd + 4;
+						const end = start + Number(match[1]);
+						if (pendingBytes.length < end) break;
+						const message = JSON.parse(pendingBytes.toString("utf-8", start, end)) as RpcMessage;
+						pendingBytes = pendingBytes.subarray(end);
+						if (message.method === "initialize") {
+							stdoutController?.enqueue(frame({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } }));
+						}
+					}
+				});
+			};
+
+			const proc = {
+				get exited() {
+					return exited;
+				},
+				get exitCode() {
+					return exitCode;
+				},
+				stdin: {
+					write(chunk: string | Uint8Array) {
+						feed(chunk);
+						return typeof chunk === "string" ? Buffer.byteLength(chunk, "utf-8") : chunk.byteLength;
+					},
+					flush: async () => {
+						onFlush?.();
+						await flushGate;
+						return 0;
+					},
+					end: async () => 0,
+				},
+				stdout,
+				peekStderr: () => "",
+				kill() {
+					killed = true;
+					if (exitCode === null) {
+						exitCode = 0;
+						stdoutController?.close();
+						resolveExited(0);
+					}
+				},
+			} as unknown as LspClient["proc"];
+
+			vi.spyOn(piUtils.ptree, "spawn").mockReturnValue(proc as unknown as piUtils.ptree.ChildProcess<"pipe">);
+
+			const tempDir = TempDir.createSync("@omp-lsp-flush-wedge-");
+			try {
+				const config: ServerConfig = {
+					command: "fake-lsp-flush-wedge",
+					fileTypes: ["ts"],
+					rootMarkers: [],
+				};
+
+				const client = await lspClient.getOrCreateClient(config, tempDir.path());
+				expect(lspClient.getActiveClients().some(s => s.name === config.command)).toBe(true);
+
+				// Wedge every subsequent flush: sink.flush() now awaits a promise
+				// that never settles, mirroring a server that stopped draining stdin.
+				const flushStarted = Promise.withResolvers<void>();
+				onFlush = flushStarted.resolve;
+				flushGate = new Promise<void>(() => {});
+
+				const controller = new AbortController();
+				const notification = lspClient.sendNotification(
+					client,
+					"textDocument/didOpen",
+					{
+						textDocument: {
+							uri: "file:///tmp/x.ts",
+							languageId: "typescript",
+							version: 1,
+							text: "",
+						},
+					},
+					controller.signal,
+				);
+				await flushStarted.promise;
+				controller.abort();
+				await expect(notification).rejects.toBeInstanceOf(Error);
+
+				// Teardown contract: an aborted write kills the client so the
+				// next `getOrCreateClient` spawns a fresh server instead of
+				// queueing behind the wedged flush forever.
+				expect(killed).toBe(true);
+				expect(lspClient.getActiveClients().some(s => s.name === config.command)).toBe(false);
+			} finally {
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+	});
 });
 
 describe("expert elixir lsp", () => {
@@ -2177,5 +4845,90 @@ describe("expert elixir lsp", () => {
 		expect(names).toContain("expert");
 		expect(names).toContain("elixirls");
 		expect(names.indexOf("elixirls")).toBeLessThan(names.indexOf("expert"));
+	});
+});
+
+describe("ty python lsp", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("registers ty for .py behind existing Python primaries and before ruff", () => {
+		const config = { servers: DEFAULTS as unknown as Record<string, ServerConfig> };
+		const names = getServersForFile(config, "app.py").map(([name]) => name);
+		expect(names).toContain("ty");
+		expect(names).toContain("ruff");
+		// ty is behind all existing Python primaries
+		expect(names.indexOf("pyright")).toBeLessThan(names.indexOf("ty"));
+		expect(names.indexOf("basedpyright")).toBeLessThan(names.indexOf("ty"));
+		expect(names.indexOf("pylsp")).toBeLessThan(names.indexOf("ty"));
+		// ruff (linter) sorts after all primaries including ty
+		expect(names.indexOf("ty")).toBeLessThan(names.indexOf("ruff"));
+	});
+
+	it("registers ty for .pyi stub files", () => {
+		const config = { servers: DEFAULTS as unknown as Record<string, ServerConfig> };
+		const names = getServersForFile(config, "app.pyi").map(([name]) => name);
+		expect(names).toContain("ty");
+	});
+
+	it("auto-detects ty when its binary and Python root markers are present", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-ty-detect-");
+		const resolvedTy = path.join(tempDir.path(), "bin", "ty");
+		const whichSpy = vi
+			.spyOn(piUtils, "$which")
+			.mockImplementation(command => (command === "ty" ? resolvedTy : null));
+		try {
+			await Bun.write(path.join(tempDir.path(), "pyproject.toml"), '[project]\nname = "demo"\n');
+			const config = loadConfig(tempDir.path());
+			expect(config.servers.ty?.resolvedCommand).toBe(resolvedTy);
+			expect(config.servers.ty?.command).toBe("ty");
+			expect(config.servers.ty?.args).toEqual(["server"]);
+			expect(whichSpy).toHaveBeenCalledWith("ty");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("coexists with ruff: ty is primary, ruff is linter, both auto-detected", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-ty-ruff-");
+		const resolvedTy = path.join(tempDir.path(), "bin", "ty");
+		const resolvedRuff = path.join(tempDir.path(), "bin", "ruff");
+		vi.spyOn(piUtils, "$which").mockImplementation(command =>
+			command === "ty" ? resolvedTy : command === "ruff" ? resolvedRuff : null,
+		);
+		try {
+			await Bun.write(path.join(tempDir.path(), "pyproject.toml"), '[project]\nname = "demo"\n');
+			const config = loadConfig(tempDir.path());
+			expect(config.servers.ty?.resolvedCommand).toBe(resolvedTy);
+			expect(config.servers.ruff?.resolvedCommand).toBe(resolvedRuff);
+			expect(config.servers.ruff?.isLinter).toBe(true);
+			expect(config.servers.ty?.isLinter).toBeFalsy();
+			const names = getServersForFile(config, path.join(tempDir.path(), "app.py")).map(([name]) => name);
+			expect(names.indexOf("ty")).toBeLessThan(names.indexOf("ruff"));
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("auto-detects ty in a ty.toml-only project, resolving via project-local venv bin", async () => {
+		// Astral documents ty.toml as a first-class project config file; a project
+		// that opts into ty with only that file (no pyproject/setup/requirements)
+		// must still pass the root-marker gate AND resolve the local venv binary.
+		const tempDir = TempDir.createSync("@omp-lsp-ty-toml-");
+		const venvBin = process.platform === "win32" ? ".venv/Scripts" : ".venv/bin";
+		const resolvedTy = path.join(tempDir.path(), venvBin, "ty");
+		// $which never succeeds: only LOCAL_BIN_PATHS resolution can find ty.
+		vi.spyOn(piUtils, "$which").mockImplementation(() => null);
+		try {
+			await Bun.write(path.join(tempDir.path(), "ty.toml"), "[configuration]\n");
+			await Bun.write(resolvedTy, '#!/bin/sh\nexec ty "$@"\n');
+			const config = loadConfig(tempDir.path());
+			expect(config.servers.ty?.resolvedCommand).toBe(resolvedTy);
+			expect(config.servers.ty?.command).toBe("ty");
+			expect(config.servers.ty?.args).toEqual(["server"]);
+		} finally {
+			tempDir.removeSync();
+		}
 	});
 });

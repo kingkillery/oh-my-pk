@@ -16,11 +16,12 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { runPluginCommand } from "@pk-nerdsaver-ai/pi-coding-agent/cli/plugin-cli";
-import { PluginManager } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/plugins/manager";
-import { MarketplaceManager } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/plugins/marketplace";
-import type { InstalledPlugin } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/plugins/types";
-import * as piUtils from "@pk-nerdsaver-ai/pi-utils";
+import { runPluginCommand } from "@oh-my-pi/pi-coding-agent/cli/plugin-cli";
+import { PluginManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/manager";
+import { MarketplaceManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace";
+import type { InstalledPlugin } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/types";
+import * as piUtils from "@oh-my-pi/pi-utils";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const FAKE_INSTALLED: InstalledPlugin = {
 	name: "kimi-datasource",
@@ -104,24 +105,22 @@ describe("runPluginCommand({ action: 'install', args: [<local>] })", () => {
 		// module namespaces. Without this, listMarketplaces() keeps returning []
 		// and breaks sibling files such as marketplace/manager.test.ts.
 		mock.restore();
-		await fs.rm(tmpRoot, { recursive: true, force: true });
+		await removeWithRetries(tmpRoot);
 	});
 
-	for (const spec of [".", "./pkg", "../pkg", "/abs/pkg", "~/pkg"]) {
-		test(`dispatches ${JSON.stringify(spec)} to link() instead of install()`, async () => {
-			const linkSpy = spyOn(PluginManager.prototype, "link").mockResolvedValue(FAKE_INSTALLED);
-			const installSpy = spyOn(PluginManager.prototype, "install").mockResolvedValue(FAKE_INSTALLED);
-			try {
-				await runPluginCommand({ action: "install", args: [spec], flags: { json: true } });
-				expect(linkSpy).toHaveBeenCalledTimes(1);
-				expect(linkSpy.mock.calls[0]?.[0]).toBe(spec);
-				expect(installSpy).not.toHaveBeenCalled();
-			} finally {
-				linkSpy.mockRestore();
-				installSpy.mockRestore();
-			}
-		});
-	}
+	test("dispatches a local path to link() instead of install()", async () => {
+		const linkSpy = spyOn(PluginManager.prototype, "link").mockResolvedValue(FAKE_INSTALLED);
+		const installSpy = spyOn(PluginManager.prototype, "install").mockResolvedValue(FAKE_INSTALLED);
+		try {
+			await runPluginCommand({ action: "install", args: ["."], flags: { json: true } });
+			expect(linkSpy).toHaveBeenCalledTimes(1);
+			expect(linkSpy.mock.calls[0]?.[0]).toBe(".");
+			expect(installSpy).not.toHaveBeenCalled();
+		} finally {
+			linkSpy.mockRestore();
+			installSpy.mockRestore();
+		}
+	});
 
 	test("npm-style spec still dispatches to install(), not link()", async () => {
 		// Guard against an overly-eager local detector: a bare package name with

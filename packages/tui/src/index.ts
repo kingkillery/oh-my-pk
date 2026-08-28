@@ -5,6 +5,7 @@ export * from "./autocomplete";
 // Components
 export * from "./components/box";
 export * from "./components/cancellable-loader";
+export * from "./components/composer";
 export * from "./components/editor";
 export * from "./components/image";
 export * from "./components/input";
@@ -19,6 +20,8 @@ export * from "./components/text";
 export * from "./components/truncated-text";
 // DECCARA rectangular-SGR background-fill optimizer
 export * from "./deccara";
+// Desktop notifications via D-Bus (Linux freedesktop notifications)
+export * from "./desktop-notify";
 // Editor component interface (for custom editors)
 export type * from "./editor-component";
 // Fuzzy matching

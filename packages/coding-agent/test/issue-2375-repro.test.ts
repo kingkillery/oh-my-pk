@@ -17,10 +17,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ImageContent } from "@pk-nerdsaver-ai/pi-ai";
-import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { InputController } from "@pk-nerdsaver-ai/pi-coding-agent/modes/controllers/input-controller";
-import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 
 // A clipboard with no image on it — the deterministic default for the
 // not-found assertions so a real screenshot on the dev's clipboard cannot
@@ -39,12 +39,14 @@ const ONE_PX_PNG = Buffer.from(
 function createContext() {
 	const pasteText = vi.fn();
 	const insertText = vi.fn();
+	const insertAtom = vi.fn();
 	const requestRender = vi.fn();
 	const showStatus = vi.fn();
 	const ctx = {
 		editor: {
 			pasteText,
 			insertText,
+			insertAtom,
 			imageLinks: undefined,
 			pendingImages: [] as ImageContent[],
 			pendingImageLinks: [] as (string | undefined)[],
@@ -56,7 +58,7 @@ function createContext() {
 		} as unknown as InteractiveModeContext["sessionManager"],
 		showStatus,
 	} as unknown as InteractiveModeContext;
-	return { ctx, spies: { pasteText, insertText, requestRender, showStatus } };
+	return { ctx, spies: { pasteText, insertText, insertAtom, requestRender, showStatus } };
 }
 
 describe("InputController.handleImagePathPaste (issue #2375)", () => {

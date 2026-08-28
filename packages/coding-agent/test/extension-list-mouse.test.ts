@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { buildTabBarTabs } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/extension-dashboard";
-import { ExtensionList } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/extension-list";
-import type { Extension } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/extensions/types";
-import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import { buildTabBarTabs } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/extension-dashboard";
+import { ExtensionList } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/extension-list";
+import type { Extension } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/types";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 
 beforeAll(async () => {
 	await initTheme(false);
@@ -125,5 +125,30 @@ describe("buildProviderTabs", () => {
 		// Disabled provider stays selectable (not muted) so it can be re-enabled.
 		expect(off?.muted).toBe(false);
 		expect(off?.label).toContain("Off (2)");
+	});
+});
+
+describe("ExtensionList list hints", () => {
+	test("collapses newlines in rule triggers to one physical row", () => {
+		const list = new ExtensionList(
+			[
+				{
+					id: "rule:dirty",
+					kind: "rule",
+					name: "dirty",
+					displayName: "dirty",
+					path: "/tmp/dirty.md",
+					trigger: "src/**/*.ts\nextra",
+					source: { provider: "native", providerName: "Native", level: "native" },
+					state: "active",
+					raw: {},
+				},
+			],
+			{ masterSwitchProvider: null },
+		);
+		list.setFocused(true);
+		const lines = list.render(80);
+		expect(lines.some(line => line.includes("\n"))).toBe(false);
+		expect(lines.join("\n").split("\n")).toHaveLength(lines.length);
 	});
 });

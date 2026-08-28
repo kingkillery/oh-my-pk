@@ -6,8 +6,10 @@ import type {
 	MessageStats,
 	ModelDashboardStats,
 	OverviewStats,
+	ProviderDashboardStats,
 	RequestDetails,
 	TimeRange,
+	ToolDashboardStats,
 } from "./types";
 
 const API_BASE = "/api";
@@ -58,8 +60,14 @@ export async function getRecentRequests(limit = 50, signal?: AbortSignal): Promi
 	return fetchJson<MessageStats[]>(`${API_BASE}/stats/recent?limit=${limit}`, { signal });
 }
 
-export async function getRecentErrors(limit = 50, signal?: AbortSignal): Promise<MessageStats[]> {
-	return fetchJson<MessageStats[]>(`${API_BASE}/stats/errors?limit=${limit}`, { signal });
+export async function getRecentErrors(
+	range: TimeRange = "24h",
+	limit = 50,
+	signal?: AbortSignal,
+): Promise<MessageStats[]> {
+	return fetchJson<MessageStats[]>(`${API_BASE}/stats/errors?range=${encodeURIComponent(range)}&limit=${limit}`, {
+		signal,
+	});
 }
 
 export async function getRequestDetails(id: number, signal?: AbortSignal): Promise<RequestDetails> {
@@ -91,4 +99,20 @@ export async function getGainDashboardStats(
 	const params = new URLSearchParams({ range });
 	if (project) params.set("project", project);
 	return fetchJson<GainDashboardStats>(`${API_BASE}/stats/gain?${params}`, { signal });
+}
+
+export async function getToolDashboardStats(
+	range: TimeRange = "24h",
+	signal?: AbortSignal,
+): Promise<ToolDashboardStats> {
+	return fetchJson<ToolDashboardStats>(`${API_BASE}/stats/tools?range=${encodeURIComponent(range)}`, { signal });
+}
+
+export async function getProviderDashboardStats(
+	range: TimeRange = "24h",
+	signal?: AbortSignal,
+): Promise<ProviderDashboardStats> {
+	return fetchJson<ProviderDashboardStats>(`${API_BASE}/stats/providers?range=${encodeURIComponent(range)}`, {
+		signal,
+	});
 }

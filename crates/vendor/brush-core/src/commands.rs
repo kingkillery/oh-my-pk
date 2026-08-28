@@ -20,7 +20,7 @@ use crate::{
 	interp::{self, Execute, ExternalCommandInfo, ExternalCommandOutputMarkers, ProcessGroupPolicy},
 	openfiles::{self, OpenFiles},
 	pathsearch, processes,
-	results::ExecutionSpawnResult,
+	results::{ExecutionSpawnResult, ExecutionWaitResult},
 	sys, trace_categories, traps, variables,
 };
 
@@ -316,7 +316,7 @@ pub struct SimpleCommand<'a, SE: extensions::ShellExtensions> {
 	/// `None`, in which case the default behavior will be used.
 	pub process_group_id: Option<i32>,
 	/// Whether this command is part of a multi-command pipeline.
-	pub in_pipeline: bool,
+	pub in_pipeline:      bool,
 
 	/// Optional override for the `argv[0]` value presented to an externally
 	/// spawned process. When `None`, `command_name` is used.
@@ -512,32 +512,60 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 		self,
 		func_registration: functions::Registration,
 	) -> Result<ExecutionSpawnResult, error::Error> {
-		let mut shell = self.shell;
 		let mut params = self.params;
 		params.disable_command_output_marking();
 
 		let last_arg = Self::take_last_arg(&self.args);
 
-		let cmd_context = ExecutionContext {
-			shell:        &mut shell,
-			command_name: self.command_name,
-			params,
-		};
+		match self.shell {
+			// The function runs in an owned subshell (a pipeline stage or
+			// async job): execute it as a task, mirroring
+			// `execute_via_builtin_in_owned_shell`, so all pipeline stages run
+			// concurrently and its output streams to the next stage as it is
+			// produced.
+			ShellForCommand::OwnedShell { target, .. } => {
+				let mut shell = *target;
+				let command_name = self.command_name;
+				let args = self.args;
+				let join_handle = tokio::spawn(async move {
+					let cmd_context = ExecutionContext { shell: &mut shell, command_name, params };
+					let result =
+						invoke_shell_function(func_registration, cmd_context, &args[1..]).await;
 
-		// Strip the function name off args.
-		let result = invoke_shell_function(func_registration, cmd_context, &self.args[1..]).await;
+					// $_ is reset *after* the function body runs; see the
+					// parent-shell path below.
+					shell.update_last_arg_variable(last_arg);
 
-		// $_ is reset *after* the function body runs, to the last argument of
-		// the invocation (or the function name itself if zero args). Any
-		// mutations made inside the body are overwritten — this matches bash,
-		// where the caller observes only the invocation's last argument.
-		shell.update_last_arg_variable(last_arg);
+					match result?.wait().await? {
+						ExecutionWaitResult::Completed(result) => Ok(result),
+						ExecutionWaitResult::Stopped(_) => Ok(ExecutionResult::stopped()),
+					}
+				});
+				Ok(ExecutionSpawnResult::StartedTask(join_handle))
+			},
+			mut shell => {
+				let cmd_context = ExecutionContext {
+					shell:        &mut shell,
+					command_name: self.command_name,
+					params,
+				};
 
-		if let Some(post_execute) = self.post_execute {
-			let _ = post_execute(&mut shell);
+				// Strip the function name off args.
+				let result = invoke_shell_function(func_registration, cmd_context, &self.args[1..]).await;
+
+				// $_ is reset *after* the function body runs, to the last argument of
+				// the invocation (or the function name itself if zero args). Any
+				// mutations made inside the body are overwritten — this matches bash,
+				// where the caller observes only the invocation's last argument.
+				shell.update_last_arg_variable(last_arg);
+
+				if let Some(post_execute) = self.post_execute {
+					let _ = post_execute(&mut shell);
+				}
+
+				result
+			},
 		}
-
-		result
 	}
 
 	fn execute_via_external(self, path: &Path) -> Result<ExecutionSpawnResult, error::Error> {
@@ -615,7 +643,6 @@ pub(crate) fn execute_external_command(
 	)?;
 	let mut marker_output = prepare_output_markers(&context, executable_path, cmd_args.as_slice());
 
-
 	// Set up process group/session state.
 	//
 	// A child we are about to `setsid()` (`DetachSession`) must NOT also be
@@ -643,7 +670,7 @@ pub(crate) fn execute_external_command(
 		ChildSessionAction::TakeForeground if command_leads_session => {
 			// Don't set process_group(0) - setsid() in pre_exec will handle it.
 			cmd.lead_session();
-		}
+		},
 		ChildSessionAction::TakeForeground => {
 			// Foreground a child that is not leading its own session: create/join
 			// the process group in the current session, then grab the terminal.
@@ -653,7 +680,7 @@ pub(crate) fn execute_external_command(
 				cmd.process_group(pgid);
 			}
 			cmd.take_foreground();
-		}
+		},
 		ChildSessionAction::None => {
 			// Normal case: create a new process group in the current session, or
 			// join an established one (later pipeline stages).
@@ -662,7 +689,7 @@ pub(crate) fn execute_external_command(
 			} else if let Some(pgid) = process_group_id {
 				cmd.process_group(pgid);
 			}
-		}
+		},
 	}
 
 	// When tracing is enabled, report.
@@ -687,6 +714,17 @@ pub(crate) fn execute_external_command(
 				}
 			} else {
 				tracing::warn!("could not retrieve pid for child process");
+			}
+
+			// Report the spawned child for scoped teardown. Skipped for reparented
+			// launches (`detach_reparent`, e.g. `nohup cmd &`): those double-fork
+			// out of the descendant tree and must survive the host's cancellation
+			// cleanup, so they are intentionally left unowned.
+			if !context.params.detach_reparent
+				&& let Some(observer) = context.params.spawn_observer()
+				&& let Some(pid) = pid
+			{
+				observer.on_spawn(pid, actual_pgid);
 			}
 
 			let mut child_process = processes::ChildProcess::new(child, pid, actual_pgid);
@@ -731,9 +769,9 @@ fn prepare_output_markers<SE: extensions::ShellExtensions>(
 ) -> Option<(openfiles::OpenFile, ExternalCommandOutputMarkers)> {
 	let marker = context.params.command_output_marker()?;
 	let markers = marker.markers_for_external_command(ExternalCommandInfo {
-		command_name:    context.command_name.as_str(),
+		command_name: context.command_name.as_str(),
 		executable_path,
-		args:            args.iter().map(|arg| arg.as_str()).collect(),
+		args: args.iter().map(|arg| arg.as_str()).collect(),
 	})?;
 	let mut output = context.params.try_stdout(context.shell)?;
 	if output.write_all(markers.start_marker.as_bytes()).is_err() {
@@ -996,18 +1034,19 @@ pub enum ChildSessionAction {
 /// itself to the foreground, and leave the host stopped on its next tty read.
 /// `setsid()` puts each stage in its own session with no controlling tty, so it
 /// cannot reach `/dev/tty` at all. The historical EPERM hazard — a later stage
-/// `setpgid()`-joining a leader that already moved to a new session — is avoided
-/// in `execute_external_command`, which skips `process_group(...)` entirely for
-/// detached children; pipeline stages no longer share one process group, which
-/// the embedded host does not rely on (it cancels via the descendant tree, and
-/// pipes are session-independent).
+/// `setpgid()`-joining a leader that already moved to a new session — is
+/// avoided in `execute_external_command`, which skips `process_group(...)`
+/// entirely for detached children; pipeline stages no longer share one process
+/// group, which the embedded host does not rely on (it cancels via the
+/// descendant tree, and pipes are session-independent).
 ///
-/// `in_pipeline_group` is no longer consulted: a pipeline stage that legitimately
-/// needs the shared tty group has terminal stdin and is handled by the
-/// `child_stdin_is_terminal` arm before pipeline membership would ever matter.
+/// `in_pipeline_group` is no longer consulted: a pipeline stage that
+/// legitimately needs the shared tty group has terminal stdin and is handled by
+/// the `child_stdin_is_terminal` arm before pipeline membership would ever
+/// matter.
 ///
 /// Foregrounding remains gated on `new_pg && child_stdin_is_terminal`.
-pub fn child_session_action(
+pub const fn child_session_action(
 	new_pg: bool,
 	child_stdin_is_terminal: bool,
 	_in_pipeline_group: bool,

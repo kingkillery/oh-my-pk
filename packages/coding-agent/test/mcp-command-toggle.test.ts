@@ -2,10 +2,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "bu
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { SourceMeta } from "@pk-nerdsaver-ai/pi-coding-agent/capability/types";
-import type { MCPServerConfig } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/types";
-import { MCPCommandController } from "@pk-nerdsaver-ai/pi-coding-agent/modes/controllers/mcp-command-controller";
-import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import type { SourceMeta } from "@oh-my-pi/pi-coding-agent/capability/types";
+import type { MCPServerConfig } from "@oh-my-pi/pi-coding-agent/mcp/types";
+import { MCPCommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/mcp-command-controller";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import {
 	getConfigRootDir,
 	getMCPConfigPath,
@@ -13,7 +13,7 @@ import {
 	removeWithRetries,
 	setAgentDir,
 	setProjectDir,
-} from "@pk-nerdsaver-ai/pi-utils";
+} from "@oh-my-pi/pi-utils";
 
 const originalProjectDir = getProjectDir();
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -53,6 +53,7 @@ function createController() {
 	const controller = new MCPCommandController({
 		chatContainer: { addChild: vi.fn() },
 		present: vi.fn(),
+		presentCommandOutput: vi.fn(),
 		ui: { requestRender: vi.fn() },
 		editor: {},
 		showError: vi.fn(),

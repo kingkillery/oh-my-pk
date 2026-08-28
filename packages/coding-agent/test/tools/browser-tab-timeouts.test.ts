@@ -1,9 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import {
+	dispatchScroll,
 	normalizeSelector,
 	resolveOpTimeouts,
 	resolveWaitTimeout,
-} from "@pk-nerdsaver-ai/pi-coding-agent/tools/browser/tab-worker";
+} from "@oh-my-pi/pi-coding-agent/tools/browser/tab-worker";
+import { resolvePredicateTimeout } from "@oh-my-pi/pi-coding-agent/tools/run-scope";
 
 // Regression coverage for the "weird timeouts" failure mode: interactive `tab.*` helpers
 // used to run with the full cell budget as their internal puppeteer timeout, so a stalled
@@ -38,6 +40,45 @@ describe("browser per-op fail-fast ceilings", () => {
 		expect(actionOpMs).toBeGreaterThanOrEqual(1);
 		expect(quickOpMs).toBeGreaterThanOrEqual(1);
 		expect(actionOpMs).toBeLessThanOrEqual(budgetBound);
+	});
+});
+
+describe("browser scroll acknowledgement", () => {
+	it("returns after the acknowledgement deadline while the renderer remains stalled", async () => {
+		// Fake timers, not a real 1ms deadline: under the Bun test runner a real
+		// short-deadline timer wedges the timer queue while the never-settling
+		// dispatch member stays pending — the deadline never fires and the test
+		// hangs (Bun 1.3.14; long budgets like the supervisor's 750ms+ survive).
+		// Advancing the fake clock fires the deadline deterministically.
+		vi.useFakeTimers();
+		try {
+			const acknowledgement = Promise.withResolvers<void>();
+			const pending = dispatchScroll(() => acknowledgement.promise, 1);
+			vi.advanceTimersByTime(1);
+
+			await expect(pending).resolves.toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("preserves wheel dispatch failures received before the acknowledgement deadline", async () => {
+		await expect(dispatchScroll(() => Promise.reject(new Error("target closed")), 100)).rejects.toThrow(
+			"target closed",
+		);
+	});
+
+	it("cancels the acknowledgement deadline after a prompt dispatch", async () => {
+		vi.useFakeTimers();
+		try {
+			const timerCount = vi.getTimerCount();
+
+			await dispatchScroll(() => Promise.resolve());
+
+			expect(vi.getTimerCount()).toBe(timerCount);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
@@ -77,6 +118,31 @@ describe("browser wait-helper timeout resolution", () => {
 	});
 });
 
+describe("browser wait(predicate) deadline resolution", () => {
+	it("keeps the default deadline strictly under the cell budget so the named error wins", () => {
+		// Default cell (30s): the old 30s predicate default tied the cell timer and lost the
+		// race, surfacing the opaque whole-cell timeout instead of the named wait error.
+		for (const cell of [5_000, 30_000, 120_000]) {
+			expect(resolvePredicateTimeout(cell)).toBeLessThan(cell);
+		}
+		expect(resolvePredicateTimeout(120_000)).toBe(30_000);
+		expect(resolvePredicateTimeout(5_000)).toBe(4_000);
+	});
+
+	it("honors an explicit deadline but clamps it under the cell budget", () => {
+		expect(resolvePredicateTimeout(30_000, 5_000)).toBe(5_000);
+		expect(resolvePredicateTimeout(30_000, 90_000)).toBe(29_000);
+		expect(resolvePredicateTimeout(120_000, 90_000)).toBe(90_000);
+	});
+
+	it("maps disable sentinels to the largest bounded deadline and garbage to the default", () => {
+		expect(resolvePredicateTimeout(30_000, 0)).toBe(29_000);
+		expect(resolvePredicateTimeout(30_000, Number.POSITIVE_INFINITY)).toBe(29_000);
+		expect(resolvePredicateTimeout(30_000, -5)).toBe(29_000);
+		expect(resolvePredicateTimeout(30_000, Number.NaN)).toBe(29_000);
+	});
+});
+
 describe("browser selector guard", () => {
 	it("rejects Playwright-only selector engines with an actionable message", () => {
 		expect(() => normalizeSelector('button:has-text("Allow all")')).toThrow(/Playwright-only/);
@@ -94,5 +160,18 @@ describe("browser selector guard", () => {
 
 	it("still rewrites legacy p- prefixes", () => {
 		expect(normalizeSelector("p-text/Continue")).toBe("text/Continue");
+	});
+
+	it("rejects non-string selectors (handle/number) instead of crashing on .startsWith", () => {
+		// Regression: passing the ElementHandle from tab.id()/tab.ref() reached
+		// `selector.startsWith(...)` and threw the opaque `A.trim is not a function`.
+		const handle = {
+			click: async () => {},
+			asElement() {
+				return this;
+			},
+		};
+		expect(() => normalizeSelector(handle as never)).toThrow(/must be a string; got an ElementHandle/);
+		expect(() => normalizeSelector(23 as never)).toThrow(/must be a string; got a number/);
 	});
 });

@@ -1,8 +1,10 @@
+import { afterEach, beforeEach } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Model } from "@pk-nerdsaver-ai/pi-ai/types";
-import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
-import { isEnoent } from "@pk-nerdsaver-ai/pi-utils";
+import type { Model } from "@oh-my-pi/pi-ai/types";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
+import { isEnoent } from "@oh-my-pi/pi-utils";
 
 export async function withEnv(
 	overrides: Record<string, string | undefined>,
@@ -54,7 +56,10 @@ export async function waitForDelayOrAbort(delayMs: number, signal: AbortSignal |
 	}
 }
 
-export function createCodexModel(id: string): Model<"openai-codex-responses"> {
+export function createCodexModel(
+	id: string,
+	spec?: Partial<ModelSpec<"openai-codex-responses">>,
+): Model<"openai-codex-responses"> {
 	return buildModel({
 		id,
 		name: id,
@@ -66,6 +71,7 @@ export function createCodexModel(id: string): Model<"openai-codex-responses"> {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 272000,
 		maxTokens: 128000,
+		...spec,
 	});
 }
 
@@ -108,4 +114,30 @@ async function readAuthGatewayE2EStatus(): Promise<AuthGatewayE2EStatus> {
 		return { ok: false, reason: `healthz unreachable: ${msg}` };
 	}
 	return { ok: true, token };
+}
+
+/**
+ * Neutralize `ANTHROPIC_BASE_URL` for the calling test file.
+ *
+ * The variable reroutes the effective Anthropic endpoint, and every
+ * "official endpoint" behavior — eager tool-input streaming, long cache
+ * retention, the Cowork TLS profile, the Claude Code session header — switches
+ * off once it points elsewhere. A contributor running a gateway, or running the
+ * suite from inside another agent, otherwise sees these tests fail on a clean
+ * checkout. Tests that exercise gateway routing set the variable explicitly
+ * with `withEnv` inside the test body, which still wins over this reset.
+ */
+export function withOfficialAnthropicEndpoint(): void {
+	let previous: string | undefined;
+	beforeEach(() => {
+		previous = Bun.env.ANTHROPIC_BASE_URL;
+		delete Bun.env.ANTHROPIC_BASE_URL;
+	});
+	afterEach(() => {
+		if (previous === undefined) {
+			delete Bun.env.ANTHROPIC_BASE_URL;
+		} else {
+			Bun.env.ANTHROPIC_BASE_URL = previous;
+		}
+	});
 }

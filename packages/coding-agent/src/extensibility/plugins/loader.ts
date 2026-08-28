@@ -6,15 +6,32 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getPluginsLockfile, getPluginsNodeModules, getPluginsPackageJson, isEnoent } from "@pk-nerdsaver-ai/pi-utils";
+import { getPluginsDir, getPluginsLockfile, isEnoent } from "@oh-my-pi/pi-utils";
 import { getConfigDirPaths } from "../../config";
-import { resolveActiveProjectRegistryPath } from "../../discovery/helpers";
+import { registerPluginCacheInvalidator, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import { installLegacyPiSpecifierShim } from "./legacy-pi-compat";
 import { readSupportedPluginManifest } from "./manifest";
 import { normalizePluginRuntimeConfig } from "./runtime-config";
 import type { InstalledPlugin, PluginManifest, PluginRuntimeConfig, ProjectPluginOverrides } from "./types";
 
+/** Installed plugin plus the root scope that supplied its runtime metadata. */
+export interface ScopedInstalledPlugin extends InstalledPlugin {
+	scope: "user" | "project";
+}
+
 installLegacyPiSpecifierShim();
+
+const enabledPluginsCache = new Map<string, Promise<ScopedInstalledPlugin[]>>();
+
+function enabledPluginsCacheKey(cwd: string, home?: string): string {
+	return `${path.resolve(cwd)}\0${home === undefined ? "" : path.resolve(home)}`;
+}
+
+function clearEnabledPluginsCache(): void {
+	enabledPluginsCache.clear();
+}
+
+registerPluginCacheInvalidator(clearEnabledPluginsCache);
 
 // =============================================================================
 // Runtime Config Loading
@@ -56,39 +73,89 @@ async function loadProjectOverrides(cwd: string): Promise<ProjectPluginOverrides
 	return {};
 }
 /**
- * Get list of enabled plugins with their resolved configurations.
- *
- * Respects both global runtime config and project overrides. Iterates the
- * union of `<plugins>/package.json#dependencies` (`bun install`-installed
- * packages) and `<plugins>/omp-plugins.lock.json#plugins` (so locally
- * `plugin link`-symlinked extensions, which never get a dependency entry,
- * are still discovered). The optional `home` parameter pins the plugins
- * root for callers that need to enumerate plugins relative to a non-default
- * home (tests with a tempdir, discovery loaders threaded with
- * `LoadContext.home`).
+ * Per-root enumeration of plugins from `<root>/node_modules`,
+ * `<root>/package.json#dependencies`, and `<root>/omp-plugins.lock.json#plugins`.
+ * Honors `projectOverrides.disabled` and `projectOverrides.features`. Returns an
+ * empty array when the root has no `node_modules` yet.
  */
-export async function getEnabledPlugins(cwd: string, opts: { home?: string } = {}): Promise<InstalledPlugin[]> {
-	const { home } = opts;
+async function collectPluginsAtRoot(
+	root: string,
+	projectOverrides: ProjectPluginOverrides,
+	scope: ScopedInstalledPlugin["scope"],
+): Promise<ScopedInstalledPlugin[]> {
+	const nodeModulesPath = path.join(root, "node_modules");
+	if (!fs.existsSync(nodeModulesPath)) return [];
 
-	interface PluginRootPaths {
-		scope: "user" | "project";
-		nodeModulesPath: string;
-		pkgJsonPath: string;
-		lockPath: string;
+	let depsKeys: string[] = [];
+	const pkgJsonPath = path.join(root, "package.json");
+	try {
+		const pkg: { dependencies?: Record<string, string> } = await Bun.file(pkgJsonPath).json();
+		depsKeys = Object.keys(pkg.dependencies ?? {});
+	} catch (err) {
+		// Linked-only setups may have no `<root>/package.json` yet — that's
+		// fine, the lockfile still records the link.
+		if (!isEnoent(err)) throw err;
 	}
 
-	// Project-scope installs live under the nearest project's `<config>/plugins`
-	// root (resolved the same way the marketplace installer picks its project
-	// registry) and shadow user-scope installs of the same name.
-	const roots: PluginRootPaths[] = [];
-	const projectRegistryPath = await resolveActiveProjectRegistryPath(cwd);
-	if (projectRegistryPath) {
-		const projectPluginsDir = path.dirname(projectRegistryPath);
-		roots.push({
-			scope: "project",
-			nodeModulesPath: path.join(projectPluginsDir, "node_modules"),
-			pkgJsonPath: path.join(projectPluginsDir, "package.json"),
-			lockPath: path.join(projectPluginsDir, "omp-plugins.lock.json"),
+	const lockPath = path.join(root, "omp-plugins.lock.json");
+	let runtimeConfig: PluginRuntimeConfig;
+	try {
+		runtimeConfig = normalizePluginRuntimeConfig(await Bun.file(lockPath).json());
+	} catch (err) {
+		if (!isEnoent(err)) throw err;
+		runtimeConfig = normalizePluginRuntimeConfig({});
+	}
+
+	// Union: dependencies (npm/marketplace installs) ∪ runtime-config plugins
+	// (links + already-recorded installs). Set preserves first-seen order,
+	// putting deps before link-only entries for deterministic output.
+	const names = new Set<string>(depsKeys);
+	for (const name of Object.keys(runtimeConfig.plugins ?? {})) {
+		names.add(name);
+	}
+
+	const plugins: ScopedInstalledPlugin[] = [];
+	for (const name of names) {
+		const pluginPkgPath = path.join(nodeModulesPath, name, "package.json");
+		let pluginPkg: { version: string; omp?: PluginManifest; pi?: PluginManifest };
+		try {
+			pluginPkg = await Bun.file(pluginPkgPath).json();
+		} catch (err) {
+			// Lockfile entry without a corresponding node_modules tree means the
+			// link was deleted out from under us; skip silently.
+			if (isEnoent(err)) continue;
+			throw err;
+		}
+
+		const manifest: PluginManifest | undefined = pluginPkg.omp || pluginPkg.pi;
+		if (!manifest) {
+			// Not an omp plugin, skip
+			continue;
+		}
+		manifest.version = pluginPkg.version;
+
+		const runtimeState = runtimeConfig.plugins[name];
+
+		// Check if disabled globally
+		if (runtimeState && !runtimeState.enabled) {
+			continue;
+		}
+
+		// Check if disabled in project
+		if (projectOverrides.disabled?.includes(name)) {
+			continue;
+		}
+
+		// Resolve enabled features (project overrides take precedence)
+		const enabledFeatures = projectOverrides.features?.[name] ?? runtimeState?.enabledFeatures ?? null;
+		plugins.push({
+			name,
+			version: pluginPkg.version,
+			path: path.join(nodeModulesPath, name),
+			scope,
+			manifest,
+			enabledFeatures,
+			enabled: true,
 		});
 	}
 	roots.push({
@@ -178,6 +245,64 @@ export async function getEnabledPlugins(cwd: string, opts: { home?: string } = {
 	}
 
 	return plugins;
+}
+
+/**
+ * Get list of enabled plugins with their resolved configurations.
+ *
+ * Enumerates two plugin roots in order: the user root
+ * (`getPluginsDir(home)`) and, when a project anchor (`.omp/` or `.git/`)
+ * exists at or above `cwd`, the project root
+ * (`<projectAnchor>/.omp/plugins`). Each root contributes the union of its
+ * `package.json#dependencies` and `omp-plugins.lock.json#plugins`. Project
+ * entries shadow user entries with the same package name, matching the
+ * shadow semantics of `MarketplaceManager.listInstalledPlugins`.
+ *
+ * The optional `home` parameter pins the user plugins root for callers that
+ * need to enumerate plugins relative to a non-default home (tests with a
+ * tempdir, discovery loaders threaded with `LoadContext.home`).
+ */
+export async function getEnabledPlugins(cwd: string, opts: { home?: string } = {}): Promise<ScopedInstalledPlugin[]> {
+	const { home } = opts;
+	const cacheKey = enabledPluginsCacheKey(cwd, home);
+	const cached = enabledPluginsCache.get(cacheKey);
+	if (cached) return cached;
+
+	const loadPromise = loadEnabledPlugins(cwd, home);
+	enabledPluginsCache.set(cacheKey, loadPromise);
+	try {
+		return await loadPromise;
+	} catch (err) {
+		if (enabledPluginsCache.get(cacheKey) === loadPromise) {
+			enabledPluginsCache.delete(cacheKey);
+		}
+		throw err;
+	}
+}
+
+async function loadEnabledPlugins(cwd: string, home?: string): Promise<ScopedInstalledPlugin[]> {
+	const projectOverrides = await loadProjectOverrides(cwd);
+
+	const userRoot = getPluginsDir(home);
+	const userPlugins = await collectPluginsAtRoot(userRoot, projectOverrides, "user");
+
+	let projectPlugins: ScopedInstalledPlugin[] = [];
+	const projectRegistryPath = await resolveActiveProjectRegistryPath(cwd);
+	if (projectRegistryPath) {
+		const projectRoot = path.dirname(projectRegistryPath);
+		if (projectRoot !== userRoot) {
+			projectPlugins = await collectPluginsAtRoot(projectRoot, projectOverrides, "project");
+		}
+	}
+
+	if (projectPlugins.length === 0) return userPlugins;
+	if (userPlugins.length === 0) return projectPlugins;
+
+	// Project entries shadow user entries with the same package name.
+	const merged = new Map<string, ScopedInstalledPlugin>();
+	for (const plugin of userPlugins) merged.set(plugin.name, plugin);
+	for (const plugin of projectPlugins) merged.set(plugin.name, plugin);
+	return Array.from(merged.values());
 }
 
 // =============================================================================

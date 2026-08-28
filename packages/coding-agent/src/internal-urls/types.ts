@@ -1,13 +1,11 @@
 /**
  * Types for the internal URL routing system.
  *
- * Internal URLs (`agent://`, `artifact://`, `history://`, `issue://`, `local://`, `mcp://`, `memory://`, `omp://`, `pr://`, `rule://`, `skill://`, `ssh://`, and `vault://`) are resolved by tools like read,
+ * Internal URLs (`agent://`, `artifact://`, `history://`, `issue://`, `local://`, `mcp://`, `memory://`, `omp://`, `pr://`, `rule://`, `security://`, `skill://`, `ssh://`, `vault://`, and `xd://`) are resolved by tools like read,
  * providing access to agent outputs and server resources without exposing filesystem paths.
  */
 
-import type { ImageContent, TextContent } from "@pk-nerdsaver-ai/pi-ai";
 import type { Skill } from "../extensibility/skills";
-import type { XdevRegistry } from "../tools/xdev";
 import type { LocalProtocolOptions } from "./local-protocol";
 
 /**
@@ -72,6 +70,12 @@ export interface InternalUrl extends URL {
 	 * Raw pathname extracted from input, preserving traversal markers before URL normalization.
 	 */
 	rawPathname?: string;
+	/**
+	 * Exact input string this URL was parsed from, before any normalization.
+	 * Set by `parseInternalUrl`; used where byte-exact URI matching matters
+	 * (e.g. MCP resource URIs compared by string equality).
+	 */
+	rawHref?: string;
 }
 
 /** Session bridge exposed to read-only xd:// protocol operations. */
@@ -98,6 +102,15 @@ export interface XdevWriteBridge extends XdevResolveBridge {
 export interface ResolveContext {
 	/** Working directory of the calling session. */
 	cwd?: string;
+	/**
+	 * Calling session's session file. Handlers that resolve agent ids which may
+	 * be parked (`history://<id>`, `agent://<id>`) refresh the caller's
+	 * persisted roster against this root before registry lookup, so a
+	 * same-named id restored by another root's scan never shadows this
+	 * caller's own transcript or output. Absent when the caller has no session
+	 * file: those handlers keep their existing in-memory behavior.
+	 */
+	sessionFile?: string;
 	/** Settings of the calling session (used by `issue://`/`pr://` for cache TTLs). */
 	settings?: unknown;
 	/** Caller's abort signal. */
@@ -115,6 +128,10 @@ export interface ResolveContext {
 	localProtocolOptions?: LocalProtocolOptions;
 	/** Calling session's loaded skills. Prefer this over process-global skill state. */
 	skills?: readonly Skill[];
+	/** Session-bound `xd://` documentation resolver. */
+	xd?: {
+		read(name: string | null): Promise<string>;
+	};
 	/**
 	 * When set, handlers that would otherwise materialize an expensive directory
 	 * listing (e.g. the ssh:// handler draining a full remote `ls`) instead return
@@ -122,8 +139,16 @@ export interface ResolveContext {
 	 * reject directory resources, so they never need the listing.
 	 */
 	skipDirectoryListing?: boolean;
-	/** Session-scoped virtual tool device registry. */
-	xdev?: XdevResolveBridge;
+	/**
+	 * When set, handlers that would otherwise materialize expensive content
+	 * (e.g. reading a multi-MiB artifact into memory just to expose its
+	 * `sourcePath`) may return the resource shape without content. Callers
+	 * that only need `sourcePath` — search/grep, bash URL expansion — pass
+	 * this so a large `artifact://` still resolves to its backing file
+	 * without OOM risk. Handlers that cannot separate path from content
+	 * ignore the flag.
+	 */
+	pathOnly?: boolean;
 }
 
 /**
@@ -138,12 +163,14 @@ export interface WriteContext {
 	signal?: AbortSignal;
 	/** Calling session's `local://` root mapping — see {@link ResolveContext.localProtocolOptions}. */
 	localProtocolOptions?: LocalProtocolOptions;
-	/** Session-scoped virtual tool device registry and execution bridge. */
-	xdev?: XdevWriteBridge;
+	/** Session-bound `xd://` device dispatcher. */
+	xd?: {
+		write(name: string | null, content: string): Promise<void>;
+	};
 }
 
 /**
- * Handler for a specific internal URL scheme (e.g., agent://, memory://, skill://, mcp://).
+ * Handler for a specific internal URL scheme (e.g., agent://, memory://, skill://, xd://).
  */
 export interface ProtocolHandler {
 	/** The scheme this handler processes (without trailing ://) */
@@ -188,11 +215,4 @@ export interface ProtocolHandler {
 	 * (e.g. ssh:// hosts from a project `ssh.json`, local:// roots per session).
 	 */
 	complete?(query?: string, context?: ResolveContext): Promise<UrlCompletion[]>;
-	/**
-	 * When true, the scheme is excluded from the router's `completionSchemes()`
-	 * even though {@link complete} exists: on-demand `router.complete(scheme, …)`
-	 * dispatch still works, but per-keystroke prompt autocomplete never fires
-	 * for it (e.g. wikigraph://, whose candidates come from a sqlite index).
-	 */
-	readonly hiddenCompletion?: boolean;
 }

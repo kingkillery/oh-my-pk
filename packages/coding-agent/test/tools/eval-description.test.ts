@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import type { Tool as AiTool } from "@pk-nerdsaver-ai/pi-ai";
-import { toolWireSchema } from "@pk-nerdsaver-ai/pi-ai/utils/schema";
-import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
-import { EvalTool, getEvalToolDescription } from "@pk-nerdsaver-ai/pi-coding-agent/tools/eval";
+import type { Tool as AiTool } from "@oh-my-pi/pi-ai";
+import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { EvalTool, getEvalToolDescription } from "@oh-my-pi/pi-coding-agent/tools/eval";
 
 function makeSession(opts: { spawns?: string | null; backends?: Record<string, boolean> }): ToolSession {
 	const settings = Settings.isolated();
@@ -36,7 +36,11 @@ function wireCellFields(tool: EvalTool): {
 		: typeof language?.const === "string"
 			? [language.const]
 			: [];
-	return { languages, languageDescription: language?.description, codeDescription: props?.code?.description };
+	return {
+		languages,
+		languageDescription: language?.description,
+		codeDescription: props?.code?.description,
+	};
 }
 
 describe("eval tool description", () => {

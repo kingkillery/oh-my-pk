@@ -5,9 +5,9 @@
  * (or sandboxes where subprocess spawning is restricted) does not fail.
  */
 import { afterEach, describe, expect, it } from "bun:test";
-import { disposeAllRubyKernelSessions, executeRubyWithKernel } from "@pk-nerdsaver-ai/pi-coding-agent/eval/rb/executor";
-import { RubyKernel } from "@pk-nerdsaver-ai/pi-coding-agent/eval/rb/kernel";
-import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
+import { disposeAllRubyKernelSessions, executeRubyWithKernel } from "@oh-my-pi/pi-coding-agent/eval/rb/executor";
+import { RubyKernel } from "@oh-my-pi/pi-coding-agent/eval/rb/kernel";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 const SHOULD_RUN = Bun.env.PI_RUBY_INTEGRATION === "1";
 
@@ -29,6 +29,18 @@ describe.skipIf(!SHOULD_RUN)("ruby runner subprocess", () => {
 			expect(result.exitCode).toBe(0);
 			expect(chunks.join("")).toContain("0\n");
 			expect(chunks.join("")).toContain("4\n");
+		} finally {
+			await kernel.shutdown();
+		}
+	});
+
+	it.skipIf(process.platform === "win32")("runs in its own POSIX session", async () => {
+		using tempDir = TempDir.createSync("@ruby-runner-session-isolation-");
+		const kernel = await RubyKernel.start({ cwd: tempDir.path() });
+		try {
+			const result = await executeRubyWithKernel(kernel, 'puts "#{Process.getsid(0)} #{Process.pid}"', {});
+			const [sessionId, processId] = result.output.trim().split(/\s+/).map(Number);
+			expect(sessionId).toBe(processId);
 		} finally {
 			await kernel.shutdown();
 		}

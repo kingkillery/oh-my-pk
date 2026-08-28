@@ -206,7 +206,13 @@ def _pr_review_pr(pr: Mapping[str, Any], repo: str, action: str, bot_login: str)
         return RouteDecision("skip", None, repo, None, "PR missing number")
     login, assoc = _submitter_info(pr)
     return RouteDecision(
-        "queue", "review_pr", repo, issue_key(repo, number), f"pull_request.{action}", submitter=login, association=assoc
+        "queue",
+        "review_pr",
+        repo,
+        issue_key(repo, number),
+        f"pull_request.{action}",
+        submitter=login,
+        association=assoc,
     )
 
 
@@ -220,9 +226,8 @@ def route(
     reviewer_bots: frozenset[str] = frozenset(),
     resolve_issue_from_pr: PrIssueResolver = None,
     pr_review_enabled: bool = True,
-    pr_review_trigger: str = "open",
-    vouch_review_label: str = "vouched",
-    vouch_review_labeler: str = "github-actions[bot]",
+    release_sentinel_enabled: bool = False,
+    release_commit_prefix: str = "chore: bump version to ",
 ) -> RouteDecision:
     """Decide whether and how to handle a webhook event.
 
@@ -237,6 +242,31 @@ def route(
         return RouteDecision("skip", None, repo, None, "repo not on allowlist")
 
     action = str(payload.get("action") or "")
+
+    if event_type == "workflow_run":
+        if action != "completed":
+            return RouteDecision("skip", None, repo, None, f"workflow_run.{action} ignored")
+        if not release_sentinel_enabled:
+            return RouteDecision("skip", None, repo, None, "release sentinel disabled")
+        run = payload.get("workflow_run")
+        repository = payload.get("repository")
+        if not isinstance(run, Mapping) or not isinstance(repository, Mapping):
+            return RouteDecision("skip", None, repo, None, "workflow_run payload incomplete")
+        default_branch = str(repository.get("default_branch") or "")
+        head_branch = str(run.get("head_branch") or "")
+        if head_branch != default_branch and re.match(r"^v[0-9]", head_branch) is None:
+            return RouteDecision("skip", None, repo, None, "not a default-branch/tag run")
+        head_commit = run.get("head_commit")
+        message = str(head_commit.get("message") or "") if isinstance(head_commit, Mapping) else ""
+        if not message.startswith(release_commit_prefix):
+            return RouteDecision("skip", None, repo, None, "not a release commit")
+        return RouteDecision(
+            "queue",
+            "handle_release_ci",
+            repo,
+            f"{repo}#release",
+            f"workflow_run {run.get('name') or ''} {run.get('conclusion') or ''}",
+        )
 
     def _resolve_pr_key(pr_number: int) -> str:
         if resolve_issue_from_pr is not None:
@@ -297,10 +327,13 @@ def route(
         if not isinstance(number, int):
             return RouteDecision("skip", None, repo, None, "issue missing number")
         key = issue_key(repo, number)
-        if action == "opened":
+        if action in ("opened", "reopened"):
+            # A reopen is submitter-attributable exactly like an open, and
+            # `finalized_issue_comment.md` promises re-triage on reopen, so it
+            # re-triages from scratch and spends the same per-user rate budget.
             login, assoc = _submitter_info(issue)
             return RouteDecision(
-                "queue", "triage_issue", repo, key, "issues.opened", submitter=login, association=assoc
+                "queue", "triage_issue", repo, key, f"issues.{action}", submitter=login, association=assoc
             )
         if action == "closed":
             # Cleanup is a lifecycle event, not a user submission; no rate-limit subject.
@@ -356,27 +389,7 @@ def route(
         if not pr_review_enabled:
             return RouteDecision("skip", None, repo, None, "PR review disabled")
         pr = payload.get("pull_request") or {}
-        if pr_review_trigger == "vouched_label":
-            # Defer to the vouch gate. robomp reviews ONLY on the `labeled`
-            # event the workflow emits AFTER a fresh check (it re-applies the
-            # vouch label on every opened/reopened/ready_for_review). Never
-            # trust a persisted label here: a since-denounced author must not
-            # slip through on reopen.
-            return RouteDecision("skip", None, repo, None, "deferred to vouch label")
         return _pr_review_pr(pr, repo, action, bot_login)
-
-    if event_type == "pull_request" and action == "labeled" and pr_review_trigger == "vouched_label":
-        if not pr_review_enabled:
-            return RouteDecision("skip", None, repo, None, "PR review disabled")
-        label = payload.get("label")
-        label_name = str(label.get("name") or "") if isinstance(label, Mapping) else ""
-        if label_name.lower() != vouch_review_label.lower():
-            return RouteDecision("skip", None, repo, None, f"label {label_name!r} not vouch label")
-        sender = payload.get("sender")
-        labeler = str(sender.get("login") or "") if isinstance(sender, Mapping) else ""
-        if labeler.lower() != vouch_review_labeler.lower():
-            return RouteDecision("skip", None, repo, None, f"vouch label not from trusted labeler ({labeler!r})")
-        return _pr_review_pr(payload.get("pull_request") or {}, repo, action, bot_login)
 
     if event_type == "pull_request_review_comment" and action == "created":
         comment = payload.get("comment") or {}

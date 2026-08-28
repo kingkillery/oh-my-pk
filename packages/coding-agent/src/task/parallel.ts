@@ -16,7 +16,7 @@ export interface ParallelResult<R> {
  * On abort: returns partial results with `aborted: true`. Completed tasks are preserved,
  * in-progress tasks will complete with their abort handling, skipped tasks are `undefined`.
  *
- * On error: fails fast - does not wait for other workers to complete.
+ * On error: cancels siblings immediately, waits for launched work to drain, then rejects with the first error.
  *
  * @param items - Items to process
  * @param concurrency - Maximum concurrent operations
@@ -39,11 +39,8 @@ export async function mapWithConcurrencyLimit<T, R>(
 	const abortController = new AbortController();
 	const workerSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
 
-	// Promise that rejects on first error - used to fail fast (not for abort)
-	let rejectFirst: (error: unknown) => void;
-	const firstErrorPromise = new Promise<never>((_, reject) => {
-		rejectFirst = reject;
-	});
+	let firstError: unknown;
+	let failed = false;
 
 	const worker = async (): Promise<void> => {
 		while (true) {
@@ -54,13 +51,15 @@ export async function mapWithConcurrencyLimit<T, R>(
 			try {
 				results[index] = await fn(items[index], index, workerSignal);
 			} catch (error) {
-				// On abort, the fn itself handles it and returns a result
-				// Only propagate non-abort errors
+				// The first non-cancellation failure stops new work immediately.
+				// Every worker then returns normally so the pool can be drained
+				// before the original error escapes to its caller.
 				if (!workerSignal.aborted) {
+					failed = true;
+					firstError = error;
 					abortController.abort();
-					rejectFirst(error);
-					throw error;
 				}
+				return;
 			}
 		}
 	};
@@ -70,17 +69,58 @@ export async function mapWithConcurrencyLimit<T, R>(
 		.fill(null)
 		.map(() => worker());
 
-	try {
-		await Promise.race([Promise.all(workers), firstErrorPromise]);
-	} catch (error) {
-		// If aborted, don't rethrow - return partial results
-		if (signal?.aborted) {
-			return { results, aborted: true };
-		}
-		throw error;
+	await Promise.all(workers);
+	if (signal?.aborted) {
+		return { results, aborted: true };
+	}
+	if (failed) {
+		throw firstError;
 	}
 
 	return { results, aborted: signal?.aborted ?? false };
+}
+
+/** Result of a concurrency-limited operation that waits for every launched item. */
+export interface ParallelSettledResult<R> {
+	/** Settled results in original input order; absent entries were never launched after cancellation. */
+	results: (PromiseSettledResult<R> | undefined)[];
+	/** Whether cancellation prevented scheduling all items. */
+	aborted: boolean;
+}
+
+/**
+ * Execute items with a concurrency limit without failing fast. Rejections are
+ * captured at their input position and already launched siblings always settle
+ * before this function returns. Cancellation stops new launches but preserves
+ * the settled state of every item that began.
+ */
+export async function mapWithConcurrencyLimitAllSettled<T, R>(
+	items: T[],
+	concurrency: number,
+	fn: (item: T, index: number, signal: AbortSignal) => Promise<R>,
+	signal?: AbortSignal,
+): Promise<ParallelSettledResult<R>> {
+	const normalizedConcurrency = Number.isFinite(concurrency) ? Math.floor(concurrency) : items.length;
+	const effectiveConcurrency = normalizedConcurrency > 0 ? normalizedConcurrency : items.length;
+	const limit = Math.max(1, Math.min(effectiveConcurrency, items.length));
+	const results: (PromiseSettledResult<R> | undefined)[] = new Array(items.length);
+	const workerSignal = signal ?? new AbortController().signal;
+	let nextIndex = 0;
+
+	const worker = async (): Promise<void> => {
+		while (!workerSignal.aborted) {
+			const index = nextIndex++;
+			if (index >= items.length) return;
+			try {
+				results[index] = { status: "fulfilled", value: await fn(items[index], index, workerSignal) };
+			} catch (reason) {
+				results[index] = { status: "rejected", reason };
+			}
+		}
+	};
+
+	await Promise.all(Array.from({ length: limit }, () => worker()));
+	return { results, aborted: workerSignal.aborted };
 }
 
 /**
@@ -90,13 +130,18 @@ export async function mapWithConcurrencyLimit<T, R>(
  * immediately — matching `task.maxConcurrency = 0`'s "Unlimited" semantics in the
  * settings UI ([#3305](https://github.com/can1357/oh-my-pi/issues/3305)).
  */
+export function normalizeConcurrencyLimit(max: number): number {
+	const normalizedMax = Number.isFinite(max) ? Math.trunc(max) : 0;
+	return normalizedMax > 0 ? normalizedMax : 0;
+}
+
 export class Semaphore {
 	#max: number;
 	#current = 0;
 	#queue: Array<() => void> = [];
 
 	constructor(max: number) {
-		const normalizedMax = Number.isFinite(max) ? Math.trunc(max) : 0;
+		const normalizedMax = normalizeConcurrencyLimit(max);
 		this.#max = normalizedMax > 0 ? normalizedMax : Number.POSITIVE_INFINITY;
 	}
 
@@ -155,7 +200,7 @@ export class Semaphore {
 	 * never push concurrency past the cap (issue #3464 review feedback).
 	 */
 	resize(max: number): void {
-		const normalizedMax = Number.isFinite(max) ? Math.trunc(max) : 0;
+		const normalizedMax = normalizeConcurrencyLimit(max);
 		this.#max = normalizedMax > 0 ? normalizedMax : Number.POSITIVE_INFINITY;
 		while (this.#current < this.#max) {
 			const next = this.#queue.shift();

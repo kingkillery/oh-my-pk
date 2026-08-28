@@ -9,9 +9,10 @@ import {
 	buildMemoryToolDeveloperInstructions,
 	getMemoryRoot,
 	startMemoryStartupTask,
-} from "@pk-nerdsaver-ai/pi-coding-agent/memories";
-import * as memoryStorage from "@pk-nerdsaver-ai/pi-coding-agent/memories/storage";
-import { getAgentDbPath, Snowflake, TempDir } from "@pk-nerdsaver-ai/pi-utils";
+} from "@oh-my-pi/pi-coding-agent/memories";
+import * as memoryStorage from "@oh-my-pi/pi-coding-agent/memories/storage";
+import { getAgentDbPath, Snowflake, TempDir } from "@oh-my-pi/pi-utils";
+import { restoreEnvValue } from "./helpers/settings-test-state";
 
 interface SessionFixture {
 	agentDir: string;
@@ -163,12 +164,12 @@ describe("memories runtime", () => {
 	});
 
 	afterEach(async () => {
-		restoreTrackedSpies();
-		process.env.XDG_DATA_HOME = savedXdgData;
-		process.env.XDG_STATE_HOME = savedXdgState;
+		vi.restoreAllMocks();
+		restoreEnvValue("XDG_DATA_HOME", savedXdgData);
+		restoreEnvValue("XDG_STATE_HOME", savedXdgState);
 	});
 
-	test("startup gating skips when disabled or subagent depth", async () => {
+	test("startup gating follows memory.backend and skips subagents", async () => {
 		const disabled = await createFixture({ "memories.enabled": false });
 		const openSpy = trackedSpyOn(memoryStorage, "openMemoryDb");
 		startMemoryStartupTask({
@@ -176,6 +177,15 @@ describe("memories runtime", () => {
 			settings: disabled.settings,
 			modelRegistry: disabled.modelRegistry,
 			agentDir: disabled.agentDir,
+			taskDepth: 0,
+		});
+		expect(openSpy).not.toHaveBeenCalled();
+		const explicitlyOff = await createFixture({ "memory.backend": "off", "memories.enabled": true });
+		startMemoryStartupTask({
+			session: explicitlyOff.session,
+			settings: explicitlyOff.settings,
+			modelRegistry: explicitlyOff.modelRegistry,
+			agentDir: explicitlyOff.agentDir,
 			taskDepth: 0,
 		});
 		expect(openSpy).not.toHaveBeenCalled();
@@ -453,9 +463,9 @@ describe("buildMemoryToolDeveloperInstructions", () => {
 	});
 
 	afterEach(async () => {
-		restoreTrackedSpies();
-		process.env.XDG_DATA_HOME = savedXdgData;
-		process.env.XDG_STATE_HOME = savedXdgState;
+		vi.restoreAllMocks();
+		restoreEnvValue("XDG_DATA_HOME", savedXdgData);
+		restoreEnvValue("XDG_STATE_HOME", savedXdgState);
 	});
 
 	test("returns undefined for missing or empty summaries", async () => {

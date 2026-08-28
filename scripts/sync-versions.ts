@@ -61,7 +61,8 @@ console.log("\n✅ All packages at same version (lockstep)");
 
 // Update all inter-package dependencies
 let totalUpdates = 0;
-for (const pkg of Object.values(packages)) {
+for (const dir in packages) {
+	const pkg = packages[dir];
 	let updated = false;
 
 	// Check dependencies

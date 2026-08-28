@@ -10,6 +10,7 @@
 import type { ImageContent, Model } from "@pk-nerdsaver-ai/pi-ai";
 import type {
 	BusChannel,
+	CollabUiRequest,
 	GuestFrame,
 	ParsedCollabLink,
 	Participant,
@@ -31,6 +32,10 @@ import type { SessionEntry, SessionHeader } from "../session/session-entries";
 
 export type {
 	CollabPromptDetails,
+	CollabUiRequest,
+	CollabUiRequestDraft,
+	CollabUiResponseValue,
+	CollabUiSelectItem,
 	ParsedCollabLink,
 	RelayControlMessage,
 	RelayControlToGuest,
@@ -59,7 +64,7 @@ export type CollabSessionState = SessionState & {
  * that serialize into those shapes.
  */
 export type CollabFrame =
-	// guest -> host (hello/abort/agent-cmd/fetch-transcript/list/load are taken verbatim from the wire grammar)
+	// guest -> host (hello/abort/agent-cmd/fetch-transcript/ui-response are taken verbatim from the wire grammar)
 	| Exclude<GuestFrame, { t: "prompt" }>
 	| { t: "prompt"; text: string; images?: ImageContent[] }
 	// host -> guest
@@ -67,19 +72,26 @@ export type CollabFrame =
 			t: "welcome";
 			proto: number;
 			header: SessionHeader;
-			/**
-			 * Number of transcript entries that follow in the `snapshot-chunk`
-			 * train. The welcome itself never carries the transcript inline — a
-			 * multi-MB single-frame welcome spent the guest's first-welcome
-			 * timeout on the default relay (#3144).
-			 */
-			entryCount: number;
 			state: CollabSessionState;
 			agents: AgentSnapshot[];
+			/**
+			 * Total number of `SessionEntry` items the host will deliver in the
+			 * `snapshot-chunk` frames that follow. The guest stays in the
+			 * snapshot-loading phase until it has accumulated that many entries
+			 * (or a chunk arrives with `final: true`).
+			 */
+			entryCount: number;
 			/** True when this peer joined through a read-only (view) link. */
 			readOnly?: boolean;
 	  }
-	/** Transcript snapshot train following a welcome; only the last chunk carries `final: true`. */
+	/**
+	 * Targeted snapshot fragment delivered after `welcome`. Splits a large
+	 * transcript across many small frames so the guest's per-chunk progress
+	 * timeout resets each time the relay delivers another batch; without
+	 * chunking, a multi-MB session has to fit one giant frame inside the
+	 * 30 s first-welcome budget. The last chunk carries `final: true` so the
+	 * guest can finalize the replica session.
+	 */
 	| { t: "snapshot-chunk"; entries: SessionEntry[]; final: boolean }
 	| { t: "entry"; entry: SessionEntry }
 	| { t: "event"; event: AgentSessionEvent }
@@ -88,7 +100,9 @@ export type CollabFrame =
 	| { t: "bus"; channel: BusChannel; data: unknown }
 	/** Full agent-registry snapshot (debounced on registry change). */
 	| { t: "agents"; agents: AgentSnapshot[] }
-	/** Targeted reply to fetch-transcript; `text` is decoded JSONL from `fromByte`, `newSize` the next offset base. */
+	| { t: "ui-request"; request: CollabUiRequest }
+	| { t: "ui-request-end"; reqId: number }
+	/** Targeted reply to fetch-transcript; `error` marks a terminal read failure that guests must surface without hot retrying. */
 	| { t: "transcript"; reqId: number; text: string; newSize: number; error?: string }
 	| {
 			t: "sessions";

@@ -8,7 +8,7 @@
 import type { ExtensionAPI } from "@pk-nerdsaver-ai/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
-	const { z } = pi.zod;
+	const z = pi.zod;
 
 	// Command entrypoint for reload.
 	// Treat reload as terminal for this handler.

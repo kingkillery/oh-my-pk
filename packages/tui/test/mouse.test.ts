@@ -5,7 +5,7 @@ import {
 	routeSgrMouseInput,
 	type SelectListMouseTarget,
 	type SgrMouseEvent,
-} from "@pk-nerdsaver-ai/pi-tui/mouse";
+} from "@oh-my-pi/pi-tui/mouse";
 
 describe("parseSgrMouse", () => {
 	it("returns null for non-mouse input", () => {

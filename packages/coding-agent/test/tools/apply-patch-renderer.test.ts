@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { ToolExecutionComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/tool-execution";
-import * as themeModule from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
-import { toolRenderers } from "@pk-nerdsaver-ai/pi-coding-agent/tools/renderers";
-import type { TUI } from "@pk-nerdsaver-ai/pi-tui";
-import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
+import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
+import type { TUI } from "@oh-my-pi/pi-tui";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 async function getUiTheme() {
 	await themeModule.initTheme(false, undefined, undefined, "dark", "light");
@@ -48,7 +48,7 @@ describe("apply_patch rendering", () => {
 
 	it("renders apply_patch results through edit UI instead of generic fallback", async () => {
 		await getUiTheme();
-		const uiStub = { requestRender() {} } as unknown as TUI;
+		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
 
 		const component = new ToolExecutionComponent(
 			"apply_patch",
@@ -127,7 +127,7 @@ describe("apply_patch rendering", () => {
 
 	it("shows apply_patch preview diffs after args complete", async () => {
 		await getUiTheme();
-		const uiStub = { requestRender() {} } as unknown as TUI;
+		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
 		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "apply-patch-preview-"));
 		try {
 			await Bun.write(path.join(tmpDir, "preview.ts"), "const value = 1;\n");
@@ -155,7 +155,7 @@ describe("apply_patch rendering", () => {
 
 	it("refreshes streaming preview immediately on arg updates without scheduling a debounce", async () => {
 		await getUiTheme();
-		const uiStub = { requestRender() {} } as unknown as TUI;
+		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
 		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "apply-patch-instant-preview-"));
 		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
 		try {
@@ -183,7 +183,7 @@ describe("apply_patch rendering", () => {
 
 	it("aligns rendered edit diff separators", async () => {
 		await getUiTheme();
-		const uiStub = { requestRender() {} } as unknown as TUI;
+		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
 		const component = new ToolExecutionComponent(
 			"edit",
 			{ path: "packages/coding-agent/src/tools/image-gen.ts" },

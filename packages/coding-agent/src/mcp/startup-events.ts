@@ -1,32 +1,23 @@
-import { sanitizeText } from "@pk-nerdsaver-ai/pi-utils";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 
 export const MCP_CONNECTION_STATUS_EVENT_CHANNEL = "mcp:connection-status";
 
-/**
- * Legacy channel for the initial "servers are connecting" burst. sdk.ts emits
- * it and interactive-mode listens; restored here because the callers landed
- * without this module gaining the export.
- */
-export const MCP_CONNECTING_EVENT_CHANNEL = "mcp:connecting";
-
-export type McpConnectingEvent = { serverNames: readonly string[] };
-
-export function isMcpConnectingEvent(data: unknown): data is McpConnectingEvent {
-	if (!data || typeof data !== "object") return false;
-	const serverNames = (data as { serverNames?: unknown }).serverNames;
-	return Array.isArray(serverNames) && serverNames.every(name => typeof name === "string");
-}
+export type McpConnectionFailure = {
+	serverName: string;
+	error: string;
+	sourcePath?: string;
+};
 
 export type McpConnectionStatusEvent =
 	| { type: "connecting"; serverNames: string[] }
 	| { type: "connected"; serverName: string }
-	| { type: "failed"; serverName: string; error: string };
+	| ({ type: "failed" } & McpConnectionFailure);
 
 export type McpConnectionStatusSnapshot = {
 	pendingServers: readonly string[];
 	connectedServers: readonly string[];
-	failedServers: readonly { serverName: string; error: string }[];
+	failedServers: readonly McpConnectionFailure[];
 };
 
 function sanitizeMcpStatusText(value: string, maxWidth: number): string {
@@ -70,8 +61,11 @@ export function formatMCPConnectingMessage(serverNames: readonly string[]): stri
 	return `Connecting to MCP servers: ${formatServerList(serverNames)}…`;
 }
 
-function formatFailedServer({ serverName, error }: { serverName: string; error: string }): string {
-	return `${sanitizeMcpServerName(serverName)}: ${sanitizeMcpStatusError(error)}`;
+function formatFailedServer({ serverName, error, sourcePath }: McpConnectionFailure): string {
+	const source = sourcePath
+		? ` [config: ${sanitizeMcpStatusText(shortenPath(sourcePath), TRUNCATE_LENGTHS.CONTENT)}]`
+		: "";
+	return `${sanitizeMcpServerName(serverName)}${source}: ${sanitizeMcpStatusError(error)}`;
 }
 
 export function formatMCPConnectionStatusMessage(snapshot: McpConnectionStatusSnapshot): string {
@@ -124,7 +118,11 @@ export function isMcpConnectionStatusEvent(data: unknown): data is McpConnection
 		case "connected":
 			return typeof data.serverName === "string";
 		case "failed":
-			return typeof data.serverName === "string" && typeof data.error === "string";
+			return (
+				typeof data.serverName === "string" &&
+				typeof data.error === "string" &&
+				(data.sourcePath === undefined || typeof data.sourcePath === "string")
+			);
 		default:
 			return false;
 	}

@@ -1,10 +1,10 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as os from "node:os";
-import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { InternalUrlRouter } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls/router";
-import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
-import { GlobTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/glob";
-import { resolveToolSearchScope } from "@pk-nerdsaver-ai/pi-coding-agent/tools/path-utils";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls/router";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { GlobTool } from "@oh-my-pi/pi-coding-agent/tools/glob";
+import { resolveToolSearchScope } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 
 // Minimal ToolSession stub (ssh-url-approval.test.ts shape). The ssh:// guard
 // fires before any session/SSH access, so no real cwd/fs is needed.
@@ -43,7 +43,7 @@ describe("ssh:// is rejected before any connection in read/write-tier tools", ()
 		for (const internalUrlAction of ["search", "rewrite"]) {
 			await expect(
 				resolveToolSearchScope({ rawPaths: ["ssh://h/x"], cwd: os.tmpdir(), internalUrlAction }),
-			).rejects.toThrow(/ssh:\/\//);
+			).rejects.toThrow(/use `grep` on a specific remote file/);
 		}
 		expect(spy).not.toHaveBeenCalled();
 	});
@@ -53,7 +53,7 @@ describe("ssh:// is rejected before any connection in read/write-tier tools", ()
 			.spyOn(InternalUrlRouter.instance(), "resolve")
 			.mockRejectedValue(new Error("resolve must not run for ssh://"));
 		const tool = new GlobTool(createTestToolSession(os.tmpdir()));
-		await expect(tool.execute("f", { paths: ["ssh://h/x"] })).rejects.toThrow(/ssh:\/\//);
+		await expect(tool.execute("f", { path: "ssh://h/x" })).rejects.toThrow(/ssh:\/\//);
 		expect(spy).not.toHaveBeenCalled();
 	});
 });

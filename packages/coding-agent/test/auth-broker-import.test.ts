@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AuthStorage, SqliteAuthCredentialStore } from "@pk-nerdsaver-ai/pi-ai";
-import { type AuthBrokerServerHandle, startAuthBroker } from "@pk-nerdsaver-ai/pi-ai/auth-broker";
-import { runAuthBrokerCommand } from "@pk-nerdsaver-ai/pi-coding-agent/cli/auth-broker-cli";
-import { getAgentDbPath, removeWithRetries, setAgentDir } from "@pk-nerdsaver-ai/pi-utils";
+import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
+import { type AuthBrokerServerHandle, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
+import { runAuthBrokerCommand } from "@oh-my-pi/pi-coding-agent/cli/auth-broker-cli";
+import { getAgentDbPath, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 
 const ORIGINAL_STDOUT_WRITE = process.stdout.write.bind(process.stdout);
 
@@ -22,9 +22,14 @@ describe("auth-broker import (CLIProxyAPI)", () => {
 	let agentDir = "";
 	let cliproxyDir = "";
 	let originalAgentDir: string | undefined;
+	const savedEnv: Record<string, string | undefined> = {};
 
 	beforeEach(async () => {
 		originalAgentDir = process.env.OMP_AGENT_DIR;
+		savedEnv.OMP_AUTH_BROKER_URL = process.env.OMP_AUTH_BROKER_URL;
+		savedEnv.OMP_AUTH_BROKER_TOKEN = process.env.OMP_AUTH_BROKER_TOKEN;
+		delete process.env.OMP_AUTH_BROKER_URL;
+		delete process.env.OMP_AUTH_BROKER_TOKEN;
 		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-import-agent-"));
 		cliproxyDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-import-cliproxy-"));
 		setAgentDir(agentDir);
@@ -36,6 +41,10 @@ describe("auth-broker import (CLIProxyAPI)", () => {
 		else process.env.OMP_AGENT_DIR = originalAgentDir;
 		await removeWithRetries(agentDir);
 		await removeWithRetries(cliproxyDir);
+		for (const key of ["OMP_AUTH_BROKER_URL", "OMP_AUTH_BROKER_TOKEN"] as const) {
+			if (savedEnv[key] === undefined) delete process.env[key];
+			else process.env[key] = savedEnv[key];
+		}
 	});
 
 	async function writeCliProxyJson(name: string, body: Record<string, unknown>): Promise<string> {

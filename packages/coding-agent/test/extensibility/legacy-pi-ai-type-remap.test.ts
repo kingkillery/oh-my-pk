@@ -4,11 +4,19 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as url from "node:url";
 import {
+	calculateCost,
+	getBundledModel,
+	getBundledModels,
+	getBundledProviders,
+	modelsAreEqual,
+} from "@oh-my-pi/pi-catalog/models";
+import { Type as TypeBoxShimType } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-typebox";
+import {
 	__resetLegacyPiResolutionCache,
 	installLegacyPiSpecifierShim,
 	loadLegacyPiModule,
-} from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/plugins/legacy-pi-compat";
-import { Type as TypeBoxShimType } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/typebox";
+} from "@oh-my-pi/pi-coding-agent/extensibility/plugins/legacy-pi-compat";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 // pi-ai 15.1.0 removed the runtime `Type` export from `@pk-nerdsaver-ai/pi-ai`'s
 // package root. Legacy extensions (and their aliased-scope variants such as
@@ -28,7 +36,7 @@ afterEach(() => {
 
 afterAll(async () => {
 	for (const dir of tempRoots) {
-		await fs.rm(dir, { recursive: true, force: true });
+		await removeWithRetries(dir);
 	}
 });
 
@@ -61,7 +69,26 @@ describe("legacy-pi @(scope)/pi-ai root `Type` remap (issue #1437)", () => {
 		expect(loaded.schema.safeParse({ name: "ok", extra: 1 }).success).toBe(false);
 	});
 
-	it('redirects `import { Type } from "@pk-nerdsaver-ai/pi-ai"` for plugins published against the canonical scope', async () => {
+	it("redirects the legacy pi-ai compat entrypoint through the root compatibility shim", async () => {
+		const entry = await writeFixtureExtension(
+			[
+				'import { StringEnum, complete, type Model } from "@earendil-works/pi-ai/compat";',
+				'export const schema = StringEnum(["red", "green"] as const);',
+				"export const completeType = typeof complete;",
+				"export type LegacyModel = Model;",
+			].join("\n"),
+		);
+
+		const loaded = (await loadLegacyPiModule(entry)) as {
+			schema: { safeParse: (input: unknown) => { success: boolean } };
+			completeType: string;
+		};
+		expect(loaded.schema.safeParse("red").success).toBe(true);
+		expect(loaded.schema.safeParse("blue").success).toBe(false);
+		expect(loaded.completeType).toBe("function");
+	});
+
+	it('redirects `import { Type } from "@oh-my-pi/pi-ai"` for plugins published against the canonical scope', async () => {
 		const entry = await writeFixtureExtension(
 			['import { Type } from "@pk-nerdsaver-ai/pi-ai";', "export const probe = Type;"].join("\n"),
 		);
@@ -70,38 +97,82 @@ describe("legacy-pi @(scope)/pi-ai root `Type` remap (issue #1437)", () => {
 		expect(loaded.probe).toBe(TypeBoxShimType);
 	});
 
-	it("preserves canonical pi-ai exports alongside the shimmed Type (z is still re-exported)", async () => {
+	it("does not redirect subpath imports such as @oh-my-pi/pi-ai/utils/schema", async () => {
 		const entry = await writeFixtureExtension(
 			[
-				'import { Type, z } from "@earendil-works/pi-ai";',
-				"export const obj = Type.Object({ name: Type.String() });",
-				"export const zodObj = z.object({ name: z.string() });",
-			].join("\n"),
-		);
-
-		const loaded = (await loadLegacyPiModule(entry)) as {
-			obj: { safeParse: (input: unknown) => { success: boolean } };
-			zodObj: { safeParse: (input: unknown) => { success: boolean } };
-		};
-
-		expect(loaded.obj.safeParse({ name: "ok" }).success).toBe(true);
-		expect(loaded.zodObj.safeParse({ name: "ok" }).success).toBe(true);
-		expect(loaded.zodObj.safeParse({}).success).toBe(false);
-	});
-
-	it("does not redirect subpath imports such as @pk-nerdsaver-ai/pi-ai/utils/schema", async () => {
-		const entry = await writeFixtureExtension(
-			[
-				// `zodToWireSchema` is only exported from the subpath, not the root,
+				// `arkToWireSchema` is only exported from the subpath, not the root,
 				// so a successful import proves the subpath still resolves directly
 				// against the bundled pi-ai package rather than the shim.
-				'import { zodToWireSchema } from "@pk-nerdsaver-ai/pi-ai/utils/schema";',
-				"export const fn = zodToWireSchema;",
+				'import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";',
+				"export const fn = arkToWireSchema;",
 			].join("\n"),
 		);
 
 		const loaded = (await loadLegacyPiModule(entry)) as { fn: unknown };
 		expect(typeof loaded.fn).toBe("function");
+	});
+
+	it("re-exports the legacy model catalog and schema helpers from the root", async () => {
+		const loaded = (await loadLegacyPiModule(
+			await writeFixtureExtension(
+				[
+					'import { calculateCost, clampThinkingLevel, getBundledModel, getBundledModels, getBundledProviders, getModel, getModels, modelsAreEqual, StringEnum } from "@oh-my-pi/pi-ai";',
+					"export const helpers = { calculateCost, getBundledModel, getBundledModels, getBundledProviders, getModel, getModels, modelsAreEqual };",
+					"export const supported = clampThinkingLevel({ reasoning: true, thinking: { efforts: ['low', 'high'] } }, 'high');",
+					"export const disabled = clampThinkingLevel({ reasoning: false }, 'high');",
+					'export const schema = StringEnum(["red", "green"] as const, { description: "primary colors" });',
+				].join("\n"),
+			),
+		)) as {
+			helpers: {
+				calculateCost: unknown;
+				getBundledModel: unknown;
+				getBundledModels: unknown;
+				getBundledProviders: unknown;
+				getModel: unknown;
+				getModels: unknown;
+				modelsAreEqual: unknown;
+			};
+			supported: string;
+			disabled: string;
+			schema: { safeParse: (input: unknown) => { success: boolean }; toJSON?: () => any };
+		};
+
+		expect(loaded.helpers.calculateCost).toBe(calculateCost);
+		expect(loaded.helpers.getModel).toBe(getBundledModel);
+		expect(loaded.helpers.getModels).toBe(getBundledModels);
+		expect(loaded.helpers.getBundledModel).toBe(getBundledModel);
+		expect(loaded.helpers.getBundledModels).toBe(getBundledModels);
+		expect(loaded.helpers.getBundledProviders).toBe(getBundledProviders);
+		expect(loaded.helpers.modelsAreEqual).toBe(modelsAreEqual);
+		expect(loaded.supported).toBe("high");
+		expect(loaded.disabled).toBe("off");
+		expect(loaded.schema.safeParse("red").success).toBe(true);
+		expect(loaded.schema.safeParse("blue").success).toBe(false);
+		expect(loaded.schema.toJSON?.()?.description).toBe("primary colors");
+	});
+
+	it("exports isRetryableAssistantError for legacy retry classification (issue #6847)", async () => {
+		// `@earendil-works/pi-ai@0.82.x` exports isRetryableAssistantError from its
+		// package root (utils/retry.js). Plugins such as
+		// `@router-for-me/pi-cliproxyapi-provider` (>=1.4.9) import it, so a missing
+		// shim export surfaced as a plain
+		// `Export named 'isRetryableAssistantError' not found` at validation time.
+		const loaded = (await loadLegacyPiModule(
+			await writeFixtureExtension(
+				[
+					'import { isRetryableAssistantError } from "@earendil-works/pi-ai";',
+					'const err = errorMessage => ({ role: "assistant", stopReason: "error", errorMessage });',
+					'export const transient = isRetryableAssistantError(err("upstream connect error"));',
+					'export const quota = isRetryableAssistantError(err("insufficient_quota"));',
+					'export const ok = isRetryableAssistantError({ role: "assistant", stopReason: "stop" });',
+				].join("\n"),
+			),
+		)) as { transient: boolean; quota: boolean; ok: boolean };
+
+		expect(loaded.transient).toBe(true);
+		expect(loaded.quota).toBe(false);
+		expect(loaded.ok).toBe(false);
 	});
 });
 
@@ -125,6 +196,54 @@ describe("legacy pi package root remaps (issue #1474)", () => {
 
 		const loaded = (await loadLegacyPiModule(entry)) as { loadedVersion: string };
 		expect(loaded.loadedVersion).toMatch(/^\d+\.\d+\.\d+/);
+	});
+
+	it("loads pi-vimmode's minified legacy imports", async () => {
+		const entry = await writeFixtureExtension(
+			[
+				'import{CustomEditor,copyToClipboard}from"@earendil-works/pi-coding-agent";',
+				'import{CURSOR_MARKER,decodeKittyPrintable,matchesKey,parseKey,truncateToWidth,visibleWidth}from"@earendil-works/pi-tui";',
+				"export const apiTypes=[typeof CustomEditor,typeof copyToClipboard,typeof CURSOR_MARKER,typeof decodeKittyPrintable,typeof matchesKey,typeof parseKey,typeof truncateToWidth,typeof visibleWidth];",
+				'export const printable=decodeKittyPrintable("\\x1b[97u");',
+			].join("\n"),
+		);
+
+		const loaded = (await loadLegacyPiModule(entry)) as { apiTypes: string[]; printable: string };
+		expect(loaded.apiTypes).toEqual([
+			"function",
+			"function",
+			"string",
+			"function",
+			"function",
+			"function",
+			"function",
+			"function",
+		]);
+		expect(loaded.printable).toBe("a");
+	});
+
+	it("loads pi-sprite's legacy terminal helpers", async () => {
+		const entry = await writeFixtureExtension(
+			[
+				'import { deleteAllKittyImages, deleteKittyImage, getCapabilities } from "@earendil-works/pi-tui";',
+				"export const deleteOne = deleteKittyImage(42);",
+				"export const deleteAll = deleteAllKittyImages();",
+				"export const capabilities = getCapabilities();",
+			].join("\n"),
+		);
+
+		const loaded = (await loadLegacyPiModule(entry)) as {
+			deleteOne: string;
+			deleteAll: string;
+			capabilities: { images: "kitty" | "iterm2" | null; trueColor: boolean; hyperlinks: boolean };
+		};
+		// Bare sequences, exactly like upstream Pi: legacy callers (pi-sprite)
+		// apply their own tmux passthrough wrapping.
+		expect(loaded.deleteOne).toBe("\x1b_Ga=d,d=I,i=42,q=2\x1b\\");
+		expect(loaded.deleteAll).toBe("\x1b_Ga=d,d=A,q=2\x1b\\");
+		expect(["kitty", "iterm2", null]).toContain(loaded.capabilities.images);
+		expect(typeof loaded.capabilities.trueColor).toBe("boolean");
+		expect(typeof loaded.capabilities.hyperlinks).toBe("boolean");
 	});
 
 	it("preserves legacy defineTool root imports and usable coding tools", async () => {

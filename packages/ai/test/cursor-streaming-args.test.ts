@@ -1,13 +1,16 @@
 import { describe, expect, it } from "bun:test";
 import {
 	type BlockState,
+	flushOpenToolCalls,
 	mergeCursorMcpToolCallArgs,
 	processInteractionUpdate,
+	synthesizeCursorExecToolCall,
 	type ToolCallState,
 	type UsageState,
-} from "@pk-nerdsaver-ai/pi-ai/providers/cursor";
-import type { AssistantMessage, AssistantMessageEvent } from "@pk-nerdsaver-ai/pi-ai/types";
-import { AssistantMessageEventStream } from "@pk-nerdsaver-ai/pi-ai/utils/event-stream";
+} from "@oh-my-pi/pi-ai/providers/cursor";
+import type { AssistantMessage, AssistantMessageEvent } from "@oh-my-pi/pi-ai/types";
+import { getStreamingPartialJson, kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 
 interface Harness {
 	output: AssistantMessage;
@@ -56,6 +59,8 @@ function newHarness(): Harness {
 		get currentToolCall() {
 			return toolCall;
 		},
+		openToolCalls: new Map(),
+		resolvedMcpToolCallIds: new Set(),
 		firstTokenTime: undefined,
 		setTextBlock: b => {
 			textBlock = b;
@@ -71,7 +76,7 @@ function newHarness(): Harness {
 	return { output, stream, captured, state, usageState: { sawTokenDelta: false } };
 }
 
-function startMcpToolCall(h: Harness, name: string, id = "call-1"): void {
+function startMcpToolCall(h: Harness, name: string, id = "call-1", args?: Record<string, Uint8Array>): void {
 	processInteractionUpdate(
 		{
 			message: {
@@ -79,7 +84,7 @@ function startMcpToolCall(h: Harness, name: string, id = "call-1"): void {
 				value: {
 					callId: id,
 					toolCall: {
-						mcpToolCall: { args: { name, toolName: name, toolCallId: id } },
+						mcpToolCall: { args: { name, toolName: name, toolCallId: id, args } },
 					},
 				},
 			},
@@ -170,6 +175,39 @@ describe("mergeCursorMcpToolCallArgs", () => {
 	});
 });
 
+describe("Cursor MCP exec resolution", () => {
+	it("marks a streamed MCP call already resolved by the exec bridge", () => {
+		const h = newHarness();
+		h.state.resolvedMcpToolCallIds.add("call-resolved");
+
+		startMcpToolCall(h, "mcp__fixture_report", "call-resolved");
+
+		const block = h.output.content[0] as ToolCallState;
+		expect(block[kCursorExecResolved]).toBe(true);
+		expect(h.state.resolvedMcpToolCallIds.size).toBe(0);
+	});
+
+	it("does not duplicate an MCP call synthesized from an earlier exec frame", () => {
+		const h = newHarness();
+		synthesizeCursorExecToolCall(h.output, h.stream, h.state, "call-resolved", "web_search", {
+			query: "latest chess news",
+		});
+		h.state.resolvedMcpToolCallIds.add("call-resolved");
+
+		startMcpToolCall(h, "web_search", "call-resolved");
+
+		expect(h.output.content).toHaveLength(1);
+		expect(h.output.content[0]).toMatchObject({
+			type: "toolCall",
+			id: "call-resolved",
+			name: "web_search",
+			arguments: { query: "latest chess news" },
+		});
+		expect(h.captured.map(event => event.type)).toEqual(["toolcall_start", "toolcall_end"]);
+		expect(h.state.resolvedMcpToolCallIds.size).toBe(0);
+	});
+});
+
 describe("processInteractionUpdate content block ordering", () => {
 	it("opens a new text block after a completed tool call", () => {
 		const h = newHarness();
@@ -196,6 +234,41 @@ describe("processInteractionUpdate content block ordering", () => {
 });
 
 describe("processInteractionUpdate args_text_delta handling", () => {
+	it("preserves announced args when Cursor streams no argument deltas", () => {
+		const h = newHarness();
+		startMcpToolCall(h, "get_weather", "call-weather", {
+			city: new TextEncoder().encode(`"Paris"`),
+		});
+
+		completeMcpToolCall(h, undefined);
+
+		expect(h.output.content[0]).toMatchObject({
+			type: "toolCall",
+			id: "call-weather",
+			name: "get_weather",
+			arguments: { city: "Paris" },
+		});
+		expect(h.captured.map(event => event.type)).toEqual(["toolcall_start", "toolcall_end"]);
+	});
+
+	it("preserves announced args when the stream ends before tool completion", () => {
+		const h = newHarness();
+		startMcpToolCall(h, "get_weather", "call-weather", {
+			city: new TextEncoder().encode(`"Paris"`),
+		});
+
+		flushOpenToolCalls(h.output, h.stream, h.state);
+
+		expect(h.output.content[0]).toMatchObject({
+			type: "toolCall",
+			id: "call-weather",
+			name: "get_weather",
+			arguments: { city: "Paris" },
+		});
+		expect(h.state.currentToolCall).toBeNull();
+		expect(h.captured.map(event => event.type)).toEqual(["toolcall_start", "toolcall_end"]);
+	});
+
 	it("treats cumulative argsTextDelta snapshots as snapshots, not append-only fragments", () => {
 		const h = newHarness();
 		startMcpToolCall(h, "task");
@@ -211,16 +284,23 @@ describe("processInteractionUpdate args_text_delta handling", () => {
 		}
 
 		const block = h.state.currentToolCall!;
-		expect(block.partialJson).toBe(cumulative[cumulative.length - 1]);
-		expect(block.arguments).toEqual({
-			agent: "task",
-			tasks: [{ assignment: "do A" }, { assignment: "do B" }],
-		});
+		expect(getStreamingPartialJson(block)).toBe(cumulative[cumulative.length - 1]);
 
 		// Each cumulative snapshot only emits the new suffix as the delta event.
 		const deltas = h.captured.filter(e => e.type === "toolcall_delta").map(e => (e as { delta: string }).delta);
 		expect(deltas.join("")).toBe(cumulative[cumulative.length - 1]);
 		expect(deltas).toEqual([`{"agent":"task","tas`, `ks":[{"assignme`, `nt":"do A"},{"assignment":"do B"}]}`]);
+
+		// The delta path throttles mid-stream parses; the authoritative full parse
+		// runs at toolCallCompleted, so the finalized block carries the full args.
+		completeMcpToolCall(h, undefined);
+		const finalBlock = h.output.content[0];
+		expect(finalBlock?.type).toBe("toolCall");
+		if (finalBlock?.type !== "toolCall") throw new Error("expected toolCall block");
+		expect(finalBlock.arguments).toEqual({
+			agent: "task",
+			tasks: [{ assignment: "do A" }, { assignment: "do B" }],
+		});
 	});
 
 	it("still appends genuinely incremental argsTextDelta fragments", () => {
@@ -232,8 +312,47 @@ describe("processInteractionUpdate args_text_delta handling", () => {
 			pushArgsTextDelta(h, fragment);
 		}
 
-		expect(h.state.currentToolCall!.partialJson).toBe(fragments.join(""));
-		expect(h.state.currentToolCall!.arguments).toEqual({ agent: "task", items: [1, 2, 3] });
+		expect(getStreamingPartialJson(h.state.currentToolCall!)).toBe(fragments.join(""));
+
+		// Finalize to observe the authoritative full parse (delta path is throttled).
+		completeMcpToolCall(h, undefined);
+		const finalBlock = h.output.content[0];
+		expect(finalBlock?.type).toBe("toolCall");
+		if (finalBlock?.type !== "toolCall") throw new Error("expected toolCall block");
+		expect(finalBlock.arguments).toEqual({ agent: "task", items: [1, 2, 3] });
+	});
+
+	it("throttles mid-stream arg parsing to bound work at O(N) in buffer length (issue #3946)", () => {
+		// Regression for the O(N²) streaming hot path: parseStreamingJson used to
+		// run on every delta, re-parsing the entire accumulated buffer each time.
+		// With parseStreamingJsonThrottled, mid-stream re-parses only fire once
+		// the buffer has grown by at least STREAMING_JSON_PARSE_MIN_GROWTH bytes.
+		const h = newHarness();
+		startMcpToolCall(h, "task");
+
+		// First snapshot: initial parse fires (lastParsedLen was 0).
+		pushArgsTextDelta(h, `{"agent":"task","note":"initial"`);
+		const block = h.state.currentToolCall!;
+		const argsAfterFirst = block.arguments;
+		expect(argsAfterFirst).toEqual({ agent: "task", note: "initial" });
+
+		// Tiny follow-up snapshots that grow the buffer by far less than the
+		// throttle threshold. block.arguments must NOT be re-parsed; if it were,
+		// the O(N²) regression would resurface for a long stream of small deltas.
+		pushArgsTextDelta(h, `{"agent":"task","note":"initial","step":1`);
+		pushArgsTextDelta(h, `{"agent":"task","note":"initial","step":12`);
+		expect(block.arguments).toBe(argsAfterFirst);
+
+		// The full buffer is still accumulated for the authoritative final parse.
+		expect(getStreamingPartialJson(block)).toBe(`{"agent":"task","note":"initial","step":12`);
+
+		// toolCallCompleted re-parses the full buffer unconditionally; the merged
+		// arguments reflect every byte streamed, including the throttled tail.
+		completeMcpToolCall(h, undefined);
+		const finalBlock = h.output.content[0];
+		expect(finalBlock?.type).toBe("toolCall");
+		if (finalBlock?.type !== "toolCall") throw new Error("expected toolCall block");
+		expect(finalBlock.arguments).toEqual({ agent: "task", note: "initial", step: 12 });
 	});
 
 	it("skips empty argsTextDelta snapshots without emitting a delta event", () => {
@@ -244,7 +363,7 @@ describe("processInteractionUpdate args_text_delta handling", () => {
 		pushArgsTextDelta(h, `{"agent":"task"}`);
 		pushArgsTextDelta(h, "");
 
-		expect(h.state.currentToolCall!.partialJson).toBe(`{"agent":"task"}`);
+		expect(getStreamingPartialJson(h.state.currentToolCall!)).toBe(`{"agent":"task"}`);
 		const deltas = h.captured.filter(e => e.type === "toolcall_delta");
 		expect(deltas).toHaveLength(1);
 	});
@@ -274,6 +393,117 @@ describe("processInteractionUpdate args_text_delta handling", () => {
 			agent: "task",
 			tasks: [{ assignment: "do A" }, { assignment: "do B" }],
 			context: "ctx",
+		});
+	});
+});
+
+describe("synthesizeCursorExecToolCall (issue #4348)", () => {
+	it("closes preceding text/thinking blocks before opening the synthesized toolCall", () => {
+		const h = newHarness();
+
+		pushTextDelta(h, "reading ");
+		synthesizeCursorExecToolCall(h.output, h.stream, h.state, "call-read", "read", { path: "src/foo.ts" });
+
+		expect(h.output.content.map(b => b.type)).toEqual(["text", "toolCall"]);
+		expect(h.output.content[0]).toMatchObject({ type: "text", text: "reading " });
+		expect(h.output.content[1]).toMatchObject({
+			type: "toolCall",
+			id: "call-read",
+			name: "read",
+			arguments: { path: "src/foo.ts" },
+		});
+		// text_end fires before toolcall_start so the preceding text block finalizes;
+		// toolcall_end fires immediately after — exec-channel args arrive complete,
+		// so no partial-JSON streaming is needed for the synthesized block.
+		expect(h.captured.map(e => e.type)).toEqual([
+			"text_start",
+			"text_delta",
+			"text_end",
+			"toolcall_start",
+			"toolcall_end",
+		]);
+		expect(h.state.currentTextBlock).toBeNull();
+		expect(h.state.currentToolCall).toBeNull();
+	});
+
+	it("preserves interleaving order across text ↔ tool ↔ text", () => {
+		const h = newHarness();
+
+		pushTextDelta(h, "planning ");
+		synthesizeCursorExecToolCall(h.output, h.stream, h.state, "t1", "read", { path: "a.txt" });
+		pushTextDelta(h, "then ");
+		synthesizeCursorExecToolCall(h.output, h.stream, h.state, "t2", "bash", {
+			command: "echo hi",
+			cwd: undefined,
+			timeout: undefined,
+		});
+		pushTextDelta(h, "done");
+
+		expect(h.output.content.map(b => b.type)).toEqual(["text", "toolCall", "text", "toolCall", "text"]);
+		const [t1, tc1, t2, tc2, t3] = h.output.content;
+		expect(t1).toMatchObject({ type: "text", text: "planning " });
+		expect(tc1).toMatchObject({ type: "toolCall", id: "t1", name: "read" });
+		expect(t2).toMatchObject({ type: "text", text: "then " });
+		expect(tc2).toMatchObject({
+			type: "toolCall",
+			id: "t2",
+			name: "bash",
+			// Undefined optional kwargs are dropped so ArkType optional-field
+			// validation does not reject the synthesized block.
+			arguments: { command: "echo hi" },
+		});
+		expect(t3).toMatchObject({ type: "text", text: "done" });
+	});
+
+	it("omits undefined optional kwargs from synthesized exec tool args", () => {
+		const h = newHarness();
+		synthesizeCursorExecToolCall(h.output, h.stream, h.state, "bash-1", "bash", {
+			command: "pwd",
+			cwd: undefined,
+			timeout: 30,
+		});
+		synthesizeCursorExecToolCall(h.output, h.stream, h.state, "grep-1", "grep", {
+			pattern: "needle",
+			path: ".",
+			case: undefined,
+			skip: undefined,
+		});
+		const [bashCall, grepCall] = h.output.content;
+		expect(bashCall).toMatchObject({
+			type: "toolCall",
+			id: "bash-1",
+			name: "bash",
+			arguments: { command: "pwd", timeout: 30 },
+		});
+		expect(Object.hasOwn((bashCall as { arguments: object }).arguments, "cwd")).toBe(false);
+		expect(grepCall).toMatchObject({
+			type: "toolCall",
+			id: "grep-1",
+			name: "grep",
+			arguments: { pattern: "needle", path: "." },
+		});
+		expect(Object.hasOwn((grepCall as { arguments: object }).arguments, "case")).toBe(false);
+		expect(Object.hasOwn((grepCall as { arguments: object }).arguments, "skip")).toBe(false);
+	});
+
+	it("emits toolcall events at the exact index the block occupies in content", () => {
+		const h = newHarness();
+
+		pushTextDelta(h, "pre");
+		synthesizeCursorExecToolCall(h.output, h.stream, h.state, "call-1", "grep", {
+			pattern: "foo",
+			path: ".",
+			case: undefined,
+		});
+
+		const toolStart = h.captured.find(e => e.type === "toolcall_start");
+		const toolEnd = h.captured.find(e => e.type === "toolcall_end");
+		// Text block sits at index 0; synthesized toolCall at index 1.
+		expect(toolStart).toMatchObject({ type: "toolcall_start", contentIndex: 1 });
+		expect(toolEnd).toMatchObject({
+			type: "toolcall_end",
+			contentIndex: 1,
+			toolCall: { id: "call-1", name: "grep" },
 		});
 	});
 });

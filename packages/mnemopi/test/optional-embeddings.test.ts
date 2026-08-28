@@ -1,6 +1,4 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { APP_NAME, getFastembedCacheDir } from "@pk-nerdsaver-ai/pi-utils";
-import "./setup";
 import {
 	available,
 	embed,
@@ -9,9 +7,10 @@ import {
 	resetEmbeddingProviderForTests,
 	setEmbeddingProviderForTests,
 	setLocalModelInitializerForTests,
-} from "@pk-nerdsaver-ai/pi-mnemopi/core/embeddings";
-import { Mnemopi } from "@pk-nerdsaver-ai/pi-mnemopi/core/memory";
-import { withMnemopiRuntimeOptions } from "@pk-nerdsaver-ai/pi-mnemopi/core/runtime-options";
+} from "@oh-my-pi/pi-mnemopi/core/embeddings";
+import { Mnemopi } from "@oh-my-pi/pi-mnemopi/core/memory";
+import { withMnemopiRuntimeOptions } from "@oh-my-pi/pi-mnemopi/core/runtime-options";
+import { getFastembedCacheDir } from "@oh-my-pi/pi-utils";
 import packageJson from "../package.json" with { type: "json" };
 
 const ENV_KEYS = [
@@ -133,9 +132,9 @@ describe("optional embeddings", () => {
 			fetch: async request => {
 				requests += 1;
 				expect(request.headers.get("content-type")).toBe("application/json");
-				expect(request.headers.get("user-agent")).toBe(`${APP_NAME}/${packageJson.version}`);
-				expect(request.headers.get("http-referer")).toBe("https://oh-my-pk.pkking.computer/");
-				expect(request.headers.get("x-openrouter-title")).toBe("Oh-My-PK");
+				expect(request.headers.get("user-agent")).toBe(`omp/${packageJson.version}`);
+				expect(request.headers.get("http-referer")).toBe("https://omp.sh/");
+				expect(request.headers.get("x-openrouter-title")).toBe("omp");
 				expect(request.headers.get("x-openrouter-categories")).toBe("cli-agent");
 				expect(request.headers.get("x-title")).toBeNull();
 				expect(request.headers.get("authorization")).toBeNull();

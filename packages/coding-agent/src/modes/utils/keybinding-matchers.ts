@@ -1,4 +1,4 @@
-import { getKeybindings, type KeyId, matchesKey } from "@pk-nerdsaver-ai/pi-tui";
+import { getKeybindings, type KeyId, matchesKey } from "@oh-my-pi/pi-tui";
 
 /**
  * Match the coding-agent interrupt key.
@@ -14,6 +14,16 @@ export function matchesAppInterrupt(data: string): boolean {
 		return keybindings.matches(data, "app.interrupt");
 	}
 	return matchesKey(data, "escape") || matchesKey(data, "esc");
+}
+
+/** Match `app.tools.expand`, falling back to Ctrl+O when the action is unbound. */
+export function matchesAppToolsExpand(data: string): boolean {
+	const keybindings = getKeybindings();
+	const expandKeys = keybindings.getKeys("app.tools.expand");
+	if (expandKeys.length > 0) {
+		return keybindings.matches(data, "app.tools.expand");
+	}
+	return matchesKey(data, "ctrl+o");
 }
 
 /** Match the generic selector cancel keybinding. */

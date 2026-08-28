@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
 	__resolveTypeBoxShimPath,
 	__validateLegacyPiPackageRootOverrides,
-} from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/plugins/legacy-pi-compat";
+} from "@oh-my-pi/pi-coding-agent/extensibility/plugins/legacy-pi-compat";
 
 // Regression for issue #2168: in compiled-binary mode the package-root
 // override branch of `resolveCanonicalPiSpecifier` returned a bunfs path
@@ -66,12 +66,12 @@ describe("legacy pi compat package-root override validation (issue #2168)", () =
 		// validator MUST short-circuit before any filesystem probe.
 		let probed = false;
 		const candidates = {
-			"@pk-nerdsaver-ai/pi-ai": "omp-legacy-pi-bundled:@pk-nerdsaver-ai/pi-ai",
-			"@pk-nerdsaver-ai/pi-coding-agent": "omp-legacy-pi-bundled:@pk-nerdsaver-ai/pi-coding-agent",
-			"@pk-nerdsaver-ai/pi-agent-core": "omp-legacy-pi-bundled:@pk-nerdsaver-ai/pi-agent-core",
-			"@pk-nerdsaver-ai/pi-natives": "omp-legacy-pi-bundled:@pk-nerdsaver-ai/pi-natives",
-			"@pk-nerdsaver-ai/pi-tui": "omp-legacy-pi-bundled:@pk-nerdsaver-ai/pi-tui",
-			"@pk-nerdsaver-ai/pi-utils": "omp-legacy-pi-bundled:@pk-nerdsaver-ai/pi-utils",
+			"@oh-my-pi/pi-ai": "omp-legacy-pi-bundled:@oh-my-pi/pi-ai",
+			"@oh-my-pi/pi-coding-agent": "omp-legacy-pi-bundled:@oh-my-pi/pi-coding-agent",
+			"@oh-my-pi/pi-agent-core": "omp-legacy-pi-bundled:@oh-my-pi/pi-agent-core",
+			"@oh-my-pi/pi-natives": "omp-legacy-pi-bundled:@oh-my-pi/pi-natives",
+			"@oh-my-pi/pi-tui": "omp-legacy-pi-bundled:@oh-my-pi/pi-tui",
+			"@oh-my-pi/pi-utils": "omp-legacy-pi-bundled:@oh-my-pi/pi-utils",
 		};
 		const result = __validateLegacyPiPackageRootOverrides(candidates, () => {
 			probed = true;
@@ -83,15 +83,15 @@ describe("legacy pi compat package-root override validation (issue #2168)", () =
 
 	it("mixes virtual and filesystem entries: virtuals always pass, filesystems gated", () => {
 		const candidates = {
-			"@pk-nerdsaver-ai/pi-ai": "omp-legacy-pi-bundled:@pk-nerdsaver-ai/pi-ai",
-			"@pk-nerdsaver-ai/pi-coding-agent": "/dev/source/legacy-pi-coding-agent-shim.ts",
-			"@pk-nerdsaver-ai/pi-tui": "/missing/path.ts",
+			"@oh-my-pi/pi-ai": "omp-legacy-pi-bundled:@oh-my-pi/pi-ai",
+			"@oh-my-pi/pi-coding-agent": "/dev/source/legacy-pi-coding-agent-shim.ts",
+			"@oh-my-pi/pi-tui": "/missing/path.ts",
 		};
 		const missing = new Set(["/missing/path.ts"]);
 		const result = __validateLegacyPiPackageRootOverrides(candidates, p => !missing.has(p));
 		expect(result).toEqual({
-			"@pk-nerdsaver-ai/pi-ai": "omp-legacy-pi-bundled:@pk-nerdsaver-ai/pi-ai",
-			"@pk-nerdsaver-ai/pi-coding-agent": "/dev/source/legacy-pi-coding-agent-shim.ts",
+			"@oh-my-pi/pi-ai": "omp-legacy-pi-bundled:@oh-my-pi/pi-ai",
+			"@oh-my-pi/pi-coding-agent": "/dev/source/legacy-pi-coding-agent-shim.ts",
 		});
 	});
 });

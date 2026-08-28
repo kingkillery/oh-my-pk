@@ -18,10 +18,11 @@
  *   POST /v1/responses                     → OpenAI Responses in/out
  */
 
-import { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
-import { extractHttpStatusFromError, extractRetryHint, logger } from "@pk-nerdsaver-ai/pi-utils";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
+import { extractHttpStatusFromError, extractRetryHint, logger } from "@oh-my-pi/pi-utils";
 import type { ApiKeyResolver } from "../auth-retry";
 import type { AuthStorage } from "../auth-storage";
+import * as AIError from "../error";
 import { classifyGatewayError } from "../error/gateway";
 import { isUsageLimitOutcome } from "../error/rate-limit";
 import * as anthropicMessages from "../providers/anthropic-messages-server";
@@ -29,10 +30,20 @@ import * as openaiChat from "../providers/openai-chat-server";
 import * as openaiResponses from "../providers/openai-responses-server";
 import * as piNative from "../providers/pi-native-server";
 import { completeSimple, streamSimple } from "../stream";
-import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "../types";
+import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "../types";
+import type { ClientUsageIdentity } from "../usage";
 import { deterministicUuid } from "../utils/deterministic-id";
 import { parseBind } from "../utils/parse-bind";
-import { captureRequestHeaders, corsHeaders, isAuthorized, json, resolvePeer, withCors } from "./http";
+import {
+	captureRequestHeaders,
+	corsHeaders,
+	gatewayResponseHeaders,
+	isAuthorized,
+	json,
+	resolveClientIdentity,
+	resolvePeer,
+	withCors,
+} from "./http";
 import type {
 	AuthGatewayServerHandle,
 	AuthGatewayServerOptions,
@@ -112,8 +123,8 @@ function deriveSessionId(modelId: string, context: Context): string {
 		parts.push(JSON.stringify({ role: first.role, content: first.content }));
 	}
 	const seed = parts.join("\u0000");
-	// The 36-char UUID flows through unchanged: Codex's
-	// `normalizeOpenAIResponsesPromptCacheKey` accepts ≤64 chars verbatim.
+	// The 36-char UUID flows through unchanged:
+	// `normalizeOpenAIPromptCacheKey` accepts ≤64 chars verbatim.
 	return deterministicUuid(seed);
 }
 
@@ -138,7 +149,11 @@ function buildStreamOptions(parsed: ParsedFormatRequest, api: Api, signal: Abort
 	if (options.headers !== undefined) opts.headers = { ...(opts.headers ?? {}), ...options.headers };
 	if (options.toolChoice !== undefined) {
 		opts.toolChoice =
-			typeof options.toolChoice === "object" ? { type: "tool", name: options.toolChoice.name } : options.toolChoice;
+			typeof options.toolChoice !== "object"
+				? options.toolChoice
+				: "type" in options.toolChoice
+					? options.toolChoice
+					: { type: "tool", name: options.toolChoice.name };
 	}
 	if (options.reasoning !== undefined) opts.reasoning = options.reasoning;
 	if (options.disableReasoning !== undefined) opts.disableReasoning = options.disableReasoning;
@@ -146,6 +161,7 @@ function buildStreamOptions(parsed: ParsedFormatRequest, api: Api, signal: Abort
 	if (options.taskBudget !== undefined) opts.taskBudget = options.taskBudget;
 	if (options.serviceTier !== undefined) opts.serviceTier = options.serviceTier;
 	if (options.cacheRetention !== undefined) opts.cacheRetention = options.cacheRetention;
+	if (options.include !== undefined) opts.include = options.include;
 	// Client-supplied `prompt_cache_key` wins; otherwise derive a stable
 	// key from the model + system + tools so prefix caching engages on
 	// Codex-class backends across turns of the same logical conversation.
@@ -227,12 +243,14 @@ async function refreshGatewayApiKeyAfterAuthError(
 	peer: string,
 ): Promise<string | undefined> {
 	const message = error instanceof Error ? error.message : String(error);
-	if (isUsageLimitOutcome(extractHttpStatusFromError(error), message)) {
+	const status = extractHttpStatusFromError(error);
+	if (AIError.isUsageLimit(error) || isUsageLimitOutcome(status, message)) {
 		const retryAfterMs = extractRetryHint(undefined, message);
 		const { switched, retryAtMs } = await storage.markUsageLimitReached(provider, sessionId, {
 			retryAfterMs,
 			baseUrl: model.baseUrl,
 			modelId: model.id,
+			apiKey: oldKey,
 			signal,
 		});
 		logger.debug("auth-gateway retrying provider request after usage-limit block", {
@@ -315,6 +333,31 @@ function clientClosedResponse(route: { module: FormatModule }): Response {
 	return route.module.formatError(499, "request_aborted", "client closed request");
 }
 
+/**
+ * Attribute one settled upstream request to the originating client via the
+ * broker's observed-usage channel (`AuthStorage.recordObservedUsage`, batched
+ * by the remote store). Error/aborted turns still record — the provider
+ * billed whatever tokens the partial turn consumed; zero-usage messages
+ * (pre-flight failures) are skipped.
+ */
+function recordGatewayUsage(
+	storage: AuthStorage,
+	model: Model<Api>,
+	client: ClientUsageIdentity,
+	message: AssistantMessage,
+): void {
+	const usage = message.usage;
+	if (usage.input + usage.output + usage.cacheRead + usage.cacheWrite === 0) return;
+	storage.recordObservedUsage({
+		provider: model.provider,
+		model: model.id,
+		at: message.timestamp || Date.now(),
+		usage: { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite },
+		costUsd: usage.cost.total,
+		client,
+	});
+}
+
 function mirrorRequestAbort(req: Request): AbortController {
 	const controller = new AbortController();
 	if (req.signal.aborted) {
@@ -333,6 +376,8 @@ async function handleFormatEndpoint(
 	req: Request,
 	peer: string,
 ): Promise<Response> {
+	const startedAt = performance.now();
+	const requestId = crypto.randomUUID();
 	const controller = mirrorRequestAbort(req);
 	if (controller.signal.aborted) return clientClosedResponse(route);
 
@@ -360,6 +405,7 @@ async function handleFormatEndpoint(
 	if (!model) {
 		return route.module.formatError(404, "invalid_request_error", `Unknown model: ${modelId}`);
 	}
+	const client = resolveClientIdentity(req.headers);
 
 	// Parse the wire-format request BEFORE resolving the credential so we
 	// have a stable per-conversation `sessionId` to thread into AuthStorage.
@@ -384,6 +430,28 @@ async function handleFormatEndpoint(
 		parsed.options.headers = { ...captured, ...(parsed.options.headers ?? {}) };
 	}
 	if (controller.signal.aborted) return clientClosedResponse(route);
+
+	const supportsOpenAIImageFileReferences =
+		model.api === "openai-responses" ||
+		model.api === "azure-openai-responses" ||
+		model.api === "openai-codex-responses";
+	if (
+		route.label === "openai-responses" &&
+		!supportsOpenAIImageFileReferences &&
+		parsed.context.messages.some(
+			message =>
+				message.role === "toolResult" &&
+				message.content.some(
+					block => block.type === "image" && block.providerFile?.provider === "openai" && block.providerFile.id,
+				),
+		)
+	) {
+		return route.module.formatError(
+			400,
+			"invalid_request_error",
+			"OpenAI image file IDs in tool outputs require a Responses-compatible upstream model",
+		);
+	}
 
 	// Sticky credential id: honour the client's `prompt_cache_key` when
 	// supplied (so external session ids align), otherwise derive from
@@ -429,6 +497,7 @@ async function handleFormatEndpoint(
 	);
 
 	logger.info("auth-gateway request", {
+		requestId,
 		format: route.label,
 		model: parsed.modelId,
 		resolvedProvider: model.provider,
@@ -441,6 +510,7 @@ async function handleFormatEndpoint(
 		try {
 			if (controller.signal.aborted) return clientClosedResponse(route);
 			const message = await completeSimple(model, parsed.context, streamOpts);
+			recordGatewayUsage(bootOpts.storage, model, client, message);
 			if (message.stopReason === "aborted" || message.stopReason === "error") {
 				const errorMessage =
 					message.errorMessage ??
@@ -454,10 +524,14 @@ async function handleFormatEndpoint(
 				if (message.stopReason === "aborted") {
 					return route.module.formatError(499, "request_aborted", errorMessage);
 				}
-				const classified = classifyGatewayError(errorMessage);
+				const classified = classifyGatewayError(message.errorClassificationMessage ?? errorMessage);
 				return route.module.formatError(classified.status, classified.type, errorMessage);
 			}
-			return json(200, route.module.encodeResponse(message, parsed.modelId));
+			return json(
+				200,
+				route.module.encodeResponse(message, parsed.modelId),
+				gatewayResponseHeaders(model, { requestId, message, startedAt }),
+			);
 		} catch (error) {
 			if (controller.signal.aborted) return clientClosedResponse(route);
 			const classified = classifyGatewayError(error);
@@ -480,6 +554,10 @@ async function handleFormatEndpoint(
 		return route.module.formatError(classified.status, classified.type, classified.message);
 	}
 	if (controller.signal.aborted) return clientClosedResponse(route);
+	void events
+		.result()
+		.then(message => recordGatewayUsage(bootOpts.storage, model, client, message))
+		.catch(() => {});
 
 	const sseStream = route.module.encodeStream(events, parsed.modelId, parsed.options, {
 		signal: controller.signal,
@@ -492,6 +570,7 @@ async function handleFormatEndpoint(
 	return new Response(sseStream, {
 		status: 200,
 		headers: {
+			...gatewayResponseHeaders(model, { requestId }),
 			"Content-Type": "text/event-stream; charset=utf-8",
 			"Cache-Control": "no-cache",
 			Connection: "keep-alive",
@@ -518,6 +597,8 @@ async function handleFormatEndpoint(
  * path.
  */
 async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, peer: string): Promise<Response> {
+	const startedAt = performance.now();
+	const requestId = crypto.randomUUID();
 	const controller = mirrorRequestAbort(req);
 	const aborted = (): Response => piNative.formatError(499, "request_aborted", "client closed request");
 	if (controller.signal.aborted) return aborted();
@@ -544,6 +625,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 	if (!model) {
 		return piNative.formatError(404, "invalid_request_error", `Unknown model: ${parsed.modelId}`);
 	}
+	const client = resolveClientIdentity(req.headers);
 	// Pi-native already parsed `streamOpts.sessionId` (when set by the
 	// client); fall back to the derived key so credential-stickiness lines
 	// up with cache-prefix stickiness — same identity used for both means
@@ -604,6 +686,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 	streamOpts.sessionId ??= sessionId;
 
 	logger.info("auth-gateway request", {
+		requestId,
 		format: "pi-native",
 		model: parsed.modelId,
 		resolvedProvider: model.provider,
@@ -616,6 +699,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 		try {
 			if (controller.signal.aborted) return aborted();
 			const message = await completeSimple(model, parsed.context, streamOpts);
+			recordGatewayUsage(bootOpts.storage, model, client, message);
 			if (message.stopReason === "aborted" || message.stopReason === "error") {
 				const errorMessage =
 					message.errorMessage ??
@@ -629,10 +713,10 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 				if (message.stopReason === "aborted") {
 					return piNative.formatError(499, "request_aborted", errorMessage);
 				}
-				const classified = classifyGatewayError(errorMessage);
+				const classified = classifyGatewayError(message.errorClassificationMessage ?? errorMessage);
 				return piNative.formatError(classified.status, classified.type, errorMessage);
 			}
-			return json(200, { message });
+			return json(200, { message }, gatewayResponseHeaders(model, { requestId, message, startedAt }));
 		} catch (error) {
 			if (controller.signal.aborted) return aborted();
 			const classified = classifyGatewayError(error);
@@ -651,6 +735,10 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 		return piNative.formatError(classified.status, classified.type, classified.message);
 	}
 	if (controller.signal.aborted) return aborted();
+	void events
+		.result()
+		.then(message => recordGatewayUsage(bootOpts.storage, model, client, message))
+		.catch(() => {});
 
 	const sseStream = piNative.encodeStream(events, parsed.modelId, parsed.options, {
 		signal: controller.signal,
@@ -663,6 +751,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 	return new Response(sseStream, {
 		status: 200,
 		headers: {
+			...gatewayResponseHeaders(model, { requestId }),
 			"Content-Type": "text/event-stream; charset=utf-8",
 			"Cache-Control": "no-cache",
 			Connection: "keep-alive",
@@ -702,14 +791,46 @@ async function handleCredentialsCheck(storage: AuthStorage, signal: AbortSignal)
 	return json(200, { generatedAt: Date.now(), credentials });
 }
 
+/**
+ * Row shape for `GET /v1/models`. Beyond the OpenAI-standard `id`/`object`/
+ * `owned_by`, rows advertise the catalog metadata OpenAI-compatible clients
+ * (omp's own proxy discovery, Zed's openai_compatible provider, ...) read to
+ * size and capability-gate discovered models: `context_length`,
+ * `max_output_tokens`, `input_modalities`, and `supports_tools` (only emitted
+ * when the catalog explicitly reports `false`; absent means usable).
+ */
+interface ModelListRow {
+	id: string;
+	object: "model";
+	owned_by: string;
+	api: Api;
+	display_name: string;
+	context_length?: number;
+	max_output_tokens?: number;
+	input_modalities: ("text" | "image")[];
+	supports_tools?: boolean;
+}
+
 function handleModelsList(opts: AuthGatewayBootOptions): Response {
-	const list = opts.listModels ? Array.from(opts.listModels()) : [];
-	const data = list.map(model => ({
-		id: model.id,
-		object: "model" as const,
-		owned_by: model.provider,
-		api: model.api,
-	}));
+	const seen = new Set<string>();
+	const data: ModelListRow[] = [];
+	for (const model of opts.listModels?.() ?? []) {
+		const id = `${model.provider}/${model.id}`;
+		if (seen.has(id)) continue;
+		seen.add(id);
+		const row: ModelListRow = {
+			id,
+			object: "model",
+			owned_by: model.provider,
+			api: model.api,
+			display_name: model.name,
+			input_modalities: model.input,
+		};
+		if (model.contextWindow != null) row.context_length = model.contextWindow;
+		if (model.maxTokens != null) row.max_output_tokens = model.maxTokens;
+		if (model.supportsTools === false) row.supports_tools = false;
+		data.push(row);
+	}
 	return json(200, { object: "list", data });
 }
 

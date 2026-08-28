@@ -16,7 +16,6 @@ import { getEnvApiKey } from "@pk-nerdsaver-ai/pi-ai/stream";
 const FIXTURE_SOURCE = "provider-registry-test";
 const ENV_KEYS = [
 	"COREWEAVE_API_KEY",
-	"CLINE_API_KEY",
 	"ZENMUX_API_KEY",
 	"EXA_API_KEY",
 	"XAI_OAUTH_TOKEN",
@@ -47,12 +46,9 @@ describe("provider registry auth surface", () => {
 		expect(getEnvApiKey("zenmux")).toBe("zenmux-env");
 		Bun.env.UMANS_AI_CODING_PLAN_API_KEY = "umans-env";
 		expect(getEnvApiKey("umans")).toBe("umans-env");
-		Bun.env.CLINE_API_KEY = "cline-env";
-		expect(getEnvApiKey("cline")).toBe("cline-env");
-		expect(getEnvApiKey("cline-pass")).toBe("cline-env");
 		Bun.env.LLAMA_CPP_API_KEY = "llama-env";
 		expect(getEnvApiKey("llama.cpp")).toBe("llama-env");
-		// Legacy search-tool key preserved (not a registry provider def).
+		// Exa is derived from the provider registry's `envKeys` definition.
 		expect(getEnvApiKey("exa")).toBe("exa-env");
 	});
 
@@ -71,10 +67,8 @@ describe("provider registry auth surface", () => {
 		const ids = providers.map(provider => provider.id);
 		expect(ids).toContain("zenmux");
 		expect(ids).toContain("kagi");
+		expect(ids).toContain("exa");
 		expect(ids).toContain("umans");
-		expect(ids).toContain("cline");
-		expect(ids).toContain("cline-pass");
-		expect(providers.find(provider => provider.id === "cline-pass")).toMatchObject({ name: "ClinePass" });
 		expect(ids).toContain("llama.cpp");
 		// openai has no interactive login flow.
 		expect(ids).not.toContain("openai");
@@ -90,6 +84,8 @@ describe("provider registry auth surface", () => {
 				"google-antigravity",
 				"google-gemini-cli",
 				"openai-codex",
+				"openrouter",
+				"zai-coding-plan",
 			].sort(),
 		);
 		expect(PASTE_CODE_LOGIN_PROVIDERS.has("zenmux")).toBe(false);
@@ -134,16 +130,5 @@ describe("provider registry auth surface", () => {
 		await storage.login("llama.cpp", { onAuth: () => {}, onPrompt: async () => "" });
 
 		expect(store.getApiKey("llama.cpp")).toBe("llama-cpp-local");
-	});
-
-	test("resolveOAuthProvider resolves canonical ids and aliases", () => {
-		expect(resolveOAuthProvider("google-antigravity")?.id).toBe("google-antigravity");
-		expect(resolveOAuthProvider("antigravity")?.id).toBe("google-antigravity");
-		expect(resolveOAuthProvider("Antigravity")?.id).toBe("google-antigravity");
-		expect(resolveOAuthProvider("gemini-cli")?.id).toBe("google-gemini-cli");
-		expect(resolveOAuthProvider("gemini")?.id).toBe("google-gemini-cli");
-		expect(resolveOAuthProvider("codex")?.id).toBe("openai-codex");
-		expect(resolveOAuthProvider("claude")?.id).toBe("anthropic");
-		expect(resolveOAuthProvider("nonexistent")).toBeUndefined();
 	});
 });

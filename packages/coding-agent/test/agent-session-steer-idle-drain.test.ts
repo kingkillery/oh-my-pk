@@ -1,15 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import * as path from "node:path";
-import { Agent } from "@pk-nerdsaver-ai/pi-agent-core";
-import type { AssistantMessage, ToolResultMessage } from "@pk-nerdsaver-ai/pi-ai";
-import { createMockModel } from "@pk-nerdsaver-ai/pi-ai/providers/mock";
-import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
-import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
-import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
-import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
-import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
-import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { Agent } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 /**
  * Regression: a steer can land on an idle session — the submit path checks
@@ -60,6 +59,14 @@ describe("AgentSession steer idle drain", () => {
 	let tempDir: TempDir;
 	let session: AgentSession;
 	let authStorage: AuthStorage;
+	let modelRegistry: ModelRegistry;
+
+	beforeAll(async () => {
+		tempDir = TempDir.createSync("@pi-steer-idle-drain-");
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		modelRegistry = new ModelRegistry(authStorage);
+	});
 
 	async function createSession(messages: Parameters<typeof Agent.prototype.appendMessage>[0][]): Promise<void> {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
@@ -68,28 +75,27 @@ describe("AgentSession steer idle drain", () => {
 		const agent = new Agent({
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages },
 		});
-		const sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
+		const sessionManager = SessionManager.inMemory(tempDir.path());
 		session = new AgentSession({
 			agent,
 			sessionManager,
 			settings: Settings.isolated({}),
-			modelRegistry: new ModelRegistry(authStorage),
+			modelRegistry,
 		});
 	}
 
-	beforeEach(async () => {
-		tempDir = TempDir.createSync("@pi-steer-idle-drain-");
+	beforeEach(() => {
 		vi.useFakeTimers();
-		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
 	});
 
 	afterEach(async () => {
 		await session.dispose();
-		authStorage.close();
-		tempDir.removeSync();
 		vi.useRealTimers();
 		vi.restoreAllMocks();
+	});
+	afterAll(() => {
+		authStorage.close();
+		tempDir.removeSync();
 	});
 
 	it("delivers a steer queued on an idle resumable session via continue()", async () => {
@@ -104,6 +110,23 @@ describe("AgentSession steer idle drain", () => {
 		vi.advanceTimersByTime(200);
 		await session.waitForIdle();
 		expect(continueSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("delivers successive idle steers after each successful drain", async () => {
+		await createSession([{ role: "user", content: "hello", timestamp: Date.now() }, createAssistantMessage()]);
+		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
+			session.agent.clearAllQueues();
+		});
+
+		await session.steer("first steer");
+		vi.advanceTimersByTime(200);
+		await session.waitForIdle();
+
+		await session.steer("second steer");
+		vi.advanceTimersByTime(200);
+		await session.waitForIdle();
+
+		expect(continueSpy).toHaveBeenCalledTimes(2);
 	});
 
 	it("delivers a steer queued after an interrupted tool result", async () => {
@@ -147,12 +170,12 @@ describe("AgentSession steer idle drain", () => {
 			initialState: { model, systemPrompt: ["Test"], tools: [] },
 			streamFn: mock.stream,
 		});
-		const sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
+		const sessionManager = SessionManager.inMemory(tempDir.path());
 		session = new AgentSession({
 			agent,
 			sessionManager,
 			settings: Settings.isolated({ "compaction.enabled": false }),
-			modelRegistry: new ModelRegistry(authStorage),
+			modelRegistry,
 		});
 
 		const running = session.prompt("do the thing");

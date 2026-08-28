@@ -7,7 +7,6 @@ use std::{
 
 use brush_parser::ast::{self, CommandPrefixOrSuffixItem};
 use itertools::Itertools;
-
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -30,7 +29,7 @@ struct PipelineExecutionContext<'a, SE: extensions::ShellExtensions> {
 	/// Process group ID for spawned processes.
 	process_group_id: Option<i32>,
 	/// Whether this command is part of a multi-command pipeline.
-	in_pipeline:       bool,
+	in_pipeline:      bool,
 }
 
 /// Information about an expanded external command launch.
@@ -66,6 +65,22 @@ pub trait ExternalCommandOutputMarker: Send + Sync {
 	) -> Option<ExternalCommandOutputMarkers>;
 }
 
+/// Optional hook invoked after each external command is spawned.
+///
+/// It reports the OS identity of the child so embedders can scope
+/// process-tree teardown (cancellation cleanup) to exactly the processes a
+/// given run launched, rather than diffing the whole host process tree. That
+/// cannot distinguish children of concurrent runs sharing one host process.
+///
+/// It is not called for reparented launches (`detach_reparent`): those
+/// deliberately escape the shell's descendant tree (e.g. `nohup cmd &`) and
+/// must survive teardown, so they are intentionally left unowned.
+pub trait SpawnObserver: Send + Sync {
+	/// Reports a freshly spawned external child. `pgid` is the child's process
+	/// group id when known (always its own pid under `NewProcessGroup`).
+	fn on_spawn(&self, pid: i32, pgid: Option<i32>);
+}
+
 /// Parameters for execution.
 #[derive(Clone, Default)]
 pub struct ExecutionParameters {
@@ -88,6 +103,8 @@ pub struct ExecutionParameters {
 	/// Whether `errexit` (exit on error) behavior should be
 	/// suppressed in this execution context. Defaults to `false`.
 	pub suppress_errexit:     bool,
+	/// Optional hook reporting spawned external children for scoped teardown.
+	spawn_observer:           Option<Arc<dyn SpawnObserver>>,
 }
 
 impl ExecutionParameters {
@@ -116,7 +133,7 @@ impl ExecutionParameters {
 	}
 
 	/// Disables external-command output marking for this execution branch.
-	pub fn disable_command_output_marking(&mut self) {
+	pub const fn disable_command_output_marking(&mut self) {
 		self.command_output_disabled = true;
 	}
 
@@ -126,6 +143,16 @@ impl ExecutionParameters {
 			return None;
 		}
 		self.command_output_marker.as_ref()
+	}
+
+	/// Assigns a spawn-observer hook for this execution.
+	pub fn set_spawn_observer(&mut self, observer: Arc<dyn SpawnObserver>) {
+		self.spawn_observer = Some(observer);
+	}
+
+	/// Returns the active spawn-observer hook, if any.
+	pub fn spawn_observer(&self) -> Option<&Arc<dyn SpawnObserver>> {
+		self.spawn_observer.as_ref()
 	}
 
 	/// Returns the standard input file; usable with `write!` et al.
@@ -266,7 +293,6 @@ fn ensure_not_cancelled(params: &ExecutionParameters) -> Result<(), error::Error
 	}
 	Ok(())
 }
-
 
 #[derive(Clone, Debug, Default)]
 /// Policy for how to manage spawned external processes.
@@ -484,10 +510,21 @@ fn unwrap_transparent_background_wrapper(pipeline: &ast::Pipeline) -> Option<ast
 	};
 	let mut unwrapped = simple_cmd.clone();
 	let suffix = unwrapped.suffix.as_mut()?;
-	let operand_index = suffix
+	let mut operand_index = suffix
 		.0
 		.iter()
 		.position(|item| matches!(item, CommandPrefixOrSuffixItem::Word(_)))?;
+	// A leading `--` only terminates the wrapper's own options
+	// (`nohup -- cmd &`): drop it and take the next word as the operand.
+	if let CommandPrefixOrSuffixItem::Word(word) = &suffix.0[operand_index]
+		&& word.value == "--"
+	{
+		suffix.0.remove(operand_index);
+		operand_index = suffix
+			.0
+			.iter()
+			.position(|item| matches!(item, CommandPrefixOrSuffixItem::Word(_)))?;
+	}
 	let CommandPrefixOrSuffixItem::Word(operand_word) = suffix.0.remove(operand_index) else {
 		return None;
 	};
@@ -499,15 +536,15 @@ fn unwrap_transparent_background_wrapper(pipeline: &ast::Pipeline) -> Option<ast
 
 	Some(ast::Pipeline {
 		timed: pipeline.timed.clone(),
-		bang: pipeline.bang,
-		seq: vec![ast::Command::Simple(unwrapped)],
+		bang:  pipeline.bang,
+		seq:   vec![ast::Command::Simple(unwrapped)],
 	})
 }
 
 async fn try_spawn_pipeline_as_job<SE: extensions::ShellExtensions>(
 	pipeline: &ast::Pipeline,
 	command_line: String,
-	shell: &mut Shell<SE>,
+	shell: &Shell<SE>,
 	params: &ExecutionParameters,
 ) -> Result<Option<jobs::Job>, error::Error> {
 	let mut subshell = shell.clone();
@@ -531,7 +568,7 @@ async fn try_spawn_pipeline_as_job<SE: extensions::ShellExtensions>(
 
 fn spawn_async_ao_list_in_task<SE: extensions::ShellExtensions>(
 	ao_list: &ast::AndOrList,
-	shell: &mut Shell<SE>,
+	shell: &Shell<SE>,
 	params: &ExecutionParameters,
 ) -> jobs::Job {
 	// Clone the inputs.
@@ -746,7 +783,6 @@ async fn spawn_pipeline_processes(
 			cmd_params.disable_command_output_marking();
 		}
 
-
 		// Install pipes.
 		if let Some(Some(reader)) = pipe_readers.pop() {
 			cmd_params.open_files.set_fd(OpenFiles::STDIN_FD, reader);
@@ -889,17 +925,41 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::Command {
 			Self::Simple(simple) => simple.execute_in_pipeline(pipeline_context, params).await,
 			Self::Compound(compound, redirects) => {
 				params.disable_command_output_marking();
-				// Set up any additional redirects.
-				if let Some(redirects) = redirects {
-					for redirect in &redirects.0 {
-						setup_redirect(&mut pipeline_context.shell, &mut params, redirect).await?;
-					}
-				}
 
-				Ok(compound
-					.execute(&mut pipeline_context.shell, &params)
-					.await?
-					.into())
+				// Each stage of a multi-command pipeline runs in its own
+				// subshell (`pipeline_context.shell` is already an owned
+				// clone). Execute compound stages as concurrent tasks rather
+				// than inline: inline execution serializes the pipeline —
+				// downstream stages are not even spawned until this stage
+				// completes — and deadlocks outright once a stage fills the
+				// connecting pipe's buffer with no reader running.
+				let in_pipeline = pipeline_context.in_pipeline;
+				match pipeline_context.shell {
+					commands::ShellForCommand::OwnedShell { target, .. } if in_pipeline => {
+						let mut shell = *target;
+						let compound = compound.clone();
+						let redirects = redirects.clone();
+						let mut params = params;
+						Ok(ExecutionSpawnResult::StartedTask(tokio::spawn(async move {
+							if let Some(redirects) = &redirects {
+								for redirect in &redirects.0 {
+									setup_redirect(&mut shell, &mut params, redirect).await?;
+								}
+							}
+							compound.execute(&mut shell, &params).await
+						})))
+					},
+					mut shell => {
+						// Set up any additional redirects.
+						if let Some(redirects) = redirects {
+							for redirect in &redirects.0 {
+								setup_redirect(&mut shell, &mut params, redirect).await?;
+							}
+						}
+
+						Ok(compound.execute(&mut shell, &params).await?.into())
+					},
+				}
 			},
 			Self::Function(func) => {
 				params.disable_command_output_marking();
@@ -1036,7 +1096,7 @@ impl Execute for ast::CoprocessCommand {
 			let pipeline_context = PipelineExecutionContext {
 				shell:            commands::ShellForCommand::ParentShell(&mut child_shell),
 				process_group_id: None,
-				in_pipeline:       false,
+				in_pipeline:      false,
 			};
 			let spawn_result = body
 				.execute_in_pipeline(pipeline_context, child_params)
@@ -1154,7 +1214,7 @@ impl Execute for ast::CaseClauseCommand {
 		// switched on, but that's not it.
 		if shell.options().print_commands_and_arguments {
 			shell
-				.trace_command(params, std::format!("case {} in", &self.value))
+				.trace_command(params, std::format!("case {} in", self.value))
 				.await;
 		}
 
@@ -1560,12 +1620,11 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 				commands::ShellForCommand::ParentShell(parent_shell)
 			};
 
-			let context =
-				PipelineExecutionContext {
-					shell,
-					process_group_id: context.process_group_id,
-					in_pipeline: context.in_pipeline,
-				};
+			let context = PipelineExecutionContext {
+				shell,
+				process_group_id: context.process_group_id,
+				in_pipeline: context.in_pipeline,
+			};
 
 			match execute_command(context, params, cmd_name, assignments, args).await {
 				Ok(result) => Ok(result),
@@ -1984,10 +2043,12 @@ pub(crate) async fn setup_redirect(
 						ast::IoFileRedirectKind::DuplicateInput => 0,
 						ast::IoFileRedirectKind::DuplicateOutput => 1,
 						_ => {
-							return Err(error::ErrorKind::InternalError(format!(
-								"unexpected redirect kind for file descriptor target: {kind:?}"
-							))
-							.into());
+							return Err(
+								error::ErrorKind::InternalError(format!(
+									"unexpected redirect kind for file descriptor target: {kind:?}"
+								))
+								.into(),
+							);
 						},
 					};
 
@@ -2007,10 +2068,12 @@ pub(crate) async fn setup_redirect(
 						ast::IoFileRedirectKind::DuplicateInput => 0,
 						ast::IoFileRedirectKind::DuplicateOutput => 1,
 						_ => {
-							return Err(error::ErrorKind::InternalError(format!(
-								"unexpected redirect kind for duplicate target: {kind:?}"
-							))
-							.into());
+							return Err(
+								error::ErrorKind::InternalError(format!(
+									"unexpected redirect kind for duplicate target: {kind:?}"
+								))
+								.into(),
+							);
 						},
 					};
 
@@ -2082,10 +2145,12 @@ pub(crate) async fn setup_redirect(
 							params.open_files.set_fd(fd_num, target_file);
 						},
 						_ => {
-							return Err(error::ErrorKind::InternalError(format!(
-								"process substitution used with invalid redirect kind: {kind:?}"
-							))
-							.into());
+							return Err(
+								error::ErrorKind::InternalError(format!(
+									"process substitution used with invalid redirect kind: {kind:?}"
+								))
+								.into(),
+							);
 						},
 					}
 				},
@@ -2227,7 +2292,6 @@ fn setup_process_substitution(
 			.await;
 	});
 
-
 	Ok((candidate_fd_num, target_file))
 }
 
@@ -2239,10 +2303,9 @@ fn setup_process_substitution(
 // function returns. Concrete buffer sizes:
 //
 //   * Linux:    64 KiB default, growable via `F_SETPIPE_SZ` up to
-//               `/proc/sys/fs/pipe-max-size` (1 MiB default).
+//     `/proc/sys/fs/pipe-max-size` (1 MiB default).
 //   * macOS:    16-64 KiB, no `F_SETPIPE_SZ` equivalent.
-//   * Windows:  ~4 KiB (`CreatePipe(nSize = 0)`), no portable knob to
-//               raise it.
+//   * Windows:  ~4 KiB (`CreatePipe(nSize = 0)`), no portable knob to raise it.
 //
 // We keep the `F_SETPIPE_SZ` fast path for Linux (avoids a thread spawn
 // for the common in-process case) but fall through to a detached writer

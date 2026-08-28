@@ -19,8 +19,8 @@ import {
 	calculateDepth,
 	loadFilesFromDir,
 	scanSkillsFromDir,
-} from "@pk-nerdsaver-ai/pi-coding-agent/discovery/helpers";
-import { removeSyncWithRetries } from "@pk-nerdsaver-ai/pi-utils";
+} from "@oh-my-pi/pi-coding-agent/discovery/helpers";
+import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
 const PROVIDER_ID = "agents";
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { shouldSkipHistory } from "@pk-nerdsaver-ai/pi-coding-agent/modes/controllers/input-controller";
+import { shouldSkipHistory } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 
 describe("shouldSkipHistory — security filter for slash command history", () => {
 	it("skips /login with a redirect URL argument (contains OAuth code/state)", () => {
@@ -45,11 +45,6 @@ describe("shouldSkipHistory — security filter for slash command history", () =
 	it("does not skip /mcp without add subcommand", () => {
 		expect(shouldSkipHistory("/mcp list")).toBe(false);
 		expect(shouldSkipHistory("/mcp reload")).toBe(false);
-	});
-
-	it("skips hub commands whose arguments can carry an AES key", () => {
-		expect(shouldSkipHistory("/hub resume https://relay.example/h/hub_alpha01#secret-key")).toBe(true);
-		expect(shouldSkipHistory("/hub publish https://relay.example/h/hub_alpha01#secret-key")).toBe(true);
 	});
 
 	it("does not skip ordinary slash commands", () => {

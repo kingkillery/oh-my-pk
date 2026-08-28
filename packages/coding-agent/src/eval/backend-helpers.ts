@@ -5,7 +5,7 @@
  */
 import type { ToolSession } from "../tools";
 import type { ExecutorBackendResult } from "./backend";
-import type { EvalCancellationCause, EvalDisplayOutput, EvalProcessErrorEvidence } from "./types";
+import type { EvalDisplayOutput } from "./types";
 
 export function namespaceSessionId(sessionId: string, prefix: string): string {
 	return sessionId.startsWith(prefix) ? sessionId : `${prefix}${sessionId}`;
@@ -25,10 +25,6 @@ export function toExecutorBackendResult(result: {
 	output: string;
 	exitCode: number | undefined;
 	cancelled: boolean;
-	timedOut?: boolean;
-	cancellationCause?: EvalCancellationCause;
-	effectiveTimeoutMs?: number;
-	processError?: EvalProcessErrorEvidence;
 	truncated: boolean;
 	artifactId?: string | undefined;
 	totalLines: number;
@@ -41,10 +37,6 @@ export function toExecutorBackendResult(result: {
 		output: result.output,
 		exitCode: result.exitCode,
 		cancelled: result.cancelled,
-		timedOut: result.timedOut,
-		cancellationCause: result.cancellationCause,
-		effectiveTimeoutMs: result.effectiveTimeoutMs,
-		processError: result.processError,
 		truncated: result.truncated,
 		artifactId: result.artifactId,
 		totalLines: result.totalLines,

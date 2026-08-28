@@ -10,10 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Markit } from "@pk-nerdsaver-ai/pi-coding-agent/markit";
-import { convertBufferWithMarkit, convertFileWithMarkit } from "@pk-nerdsaver-ai/pi-coding-agent/utils/markit";
-import { pruneMarkitConversionCache } from "@pk-nerdsaver-ai/pi-coding-agent/utils/markit-cache";
-import { __resetDirsFromEnvForTests, getAgentDir, Snowflake, setAgentDir } from "@pk-nerdsaver-ai/pi-utils";
+import { Markit } from "@oh-my-pi/pi-coding-agent/markit";
+import { convertBufferWithMarkit, convertFileWithMarkit } from "@oh-my-pi/pi-coding-agent/utils/markit";
+import { pruneMarkitConversionCache } from "@oh-my-pi/pi-coding-agent/utils/markit-cache";
+import { __resetDirsFromEnvForTests, getAgentDir, Snowflake, setAgentDir } from "@oh-my-pi/pi-utils";
 
 function restoreEnv(key: string, value: string | undefined): void {
 	if (value === undefined) {
@@ -105,7 +105,7 @@ describe("document conversion cache", () => {
 
 	it("skips cache for imageDir conversions", async () => {
 		const convert = vi.spyOn(Markit.prototype, "convert").mockResolvedValue({ markdown: "image body" });
-		const docPath = path.join(testDir, "image-doc.pdf");
+		const docPath = path.join(testDir, "image-doc.docx");
 		await fs.writeFile(docPath, new TextEncoder().encode("image bytes"));
 		const imageDir = path.join(testDir, "images");
 

@@ -7,8 +7,8 @@ import {
 	AuthStorage,
 	REMOTE_REFRESH_SENTINEL,
 	SqliteAuthCredentialStore,
-} from "@pk-nerdsaver-ai/pi-ai/auth-storage";
-import * as oauthUtils from "@pk-nerdsaver-ai/pi-ai/registry/oauth";
+} from "@oh-my-pi/pi-ai/auth-storage";
+import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
 import { removeWithRetries } from "../../utils/src/temp";
 
 describe("AuthStorage broker sentinel refresh", () => {
@@ -70,6 +70,7 @@ describe("AuthStorage broker sentinel refresh", () => {
 
 		expect(access).toEqual({
 			accessToken: "broker-access-rotated",
+			credentialId: expect.any(Number),
 			accountId: "broker-account",
 			email: "broker@example.com",
 			projectId: "broker-project",

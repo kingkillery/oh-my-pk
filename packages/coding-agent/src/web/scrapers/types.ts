@@ -2,8 +2,8 @@
  * Shared types and utilities for web-fetch handlers
  */
 import { scheduler } from "node:timers/promises";
-import { ptree } from "@pk-nerdsaver-ai/pi-utils";
-import type TurndownService from "turndown";
+import { ptree } from "@oh-my-pi/pi-utils";
+import type TurndownService from "@oh-my-pi/pi-utils/turndown";
 
 import type { AgentStorage } from "../../session/agent-storage";
 import { ToolAbortError } from "../../tools/tool-errors";

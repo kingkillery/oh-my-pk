@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { CURSOR_MARKER } from "@pk-nerdsaver-ai/pi-tui";
-import { Input } from "@pk-nerdsaver-ai/pi-tui/components/input";
-import { setKittyProtocolActive } from "@pk-nerdsaver-ai/pi-tui/keys";
+import { CURSOR_MARKER } from "@oh-my-pi/pi-tui";
+import { Input } from "@oh-my-pi/pi-tui/components/input";
+import { setKittyProtocolActive } from "@oh-my-pi/pi-tui/keys";
 import {
 	resetHangulCompatibilityJamoWidthForTests,
 	setHangulCompatibilityJamoWidth,
 	visibleWidth,
-} from "@pk-nerdsaver-ai/pi-tui/utils";
-import { DEFAULT_TAB_WIDTH } from "@pk-nerdsaver-ai/pi-utils";
+} from "@oh-my-pi/pi-tui/utils";
+import { DEFAULT_TAB_WIDTH } from "@oh-my-pi/pi-utils";
 
 function renderedWidth(input: Input, width: number): number {
 	const [line] = input.render(width);
@@ -199,6 +199,41 @@ describe("Input component", () => {
 		input.handleInput("\x05"); // Ctrl+E (end)
 		const width = 40;
 		expect(renderedWidth(input, width)).toBeLessThanOrEqual(width);
+	});
+
+	it("masks one bullet per grapheme without changing the submitted value", () => {
+		const input = new Input();
+		input.focused = true;
+		input.mask = true;
+		input.setValue("a😀e\u0301z");
+		input.handleInput("\x01"); // Ctrl+A (start)
+		input.handleInput("\x1b[C"); // after a
+		input.handleInput("\x1b[C"); // after emoji
+
+		const [line] = input.render(20);
+		const markerIndex = line.indexOf(CURSOR_MARKER);
+		expect(visibleWidth(line.slice(0, markerIndex))).toBe(4); // prompt + two graphemes
+		expect(Bun.stripANSI(line.replaceAll(CURSOR_MARKER, "")).trimEnd()).toBe("> ••••");
+		expect(line).not.toContain(input.getValue());
+
+		let submitted = "";
+		input.onSubmit = value => {
+			submitted = value;
+		};
+		input.handleInput("\n");
+		expect(submitted).toBe("a😀e\u0301z");
+	});
+
+	it("keeps masked Unicode input within narrow viewports", () => {
+		const input = setupAtEnd("😀e\u0301".repeat(20));
+		input.mask = true;
+		expect(renderedWidth(input, 12)).toBeLessThanOrEqual(12);
+	});
+
+	it("renders non-secret input unchanged when masking is disabled", () => {
+		const input = setupAtEnd("visible-value");
+		const [line] = input.render(30);
+		expect(Bun.stripANSI(line.replaceAll(CURSOR_MARKER, ""))).toContain("visible-value");
 	});
 
 	it("normalizes NFD Korean pastes (macOS Finder drag-drop) to NFC", () => {

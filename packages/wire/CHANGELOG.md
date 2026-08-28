@@ -17,6 +17,21 @@
 ### Added
 
 - Added remote-control session list/load frames and per-agent cwd metadata to the collab wire contract.
+## [16.3.0] - 2026-07-02
+
+### Breaking Changes
+
+- Upgraded the collaboration protocol to version 3. Guests using version 2 will now be rejected during the handshake with a protocol-mismatch error.
+
+### Added
+
+- Added support for interactive UI request and response frames, enabling browser guests to respond to prompts initiated by the host.
+
+## [16.1.8] - 2026-06-20
+
+### Breaking Changes
+
+- Bumped `COLLAB_PROTO` to `2`. The `welcome` host frame now carries metadata only (`header`, `state`, `agents`, `entryCount`, optional `readOnly`) — the transcript moves to a new `snapshot-chunk` host frame (`{ entries: SessionEntry[]; final: boolean }`) sent immediately after the welcome. Hosts split large snapshots into multiple chunks; the last chunk carries `final: true`. Old guests speaking proto v1 are rejected with the existing protocol-mismatch error. ([#3144](https://github.com/can1357/oh-my-pi/issues/3144))
 
 ## [15.12.4] - 2026-06-13
 

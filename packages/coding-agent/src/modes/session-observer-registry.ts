@@ -24,6 +24,9 @@ export interface ObservableSession {
 	progress?: AgentProgress;
 }
 
+/** Coarse source of an observer change; callers use it to separate lifecycle work from high-frequency progress. */
+export type SessionObserverChangeKind = "main" | "reset" | "lifecycle" | "progress";
+
 const STATUS_MAP: Record<string, ObservableSession["status"]> = {
 	started: "active",
 	completed: "completed",
@@ -33,20 +36,20 @@ const STATUS_MAP: Record<string, ObservableSession["status"]> = {
 
 export class SessionObserverRegistry {
 	#sessions = new Map<string, ObservableSession>();
-	#listeners = new Set<() => void>();
+	#listeners = new Set<(kind: SessionObserverChangeKind) => void>();
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#sortOrderById = new Map<string, number>();
 	#parentSortOrderById = new Map<string, number>();
 	#nextSortOrder = 0;
 
 	/** Add a change listener. Returns unsubscribe function. */
-	onChange(cb: () => void): () => void {
+	onChange(cb: (kind: SessionObserverChangeKind) => void): () => void {
 		this.#listeners.add(cb);
 		return () => this.#listeners.delete(cb);
 	}
 
-	#notifyListeners(): void {
-		for (const cb of this.#listeners) cb();
+	#notifyListeners(kind: SessionObserverChangeKind): void {
+		for (const cb of this.#listeners) cb(kind);
 	}
 
 	#ensureSortOrder(id: string): number {
@@ -85,7 +88,12 @@ export class SessionObserverRegistry {
 			sessionFile: sessionFile ?? existing?.sessionFile,
 			lastUpdate: Date.now(),
 		});
-		this.#notifyListeners();
+		this.#notifyListeners("main");
+	}
+
+	/** Return one tracked session without copying or sorting the registry. */
+	getSession(id: string): ObservableSession | undefined {
+		return this.#sessions.get(id);
 	}
 
 	getSessions(): ObservableSession[] {
@@ -121,7 +129,7 @@ export class SessionObserverRegistry {
 		this.#sortOrderById.clear();
 		this.#parentSortOrderById.clear();
 		this.#nextSortOrder = 0;
-		this.#notifyListeners();
+		this.#notifyListeners("reset");
 	}
 
 	dispose(): void {
@@ -134,82 +142,106 @@ export class SessionObserverRegistry {
 		this.#listeners.clear();
 	}
 
-	subscribeToEventBus(eventBus: EventBus): void {
+	subscribeToEventBus(eventBus: EventBus, subagentEventBus: EventBus): void {
 		// Dispose previous EventBus subscriptions if called again
 		for (const unsub of this.#eventBusUnsubscribers) unsub();
 		this.#eventBusUnsubscribers = [];
 
-		this.#eventBusUnsubscribers.push(
-			eventBus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
-				const payload = data as SubagentLifecyclePayload;
-				const status = STATUS_MAP[payload.status];
-				if (!status) return;
-
-				const sortOrder = this.#ensureSortOrder(payload.id);
-				this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
-				const existing = this.#sessions.get(payload.id);
-				if (existing) {
-					existing.status = status;
-					existing.lastUpdate = Date.now();
-					existing.index = payload.index;
-					existing.parentToolCallId = payload.parentToolCallId ?? existing.parentToolCallId;
-					existing.detached = payload.detached ?? existing.detached;
-					if (payload.description) existing.description = payload.description;
-					if (payload.sessionFile) existing.sessionFile = payload.sessionFile;
-				} else {
-					this.#sessions.set(payload.id, {
-						id: payload.id,
-						kind: "subagent",
-						label: payload.description ?? `Subagent #${payload.index}`,
-						agent: payload.agent,
-						description: payload.description,
-						status,
-						sessionFile: payload.sessionFile,
-						parentToolCallId: payload.parentToolCallId,
-						detached: payload.detached,
-						index: payload.index,
-						lastUpdate: Date.now(),
-					});
+		// The task executor dual-publishes every frame on the spawning session's
+		// bus and on the session tree's observability bus. Subscribe to both so
+		// producers that only emit on the injected session bus still land —
+		// dual-published payloads share one object reference, so each is handled
+		// exactly once.
+		const seen = new WeakSet<object>();
+		const dedupe =
+			(handle: (data: unknown) => void) =>
+			(data: unknown): void => {
+				if (data !== null && typeof data === "object") {
+					if (seen.has(data as object)) return;
+					seen.add(data as object);
 				}
-				this.#notifyListeners();
-			}),
-		);
+				handle(data);
+			};
 
-		this.#eventBusUnsubscribers.push(
-			eventBus.on(TASK_SUBAGENT_PROGRESS_CHANNEL, data => {
-				const payload = data as SubagentProgressPayload;
-				const progress = payload.progress;
-				const id = progress.id;
-				const existing = this.#sessions.get(id);
+		for (const bus of [eventBus, subagentEventBus]) {
+			this.#eventBusUnsubscribers.push(
+				bus.on(
+					TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+					dedupe(data => {
+						const payload = data as SubagentLifecyclePayload;
+						const status = STATUS_MAP[payload.status];
+						if (!status) return;
 
-				const sortOrder = this.#ensureSortOrder(id);
-				this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
-				if (existing) {
-					existing.lastUpdate = Date.now();
-					existing.index = payload.index;
-					existing.parentToolCallId = payload.parentToolCallId ?? existing.parentToolCallId;
-					existing.detached = payload.detached ?? existing.detached;
-					existing.progress = progress;
-					if (progress.description) existing.description = progress.description;
-					if (payload.sessionFile) existing.sessionFile = payload.sessionFile;
-				} else {
-					this.#sessions.set(id, {
-						id,
-						kind: "subagent",
-						label: progress.description ?? `Subagent #${payload.index}`,
-						agent: payload.agent,
-						description: progress.description,
-						status: "active",
-						sessionFile: payload.sessionFile,
-						parentToolCallId: payload.parentToolCallId,
-						detached: payload.detached,
-						index: payload.index,
-						lastUpdate: Date.now(),
-						progress,
-					});
-				}
-				this.#notifyListeners();
-			}),
-		);
+						const sortOrder = this.#ensureSortOrder(payload.id);
+						this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
+						const existing = this.#sessions.get(payload.id);
+						if (existing) {
+							existing.status = status;
+							existing.lastUpdate = Date.now();
+							existing.index = payload.index;
+							existing.parentToolCallId = payload.parentToolCallId ?? existing.parentToolCallId;
+							existing.detached = payload.detached ?? existing.detached;
+							if (payload.description) existing.description = payload.description;
+							if (payload.sessionFile) existing.sessionFile = payload.sessionFile;
+						} else {
+							this.#sessions.set(payload.id, {
+								id: payload.id,
+								kind: "subagent",
+								label: payload.description ?? `Subagent #${payload.index}`,
+								agent: payload.agent,
+								description: payload.description,
+								status,
+								sessionFile: payload.sessionFile,
+								parentToolCallId: payload.parentToolCallId,
+								detached: payload.detached,
+								index: payload.index,
+								lastUpdate: Date.now(),
+							});
+						}
+						this.#notifyListeners("lifecycle");
+					}),
+				),
+			);
+
+			this.#eventBusUnsubscribers.push(
+				bus.on(
+					TASK_SUBAGENT_PROGRESS_CHANNEL,
+					dedupe(data => {
+						const payload = data as SubagentProgressPayload;
+						const progress = payload.progress;
+						const id = progress.id;
+						const existing = this.#sessions.get(id);
+
+						const sortOrder = this.#ensureSortOrder(id);
+						this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
+						if (existing) {
+							existing.lastUpdate = Date.now();
+							existing.index = payload.index;
+							existing.parentToolCallId = payload.parentToolCallId ?? existing.parentToolCallId;
+							existing.detached = payload.detached ?? existing.detached;
+							existing.progress = progress;
+							if (progress.description) existing.description = progress.description;
+							if (payload.sessionFile) existing.sessionFile = payload.sessionFile;
+						} else {
+							this.#sessions.set(id, {
+								id,
+								kind: "subagent",
+								label: progress.description ?? `Subagent #${payload.index}`,
+								agent: payload.agent,
+								description: progress.description,
+								status: "active",
+								sessionFile: payload.sessionFile,
+								parentToolCallId: payload.parentToolCallId,
+								detached: payload.detached,
+								index: payload.index,
+								lastUpdate: Date.now(),
+								progress,
+							});
+						}
+						this.#notifyListeners("progress");
+					}),
+				),
+			);
+		}
 	}
 }

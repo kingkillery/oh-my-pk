@@ -1,4 +1,4 @@
-import type { SelectList, SgrMouseEvent } from "@pk-nerdsaver-ai/pi-tui";
+import type { SelectList, SgrMouseEvent } from "@oh-my-pi/pi-tui";
 
 interface RoutableSelectList {
 	routeMouse?: (event: SgrMouseEvent, line: number, col: number) => void;

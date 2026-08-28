@@ -7,14 +7,14 @@ import {
 	formatMCPConnectionStatusMessage,
 	MCP_CONNECTION_STATUS_EVENT_CHANNEL,
 	type McpConnectionStatusEvent,
-} from "@pk-nerdsaver-ai/pi-coding-agent/mcp/startup-events";
-import { InteractiveMode } from "@pk-nerdsaver-ai/pi-coding-agent/modes/interactive-mode";
-import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
-import { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
-import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
-import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
-import { EventBus } from "@pk-nerdsaver-ai/pi-coding-agent/utils/event-bus";
-import { logger, TempDir } from "@pk-nerdsaver-ai/pi-utils";
+} from "@oh-my-pi/pi-coding-agent/mcp/startup-events";
+import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import { logger, TempDir } from "@oh-my-pi/pi-utils";
 
 /**
  * Behavioral wiring guard for MCP startup status (mirrors
@@ -127,6 +127,7 @@ describe("InteractiveMode MCP connection status", () => {
 			type: "failed",
 			serverName: "broken",
 			error: "missing command",
+			sourcePath: "/tmp/codex/config.toml",
 		} satisfies McpConnectionStatusEvent);
 		eventBus.emit(MCP_CONNECTION_STATUS_EVENT_CHANNEL, {
 			type: "connected",
@@ -136,8 +137,8 @@ describe("InteractiveMode MCP connection status", () => {
 		expect(showStatusSpy.mock.calls.map(call => call[0])).toEqual([
 			"Connecting to MCP servers: alpha, broken, slow…",
 			"Connected: alpha. Still connecting: broken, slow…",
-			"Connected: alpha. Failed: broken: missing command. Still connecting: slow…",
-			"MCP finished with failures. Connected: alpha, slow. Failed: broken: missing command",
+			"Connected: alpha. Failed: broken [config: /tmp/codex/config.toml]: missing command. Still connecting: slow…",
+			"MCP finished with failures. Connected: alpha, slow. Failed: broken [config: /tmp/codex/config.toml]: missing command",
 		]);
 	});
 

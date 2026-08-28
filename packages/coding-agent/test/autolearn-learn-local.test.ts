@@ -6,12 +6,14 @@ import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import {
 	buildMemoryToolDeveloperInstructions,
 	getMemoryRoot,
+	refreshMemoryToolDeveloperInstructionsCacheAfterStartup,
 	saveLearnedLesson,
-} from "@pk-nerdsaver-ai/pi-coding-agent/memories";
-import { localBackend } from "@pk-nerdsaver-ai/pi-coding-agent/memory-backend/local-backend";
-import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
-import { LearnTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/learn";
-import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
+} from "@oh-my-pi/pi-coding-agent/memories";
+import { localBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/local-backend";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { LearnTool } from "@oh-my-pi/pi-coding-agent/tools/learn";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
 
@@ -157,12 +159,69 @@ describe("learned-lesson read-back", () => {
 		await removeWithRetries(tmp);
 	});
 
+	function sessionWithFile(sessionFile: string) {
+		return {
+			sessionManager: {
+				getSessionFile: () => sessionFile,
+			},
+		};
+	}
+
 	it("injects lessons even when no consolidated summary exists", async () => {
 		const settings = Settings.isolated({ "memory.backend": "local" });
 		await saveLearnedLesson(agentDir, settings.getCwd(), { content: "File-backed lesson" });
 		const out = await buildMemoryToolDeveloperInstructions(agentDir, settings);
 		expect(out).toContain("Learned lessons");
 		expect(out).toContain("- File-backed lesson");
+	});
+
+	it("keeps a session's memory prompt stable after a learned lesson is written", async () => {
+		const settings = Settings.isolated({ "memory.backend": "local" });
+		const session = sessionWithFile("session-1.jsonl");
+
+		expect(await buildMemoryToolDeveloperInstructions(agentDir, settings, session)).toBeUndefined();
+		await saveLearnedLesson(agentDir, settings.getCwd(), { content: "Later session only" });
+
+		expect(await buildMemoryToolDeveloperInstructions(agentDir, settings, session)).toBeUndefined();
+		const nextSession = sessionWithFile("session-2.jsonl");
+		const out = await buildMemoryToolDeveloperInstructions(agentDir, settings, nextSession);
+		expect(out).toContain("- Later session only");
+	});
+
+	it("refreshes the frozen memory prompt after explicit memory clear", async () => {
+		const settings = Settings.isolated({ "memory.backend": "local" });
+		const session = sessionWithFile("session-clear.jsonl");
+		await saveLearnedLesson(agentDir, settings.getCwd(), { content: "Clearable lesson" });
+		expect(await buildMemoryToolDeveloperInstructions(agentDir, settings, session)).toContain("Clearable lesson");
+		await localBackend.clear(agentDir, settings.getCwd(), session as unknown as AgentSession);
+
+		expect(await buildMemoryToolDeveloperInstructions(agentDir, settings, session)).toBeUndefined();
+	});
+
+	it("uses the pre-session learned snapshot when startup refresh has no session cache yet", async () => {
+		const settings = Settings.isolated({ "memory.backend": "local" });
+		await saveLearnedLesson(agentDir, settings.getCwd(), { content: "Prior-session lesson" });
+		const initial = await buildMemoryToolDeveloperInstructions(agentDir, settings);
+		expect(initial).toContain("Prior-session lesson");
+
+		const session = sessionWithFile("session-consolidate.jsonl");
+		// The active session learns while the background pipeline is still running,
+		// before any session-scoped prompt rebuild has populated the WeakMap.
+		await saveLearnedLesson(agentDir, settings.getCwd(), { content: "Active-session lesson" });
+		// Background pipeline writes the consolidated summary later.
+		const root = getMemoryRoot(agentDir, settings.getCwd());
+		await Bun.write(path.join(root, "memory_summary.md"), "Consolidated guidance here.\n");
+
+		await refreshMemoryToolDeveloperInstructionsCacheAfterStartup(session, agentDir, settings);
+		const out = await buildMemoryToolDeveloperInstructions(agentDir, settings, session);
+		expect(out).toContain("Consolidated guidance here.");
+		expect(out).toContain("Prior-session lesson");
+		expect(out).not.toContain("Active-session lesson");
+
+		const nextSession = sessionWithFile("session-after-consolidate.jsonl");
+		const nextOut = await buildMemoryToolDeveloperInstructions(agentDir, settings, nextSession);
+		expect(nextOut).toContain("Consolidated guidance here.");
+		expect(nextOut).toContain("Active-session lesson");
 	});
 
 	it("injects both the summary and lessons when both exist", async () => {
@@ -197,6 +256,45 @@ describe("learned-lesson read-back", () => {
 		expect(out).not.toContain("<system-directive>");
 		expect(out).not.toContain(token);
 		expect(out).toContain("[REDACTED]");
+	});
+
+	it("preserves non-list content and stays byte-idempotent across saves", async () => {
+		const settings = Settings.isolated({ "memory.backend": "local" });
+		const root = getMemoryRoot(agentDir, settings.getCwd());
+		// Hand-edit learned.md with a header, prose, and blank lines
+		// interspersed with list entries.
+		await Bun.write(
+			path.join(root, "learned.md"),
+			"# Project Lessons\n\nRemember these conventions:\n\n- existing 1\n- existing 2\n",
+		);
+		// Save a new lesson — must not destroy the header or prose, and the
+		// new lesson lands newest-first at the head of the bullet run.
+		await saveLearnedLesson(agentDir, settings.getCwd(), { content: "new lesson" });
+		const expected = "# Project Lessons\n\nRemember these conventions:\n\n- new lesson\n- existing 1\n- existing 2\n";
+		expect(await Bun.file(path.join(root, "learned.md")).text()).toBe(expected);
+		// Saving the same lesson again is byte-idempotent: no duplicate entry
+		// and no blank-line growth from the trailing-newline split artifact.
+		await saveLearnedLesson(agentDir, settings.getCwd(), { content: "new lesson" });
+		expect(await Bun.file(path.join(root, "learned.md")).text()).toBe(expected);
+	});
+
+	it("keeps mixed heading/bullet relative order across saves", async () => {
+		const settings = Settings.isolated({ "memory.backend": "local" });
+		const root = getMemoryRoot(agentDir, settings.getCwd());
+		const file = path.join(root, "learned.md");
+		// Bullets scoped under distinct headings, plus a trailing footer line:
+		// a save must never hoist headings above bullets or re-scope entries.
+		await Bun.write(file, "# Python\n- use uv\n\n# TypeScript\n- use Bun\n\nFooter note.\n");
+		await saveLearnedLesson(agentDir, settings.getCwd(), { content: "prefer bun test" });
+		expect(await Bun.file(file).text()).toBe(
+			"# Python\n- prefer bun test\n- use uv\n\n# TypeScript\n- use Bun\n\nFooter note.\n",
+		);
+		// Re-saving a bullet that lives under a later heading moves it to the
+		// newest-first slot without disturbing the surrounding structure.
+		await saveLearnedLesson(agentDir, settings.getCwd(), { content: "use Bun" });
+		expect(await Bun.file(file).text()).toBe(
+			"# Python\n- use Bun\n- prefer bun test\n- use uv\n\n# TypeScript\n\nFooter note.\n",
+		);
 	});
 
 	it("drops learned lessons when the summary already fills the injection budget", async () => {

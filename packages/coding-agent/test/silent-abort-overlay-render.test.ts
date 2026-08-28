@@ -11,15 +11,15 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as AIError from "@pk-nerdsaver-ai/pi-ai/error";
-import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { AgentTranscriptViewer } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/agent-transcript-viewer";
-import type { ObservableSession } from "@pk-nerdsaver-ai/pi-coding-agent/modes/session-observer-registry";
-import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
-import { AgentRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-registry";
-import { SILENT_ABORT_MARKER } from "@pk-nerdsaver-ai/pi-coding-agent/session/messages";
-import type { TUI } from "@pk-nerdsaver-ai/pi-tui";
-import { removeSyncWithRetries } from "@pk-nerdsaver-ai/pi-utils";
+import * as AIError from "@oh-my-pi/pi-ai/error";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AgentTranscriptViewer } from "@oh-my-pi/pi-coding-agent/modes/components/agent-transcript-viewer";
+import type { ObservableSession } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { SILENT_ABORT_MARKER } from "@oh-my-pi/pi-coding-agent/session/messages";
+import type { TUI } from "@oh-my-pi/pi-tui";
+import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
 const SESSION_ID = "test-session-1";
 
@@ -33,6 +33,7 @@ function makeJsonlSessionFile(dirPath: string, entries: object[]): string {
 function makeSubagentRegistry(sessions: ObservableSession[]) {
 	return {
 		getSessions: () => sessions,
+		getSession: (id: string) => sessions.find(session => session.id === id),
 		onChange: () => () => {},
 		setMainSession: () => {},
 		getActiveSubagentCount: () => sessions.filter(s => s.status === "active").length,

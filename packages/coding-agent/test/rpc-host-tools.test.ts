@@ -8,8 +8,8 @@ import type {
 	RpcHostToolCallRequest,
 	RpcHostToolCancelRequest,
 	RpcHostToolUpdate,
-} from "@pk-nerdsaver-ai/pi-coding-agent/modes/rpc/rpc-types";
-import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
+} from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const tempPaths: string[] = [];
 
@@ -230,7 +230,7 @@ function handle(frame) {
 				content: [{ type: "text", text: "working:hello" }],
 			});
 		} finally {
-			client.stop();
+			await client.stop();
 		}
 	});
 });

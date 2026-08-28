@@ -43,7 +43,7 @@ const googleVertexModelsDevPayload = {
 } satisfies Record<string, unknown>;
 
 describe("google-vertex model catalog", () => {
-	it("maps the models.dev Vertex catalog instead of the project discovery endpoint", () => {
+	it("maps the stencil.so Vertex catalog instead of the project discovery endpoint", () => {
 		const models = mapModelsDevToModels(googleVertexModelsDevPayload, MODELS_DEV_PROVIDER_DESCRIPTORS).filter(
 			model => model.provider === "google-vertex",
 		);
@@ -81,6 +81,13 @@ describe("google-vertex model catalog", () => {
 			fetch: async () => new Response("unexpected", { status: 500 }),
 		});
 
-		expect(options).toEqual({ providerId: "google-vertex" });
+		expect(options.fetchDynamicModels).toBeUndefined();
+		expect(options.staticModels).toBeUndefined();
+
+		const result = await resolveProviderModels({ ...options, cacheDbPath: ":memory:" }, "offline");
+		expect(result.stale).toBe(false);
+		expect(result.models.some(model => model.id.endsWith("-maas") && model.api === "openai-completions")).toBe(true);
+		expect(result.models.some(model => model.id === "gemini-3.5-flash")).toBe(true);
+		expect(result.models.some(model => model.id === "gemini-1.5-pro")).toBe(false);
 	});
 });

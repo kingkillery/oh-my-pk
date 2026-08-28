@@ -1,14 +1,15 @@
-import type { ImageContent, Message, Model, TextContent } from "@pk-nerdsaver-ai/pi-ai";
-import type { Component, TUI } from "@pk-nerdsaver-ai/pi-tui";
-import type { logger as PiLogger } from "@pk-nerdsaver-ai/pi-utils";
-import type { Type } from "arktype";
-import type * as zod from "zod/v4";
+import type { type as ArkType } from "@oh-my-pi/omptype";
+import type * as TypeBox from "@oh-my-pi/omptype/typebox";
+import type * as zod from "@oh-my-pi/omptype/zod";
+import type { ImageContent, Message, Model, TextContent } from "@oh-my-pi/pi-ai";
+import type { Component, TUI } from "@oh-my-pi/pi-tui";
+import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { EditToolDetails } from "../../edit";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type * as PiCodingAgent from "../../index";
 import type { Theme } from "../../modes/theme/theme";
-import type { HookMessage } from "../../session/messages";
+import type { CustomMessagePayload, HookMessage } from "../../session/messages";
 import type { ReadonlySessionManager, SessionManager } from "../../session/session-manager";
 import type { BashToolDetails, GlobToolDetails, GrepToolDetails, ReadToolDetails } from "../../tools";
 import type {
@@ -43,7 +44,6 @@ import type {
 	TurnEndEvent,
 	TurnStartEvent,
 } from "../shared-events";
-import type * as TypeBox from "../typebox";
 
 // Re-export for backward compatibility
 export type { ExecOptions, ExecResult } from "../../exec/exec";
@@ -86,8 +86,8 @@ export interface HookUIContext {
 	/**
 	 * Set status text in the footer/status bar.
 	 * Pass undefined as text to clear the status for this key.
-	 * Text can include ANSI escape codes for styling.
-	 * Note: Newlines, tabs, and carriage returns are replaced with spaces.
+	 * ANSI/VT escape sequences and most control characters are stripped; tabs and newlines become spaces.
+	 * Repeated spaces are collapsed and surrounding whitespace is trimmed.
 	 * The combined status line is truncated to terminal width.
 	 * @param key - Unique key to identify this status (e.g., hook name)
 	 * @param text - Status text to display, or undefined to clear
@@ -156,12 +156,7 @@ export interface HookUIContext {
 	): Promise<string | undefined>;
 
 	/**
-	 * Get the current theme for styling text with ANSI codes.
-	 * Use theme.fg() and theme.bg() to style status text.
-	 *
-	 * @example
-	 * const theme = ctx.ui.theme;
-	 * ctx.ui.setStatus("my-hook", theme.fg("success", theme.status.success) + " Ready");
+	 * Get the current theme for styling custom components.
 	 */
 	readonly theme: Theme;
 }
@@ -425,7 +420,7 @@ export type { ToolCallEventResult, ToolResultEventResult } from "../shared-event
  */
 export interface BeforeAgentStartEventResult {
 	/** Message to inject into context (persisted to session, visible in TUI) */
-	message?: Pick<HookMessage, "customType" | "content" | "display" | "details" | "attribution">;
+	message?: CustomMessagePayload;
 }
 
 export type {
@@ -444,7 +439,6 @@ export type {
  * Handler function type for each event.
  * Handlers can return R, undefined, or void (bare return statements).
  */
-// biome-ignore lint/suspicious/noConfusingVoidType: void allows bare return statements in handlers
 export type HookHandler<E, R = undefined> = (event: E, ctx: HookContext) => Promise<R | void> | R | void;
 
 export interface HookMessageRenderOptions {
@@ -519,7 +513,7 @@ export interface HookAPI {
 	 * Use this when you want the LLM to see the message content.
 	 * For hook state that should NOT be sent to the LLM, use appendEntry() instead.
 	 *
-	 * @param message - The message to send
+	 * @param message - The message object to send, or a string shorthand for visible message content
 	 * @param message.customType - Identifier for your hook (used for filtering on reload)
 	 * @param message.content - Message content (string or TextContent/ImageContent array)
 	 * @param message.display - Whether to show in TUI (true = styled display, false = hidden)
@@ -530,7 +524,7 @@ export interface HookAPI {
 	 * @param options.deliverAs - How to deliver the message: "steer" or "followUp".
 	 */
 	sendMessage<T = unknown>(
-		message: Pick<HookMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
+		message: CustomMessagePayload<T>,
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" },
 	): void;
 
@@ -583,11 +577,11 @@ export interface HookAPI {
 
 	/** File logger for error/warning/debug messages */
 	logger: typeof PiLogger;
-	/** Injected zod-backed typebox shim (legacy/compat — prefer `arktype`). */
+	/** Injected TypeBox shim (legacy/compat — prefer `arktype`). */
 	typebox: typeof TypeBox;
-	/** Injected arktype module for arktype-authored hooks. */
-	arktype: typeof Type;
-	/** Injected zod/v4 module for canonical hook validation. */
+	/** Injected omptype schema builder for hooks. */
+	arktype: typeof ArkType;
+	/** Injected Zod-compatible omptype builder for hooks. */
 	zod: typeof zod;
 	/** Injected pi-coding-agent exports */
 	pi: typeof PiCodingAgent;

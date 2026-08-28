@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { resolveOpenAIRequestSetup } from "@pk-nerdsaver-ai/pi-ai/providers/openai-shared";
-import { loginAlibabaTokenPlan } from "@pk-nerdsaver-ai/pi-ai/registry/alibaba-token-plan";
-import { getOAuthProviders } from "@pk-nerdsaver-ai/pi-ai/registry/oauth";
-import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
+import { resolveOpenAIRequestSetup } from "@oh-my-pi/pi-ai/providers/openai-shared";
+import { loginAlibabaTokenPlan } from "@oh-my-pi/pi-ai/registry/alibaba-token-plan";
+import { getOAuthProviders } from "@oh-my-pi/pi-ai/registry/oauth";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
 describe("QwenCloud Token Plan login", () => {
 	test("International (default) region opens Individual page and validates without inference", async () => {
@@ -26,7 +26,7 @@ describe("QwenCloud Token Plan login", () => {
 			{
 				url: "https://home.qwencloud.com/billing/subscription/token-plan-individual",
 				instructions:
-					"Subscribe to Token Plan Personal/Individual Edition and copy its dedicated API key (sk-sp-...). Keep this page open; the next prompt explains how to enable optional quota reporting.",
+					"Subscribe to Token Plan Individual and copy its dedicated API key. Keep this page open; the next prompt explains how to enable optional quota reporting.",
 			},
 		]);
 		expect(requestedUrl).toBe("https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/models");
@@ -36,10 +36,17 @@ describe("QwenCloud Token Plan login", () => {
 	test("China (Beijing) region validates against and routes inference to cn-beijing", async () => {
 		const authRequests: { url: string; instructions?: string }[] = [];
 		let requestedUrl = "";
+		let cookiePrompt = "";
 		const prompts = ["2", "sk-sp-beijing"];
 		const credential = await loginAlibabaTokenPlan({
 			onAuth: request => authRequests.push(request),
-			onPrompt: async prompt => (prompt.allowEmpty ? "" : (prompts.shift() ?? "")),
+			onPrompt: async prompt => {
+				if (prompt.allowEmpty) {
+					cookiePrompt = prompt.message;
+					return "";
+				}
+				return prompts.shift() ?? "";
+			},
 			fetch: input => {
 				requestedUrl = String(input);
 				return Promise.resolve(Response.json({ data: [{ id: "qwen3.7-plus" }] }));
@@ -48,6 +55,7 @@ describe("QwenCloud Token Plan login", () => {
 
 		expect(requestedUrl).toBe("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models");
 		expect(authRequests[0]?.url).toBe("https://www.aliyun.com/benefit/scene/tokenplan");
+		expect(cookiePrompt).toContain("bailian-cs.console.aliyun.com/data/api.json");
 		expect(JSON.parse(credential)).toEqual({
 			token: "sk-sp-beijing",
 			baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
@@ -149,7 +157,7 @@ describe("QwenCloud Token Plan login", () => {
 		}
 	});
 
-	test("registers Token Plan separately from the Alibaba Coding Plan", () => {
+	test("registers Token Plan separately from the legacy Alibaba Coding Plan", () => {
 		const providers = getOAuthProviders();
 		expect(providers.find(provider => provider.id === "alibaba-token-plan")).toMatchObject({
 			name: "QwenCloud Token Plan",

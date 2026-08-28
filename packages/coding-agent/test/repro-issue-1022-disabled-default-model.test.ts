@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
-import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { createAgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
-import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
-import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
-import { removeSyncWithRetries, Snowflake } from "@pk-nerdsaver-ai/pi-utils";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 
 /**
@@ -57,7 +57,7 @@ describe("issue #1022 — path-scoped enabledModels respected by default fallbac
 		expect(settings.get("enabledModels")).toEqual(["openai-codex"]);
 		expect(settings.get("disabledProviders")).toEqual(["github-copilot"]);
 
-		const authStorage = await AuthStorage.create(path.join(testDir, "auth.db"));
+		const authStorage = await AuthStorage.create(":memory:");
 		// Only anthropic has credentials. Per `enabledModels` the path allows
 		// only openai-codex, so no anthropic model should be selected.
 		authStorage.setRuntimeApiKey("anthropic", "test-anthropic-key");

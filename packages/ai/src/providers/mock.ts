@@ -67,7 +67,7 @@ export type MockApi = typeof MOCK_API;
 export type MockContent =
 	| string
 	| { type: "text"; text: string }
-	| { type: "thinking"; thinking: string }
+	| { type: "thinking"; thinking: string; thinkingSignature?: string }
 	| {
 			type: "toolCall";
 			/** Optional explicit id; auto-generated when omitted. */
@@ -137,6 +137,8 @@ export interface MockModelOptions {
 	id?: string;
 	/** Provider string used in the returned AssistantMessage. Defaults to `"mock"`. */
 	provider?: string;
+	/** Base URL reported by the model. Defaults to `"mock://"`. */
+	baseUrl?: string;
 	/** A sequence of responses, one per call. Accepts arrays, generators, or any iterable. */
 	responses?: MockResponseSource;
 	/** Fallback handler used when `responses` is exhausted. */
@@ -168,7 +170,7 @@ export class MockModel implements Model<MockApi> {
 	readonly name: string;
 	readonly api: MockApi = MOCK_API;
 	readonly provider: string;
-	readonly baseUrl = "mock://";
+	readonly baseUrl: string;
 	readonly reasoning: boolean;
 	readonly input: ("text" | "image")[] = ["text"];
 	readonly cost: Model["cost"];
@@ -189,6 +191,7 @@ export class MockModel implements Model<MockApi> {
 		this.id = options.id ?? "mock-model";
 		this.name = options.id ?? "mock-model";
 		this.provider = options.provider ?? "mock";
+		this.baseUrl = options.baseUrl ?? "mock://";
 		this.reasoning = options.reasoning ?? false;
 		this.cost = options.cost ?? ZERO_COST;
 		this.contextWindow = options.contextWindow ?? 200_000;
@@ -446,10 +449,17 @@ function mergeUsage(partial?: Partial<Omit<Usage, "cost">> & { cost?: Partial<Us
 	if (costProvided) {
 		merged.cost = { ...base.cost, ...partial.cost } as Usage["cost"];
 	}
-	// Recompute totalTokens when not explicitly provided (canonical formula matches types.ts:
-	// input + output + cacheRead + cacheWrite).
+	// Recompute totalTokens when not explicitly provided (canonical formula matches types.ts).
 	if (partial.totalTokens === undefined) {
-		merged.totalTokens = merged.input + merged.output + merged.cacheRead + merged.cacheWrite;
+		const orchestration = merged.orchestration;
+		merged.totalTokens =
+			merged.input +
+			merged.output +
+			merged.cacheRead +
+			merged.cacheWrite +
+			(orchestration?.input ?? 0) +
+			(orchestration?.output ?? 0) +
+			(orchestration?.cacheRead ?? 0);
 	}
 	// Recompute cost.total when cost components were supplied without an explicit total.
 	if (costProvided && partial.cost?.total === undefined) {

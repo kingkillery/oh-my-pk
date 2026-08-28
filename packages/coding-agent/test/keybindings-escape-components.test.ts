@@ -1,13 +1,13 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
-import { KeybindingsManager } from "@pk-nerdsaver-ai/pi-coding-agent/config/keybindings";
-import type { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
-import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { ModelSelectorComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/model-selector";
-import { SessionSelectorComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/session-selector";
-import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
-import type { SessionInfo } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-listing";
-import { setKeybindings, type TUI } from "@pk-nerdsaver-ai/pi-tui";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
+import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { ModelHubComponent } from "@oh-my-pi/pi-coding-agent/modes/components/model-hub";
+import { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
+import { setKeybindings, type TUI } from "@oh-my-pi/pi-tui";
 
 beforeAll(() => {
 	initTheme();
@@ -59,7 +59,7 @@ describe("component escape bindings", () => {
 		expect(onExit).toHaveBeenCalledTimes(1);
 	});
 
-	it("uses tui.select.cancel for model selector cancellation", async () => {
+	it("uses tui.select.cancel for model selector cancellation", () => {
 		const keybindings = KeybindingsManager.inMemory({
 			"tui.select.cancel": "ctrl+g",
 		});
@@ -77,30 +77,32 @@ describe("component escape bindings", () => {
 		});
 		const modelRegistry = {
 			getAll: () => [model],
+			getAvailable: () => [model],
+			getError: () => undefined,
 			getDiscoverableProviders: () => [],
-			getCanonicalModelSelections: () => [],
+			getProviderDiscoveryState: () => undefined,
+			refresh: async () => {},
+			refreshProvider: async () => {},
+			authStorage: { hasAuth: () => false },
 		} as unknown as ModelRegistry;
 		const ui = {
 			requestRender: vi.fn(),
+			terminal: { rows: 40 },
 		} as unknown as TUI;
 		const onCancel = vi.fn();
 
-		const selector = new ModelSelectorComponent(
-			ui,
-			model,
-			settings,
-			modelRegistry,
-			[{ model, thinkingLevel: "off" }],
-			() => {},
+		const hub = new ModelHubComponent(ui, settings, modelRegistry, [{ model, thinkingLevel: "off" }], {
+			onAssign: () => {},
+			onUnassign: () => {},
 			onCancel,
-		);
+		});
 
-		await Bun.sleep(0);
-
-		selector.handleInput("\x1b");
+		hub.handleInput("\x1b");
 		expect(onCancel).not.toHaveBeenCalled();
 
-		selector.handleInput("\x07");
+		hub.handleInput("\x07");
 		expect(onCancel).toHaveBeenCalledTimes(1);
+
+		hub.dispose();
 	});
 });

@@ -16,9 +16,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { MCPManager } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/manager";
-import type { MCPStdioServerConfig } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/types";
-import { removeSyncWithRetries } from "@pk-nerdsaver-ai/pi-utils";
+import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
+import type { MCPStdioServerConfig } from "@oh-my-pi/pi-coding-agent/mcp/types";
+import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
 const FIXTURE_PATH = path.join(import.meta.dir, "fixtures", "crash-after-init-mcp.ts");
 const BUN_EXEC = process.execPath;

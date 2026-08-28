@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
-import { resolveResumableSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-listing";
-import { computeDefaultSessionDir } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-paths";
-import { FileSessionStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-storage";
-import { executeBuiltinSlashCommand } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/builtin-registry";
-import { getConfigRootDir, setAgentDir } from "@pk-nerdsaver-ai/pi-utils";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { resolveResumableSession } from "@oh-my-pi/pi-coding-agent/session/session-listing";
+import { computeDefaultSessionDir } from "@oh-my-pi/pi-coding-agent/session/session-paths";
+import { FileSessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
+import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
+import { getConfigRootDir, setAgentDir } from "@oh-my-pi/pi-utils";
 
 let tempDir: string;
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -77,6 +77,23 @@ describe("/resume slash command", () => {
 		expect(harness.setText).toHaveBeenCalledWith("");
 		expect(harness.showSessionSelector).toHaveBeenCalled();
 		expect(harness.handleResumeSession).not.toHaveBeenCalled();
+	});
+
+	it("opens foreign session selectors for @claude and @codex", async () => {
+		const sources: Array<{ argument: string; source: "claude" | "codex" }> = [
+			{ argument: "@claude", source: "claude" },
+			{ argument: "@codex", source: "codex" },
+		];
+		for (const { argument, source } of sources) {
+			const harness = createRuntime();
+
+			const handled = await executeBuiltinSlashCommand(`/resume ${argument}`, harness.runtime);
+
+			expect(handled).toBe(true);
+			expect(harness.showSessionSelector).toHaveBeenCalledWith(source);
+			expect(harness.handleResumeSession).not.toHaveBeenCalled();
+			expect(harness.showError).not.toHaveBeenCalled();
+		}
 	});
 
 	it("resumes a matching session id prefix", async () => {

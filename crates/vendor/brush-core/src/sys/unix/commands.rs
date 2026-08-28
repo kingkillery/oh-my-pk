@@ -69,9 +69,11 @@ impl CommandFgControlExt for std::process::Command {
 	}
 }
 
-/// Extension trait for detaching commands from the parent's controlling terminal.
+/// Extension trait for detaching commands from the parent's controlling
+/// terminal.
 pub trait CommandSessionExt {
-	/// Arranges for the command to run in a new POSIX session with no controlling terminal.
+	/// Arranges for the command to run in a new POSIX session with no
+	/// controlling terminal.
 	fn detach_session(&mut self);
 	/// Like [`CommandSessionExt::detach_session`], but additionally double-forks
 	/// so the spawned process reparents to init (PID 1) and leaves the caller's
@@ -156,6 +158,8 @@ fn pre_exec_detach_session_reparent() -> Result<(), std::io::Error> {
 	if pid > 0 {
 		// Intermediate parent: exit now to orphan the grandchild. `_exit` avoids
 		// running atexit handlers or flushing inherited buffers in the fork.
+		// SAFETY: this post-fork intermediate child must terminate without
+		// running destructors or touching inherited buffered state.
 		unsafe { libc::_exit(0) };
 	}
 	Ok(())

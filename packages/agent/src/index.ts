@@ -9,8 +9,8 @@ export * from "./append-only-context";
 export * from "./cache-attribution";
 // Compaction
 export * from "./compaction";
-// Mixture-of-Agents stream composition
-export * from "./moa";
+// Process-global pause gate
+export * from "./pause";
 // Proxy utilities
 export * from "./proxy";
 // Replay policy

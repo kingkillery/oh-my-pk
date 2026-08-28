@@ -11,117 +11,17 @@
  * are stubbed.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { importRoomKey } from "@pk-nerdsaver-ai/pi-coding-agent/collab/crypto";
-import { CollabGuestLink } from "@pk-nerdsaver-ai/pi-coding-agent/collab/guest";
-import { CollabHost } from "@pk-nerdsaver-ai/pi-coding-agent/collab/host";
-import {
-	COLLAB_PROTO,
-	type CollabFrame,
-	parseCollabLink,
-	rewriteEnvelopePeer,
-	unpackEnvelope,
-} from "@pk-nerdsaver-ai/pi-coding-agent/collab/protocol";
-import { CollabSocket } from "@pk-nerdsaver-ai/pi-coding-agent/collab/relay-client";
-import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
-import type { SessionEntry } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-entries";
+import { importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
+import { CollabGuestLink } from "@oh-my-pi/pi-coding-agent/collab/guest";
+import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
+import { COLLAB_PROTO, type CollabFrame, parseCollabLink } from "@oh-my-pi/pi-coding-agent/collab/protocol";
+import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
-// ── In-memory transport (verbatim copy of the relay used in read-only.test.ts) ──
-
-let activeRelay: InMemoryRelay | null = null;
-
-class FakeWebSocket {
-	static readonly CONNECTING = 0;
-	static readonly OPEN = 1;
-	static readonly CLOSING = 2;
-	static readonly CLOSED = 3;
-
-	binaryType = "blob";
-	readyState: number = FakeWebSocket.CONNECTING;
-	readonly role: "host" | "guest";
-	peerId = 0;
-	onopen: (() => void) | null = null;
-	onmessage: ((event: { data: unknown }) => void) | null = null;
-	onerror: (() => void) | null = null;
-	onclose: ((event: { code: number; reason: string }) => void) | null = null;
-	readonly #relay: InMemoryRelay;
-
-	constructor(url: string) {
-		const relay = activeRelay;
-		if (!relay) throw new Error("FakeWebSocket: no active in-memory relay");
-		this.#relay = relay;
-		this.role = new URL(url).searchParams.get("role") === "host" ? "host" : "guest";
-		queueMicrotask(() => {
-			if (this.readyState !== FakeWebSocket.CONNECTING) return;
-			this.readyState = FakeWebSocket.OPEN;
-			relay.connect(this);
-			this.onopen?.();
-		});
-	}
-
-	send(data: Uint8Array): void {
-		if (this.readyState !== FakeWebSocket.OPEN) return;
-		const bytes = new Uint8Array(data);
-		queueMicrotask(() => this.#relay.forward(this, bytes));
-	}
-
-	close(_code?: number): void {
-		if (this.readyState === FakeWebSocket.CLOSED) return;
-		this.readyState = FakeWebSocket.CLOSED;
-		this.#relay.disconnect(this);
-		queueMicrotask(() => this.onclose?.({ code: 1000, reason: "closed" }));
-	}
-
-	deliver(bytes: Uint8Array): void {
-		if (this.readyState !== FakeWebSocket.OPEN) return;
-		const copy = new Uint8Array(bytes);
-		queueMicrotask(() => this.onmessage?.({ data: copy.buffer }));
-	}
-
-	deliverControl(json: string): void {
-		if (this.readyState !== FakeWebSocket.OPEN) return;
-		queueMicrotask(() => this.onmessage?.({ data: json }));
-	}
-}
-
-class InMemoryRelay {
-	#host: FakeWebSocket | null = null;
-	readonly #guests = new Map<number, FakeWebSocket>();
-	#nextPeerId = 1;
-
-	connect(ws: FakeWebSocket): void {
-		if (ws.role === "host") {
-			this.#host = ws;
-			return;
-		}
-		ws.peerId = this.#nextPeerId++;
-		this.#guests.set(ws.peerId, ws);
-		this.#host?.deliverControl(JSON.stringify({ t: "peer-joined", peer: ws.peerId }));
-	}
-
-	forward(from: FakeWebSocket, bytes: Uint8Array): void {
-		if (from.role === "host") {
-			const envelope = unpackEnvelope(bytes);
-			if (!envelope) return;
-			if (envelope.peerId === 0) {
-				for (const guest of this.#guests.values()) guest.deliver(bytes);
-			} else {
-				this.#guests.get(envelope.peerId)?.deliver(bytes);
-			}
-			return;
-		}
-		rewriteEnvelopePeer(bytes, from.peerId);
-		this.#host?.deliver(bytes);
-	}
-
-	disconnect(ws: FakeWebSocket): void {
-		if (ws.role === "host") {
-			if (this.#host === ws) this.#host = null;
-			return;
-		}
-		this.#guests.delete(ws.peerId);
-		this.#host?.deliverControl(JSON.stringify({ t: "peer-left", peer: ws.peerId }));
-	}
-}
+// In-memory transport: shared FakeWebSocket + InMemoryRelay harness (see
+// ./helpers/in-memory-relay), mirroring the relay's forwarding contract.
 
 // ── Host harness with a configurable transcript ────────────────────────────
 
@@ -203,15 +103,16 @@ function makeFailingGuestContext(failure: Error): InteractiveModeContext {
 		compactionQueuedMessages: [],
 		streamingComponent: undefined,
 		streamingMessage: undefined,
+		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),
 		loadingAnimation: undefined,
 		statusLine: {
 			setCollabStatus: () => {},
 			invalidate: () => {},
-			setSessionStartTime: () => {},
+			resetActiveTime: () => {},
 		},
 		ui: { requestRender: () => {} },
-		chatContainer: { clear: () => {} },
+		chatContainer: { clear: () => {}, disposeChildren: () => {} },
 		resetObserverRegistry: () => {},
 		renderInitialMessages: () => {},
 		reloadTodos: () => Promise.resolve(),
@@ -222,23 +123,68 @@ function makeFailingGuestContext(failure: Error): InteractiveModeContext {
 	} as unknown as InteractiveModeContext;
 	return ctx;
 }
+function makeCancelledSwitchGuestContext(
+	switchSession: () => Promise<boolean>,
+	events: string[],
+): InteractiveModeContext {
+	return {
+		settings: { get: () => "" },
+		sessionManager: {
+			getSessionFile: () => null,
+			getSessionName: () => undefined,
+			getCwd: () => process.cwd(),
+		},
+		session: {
+			switchSession,
+			newSession: () => Promise.resolve(),
+			messages: [],
+			agent: {
+				state: { model: undefined },
+				setModel: () => events.push("host-model"),
+				setThinkingLevel: () => events.push("host-thinking"),
+				setDisableReasoning: () => events.push("host-reasoning"),
+			},
+		},
+		statusContainer: { clear: () => events.push("clear-transient-ui") },
+		pendingMessagesContainer: { clear: () => {} },
+		compactionQueuedMessages: [],
+		streamingComponent: undefined,
+		streamingMessage: undefined,
+		transcriptMessageComponents: new WeakMap(),
+		pendingTools: new Map(),
+		loadingAnimation: undefined,
+		statusLine: {
+			setCollabStatus: () => {},
+			invalidate: () => {},
+			resetActiveTime: () => {},
+			markActivityEnd: () => events.push("host-activity"),
+		},
+		ui: { requestRender: () => {} },
+		chatContainer: { clear: () => {}, disposeChildren: () => {} },
+		resetObserverRegistry: () => {},
+		renderInitialMessages: () => {},
+		syncRunningSubagentBadge: () => {},
+		reloadTodos: () => Promise.resolve(),
+		showStatus: (status: string) => events.push(`status:${status}`),
+		updateEditorTopBorder: () => {},
+		updateEditorBorderColor: () => {},
+		collabGuest: undefined,
+	} as unknown as InteractiveModeContext;
+}
 
 // ── Shared host/relay ───────────────────────────────────────────────────────
 
-const RealWebSocket = globalThis.WebSocket;
 const snapshot = makeLargeSnapshot();
 let host: CollabHost;
 
 beforeAll(async () => {
-	globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-	activeRelay = new InMemoryRelay();
+	installInMemoryRelay();
 	host = new CollabHost(makeHostContext(snapshot));
 	await host.start("ws://localhost:8788");
 });
 
 afterAll(async () => {
-	globalThis.WebSocket = RealWebSocket;
-	activeRelay = null;
+	uninstallInMemoryRelay();
 	await host.stop("test done");
 });
 
@@ -319,6 +265,48 @@ describe("collab chunked welcome (#3144)", () => {
 			).rejects.toThrow("replica write failed during snapshot resume");
 		} finally {
 			writeSpy.mockRestore();
+			await guest.leave("test cleanup").catch(() => {});
+		}
+	});
+	it("does not clear the old guest session when replica activation is cancelled", async () => {
+		const events: string[] = [];
+		const guest = new CollabGuestLink(makeCancelledSwitchGuestContext(async () => false, events));
+		guest.agentRegistry.register({
+			id: "local-agent",
+			displayName: "local",
+			kind: "main",
+			parentId: undefined,
+			session: null,
+			status: "running",
+		});
+
+		const joinAttempt = guest.join(host.link);
+		try {
+			await expect(joinAttempt).rejects.toThrow("Collab replica activation was cancelled");
+			expect(guest.agentRegistry.get("local-agent")).toBeDefined();
+			expect(events).not.toContain("clear-transient-ui");
+			expect(events).not.toContain("status:Joined collab session");
+		} finally {
+			await guest.leave("test cleanup").catch(() => {});
+		}
+	});
+	it("applies host state only after the replica activates", async () => {
+		const events: string[] = [];
+		const guest = new CollabGuestLink(
+			makeCancelledSwitchGuestContext(async () => {
+				events.push("replica-activated");
+				return true;
+			}, events),
+		);
+
+		try {
+			await guest.join(host.link);
+			expect(events.indexOf("replica-activated")).toBeGreaterThanOrEqual(0);
+			expect(events.indexOf("host-thinking")).toBeGreaterThan(events.indexOf("replica-activated"));
+			expect(events.findIndex(event => event.startsWith("status:Joined collab session"))).toBeGreaterThan(
+				events.indexOf("host-thinking"),
+			);
+		} finally {
 			await guest.leave("test cleanup").catch(() => {});
 		}
 	});

@@ -1,12 +1,14 @@
 import { describe, expect, it } from "bun:test";
-import { type Component, Container, type Focusable, type OverlayFocusOwner, TUI } from "@pk-nerdsaver-ai/pi-tui";
-import type { Terminal, TerminalAppearance } from "@pk-nerdsaver-ai/pi-tui/terminal";
+import { type Component, Container, type Focusable, type OverlayFocusOwner, TUI } from "@oh-my-pi/pi-tui";
+import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui/terminal";
 
 class MinimalTerminal implements Terminal {
 	columns = 80;
 	rows = 24;
 	kittyProtocolActive = false;
 	kittyEnableSequence: string | null = null;
+	keyboardEnhancementEnterSequence: string | null = null;
+	keyboardEnhancementExitSequence: string | null = null;
 	appearance: TerminalAppearance | undefined;
 	#onInput: ((data: string) => void) | undefined;
 	#onResize: (() => void) | undefined;
