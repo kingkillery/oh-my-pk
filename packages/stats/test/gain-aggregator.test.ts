@@ -1,46 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
-import { closeDb, initDb, insertMessageStats } from "@pk-nerdsaver-ai/omp-stats/db";
-import {
-	dedupeProjects,
-	getGainDashboardStats,
-	normalizeProjectPath,
-} from "@pk-nerdsaver-ai/omp-stats/gain-aggregator";
+import { initDb, insertMessageStats } from "@pk-nerdsaver-ai/omp-stats/db";
+import { dedupeProjects, getGainDashboardStats, normalizeProjectPath } from "@pk-nerdsaver-ai/omp-stats/gain-aggregator";
 import type { MessageStats } from "@pk-nerdsaver-ai/omp-stats/types";
-import { getAgentDir, getStatsDbPath, setAgentDir, TempDir } from "@pk-nerdsaver-ai/pi-utils";
+import { getStatsDbPath } from "@pk-nerdsaver-ai/pi-utils";
+import { installStatsTestIsolation } from "./helpers/temp-agent";
 
-const originalConfigDir = process.env.PI_CONFIG_DIR;
-const originalAgentDir = getAgentDir();
-let tempDir: TempDir | null = null;
-
-beforeEach(() => {
-	tempDir = TempDir.createSync("@pi-stats-gain-");
-	const configDir = path.relative(os.homedir(), tempDir.join("config"));
-	process.env.PI_CONFIG_DIR = configDir;
-	setAgentDir(path.join(os.homedir(), configDir, "agent"));
-});
-
-afterEach(() => {
-	closeDb();
-	if (originalConfigDir === undefined) {
-		delete process.env.PI_CONFIG_DIR;
-	} else {
-		process.env.PI_CONFIG_DIR = originalConfigDir;
-	}
-	setAgentDir(originalAgentDir);
-	// Best-effort: the stats SQLite handles can still be open when teardown
-	// runs, and Windows then refuses the delete with EBUSY — failing a test whose
-	// assertions all passed and masking any genuine failure behind it.
-	// Reclaiming an OS temp dir is not what these tests assert.
-	try {
-		tempDir?.removeSync();
-	} catch {
-		// leave it to the OS temp reaper
-	}
-	tempDir = null;
-});
+installStatsTestIsolation("@pi-stats-gain-");
 
 function makeMessage(sessionFile: string, folder: string, entryId: string, timestamp: number): MessageStats {
 	return {

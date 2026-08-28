@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { getRecentErrors } from "../api";
-import { formatCost, formatInteger, formatRelativeTime } from "../data/formatters";
+import { formatInteger, formatMessageCost, formatRelativeTime } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import type { MessageStats, TimeRange } from "../types";
 import { AsyncBoundary, DataTable, Panel, StatusPill } from "../ui";
@@ -12,12 +12,12 @@ export interface ErrorsRouteProps {
 	onRequestClick: (id: number) => void;
 }
 
-export function ErrorsRoute({ active, refreshTrigger, onRequestClick }: ErrorsRouteProps) {
+export function ErrorsRoute({ active, range, refreshTrigger, onRequestClick }: ErrorsRouteProps) {
 	const {
 		data: recentErrors,
 		error,
 		loading,
-	} = useResource(["recent-errors-dense", refreshTrigger], signal => getRecentErrors(50, signal), {
+	} = useResource(["recent-errors-dense", range, refreshTrigger], signal => getRecentErrors(range, 50, signal), {
 		pollMs: 30000,
 		enabled: active,
 	});
@@ -59,9 +59,9 @@ export function ErrorsRoute({ active, refreshTrigger, onRequestClick }: ErrorsRo
 			},
 			{
 				key: "cost",
-				header: "Cost",
+				header: "API-equivalent estimate",
 				numeric: true,
-				render: (item: MessageStats) => formatCost(item.usage.cost.total, 4),
+				render: (item: MessageStats) => formatMessageCost(item, 4),
 			},
 		],
 		[],
@@ -82,8 +82,8 @@ export function ErrorsRoute({ active, refreshTrigger, onRequestClick }: ErrorsRo
 					<div className="stats-mobile-card-value">{formatRelativeTime(item.timestamp)}</div>
 				</div>
 				<div>
-					<div className="stats-mobile-card-label">Cost</div>
-					<div className="stats-mobile-card-value">{formatCost(item.usage.cost.total, 4)}</div>
+					<div className="stats-mobile-card-label">API-equivalent estimate</div>
+					<div className="stats-mobile-card-value">{formatMessageCost(item, 4)}</div>
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">Tokens</div>

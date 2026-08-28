@@ -1,5 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import * as path from "node:path";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@pk-nerdsaver-ai/pi-agent-core";
 import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
 import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
@@ -8,20 +7,25 @@ import * as pythonExecutor from "@pk-nerdsaver-ai/pi-coding-agent/eval/py/execut
 import * as bashExecutor from "@pk-nerdsaver-ai/pi-coding-agent/exec/bash-executor";
 import type { ExtensionRunner } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions";
 import { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
-import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
 import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
+import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
+
+const sharedAuthStorage = createInMemoryAuthStorage();
+const sharedModelRegistry = new ModelRegistry(sharedAuthStorage);
+
+afterAll(() => {
+	sharedAuthStorage.close();
+});
 
 describe("AgentSession user shortcut hooks", () => {
 	let tempDir: TempDir;
 	let session: AgentSession;
 	let modelRegistry: ModelRegistry;
-	let authStorage: AuthStorage | undefined;
 
-	beforeEach(async () => {
+	beforeEach(() => {
 		tempDir = TempDir.createSync("@pi-user-shortcut-hooks-");
-		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		modelRegistry = new ModelRegistry(authStorage);
+		modelRegistry = sharedModelRegistry;
 	});
 
 	afterEach(async () => {
@@ -30,8 +34,6 @@ describe("AgentSession user shortcut hooks", () => {
 			await session.dispose();
 		}
 		await pythonExecutor.disposeAllKernelSessions();
-		authStorage?.close();
-		authStorage = undefined;
 		tempDir.removeSync();
 	});
 

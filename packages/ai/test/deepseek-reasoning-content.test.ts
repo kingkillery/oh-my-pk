@@ -3,6 +3,7 @@ import { renderDemotedThinking } from "@pk-nerdsaver-ai/pi-ai/dialect";
 import { convertMessages } from "@pk-nerdsaver-ai/pi-ai/providers/openai-completions";
 import type { AssistantMessage, Model, ModelSpec, ThinkingContent, ToolCall } from "@pk-nerdsaver-ai/pi-ai/types";
 import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
 import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
 
 interface OpenAICompletionAssistantWireMessage {
@@ -66,52 +67,38 @@ function assistantToolCall(
 
 describe("DeepSeek reasoning_content tool-call replay", () => {
 	// ----------------------------------------------------------------
-	// Fix 1: effortMap for DeepSeek-family on any provider
+	// Fix 1: honest wire-exact ladders for DeepSeek-family on any provider —
+	// V4 Flash and Pro expose [low, high, max] (#7668, #8405).
 	// ----------------------------------------------------------------
-	describe("thinking effortMap (Fix 1)", () => {
-		it("maps unsupported lower DeepSeek efforts to high on opencode-go", () => {
+	describe("thinking ladder (Fix 1)", () => {
+		it("bakes the honest [low, high, max] flash ladder with no effortMap on opencode-go", () => {
 			const model = deepseekModel({
 				provider: "opencode-go",
 				baseUrl: "https://opencode.ai/zen/go/v1",
 				id: "deepseek-v4-flash",
 			});
-			expect(model.thinking?.effortMap).toMatchObject({
-				minimal: "high",
-				low: "high",
-				medium: "high",
-				high: "high",
-				xhigh: "max",
-			});
+			expect(model.thinking?.efforts).toEqual([Effort.Low, Effort.High, Effort.Max]);
+			expect(model.thinking?.effortMap).toBeUndefined();
 		});
 
-		it("maps unsupported lower DeepSeek efforts to high on NVIDIA", () => {
+		it("bakes the honest [low, high, max] flash ladder with no effortMap on NVIDIA", () => {
 			const model = deepseekModel({
 				provider: "nvidia",
 				baseUrl: "https://integrate.api.nvidia.com/v1",
 				id: "deepseek-ai/deepseek-v4-flash",
 			});
-			expect(model.thinking?.effortMap).toMatchObject({
-				minimal: "high",
-				low: "high",
-				medium: "high",
-				high: "high",
-				xhigh: "max",
-			});
+			expect(model.thinking?.efforts).toEqual([Effort.Low, Effort.High, Effort.Max]);
+			expect(model.thinking?.effortMap).toBeUndefined();
 		});
 
-		it("maps unsupported lower DeepSeek efforts to high on the official endpoint", () => {
+		it("bakes the honest [low, high, max] ladder with no effortMap on the official endpoint", () => {
 			const model = deepseekModel({
 				provider: "deepseek",
 				baseUrl: "https://api.deepseek.com/v1",
 				id: "deepseek-v4-pro",
 			});
-			expect(model.thinking?.effortMap).toMatchObject({
-				minimal: "high",
-				low: "high",
-				medium: "high",
-				high: "high",
-				xhigh: "max",
-			});
+			expect(model.thinking?.efforts).toEqual([Effort.Low, Effort.High, Effort.Max]);
+			expect(model.thinking?.effortMap).toBeUndefined();
 		});
 
 		it("does NOT map xhigh for non-DeepSeek models", () => {

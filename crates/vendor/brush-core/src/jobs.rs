@@ -1,9 +1,8 @@
 //! Job management
 
-use std::{collections::VecDeque, fmt::Display, time::Duration};
-
 #[cfg(windows)]
 use std::os::windows::io::OwnedHandle;
+use std::{collections::VecDeque, fmt::Display, time::Duration};
 
 use futures::FutureExt;
 
@@ -26,13 +25,13 @@ pub enum JobSelector {
 /// Result returned when waiting for a single managed job.
 pub struct WaitedJob {
 	/// Shell-internal job ID.
-	pub id: usize,
+	pub id:           usize,
 	/// Process ID when known, otherwise the shell-internal job ID.
-	pub identifier: String,
+	pub identifier:   String,
 	/// Command line associated with the job.
 	pub command_line: String,
 	/// Exit status returned by the job.
-	pub result: ExecutionResult,
+	pub result:       ExecutionResult,
 }
 
 impl WaitedJob {
@@ -232,7 +231,10 @@ impl JobManager {
 	///
 	/// * `pid` - The process ID to resolve.
 	pub fn resolve_process_id(&mut self, pid: i32) -> Option<&mut Job> {
-		self.jobs.iter_mut().find(|job| job.contains_process_id(pid))
+		self
+			.jobs
+			.iter_mut()
+			.find(|job| job.contains_process_id(pid))
 	}
 
 	/// Waits for all managed jobs to complete.
@@ -282,11 +284,7 @@ impl JobManager {
 				}
 				if matches!(self.jobs[i].state, JobState::Done) {
 					let job = self.jobs.remove(i);
-					return Ok(Some(WaitedJob::from_job(
-						job,
-						ExecutionResult::success(),
-						identifier,
-					)));
+					return Ok(Some(WaitedJob::from_job(job, ExecutionResult::success(), identifier)));
 				}
 				i += 1;
 			}
@@ -617,6 +615,19 @@ impl Job {
 			.representative_pid()
 			.map_or_else(|| self.id.to_string(), |pid| pid.to_string())
 	}
+	/// Returns the number of external processes retained by this job.
+	pub fn external_process_count(&self) -> usize {
+		self.tasks.iter().filter(|task| task.is_external()).count()
+	}
+
+	/// Iterates over the external process IDs that make up this job.
+	pub fn process_ids(&self) -> impl Iterator<Item = sys::process::ProcessId> + '_ {
+		self.tasks.iter().filter_map(|task| match task {
+			JobTask::External(process) => process.pid(),
+			JobTask::Internal(_) => None,
+		})
+	}
+
 
 	/// Tries to retrieve a "representative" pid for the job.
 	pub fn representative_pid(&self) -> Option<sys::process::ProcessId> {

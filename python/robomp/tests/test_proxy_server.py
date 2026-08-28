@@ -166,7 +166,9 @@ async def _async_client(app) -> httpx.AsyncClient:
     )
 
 
-def test_read_remote_urls_uses_safe_directory_and_slot_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_read_remote_urls_uses_safe_directory_and_slot_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from robomp.proxy import server as proxy_server
 
     captured: dict[str, object] = {}
@@ -946,6 +948,164 @@ async def test_git_push_workspace_key_mismatch(proxy_settings: Settings) -> None
     assert "workspace_key" in resp.text
 
 
+async def test_git_push_release_requires_hmac(proxy_settings: Settings) -> None:
+    app = _build_app(proxy_settings)
+    body = json.dumps(
+        {
+            "repo": "octo/widget",
+            "workspace_key": "octo__widget__release",
+            "branch": "main",
+            "tag": "v1.2.3",
+            "expected_head": "0" * 40,
+        }
+    ).encode()
+    async with await _async_client(app) as client:
+        resp = await client.post(
+            "/gh/v1/git/push_release",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status_code == 401
+
+
+async def test_git_push_release_rejects_workspace_key_mismatch(proxy_settings: Settings) -> None:
+    app = _build_app(proxy_settings)
+    body = json.dumps(
+        {
+            "repo": "octo/widget",
+            "workspace_key": "other__repo__release",
+            "branch": "main",
+            "tag": "v1.2.3",
+            "expected_head": "0" * 40,
+        }
+    ).encode()
+    async with await _async_client(app) as client:
+        resp = await client.post(
+            "/gh/v1/git/push_release",
+            content=body,
+            headers={
+                **_signed("POST", "/gh/v1/git/push_release", body),
+                "Content-Type": "application/json",
+            },
+        )
+    assert resp.status_code == 400
+    assert "workspace_key" in resp.text
+
+
+async def test_git_push_release_rejects_invalid_tag(proxy_settings: Settings) -> None:
+    app = _build_app(proxy_settings)
+    body = json.dumps(
+        {
+            "repo": "octo/widget",
+            "workspace_key": "octo__widget__release",
+            "branch": "main",
+            "tag": "release/1.2.3",
+            "expected_head": "0" * 40,
+        }
+    ).encode()
+    async with await _async_client(app) as client:
+        resp = await client.post(
+            "/gh/v1/git/push_release",
+            content=body,
+            headers={
+                **_signed("POST", "/gh/v1/git/push_release", body),
+                "Content-Type": "application/json",
+            },
+        )
+    assert resp.status_code == 400
+    assert "tag" in resp.text
+
+
+async def test_release_read_endpoints_proxy_typed_github_shapes(proxy_settings: Settings) -> None:
+    upstream: list[str] = []
+
+    def gh(request: httpx.Request) -> httpx.Response:
+        upstream.append(str(request.url))
+        if request.url.path == "/repos/octo/widget/actions/runs":
+            return httpx.Response(
+                200,
+                json={
+                    "workflow_runs": [
+                        {
+                            "id": 7,
+                            "name": "CI",
+                            "event": "push",
+                            "status": "completed",
+                            "conclusion": "failure",
+                            "head_branch": "main",
+                            "head_sha": "abc",
+                            "html_url": "https://example.invalid/run/7",
+                            "run_attempt": 2,
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/repos/octo/widget/actions/runs/7/jobs":
+            return httpx.Response(
+                200,
+                json={
+                    "jobs": [
+                        {
+                            "id": 8,
+                            "run_id": 7,
+                            "name": "check",
+                            "status": "completed",
+                            "conclusion": "failure",
+                            "html_url": "https://example.invalid/job/8",
+                            "steps": [
+                                {"name": "install", "conclusion": "success"},
+                                {"name": "bun check", "conclusion": "failure"},
+                            ],
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/repos/octo/widget/actions/jobs/8/logs":
+            return httpx.Response(200, text="install ok\nbun check failed")
+        if request.url.path == "/repos/octo/widget/git/ref/tags/v1.2.3":
+            return httpx.Response(200, json={"object": {"type": "commit", "sha": "abc"}})
+        if request.url.path == "/repos/octo/widget/releases/tags/v1.2.3":
+            return httpx.Response(
+                200,
+                json={
+                    "tag_name": "v1.2.3",
+                    "name": "1.2.3",
+                    "draft": False,
+                    "prerelease": False,
+                    "html_url": "https://example.invalid/release/v1.2.3",
+                    "assets": [{"name": "omp.tar.gz"}],
+                },
+            )
+        return httpx.Response(500, json={"message": f"unexpected {request.url.path}"})
+
+    app = _build_app(proxy_settings, gh)
+
+    async def signed_get(client: httpx.AsyncClient, path: str, params: dict[str, object]) -> httpx.Response:
+        return await client.get(path, params=params, headers=_signed("GET", path, params=params))
+
+    async with await _async_client(app) as client:
+        runs = await signed_get(client, "/gh/v1/workflow_runs", {"repo": "octo/widget", "head_sha": "abc"})
+        jobs = await signed_get(client, "/gh/v1/workflow_jobs", {"repo": "octo/widget", "run_id": 7})
+        log_tail = await signed_get(
+            client,
+            "/gh/v1/job_log_tail",
+            {"repo": "octo/widget", "job_id": 8, "tail": 5000},
+        )
+        tag = await signed_get(client, "/gh/v1/tag_ref", {"repo": "octo/widget", "tag": "v1.2.3"})
+        release = await signed_get(
+            client,
+            "/gh/v1/release_by_tag",
+            {"repo": "octo/widget", "tag": "v1.2.3"},
+        )
+
+    assert runs.json()["items"][0]["head_sha"] == "abc"
+    assert jobs.json()["items"][0]["failed_steps"] == ["bun check"]
+    assert log_tail.json() == {"text": "install ok\nbun check failed"}
+    assert tag.json() == {"sha": "abc"}
+    assert release.json()["asset_names"] == ["omp.tar.gz"]
+    assert "head_sha=abc" in upstream[0]
+
+
 # ============================================================================
 # Finding 2 — HMAC must bind the raw query string
 # ============================================================================
@@ -1134,7 +1294,9 @@ async def test_git_fetch_rejects_option_shaped_origin(proxy_settings: Settings, 
     pool_dir = _stage_pool(proxy_settings, upstream_repo)
     config_path = pool_dir / ".git" / "config"
     config_text = config_path.read_text(encoding="utf-8")
-    config_path.write_text(config_text.replace(f"\turl = {upstream_repo}\n", "\turl = --upload-pack=env\n"), encoding="utf-8")
+    config_path.write_text(
+        config_text.replace(f"\turl = {upstream_repo}\n", "\turl = --upload-pack=env\n"), encoding="utf-8"
+    )
 
     app = _build_app(proxy_settings)
     body = b'{"repo":"octo/widget"}'
@@ -1146,8 +1308,6 @@ async def test_git_fetch_rejects_option_shaped_origin(proxy_settings: Settings, 
         )
 
     assert resp.status_code == 400, resp.text
-
-
 
 
 @pytest.mark.parametrize(
@@ -1204,6 +1364,7 @@ async def test_git_push_rejects_attacker_pushurl(proxy_settings: Settings, upstr
         )
     assert resp.status_code == 400, resp.text
     assert not _bare_has_branch(upstream_repo, branch)
+
 
 # ============================================================================
 # fetch_ref refuses refspec / option injection in `ref`

@@ -10,7 +10,9 @@ import {
 	ModelsRoute,
 	OverviewRoute,
 	ProjectsRoute,
+	ProvidersRoute,
 	RequestsRoute,
+	ToolsRoute,
 } from "./routes";
 import { RequestDrawer } from "./ui/RequestDrawer";
 
@@ -72,6 +74,10 @@ export default function App() {
 				);
 			case "models":
 				return <ModelsRoute active={isActive} range={range} refreshTrigger={refreshTrigger} />;
+			case "providers":
+				return <ProvidersRoute active={isActive} range={range} refreshTrigger={refreshTrigger} />;
+			case "tools":
+				return <ToolsRoute active={isActive} range={range} refreshTrigger={refreshTrigger} />;
 			case "costs":
 				return <CostsRoute active={isActive} range={range} refreshTrigger={refreshTrigger} />;
 			case "behavior":

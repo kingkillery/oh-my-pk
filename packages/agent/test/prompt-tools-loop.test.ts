@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import { agentLoop } from "@pk-nerdsaver-ai/pi-agent-core/agent-loop";
 import type { AgentContext, AgentLoopConfig, AgentMessage, AgentTool } from "@pk-nerdsaver-ai/pi-agent-core/types";
 import type { AssistantMessage, Context, Message, TextContent, ToolResultMessage } from "@pk-nerdsaver-ai/pi-ai";
 import { createMockModel } from "@pk-nerdsaver-ai/pi-ai/providers/mock";
-import { type } from "arktype";
 import { createUserMessage } from "./helpers";
 
 function identityConverter(messages: AgentMessage[]): Message[] {

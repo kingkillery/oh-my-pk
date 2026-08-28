@@ -1,5 +1,4 @@
-import { APP_NAME } from "@pk-nerdsaver-ai/pi-utils";
-import chalk from "chalk";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
 import type { CommitCommandArgs } from "./types";
 
 const FLAG_ALIASES = new Map<string, string>([

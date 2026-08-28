@@ -1,15 +1,14 @@
-import { countTokens } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { Tokenizer } from "@pk-nerdsaver-ai/pi-agent-core";
 import type { CompactionSettings } from "@pk-nerdsaver-ai/pi-agent-core/compaction";
-import {
-	effectiveReserveTokens,
-	estimateTokens,
-	resolveThresholdTokens,
-} from "@pk-nerdsaver-ai/pi-agent-core/compaction";
+import { effectiveReserveTokens, resolveThresholdTokens } from "@pk-nerdsaver-ai/pi-agent-core/compaction";
 import type { Tool as AiTool, Model } from "@pk-nerdsaver-ai/pi-ai";
 import { toolWireSchema } from "@pk-nerdsaver-ai/pi-ai/utils/schema";
 import { formatNumber } from "@pk-nerdsaver-ai/pi-utils";
 import type { Skill } from "../../extensibility/skills";
 import type { AgentSession } from "../../session/agent-session";
+import { resolveSpeculationMethod } from "../../session/compaction-methods";
+import { estimateInlineSavings, type SnapcompactSavingsEstimate } from "../../session/snapcompact-inline";
+import { resolveSpeculationLeadTokens } from "../../session/speculation-lead";
 import type { Tool } from "../../tools";
 import type { theme as Theme } from "../theme/theme";
 
@@ -42,37 +41,109 @@ export interface ContextBreakdown {
 	freeTokens: number;
 }
 
-const EMPTY_STRING_PARTS: readonly string[] = [];
-const EMPTY_TOOLS: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">> = [];
+/** Percent positions (0–100 of the context window) for the auto-compaction boundaries. */
+export interface CompactionBoundaries {
+	/** Where auto-compaction fires. */
+	thresholdPercent: number;
+	/**
+	 * Where the background speculative summarizer starts (threshold − lead), or
+	 * `null` when no speculation will run (async compaction disabled, or the
+	 * first available method is local — snapcompact/shake — and thus instant).
+	 */
+	speculationPercent: number | null;
+}
 
-export function estimateSkillsTokens(skills: readonly Skill[]): number {
+/**
+ * Boundary positions for the status line's annotated context gauge. `null`
+ * when compaction is disabled/off or the window is unknown — the gauge then
+ * renders without markers. `model` resolves which configured method a real
+ * pass would run; without it, model-gated methods count as unavailable.
+ */
+export function computeCompactionBoundaries(
+	settings: AgentSession["settings"],
+	contextWindow: number,
+	model?: Model | null,
+): CompactionBoundaries | null {
+	if (!(contextWindow > 0)) return null;
+	const configured = settings.getGroup("compaction");
+	const compactionSettings = configured as CompactionSettings;
+	if (!configured.enabled || compactionSettings.strategy === "off") return null;
+	const thresholdTokens = resolveThresholdTokens(contextWindow, compactionSettings);
+	if (!(thresholdTokens > 0) || thresholdTokens > contextWindow) return null;
+	const speculates = configured.asyncEnabled !== false && resolveSpeculationMethod(model, configured) !== undefined;
+	const leadTokens = resolveSpeculationLeadTokens(thresholdTokens);
+	return {
+		thresholdPercent: (thresholdTokens / contextWindow) * 100,
+		speculationPercent: speculates ? (Math.max(0, thresholdTokens - leadTokens) / contextWindow) * 100 : null,
+	};
+}
+
+/** Stable inputs used to cache non-message token estimates. */
+export interface NonMessageTokenSource {
+	readonly systemPrompt?: string[];
+	readonly agent?: {
+		readonly state?: {
+			readonly tools?: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>;
+		};
+	};
+	readonly skills?: readonly Skill[];
+}
+
+const EMPTY_STRING_PARTS: string[] = [];
+const EMPTY_TOOLS: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">> = [];
+const EMPTY_SKILLS: readonly Skill[] = [];
+
+/**
+ * Skills actually rendered into the system prompt, mirroring the filter in
+ * `buildSystemPrompt` (`system-prompt.ts`): the `read` tool must be present so
+ * the model can fetch skill content, and skills with frontmatter `hide: true`
+ * (or `disable-model-invocation`, normalized onto `hide`) are excluded.
+ * Accounting must count only these so the Skills category and the System-prompt
+ * subtraction stay aligned with the provider-facing prompt.
+ */
+function renderedSkills(
+	skills: readonly Skill[],
+	tools: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>,
+): readonly Skill[] {
+	if (!tools.some(tool => tool.name === "read")) return EMPTY_SKILLS;
+	return skills.filter(skill => skill.hide !== true);
+}
+
+export function estimateSkillsTokens(skills: readonly Skill[], tokenizer: Tokenizer): number {
 	const fragments: string[] = [];
 	for (const skill of skills) {
 		// "- name: description\n" wire framing tokenizes ~identically to the
 		// concatenated form, so encode each piece separately and sum.
-		fragments.push(skill.name, skill.description);
+		fragments.push(skill.name, skill.description ?? "");
 	}
-	return countTokens(fragments);
+	return tokenizer.countTokens(fragments);
 }
 
 export function estimateToolSchemaTokens(
 	tools: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>,
+	tokenizer: Tokenizer,
 ): number {
 	const fragments: string[] = [];
 	for (const tool of tools) {
-		fragments.push(tool.name, tool.description);
+		// Extension-supplied tools may carry a non-string name/description or a
+		// parameters value whose wire schema stringifies to `undefined` (e.g. a
+		// callable schema that escaped normalization). A non-string fragment is
+		// fatal inside the native tokenizer, so only real strings are counted.
+		if (typeof tool.name === "string") fragments.push(tool.name);
+		if (typeof tool.description === "string") fragments.push(tool.description);
 		try {
 			const wireTool: AiTool = {
 				name: tool.name,
 				description: tool.description,
 				parameters: tool.parameters as AiTool["parameters"],
 			};
-			fragments.push(JSON.stringify(toolWireSchema(wireTool) ?? {}));
+			const wireJson = JSON.stringify(toolWireSchema(wireTool) ?? {});
+			if (typeof wireJson === "string") fragments.push(wireJson);
 		} catch {
 			// Schema may contain functions or cycles; ignore.
 		}
 	}
-	return countTokens(fragments);
+	return tokenizer.countTokens(fragments);
 }
 
 /**
@@ -87,10 +158,69 @@ export function estimateToolSchemaTokens(
  * cadence — non-message recomputed only when the inputs identity changes,
  * messages walked incrementally as new entries append.
  */
-export function computeNonMessageTokens(session: AgentSession): number {
+// Non-message inputs (system prompt, tools, skills) change rarely — at most
+// once per turn via setSystemPrompt/setTools — but the per-turn compaction and
+// threshold paths call these helpers several times: getContextBreakdown calls
+// both, and #estimateStoredContextTokens adds a third. Memoize on the identity
+// of the three input arrays so the expensive parts (system-prompt tokenization
+// and the per-tool JSON.stringify(toolWireSchema) inside estimateToolSchemaTokens)
+// run at most once per input change rather than per call. The identity keys are
+// the same stable references the StatusLineComponent cache already trusts
+// (setSystemPrompt/setTools replace the array reference rather than mutating it).
+interface NonMessageTokenCache {
+	systemPromptRef: readonly string[];
+	toolsRef: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>;
+	skillsRef: readonly Skill[];
+	// The Agent swaps its Tokenizer instance when the model's encoding changes,
+	// so instance identity doubles as the encoding key.
+	tokenizerRef: Tokenizer;
+	tokens: number | undefined;
+	breakdown:
+		| {
+				skillsTokens: number;
+				toolsTokens: number;
+				systemContextTokens: number;
+				systemPromptTokens: number;
+		  }
+		| undefined;
+}
+
+const NON_MESSAGE_TOKEN_CACHE = Symbol("non-message-token-cache");
+
+interface CachedNonMessageTokenSource extends NonMessageTokenSource {
+	[NON_MESSAGE_TOKEN_CACHE]?: NonMessageTokenCache;
+}
+
+function nonMessageTokenCacheEntry(session: NonMessageTokenSource, tokenizer: Tokenizer): NonMessageTokenCache {
+	const cachedSession: CachedNonMessageTokenSource = session;
+	const systemPromptRef = session.systemPrompt ?? EMPTY_STRING_PARTS;
+	const toolsRef = session.agent?.state?.tools ?? EMPTY_TOOLS;
+	const skillsRef = session.skills ?? EMPTY_SKILLS;
+	let entry = cachedSession[NON_MESSAGE_TOKEN_CACHE];
+	if (
+		entry &&
+		entry.systemPromptRef === systemPromptRef &&
+		entry.toolsRef === toolsRef &&
+		entry.skillsRef === skillsRef &&
+		entry.tokenizerRef === tokenizer
+	) {
+		return entry;
+	}
+	entry = { systemPromptRef, toolsRef, skillsRef, tokenizerRef: tokenizer, tokens: undefined, breakdown: undefined };
+	cachedSession[NON_MESSAGE_TOKEN_CACHE] = entry;
+	return entry;
+}
+
+export function computeNonMessageTokens(session: NonMessageTokenSource, tokenizer: Tokenizer): number {
+	const entry = nonMessageTokenCacheEntry(session, tokenizer);
+	if (entry.tokens !== undefined) return entry.tokens;
 	const systemPromptParts = session.systemPrompt ?? EMPTY_STRING_PARTS;
 	const tools = session.agent?.state?.tools ?? EMPTY_TOOLS;
-	return countTokens(systemPromptParts) + estimateToolSchemaTokens(tools);
+	const tokens =
+		tokenizer.countTokens(Array.from(systemPromptParts, part => part ?? "")) +
+		estimateToolSchemaTokens(tools, tokenizer);
+	entry.tokens = tokens;
+	return tokens;
 }
 
 /**
@@ -99,18 +229,26 @@ export function computeNonMessageTokens(session: AgentSession): number {
  * the status-line fast path intentionally uses the equivalent collapsed total
  * in `computeNonMessageTokens`.
  */
-export function computeNonMessageBreakdown(session: AgentSession): {
+export function computeNonMessageBreakdown(
+	session: NonMessageTokenSource,
+	tokenizer: Tokenizer,
+): {
 	skillsTokens: number;
 	toolsTokens: number;
 	systemContextTokens: number;
 	systemPromptTokens: number;
 } {
-	const skillsTokens = estimateSkillsTokens(session.skills ?? []);
-	const toolsTokens = estimateToolSchemaTokens(session.agent?.state?.tools ?? []);
-	const systemPromptParts = session.systemPrompt ?? [];
-	const systemContextTokens = countTokens(systemPromptParts.slice(1));
-	const systemPromptTokens = Math.max(0, countTokens(systemPromptParts[0] ?? "") - skillsTokens);
-	return { skillsTokens, toolsTokens, systemContextTokens, systemPromptTokens };
+	const entry = nonMessageTokenCacheEntry(session, tokenizer);
+	if (entry.breakdown) return entry.breakdown;
+	const tools = session.agent?.state?.tools ?? EMPTY_TOOLS;
+	const skillsTokens = estimateSkillsTokens(renderedSkills(session.skills ?? EMPTY_SKILLS, tools), tokenizer);
+	const toolsTokens = estimateToolSchemaTokens(tools, tokenizer);
+	const systemPromptParts = session.systemPrompt ?? EMPTY_STRING_PARTS;
+	const systemContextTokens = tokenizer.countTokens(Array.from(systemPromptParts.slice(1), part => part ?? ""));
+	const systemPromptTokens = Math.max(0, tokenizer.countTokens(systemPromptParts[0] ?? "") - skillsTokens);
+	const breakdown = { skillsTokens, toolsTokens, systemContextTokens, systemPromptTokens };
+	entry.breakdown = breakdown;
+	return breakdown;
 }
 
 /**
@@ -119,6 +257,7 @@ export function computeNonMessageBreakdown(session: AgentSession): {
  */
 export function computeContextBreakdown(session: AgentSession): ContextBreakdown {
 	const model = session.model;
+	const tokenizer = session.agent.tokenizer;
 	const contextWindow = model?.contextWindow ?? 0;
 
 	const breakdown = typeof session.getContextBreakdown === "function" ? session.getContextBreakdown() : undefined;
@@ -138,13 +277,10 @@ export function computeContextBreakdown(session: AgentSession): ContextBreakdown
 		systemPromptTokens = breakdown.systemPromptTokens;
 		usedTokens = breakdown.usedTokens;
 	} else {
-		const convo = session.messages;
-		if (convo) {
-			for (const message of convo) {
-				messagesTokens += estimateTokens(message);
-			}
-		}
-		const nonMessage = computeNonMessageBreakdown(session);
+		// Category split needs a messages-only number, so this walk stays local:
+		// an anchored total folds the system prompt and tool schemas into it.
+		messagesTokens = tokenizer.countMessages(session.messages ?? []);
+		const nonMessage = computeNonMessageBreakdown(session, tokenizer);
 		skillsTokens = nonMessage.skillsTokens;
 		toolsTokens = nonMessage.toolsTokens;
 		systemContextTokens = nonMessage.systemContextTokens;

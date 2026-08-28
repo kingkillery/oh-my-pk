@@ -1,6 +1,22 @@
 import { Box, type Component, Markdown } from "@pk-nerdsaver-ai/pi-tui";
+import { formatNumber } from "@pk-nerdsaver-ai/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import type { BranchSummaryMessage, CompactionSummaryMessage, CustomMessage } from "../../session/messages";
+
+/** Divider labels per compaction method; unknown/legacy methods fall back to "compacted". */
+const COMPACTION_METHOD_LABELS: Record<string, string> = {
+	remote: "remote-compacted",
+	soft: "soft-compacted",
+	handoff: "handed-off",
+	snapcompact: "snap-compacted",
+	shake: "shaken",
+};
+
+/** `256K→20K` amount badge, or undefined when the entry predates `tokensAfter`. */
+function compactionAmount(message: CompactionSummaryMessage): string | undefined {
+	if (message.tokensAfter === undefined || message.tokensBefore <= 0) return undefined;
+	return `${formatNumber(message.tokensBefore)}→${formatNumber(message.tokensAfter)}`;
+}
 
 interface SummaryDividerOptions {
 	label: () => string;
@@ -76,9 +92,12 @@ class SummaryDividerComponent implements Component {
 /**
  * Compaction point in the transcript, rendered as a slim horizontal divider:
  *
- *   ──────── 📷 compacted · ctrl+o ────────
+ *   ──────── 📷 remote-compacted · 256K→20K · ctrl+o ────────
  *
- * The conversation above the divider stays visible (display transcript keeps
+ * The label names the maintenance method that fired (remote/soft/handoff/
+ * snapcompact; "compacted" for legacy or extension-provided entries) and the
+ * before → after context amounts when the entry recorded them. The
+ * conversation above the divider stays visible (display transcript keeps
  * full history); only the LLM context was reset. Expanding (ctrl+o) reveals
  * the compaction summary below the divider.
  */
@@ -87,9 +106,20 @@ export class CompactionSummaryMessageComponent implements Component {
 
 	constructor(private readonly message: CompactionSummaryMessage) {
 		this.#divider = new SummaryDividerComponent({
-			label: () => `${theme.icon.camera} compacted`,
+			// A dead-end warning stamped by the progress guard badges the bar;
+			// the full text lives in the ctrl+o detail block below.
+			label: () => this.#label(),
 			detailMarkdown: () => this.#detailMarkdown(),
 		});
+	}
+
+	#label(): string {
+		const name = (this.message.method && COMPACTION_METHOD_LABELS[this.message.method]) || "compacted";
+		let label = `${theme.icon.camera} ${name}`;
+		const amount = compactionAmount(this.message);
+		if (amount) label += `${theme.sep.dot}${amount}`;
+		if (this.message.warning) label += ` ${theme.fg("warning", theme.icon.warning)}`;
+		return label;
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -105,8 +135,19 @@ export class CompactionSummaryMessageComponent implements Component {
 	}
 
 	#detailMarkdown(): string {
-		const tokenStr = this.message.tokensBefore.toLocaleString();
-		return `**Compacted from ${tokenStr} tokens**\n\n${this.message.summary}`;
+		const tokenLine =
+			this.message.tokensBefore > 0
+				? this.message.tokensAfter !== undefined
+					? `Compacted from ${this.message.tokensBefore.toLocaleString()} to ${this.message.tokensAfter.toLocaleString()} tokens`
+					: `Compacted from ${this.message.tokensBefore.toLocaleString()} tokens`
+				: this.message.tokensAfter !== undefined
+					? `Compacted to ${this.message.tokensAfter.toLocaleString()} tokens`
+					: "Compacted context";
+		const frameCount = this.message.images?.length ?? 0;
+		const frameNote =
+			frameCount > 0 ? `\n\n_${frameCount} snapcompact frame${frameCount === 1 ? "" : "s"} attached_` : "";
+		const warningNote = this.message.warning ? `\n\n${theme.icon.warning} **Warning:** ${this.message.warning}` : "";
+		return `**${tokenLine}**${warningNote}\n\n${this.message.summary}${frameNote}`;
 	}
 }
 
@@ -120,7 +161,7 @@ export class HandoffSummaryMessageComponent implements Component {
 
 	constructor(private readonly message: CustomMessage<unknown>) {
 		this.#divider = new SummaryDividerComponent({
-			label: () => `${theme.icon.context} handoff`,
+			label: () => `${theme.icon.context} handed-off`,
 			detailMarkdown: () => this.#detailMarkdown(),
 		});
 	}

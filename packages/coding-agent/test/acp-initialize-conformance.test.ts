@@ -7,18 +7,15 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentSideConnection, InitializeRequest } from "@agentclientprotocol/sdk";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import type { Model } from "@pk-nerdsaver-ai/pi-ai";
 import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 import { AcpAgent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/acp/acp-agent";
-import {
-	ACP_TERMINAL_AUTH_FLAG,
-	prepareAcpTerminalAuthArgs,
-} from "@pk-nerdsaver-ai/pi-coding-agent/modes/acp/terminal-auth";
+import { ACP_TERMINAL_AUTH_FLAG, prepareAcpTerminalAuthArgs } from "@pk-nerdsaver-ai/pi-coding-agent/modes/acp/terminal-auth";
 import type { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
 import { getConfigRootDir, setAgentDir, VERSION } from "@pk-nerdsaver-ai/pi-utils";
-import { type } from "arktype";
+import type { AgentSideConnection, InitializeRequest } from "@pk-nerdsaver-ai/pi-utils/acp";
 import { expectAcpStructure } from "./helpers/acp-schema";
 
 const arkInitializeResponse = type({
@@ -163,8 +160,10 @@ async function createAgent(): Promise<AcpAgent> {
 	} as unknown as AgentSideConnection;
 
 	const initialSession = new FakeAgentSession(cwd);
-	cleanupSessions.push(initialSession);
-	const factory = async (next: string): Promise<AgentSession> => new FakeAgentSession(next) as unknown as AgentSession;
+	const factory = async (next: string) => ({
+		session: new FakeAgentSession(next) as unknown as AgentSession,
+		setToolUIContext: () => {},
+	});
 	return new AcpAgent(connection, factory, initialSession as unknown as AgentSession);
 }
 

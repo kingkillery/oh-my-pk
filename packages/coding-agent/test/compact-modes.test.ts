@@ -6,15 +6,15 @@ import {
 } from "@pk-nerdsaver-ai/pi-coding-agent/session/compact-modes";
 
 describe("compact mode registry", () => {
-	it("maps the supported modes to the settings overrides the engine relies on", () => {
-		expect(findCompactMode("soft")?.overrides).toEqual({ strategy: "context-full", remoteEnabled: false });
-		expect(findCompactMode("remote")?.overrides).toEqual({ strategy: "context-full", remoteEnabled: true });
-		expect(findCompactMode("snapcompact")).toBeUndefined();
+	it("maps each mode to the method order the engine executes", () => {
+		expect(findCompactMode("soft")?.overrides).toEqual({ methodOrder: ["soft"] });
+		expect(findCompactMode("remote")?.overrides).toEqual({ methodOrder: ["remote", "soft"] });
+		expect(findCompactMode("snapcompact")?.overrides).toEqual({ methodOrder: ["snapcompact"] });
 	});
 
-	it("flags only remote as remote-requiring", () => {
-		expect(findCompactMode("remote")?.requiresRemote).toBe(true);
-		expect(findCompactMode("soft")?.requiresRemote).toBeUndefined();
+	it("flags snapcompact as focus-rejecting", () => {
+		expect(findCompactMode("snapcompact")?.rejectsFocus).toBe(true);
+		expect(findCompactMode("soft")?.rejectsFocus).toBeUndefined();
 	});
 
 	it("resolves mode names case-insensitively and rejects unknowns", () => {

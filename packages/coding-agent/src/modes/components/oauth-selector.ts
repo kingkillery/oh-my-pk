@@ -14,7 +14,7 @@ import { settings } from "../../config/settings";
 import { theme } from "../../modes/theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import type { AuthStorage, CredentialOriginKind } from "../../session/auth-storage";
-import { DynamicBorder } from "./dynamic-border";
+import { OverlayPanel } from "./overlay-box";
 
 const OAUTH_SELECTOR_MAX_VISIBLE = 10;
 
@@ -33,10 +33,10 @@ function getDisabledProviderIds(): ReadonlySet<string> {
 }
 
 /**
- * Rendered lines before the provider rows: top border, spacer, title, spacer
+ * Rendered lines before the provider rows: top border
  * (must mirror the constructor's addChild order).
  */
-const LIST_ROW_OFFSET = 4;
+const LIST_ROW_OFFSET = 1;
 
 /** Compact, human-readable tag for each credential-origin leg. */
 const ORIGIN_LABELS: Record<CredentialOriginKind, string> = {
@@ -50,7 +50,7 @@ const ORIGIN_LABELS: Record<CredentialOriginKind, string> = {
 /**
  * Component that renders an OAuth provider selector.
  */
-export class OAuthSelectorComponent extends Container {
+export class OAuthSelectorComponent extends OverlayPanel {
 	#listContainer: Container;
 	#allProviders: OAuthProviderInfo[] = [];
 	#filteredProviders: OAuthProviderInfo[] = [];
@@ -60,6 +60,8 @@ export class OAuthSelectorComponent extends Container {
 	/** First provider index of the visible ScrollView window (last #updateList). */
 	#scrollStart = 0;
 	#visibleCount = 0;
+	/** Visible list window, shrunk by {@link setMaxHeight} on short screens. */
+	#maxVisible = OAUTH_SELECTOR_MAX_VISIBLE;
 	#mode: "login" | "logout";
 	#authStorage: AuthStorage;
 	#onSelectCallback: (providerId: string) => void;
@@ -81,7 +83,7 @@ export class OAuthSelectorComponent extends Container {
 			requestRender?: () => void;
 		},
 	) {
-		super();
+		super(mode === "login" ? "Select provider to login" : "Select provider to logout");
 		this.#mode = mode;
 		this.#authStorage = authStorage;
 		this.#onSelectCallback = onSelect;
@@ -90,18 +92,9 @@ export class OAuthSelectorComponent extends Container {
 		this.#requestRenderCallback = options?.requestRender;
 		// Load all OAuth providers
 		this.#loadProviders();
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
-		// Add title
-		const title = mode === "login" ? "Select provider to login:" : "Select provider to logout:";
-		this.addChild(new TruncatedText(theme.bold(title)));
-		this.addChild(new Spacer(1));
 		// Create list container
 		this.#listContainer = new Container();
 		this.addChild(this.#listContainer);
-		this.addChild(new Spacer(1));
-		// Add bottom border
-		this.addChild(new DynamicBorder());
 		// Initial render
 		this.#updateList();
 		this.#startValidation();
@@ -110,6 +103,24 @@ export class OAuthSelectorComponent extends Container {
 	stopValidation(): void {
 		this.#validationGeneration += 1;
 		this.#stopSpinner();
+	}
+
+	/**
+	 * Fit the selector into `lines` rendered rows by shrinking the visible list
+	 * window (the window is centered on the selection, so the selected row is
+	 * always visible at any height). Prefers keeping the full chrome — borders,
+	 * spacers, title, search status — but sacrifices the trailing spacer/border
+	 * (clipped by the host) before dropping below three visible rows.
+	 */
+	setMaxHeight(lines: number): void {
+		// Above the rows: LIST_ROW_OFFSET; below: search status + border.
+		const strict = lines - LIST_ROW_OFFSET - 2;
+		// Keeps only the rows + search status inside `lines`.
+		const relaxed = lines - LIST_ROW_OFFSET - 1;
+		const rows = Math.min(OAUTH_SELECTOR_MAX_VISIBLE, Math.max(1, strict, Math.min(relaxed, 3)));
+		if (rows === this.#maxVisible) return;
+		this.#maxVisible = rows;
+		this.#updateList();
 	}
 	#hasSelectableAuth(providerId: string): boolean {
 		return this.#mode === "logout" ? this.#authStorage.has(providerId) : this.#authStorage.hasAuth(providerId);
@@ -227,7 +238,7 @@ export class OAuthSelectorComponent extends Container {
 	}
 
 	#isSearchEnabled(): boolean {
-		return this.#allProviders.length > OAUTH_SELECTOR_MAX_VISIBLE;
+		return this.#allProviders.length > this.#maxVisible;
 	}
 
 	#shouldRenderSearchStatus(): boolean {
@@ -237,7 +248,7 @@ export class OAuthSelectorComponent extends Container {
 	#renderStatusLine(_total: number): string {
 		const query = this.#searchQuery.trim();
 		const suffix = query ? `Search: ${this.#searchQuery}` : "Type to search";
-		return theme.fg("muted", `  ${suffix}`);
+		return theme.fg("muted", suffix);
 	}
 
 	#getProviderSearchText(provider: OAuthProviderInfo): string {
@@ -286,7 +297,7 @@ export class OAuthSelectorComponent extends Container {
 		this.#listContainer.clear();
 
 		const total = this.#filteredProviders.length;
-		const maxVisible = OAUTH_SELECTOR_MAX_VISIBLE;
+		const maxVisible = this.#maxVisible;
 		const startIndex =
 			total <= maxVisible
 				? 0
@@ -341,11 +352,11 @@ export class OAuthSelectorComponent extends Container {
 						? "No OAuth providers available"
 						: "No stored provider credentials to log out"
 					: "No matching providers";
-			this.#listContainer.addChild(new TruncatedText(theme.fg("muted", `  ${message}`), 0, 0));
+			this.#listContainer.addChild(new TruncatedText(theme.fg("muted", message), 0, 0));
 		}
 		if (this.#statusMessage) {
 			this.#listContainer.addChild(new Spacer(1));
-			this.#listContainer.addChild(new TruncatedText(theme.fg("warning", `  ${this.#statusMessage}`), 0, 0));
+			this.#listContainer.addChild(new TruncatedText(theme.fg("warning", this.#statusMessage), 0, 0));
 		}
 	}
 	handleInput(keyData: string): void {
@@ -381,7 +392,7 @@ export class OAuthSelectorComponent extends Container {
 		// Page up - jump up by one visible page
 		else if (matchesKey(keyData, "pageUp")) {
 			if (this.#filteredProviders.length > 0) {
-				this.#selectedIndex = Math.max(0, this.#selectedIndex - OAUTH_SELECTOR_MAX_VISIBLE);
+				this.#selectedIndex = Math.max(0, this.#selectedIndex - this.#maxVisible);
 			}
 			this.#statusMessage = undefined;
 			this.#updateList();
@@ -389,10 +400,7 @@ export class OAuthSelectorComponent extends Container {
 		// Page down - jump down by one visible page
 		else if (matchesKey(keyData, "pageDown")) {
 			if (this.#filteredProviders.length > 0) {
-				this.#selectedIndex = Math.min(
-					this.#filteredProviders.length - 1,
-					this.#selectedIndex + OAUTH_SELECTOR_MAX_VISIBLE,
-				);
+				this.#selectedIndex = Math.min(this.#filteredProviders.length - 1, this.#selectedIndex + this.#maxVisible);
 			}
 			this.#statusMessage = undefined;
 			this.#updateList();

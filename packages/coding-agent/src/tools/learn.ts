@@ -1,11 +1,6 @@
+import { type } from "@pk-nerdsaver-ai/omptype";
 import type { AgentTool, AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
-import { type } from "arktype";
-import {
-	formatManagedSkillValidationIssues,
-	sanitizeSkillName,
-	validateManagedSkillPayload,
-	writeManagedSkill,
-} from "../autolearn/managed-skills";
+import { sanitizeSkillName, writeManagedSkill } from "../autolearn/managed-skills";
 import { isNameClaimedByAuthoredSkill } from "../extensibility/skills";
 import { localBackend } from "../memory-backend/local-backend";
 import learnDescription from "../prompts/tools/learn.md" with { type: "text" };

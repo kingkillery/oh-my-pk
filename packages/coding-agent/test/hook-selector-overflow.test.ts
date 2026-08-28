@@ -32,6 +32,19 @@ describe("HookSelectorComponent", () => {
 		}
 	});
 
+	it("renders a multiline title in the border and body without dropping detail", () => {
+		const component = new HookSelectorComponent(
+			"Delete session?\nsession-2026-08-20",
+			["Delete", "Cancel"],
+			() => {},
+			() => {},
+		);
+
+		const lines = component.render(80).map(line => Bun.stripANSI(line));
+		expect(lines[0]).toContain("Delete session?");
+		expect(lines.some(line => line.includes("session-2026-08-20"))).toBe(true);
+	});
+
 	it("wraps outlined option text without omitting the tail", () => {
 		const options = [
 			"Option A: Move to OMP-native only by migrating reusable shared AI instructions into .ompk/AGENTS.md, .ompk/rules, .ompk/skills, and .ompk/agents while deliberately not creating a root .github directory.",
@@ -226,6 +239,109 @@ describe("HookSelectorComponent", () => {
 		expect(selected).toBeUndefined();
 	});
 
+	it("selects the matching numbered option after an unnumbered row", () => {
+		let selected: string | undefined;
+		const component = new HookSelectorComponent(
+			"Pick one",
+			["Detected item", "1. First", "2. Second", "3. Third"],
+			option => {
+				selected = option;
+			},
+			() => {},
+		);
+
+		component.handleInput("3");
+
+		expect(selected).toBe("3. Third");
+	});
+
+	it("ignores a digit that targets a disabled option", () => {
+		let selected: string | undefined;
+		const component = new HookSelectorComponent(
+			"Pick one",
+			["1. First", "2. Disabled", "3. Third"],
+			option => {
+				selected = option;
+			},
+			() => {},
+			{ disabledIndices: [1] },
+		);
+
+		component.handleInput("2");
+
+		expect(selected).toBeUndefined();
+	});
+
+	it("ignores a digit without a matching numbered option", () => {
+		let selected: string | undefined;
+		const component = new HookSelectorComponent(
+			"Pick one",
+			["1. First", "2. Second"],
+			option => {
+				selected = option;
+			},
+			() => {},
+		);
+
+		component.handleInput("9");
+
+		expect(selected).toBeUndefined();
+	});
+
+	it("does not turn an unnumbered menu into implicit numeric shortcuts", () => {
+		let selected: string | undefined;
+		const component = new HookSelectorComponent(
+			"Pick one",
+			["First", "Second", "Third"],
+			option => {
+				selected = option;
+			},
+			() => {},
+		);
+
+		component.handleInput("3");
+
+		expect(selected).toBeUndefined();
+	});
+
+	it("moves the cursor without confirming on checkbox menus", () => {
+		let selected: string | undefined;
+		const component = new HookSelectorComponent(
+			"Pick many",
+			["1. First", "2. Second", "3. Third"],
+			option => {
+				selected = option;
+			},
+			() => {},
+			{ selectionMarker: "checkbox" },
+		);
+
+		component.handleInput("2");
+		expect(selected).toBeUndefined();
+
+		component.handleInput("\n");
+		expect(selected).toBe("2. Second");
+	});
+
+	it("treats digits as search text once the list overflows", () => {
+		let selected: string | undefined;
+		const options = Array.from({ length: 20 }, (_, i) => `Option ${i + 1}`);
+		const component = new HookSelectorComponent(
+			"Pick one",
+			options,
+			option => {
+				selected = option;
+			},
+			() => {},
+			{ maxVisible: 5 },
+		);
+
+		component.handleInput("1");
+
+		expect(selected).toBeUndefined();
+		expect(component.render(80).join("\n")).toContain("Search: 1");
+	});
+
 	it("renders disabled options dimmed", () => {
 		const component = new HookSelectorComponent(
 			"Pick one",
@@ -297,5 +413,116 @@ describe("HookSelectorComponent", () => {
 		// Control rows beyond markableCount carry no checkbox marker.
 		expect(done).not.toContain(theme.checkbox.checked);
 		expect(done).not.toContain(theme.checkbox.unchecked);
+	});
+
+	it("paints a selectedBg focus band across the highlighted checkbox row (outlined)", () => {
+		// Bug #4157: multi-select checkbox picker used only an accent fg to signal
+		// focus, which vanished on themes where accent ≈ text. The focused row
+		// must now carry the selectedBg band regardless of accent/text contrast.
+		const component = new HookSelectorComponent(
+			"Pick many",
+			["Apple", "Banana", "Cherry", "Done selecting", "Other (type your own)"],
+			() => {},
+			() => {},
+			{
+				outline: true,
+				selectionMarker: "checkbox",
+				markableCount: 3,
+				checkedIndices: [],
+				initialIndex: 0,
+			},
+		);
+		const bgProbe = theme.bg("selectedBg", "|");
+		const openBg = bgProbe.slice(0, bgProbe.indexOf("|"));
+
+		const rendered = component.render(80);
+		const appleRow = rendered.find(line => Bun.stripANSI(line).includes("Apple"));
+		const bananaRow = rendered.find(line => Bun.stripANSI(line).includes("Banana"));
+		const otherRow = rendered.find(line => Bun.stripANSI(line).includes("Other"));
+		expect(appleRow).toBeDefined();
+		expect(bananaRow).toBeDefined();
+		expect(otherRow).toBeDefined();
+		expect(appleRow).toContain(openBg);
+		expect(bananaRow).not.toContain(openBg);
+		expect(otherRow).not.toContain(openBg);
+	});
+
+	it("moves the selectedBg band with the cursor and paints control rows too", () => {
+		const build = (initialIndex: number) =>
+			new HookSelectorComponent(
+				"Pick many",
+				["Apple", "Banana", "Cherry", "Done selecting", "Other (type your own)"],
+				() => {},
+				() => {},
+				{
+					outline: true,
+					selectionMarker: "checkbox",
+					markableCount: 3,
+					checkedIndices: [],
+					initialIndex,
+				},
+			);
+		const bgProbe = theme.bg("selectedBg", "|");
+		const openBg = bgProbe.slice(0, bgProbe.indexOf("|"));
+		const bandedLabel = (component: HookSelectorComponent) => {
+			const rendered = component.render(80);
+			const banded = rendered.filter(line => line.includes(openBg));
+			const labels = ["Apple", "Banana", "Cherry", "Done selecting", "Other"];
+			return labels.find(label => banded.some(line => Bun.stripANSI(line).includes(label)));
+		};
+		expect(bandedLabel(build(1))).toBe("Banana");
+		// Control rows past markableCount ("Other") still receive the focus band
+		// even though they carry no checkbox marker.
+		expect(bandedLabel(build(4))).toBe("Other");
+	});
+
+	it("highlights the whole selected block including wrapped description rows", () => {
+		const component = new HookSelectorComponent(
+			"Choose",
+			[
+				{
+					label: "Alpha",
+					description:
+						"Detailed first-choice explanation long enough to wrap across multiple rendered rows once outlined inside a tight width.",
+				},
+				{ label: "Beta", description: "Second." },
+			],
+			() => {},
+			() => {},
+			{ outline: true, initialIndex: 0 },
+		);
+		const bgProbe = theme.bg("selectedBg", "|");
+		const openBg = bgProbe.slice(0, bgProbe.indexOf("|"));
+
+		const rendered = component.render(60);
+		const bandedRows = rendered.filter(line => line.includes(openBg));
+		// Label row plus at least one wrapped description continuation, all under
+		// the Alpha option; Beta must stay unbanded.
+		expect(bandedRows.length).toBeGreaterThanOrEqual(2);
+		const bandedContainsBeta = bandedRows.some(line => Bun.stripANSI(line).includes("Beta"));
+		expect(bandedContainsBeta).toBe(false);
+	});
+
+	it("paints the selectedBg band on the non-outlined plain list too", () => {
+		const component = new HookSelectorComponent(
+			"Pick",
+			["Apple", "Banana", "Cherry"],
+			() => {},
+			() => {},
+			{ initialIndex: 1 },
+		);
+		const bgProbe = theme.bg("selectedBg", "|");
+		const openBg = bgProbe.slice(0, bgProbe.indexOf("|"));
+
+		const rendered = component.render(80);
+		const appleRow = rendered.find(line => Bun.stripANSI(line).includes("Apple"));
+		const bananaRow = rendered.find(line => Bun.stripANSI(line).includes("Banana"));
+		const cherryRow = rendered.find(line => Bun.stripANSI(line).includes("Cherry"));
+		expect(appleRow).toBeDefined();
+		expect(bananaRow).toBeDefined();
+		expect(cherryRow).toBeDefined();
+		expect(bananaRow).toContain(openBg);
+		expect(appleRow).not.toContain(openBg);
+		expect(cherryRow).not.toContain(openBg);
 	});
 });

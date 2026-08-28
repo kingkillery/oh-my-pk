@@ -16,28 +16,22 @@ describe("catalog provider descriptors", () => {
 		expect(DEFAULT_MODEL_PER_PROVIDER.minimax).toBe("MiniMax-M3");
 		expect(DEFAULT_MODEL_PER_PROVIDER["minimax-code"]).toBe("MiniMax-M3");
 		expect(DEFAULT_MODEL_PER_PROVIDER["minimax-code-cn"]).toBe("MiniMax-M3");
+		expect(DEFAULT_MODEL_PER_PROVIDER.xiaomi).toBe("mimo-v2.5");
 		// Login-only tools have no default model.
 		expect(DEFAULT_MODEL_PER_PROVIDER).not.toHaveProperty("kagi");
 	});
 
-	test("exposes Devin for catalog and runtime model discovery", async () => {
-		const devin = PROVIDER_DESCRIPTORS.find(descriptor => descriptor.providerId === "devin");
+	test("anthropic descriptor opts into first-party catalog discovery", () => {
+		const anthropic = PROVIDER_DESCRIPTORS.find(descriptor => descriptor.providerId === "anthropic");
+		expect(anthropic).toBeDefined();
+		expect(anthropic?.catalogDiscovery).toEqual({
+			label: "Anthropic",
+			envVars: ["ANTHROPIC_API_KEY"],
+		});
 
-		expect(devin?.defaultModel).toBe("swe-1-6");
-		expect(devin?.dynamicModelsAuthoritative).toBe(true);
-		expect(devin?.catalogDiscovery).toEqual({
-			label: "Devin",
-			envVars: ["DEVIN_API_KEY"],
-			oauthProvider: "devin",
-		});
-		const manager = devin?.createModelManagerOptions({
-			apiKey: "token",
-			fetch: async () => new Response(new Uint8Array()),
-		});
-		expect(manager?.providerId).toBe("devin");
-		expect(manager?.dynamicModelsAuthoritative).toBe(true);
-		expect(typeof manager?.fetchDynamicModels).toBe("function");
-		expect(await manager?.fetchDynamicModels?.()).toEqual([]);
+		const options = anthropic?.createModelManagerOptions({ apiKey: "k" });
+		expect(options?.providerId).toBe("anthropic");
+		expect(typeof options?.fetchDynamicModels).toBe("function");
 	});
 
 	test("every descriptor has a default model and a factory that preserves provider identity", () => {

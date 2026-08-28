@@ -1,28 +1,19 @@
-Language Server Protocol (LSP) servers for code intelligence.
+Symbol-aware code intelligence from language servers — navigation, refactors, and diagnostics where text tools miss callsites.
 
 <operations>
-- `rename_file` updates import paths + other references (not just the file move).
-- `code_actions` lists quick-fixes/refactors/import actions; apply one when `apply: true` + `query` matches title or index.
-- `request` runs a raw LSP method — `query` is the method name (e.g. `rust-analyzer/expandMacro`, `workspace/executeCommand`), `payload` is JSON params.
-- `reload` restarts one server (via `file`) or all (`file: "*"`).
+- Position-based: `file` + `line` + `symbol` (substring; `#N` for Nth match). `line` is 1-indexed.
+- `rename` — applies by default; `apply: false` previews. Project-aware lookups ERROR without `symbol` — no silent fallback on missing/ambiguous matches.
+- `code_actions` — lists by default; apply ONE with `apply: true` + `query` (title substring or index).
+- `rename_file` — moves file AND rewrites all imports/references; applies by default.
+- `diagnostics` — path, glob (`src/**/*.ts`), or `file: "*"` for workspace.
+- `symbols` — `file` lists file symbols; `file: "*"` + `query` searches workspace.
+- `reload` — restart one server (`file`) or all (`*`); `reload *` re-reads LSP config.
+- `request` — raw: `query` = method, `payload` = JSON params (else auto-built).
 </operations>
 
-<parameters>
-- `file`: path, glob (e.g. `src/**/*.ts`), or `"*"` for workspace scope
-- `line`: 1-indexed line for position-based actions
-- `symbol`: substring on the target line. Append `#N` for the Nth occurrence — e.g. `foo#2` = second `foo`.
-- `query`: symbol search, code-action kind filter/selector (list/apply mode), or LSP method name when `action: request`
-- `new_name`: new identifier (rename) or destination path (rename_file)
-- `apply`: apply edits (default true for rename/rename_file; code_actions list mode unless true)
-- `payload`: JSON params for `action: request`
-- `timeout`: seconds
-</parameters>
-
-<caution>
-- Missing `symbol` or out-of-bounds `#N` → explicit error.
-</caution>
-
 <critical>
-- You MUST use `lsp` for symbol-aware operations (rename, references, definition/implementation, code_actions) whenever a language server is available — safer and more accurate than text-based alternatives.
-- You NEVER perform cross-file renames with `ast_edit`, `sed`, or manual edits when `lsp` `rename` can do it. Text-based renames miss shadowing, re-exports, and cross-file usages.
+- Symbol-aware work (rename, references, definition, code actions) MUST use `lsp` whenever a server is available.
+  It follows shadowing, re-exports, and cross-file usages text tools miss.
+- NEVER do a cross-file rename with `ast_edit`/`sed`/hand edits when `lsp` `rename`/`rename_file` can — text renames silently drop callsites.
+- Reach for `code_actions` on imports, quick-fixes, and server-known refactors before editing by hand.
 </critical>

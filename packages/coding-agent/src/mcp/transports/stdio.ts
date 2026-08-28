@@ -7,31 +7,20 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getProjectDir, readJsonl, Snowflake } from "@pk-nerdsaver-ai/pi-utils";
-import { type Subprocess, spawn } from "bun";
+import { getProjectDir, readJsonl } from "@pk-nerdsaver-ai/pi-utils";
+import type { Subprocess } from "bun";
 import { hostHasInheritableConsole } from "../../eval/py/spawn-options";
-import {
-	buildModernRequestParams,
-	getMCPNotificationSubscriptionId,
-	hasMCPSubscriptionNotifications,
-	isMCPSubscriptionNotificationAcknowledged,
-	type JsonRpcError,
-	type JsonRpcMessage,
-	type JsonRpcRequest,
-	type JsonRpcResponse,
-	type MCPListenHandle,
-	type MCPListenOptions,
-	MCPNotificationMethods,
-	type MCPRequestId,
-	type MCPRequestOptions,
-	type MCPStdioServerConfig,
-	type MCPSubscriptionNotificationFilter,
-	MCPSubscriptionProtocolError,
-	type MCPTransport,
-	type MCPTransportProtocolConfiguration,
-	toJsonRpcError,
-	validateMCPSubscriptionAcknowledgement,
+import type {
+	JsonRpcError,
+	JsonRpcMessage,
+	JsonRpcRequest,
+	JsonRpcResponse,
+	MCPRequestOptions,
+	MCPStdioServerConfig,
+	MCPTransport,
 } from "../../mcp/types";
+import { toJsonRpcError } from "../../mcp/types";
+import { RequestIdAllocator } from "../request-id";
 import { isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
 
 /** Subprocess argv and platform-derived spawn flags for an MCP stdio server. */
@@ -49,18 +38,35 @@ export interface StdioSpawnCommand {
 	 */
 	windowsHide?: boolean;
 	/**
-	 * Run the subprocess in its own session.
+	 * Run the subprocess in its own session when the platform can safely do so.
 	 *
-	 * POSIX: `true`. Detach → `setsid`, so the MCP process tree has no
-	 * controlling terminal and terminal job-control signals (Ctrl+Z SIGTSTP,
+	 * Linux/other POSIX: `true`. Detach → `setsid`, so the MCP process tree has
+	 * no controlling terminal and terminal job-control signals (Ctrl+Z SIGTSTP,
 	 * background-read SIGTTIN) cannot stop stdio servers such as
 	 * `chrome-devtools-mcp` and leave our read loop blocked on silent pipes.
+	 *
+	 * macOS: `false`. LaunchServices/TCC attributes Apple Events automation to
+	 * the responsible terminal process only while the child stays in the
+	 * inherited session; detaching via `setsid` prevents the permission prompt
+	 * for servers such as `xcrun mcpbridge` (#4987).
 	 *
 	 * Windows: `false`. There is no SIGTSTP/SIGTTIN to escape, and Windows
 	 * wrapper chains must stay in the OMP console session so nested console
 	 * grandchildren keep stdout routed through our pipe (#3544).
 	 */
 	detached: boolean;
+	/**
+	 * Pass argv to `Bun.spawn` verbatim (Windows only), suppressing the
+	 * default libuv backslash-quoting.
+	 *
+	 * Set when `cmd` already holds a `cmd.exe /d /e:ON /v:OFF /c "<line>"`
+	 * command line escaped for `cmd.exe`'s parser (see `buildCmdExeArgv`).
+	 * libuv's quoting targets `CommandLineToArgvW`, not `cmd.exe`, so letting
+	 * it re-quote a batch launch would corrupt arguments and re-open the
+	 * `%VAR%` / quote-injection holes the escaping closes (BatBadBut,
+	 * CVE-2024-24576).
+	 */
+	windowsVerbatimArguments?: boolean;
 }
 
 /** Inputs used to resolve platform-specific stdio spawn behavior. */
@@ -159,21 +165,6 @@ function resolveWindowsShimPath(value: string, shimDir: string): string | null {
 	return path.join(shimDir, ...suffix.split(/[\\/]+/).filter(Boolean));
 }
 
-function extractWindowsNpmShimTarget(content: string): string | null {
-	const match = /"%_prog%"\s+"([^"]+)"\s+%\*/i.exec(content);
-	return match?.[1] ?? null;
-}
-
-/**
- * Extract the shim's PATH-fallback interpreter (`SET "_prog=node"`). The
- * `IF EXIST` branch assigns a `%dp0%`-prefixed value, so requiring a
- * non-`%`-leading value picks the bare program name.
- */
-function extractWindowsNpmShimProg(content: string): string | null {
-	const match = /SET\s+"_prog=([^%"][^"]*)"/i.exec(content);
-	return match?.[1] ?? null;
-}
-
 async function resolveWindowsNpmShimCommand(
 	command: string,
 	args: readonly string[],
@@ -183,6 +174,11 @@ async function resolveWindowsNpmShimCommand(
 	if (!isWindowsBatchCommand(command)) return null;
 	if (!hasPathSegment(command)) return null;
 	const commandPath = path.resolve(cwd, command);
+	const commandName = path
+		.basename(commandPath)
+		.replace(/\.cmd$/i, "")
+		.toLowerCase();
+	if (commandName === "npx") return null;
 
 	let content: string;
 	try {
@@ -193,7 +189,9 @@ async function resolveWindowsNpmShimCommand(
 
 	// cmd-shim emits the same invocation line for every interpreter; only
 	// bypass cmd.exe when the shim's fallback interpreter is actually node.
-	const prog = extractWindowsNpmShimProg(content);
+	// The IF EXIST branch assigns a %dp0%-prefixed value, so requiring a
+	// non-%-leading SET value picks the bare PATH-fallback program name.
+	const prog = /SET\s+"_prog=([^%"][^"]*)"/i.exec(content)?.[1];
 	if (
 		!prog ||
 		path
@@ -203,7 +201,7 @@ async function resolveWindowsNpmShimCommand(
 	)
 		return null;
 
-	const rawTarget = extractWindowsNpmShimTarget(content);
+	const rawTarget = /"%_prog%"\s+"([^"]+)"\s+%\*/i.exec(content)?.[1];
 	if (!rawTarget) return null;
 
 	const target = resolveWindowsShimPath(rawTarget, path.dirname(commandPath));
@@ -218,23 +216,6 @@ async function resolveWindowsNpmShimCommand(
 	};
 }
 
-function quoteCmdArg(value: string): string {
-	if (value.length === 0) return '""';
-	let result = '"';
-	for (const char of value) {
-		if (char === '"') {
-			result += '^"';
-		} else if (char === "^") {
-			result += "^^";
-		} else if (char === "%") {
-			result += "^%";
-		} else {
-			result += char;
-		}
-	}
-	return `${result}"`;
-}
-
 function isWindowsBatchCommand(command: string): boolean {
 	return WINDOWS_BATCH_EXTENSIONS.has(path.extname(command).toLowerCase());
 }
@@ -244,10 +225,93 @@ function resolveComSpec(env: Record<string, string | undefined>): string {
 	return comspec && comspec.length > 0 ? comspec : "cmd.exe";
 }
 
-/** `cmd /s /c` strips one outer quote pair; keep inner argv quotes intact. */
-function buildCmdExeCommand(command: string, args: readonly string[]): string {
-	const quotedCommand = [command, ...args].map(quoteCmdArg).join(" ");
-	return `"${quotedCommand}"`;
+// Argument bytes cmd.exe delivers unchanged without quoting. Anything outside
+// this set (spaces, quotes, `%`, shell metacharacters, non-ASCII) forces the
+// quoted+escaped path below. Mirrors the fuzz-tested allow-list from Zig's
+// BatBadBut mitigation.
+const CMD_SAFE_ARG = /^[A-Za-z0-9#$*+\-./:?@\\_]+$/;
+
+/**
+ * Escape the interior of a `cmd.exe`-quoted token: neutralize `%VAR%` expansion
+ * and double any backslash run that precedes a quote (including the caller's
+ * closing quote) so `CommandLineToArgvW` delivers the backslashes literally.
+ *
+ * `cmd.exe` re-parses the whole `/c` string and expands `%…%` *before* the
+ * batch shim's own argv split runs, so both the command path and every argument
+ * must pass through this. Percent → `%%cd:~,%` (which expands to nothing,
+ * leaving a literal `%`) and `"` → `""` are the documented BatBadBut mitigation
+ * (CVE-2024-24576). The caller supplies the surrounding double quotes.
+ *
+ * @see https://flatt.tech/research/posts/batbadbut-you-cant-securely-execute-commands-on-windows/
+ */
+function escapeCmdQuotedInterior(value: string): string {
+	let out = "";
+	let backslashes = 0;
+	for (const ch of value) {
+		if (ch === "\\") {
+			backslashes += 1;
+			out += ch;
+		} else if (ch === '"') {
+			out += "\\".repeat(backslashes);
+			out += '""';
+			backslashes = 0;
+		} else if (ch === "%") {
+			out += "%%cd:~,%";
+			backslashes = 0;
+		} else {
+			backslashes = 0;
+			out += ch;
+		}
+	}
+	// Double the trailing backslash run so it stays literal before the closing
+	// quote the caller appends.
+	out += "\\".repeat(backslashes);
+	return out;
+}
+
+/** Reject bytes that cannot round-trip through `cmd.exe`'s `/c` command line. */
+function assertCmdBatchToken(value: string, kind: "command" | "argument"): void {
+	// NUL/LF act as an end-of-command marker and CR is stripped, so any of them
+	// would silently truncate or corrupt the launch.
+	if (/[\0\r\n]/.test(value)) {
+		throw new Error(`Windows batch MCP ${kind} cannot contain NUL, CR, or LF characters`);
+	}
+}
+
+/**
+ * Escape one argument for `cmd.exe`'s command-line pre-parse so a `.cmd`/`.bat`
+ * shim receives it verbatim. Quotes only when the argument is empty, ends in a
+ * backslash, or holds a byte outside {@link CMD_SAFE_ARG}; the quoted body is
+ * escaped by {@link escapeCmdQuotedInterior}.
+ *
+ * @throws when the argument contains NUL, CR, or LF (see {@link assertCmdBatchToken}).
+ */
+function escapeCmdBatchArg(arg: string): string {
+	assertCmdBatchToken(arg, "argument");
+	const needsQuotes = arg.length === 0 || arg.endsWith("\\") || !CMD_SAFE_ARG.test(arg);
+	// An unquoted arg is pure allow-list bytes (no `%`, `"`, or trailing `\`), so
+	// it needs no interior escaping.
+	return needsQuotes ? `"${escapeCmdQuotedInterior(arg)}"` : arg;
+}
+
+/**
+ * Build the `cmd.exe` argv for a Windows `.cmd`/`.bat` (or unresolved bare)
+ * MCP command.
+ *
+ * The trailing element is a single `/c` string wrapped in an outer quote pair
+ * that `cmd.exe` strips (its opening-quote rule). The command token is always
+ * quoted and, like every argument, escaped so a `%` in the resolved path (e.g.
+ * `C:\work\%TOKEN%\server.cmd`) is not expanded before the shim launches.
+ * `/e:ON` keeps command extensions on (required for the `%%cd:~,%` trick) and
+ * `/v:OFF` disables delayed expansion. The result MUST be spawned with
+ * `windowsVerbatimArguments` so libuv passes it through unmodified.
+ */
+function buildCmdExeArgv(comspec: string, command: string, args: readonly string[]): string[] {
+	assertCmdBatchToken(command, "command");
+	let line = `""${escapeCmdQuotedInterior(command)}"`;
+	for (const arg of args) line += ` ${escapeCmdBatchArg(arg)}`;
+	line += '"';
+	return [comspec, "/d", "/e:ON", "/v:OFF", "/c", line];
 }
 
 /**
@@ -260,14 +324,14 @@ function buildCmdExeCommand(command: string, args: readonly string[]): string {
  * only appends `.exe` for extensionless names — `.cmd`/`.bat` are never
  * tried, so `npx` (which exists only as `npx.cmd` on Windows) crashes the
  * subprocess immediately. When the resolver can't pin the command down,
- * route through `cmd.exe /d /s /c` so Windows's own PATHEXT lookup runs.
+ * route through `cmd.exe` so Windows's own PATHEXT lookup runs.
  */
 export async function resolveStdioSpawnCommand(
 	config: MCPStdioServerConfig,
 	options: ResolveStdioSpawnOptions,
 ): Promise<StdioSpawnCommand> {
 	const args = config.args ?? [];
-	if (options.platform !== "win32") return { cmd: [config.command, ...args], detached: true };
+	if (options.platform !== "win32") return { cmd: [config.command, ...args], detached: options.platform !== "darwin" };
 
 	const windowsHide = options.hostHasInheritableConsole === undefined ? true : !options.hostHasInheritableConsole;
 	const resolved = await resolveWindowsCommandPath(config.command, options.cwd, options.env);
@@ -286,9 +350,10 @@ export async function resolveStdioSpawnCommand(
 	if (!needsCmdExe) return { cmd: [resolvedCommand, ...args], windowsHide, detached };
 
 	return {
-		cmd: [resolveComSpec(options.env), "/d", "/s", "/c", buildCmdExeCommand(resolvedCommand, args)],
+		cmd: buildCmdExeArgv(resolveComSpec(options.env), resolvedCommand, args),
 		windowsHide,
 		detached,
+		windowsVerbatimArguments: true,
 	};
 }
 
@@ -356,6 +421,136 @@ interface MCPStdioListenerState {
 	settled: boolean;
 }
 
+/** Grace window to observe a cooperative exit after SIGTERM before escalating to SIGKILL. */
+const TERM_GRACE_MS = 1000;
+/** Grace window to observe SIGKILL taking effect before `close()` gives up and returns. */
+const KILL_GRACE_MS = 500;
+
+/**
+ * The subset of `Subprocess` that termination needs. Decoupled from the
+ * `Subprocess<In, Out, Err>` stdio generics — `#process`'s pipes are
+ * irrelevant to signaling — so tests can exercise it against a plain
+ * `Bun.spawn(cmd, { stdio: "ignore" })` child without fighting the generics.
+ */
+interface KillableSubprocess {
+	readonly pid: number;
+	readonly exited: Promise<number>;
+	kill(signal?: number | NodeJS.Signals): void;
+}
+
+/**
+ * Race `exited` against a timer. Resolves `true` once the process has exited
+ * within `timeoutMs`, `false` if the timer wins first. `exited` resolving OR
+ * rejecting both count as "exited" — mirrors `waitForExit()` in
+ * `lsp/client.ts`, which treats the same ambiguity (Bun documents
+ * `Subprocess.exited` as resolve-only, but a settle either way means there is
+ * nothing left to wait on).
+ *
+ * The timer is always cleared before returning — win or lose — so a process
+ * that exits promptly never leaves a dangling `timeoutMs` timer holding the
+ * event loop open behind it.
+ */
+async function waitForProcessExit(exited: Promise<number>, timeoutMs: number): Promise<boolean> {
+	const { promise: timedOut, resolve: resolveTimedOut } = Promise.withResolvers<false>();
+	const timer = setTimeout(() => resolveTimedOut(false), timeoutMs);
+	try {
+		return await Promise.race([
+			exited.then(
+				() => true,
+				() => true,
+			),
+			timedOut,
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/** `true` when `error` is a Node errno exception carrying the given `code`. */
+function isErrnoCode(error: unknown, code: string): boolean {
+	if (typeof error !== "object" || error === null || !("code" in error)) return false;
+	return error.code === code;
+}
+
+/**
+ * Signal `signal` to `proc`. When `detached` is true on a POSIX platform,
+ * targets the whole process group via the negative-pid convention
+ * (`process.kill(-pid, signal)`) so a detached session leader's descendants —
+ * not just the direct child — receive it too; a bare direct-child signal
+ * never reaches grandchildren the child itself spawned.
+ *
+ * `ESRCH` from the group signal means the group is already gone — that is a
+ * success (nothing left to signal), not a failure — so it does not fall
+ * through. Any other group-signal failure (e.g. `EPERM`) falls back to
+ * signaling the direct child as a last resort. Non-detached transports
+ * (macOS, Windows, or POSIX where detach did not apply) always signal the
+ * direct child only: a negative-pid signal outside a detached session could
+ * hit an unrelated process group.
+ */
+function signalStdioProcess(
+	proc: KillableSubprocess,
+	detached: boolean,
+	signal: NodeJS.Signals,
+	platform: NodeJS.Platform,
+): void {
+	if (detached && platform !== "win32") {
+		try {
+			process.kill(-proc.pid, signal);
+			return;
+		} catch (error) {
+			if (isErrnoCode(error, "ESRCH")) return;
+			// Fall through to the direct-child signal below.
+		}
+	}
+	try {
+		proc.kill(signal);
+	} catch {
+		// Already gone.
+	}
+}
+
+/**
+ * Terminate an MCP stdio subprocess: SIGTERM (process-group when `detached`
+ * on POSIX, direct child otherwise), wait up to `termGraceMs` for a
+ * cooperative exit, then escalate to SIGKILL — waiting up to `KILL_GRACE_MS`
+ * more only when the leader itself hadn't already exited. A detached
+ * leader's cooperative exit does not prove the whole process group is gone
+ * (a grandchild can outlive it and ignore SIGTERM), so detached transports
+ * always fire the group SIGKILL sweep, even after a clean SIGTERM exit.
+ * Every step is a no-op-safe signal against an already-exited target, so
+ * repeat calls (idempotent `close()`) never throw.
+ *
+ * Exported so tests can exercise group-signal escalation with an explicit
+ * `detached`/`platform` pair: `StdioTransport.connect()` derives `detached`
+ * from `resolveStdioSpawnCommand()`, which is tied to the host's real
+ * `process.platform`, so a POSIX detached session cannot be reproduced
+ * end-to-end through `connect()` on a non-Linux dev/CI host. `termGraceMs`
+ * preserves the production grace by default while allowing those real
+ * subprocess tests to cover the same transition without sleeping for a
+ * production-length shutdown window.
+ */
+export async function terminateStdioProcess(
+	proc: KillableSubprocess,
+	detached: boolean,
+	platform: NodeJS.Platform = process.platform,
+	termGraceMs = TERM_GRACE_MS,
+): Promise<void> {
+	signalStdioProcess(proc, detached, "SIGTERM", platform);
+	const exitedOnTerm = await waitForProcessExit(proc.exited, termGraceMs);
+	// A non-detached transport has no process group beyond the leader itself:
+	// once it exits, there is nothing left to signal. A detached transport's
+	// leader exiting is NOT proof the group is empty — a grandchild it spawned
+	// can still be alive and ignoring SIGTERM — so detached transports always
+	// fall through to the group SIGKILL, even on a cooperative leader exit.
+	if (exitedOnTerm && !detached) return;
+	signalStdioProcess(proc, detached, "SIGKILL", platform);
+	// Once the leader has already exited there is no further `exited` signal
+	// to wait on for this call — the SIGKILL above is a fire-and-forget sweep
+	// for any surviving group members — so only block on the grace window
+	// when the leader itself is still the thing being escalated against.
+	if (!exitedOnTerm) await waitForProcessExit(proc.exited, KILL_GRACE_MS);
+}
+
 /**
  * Stdio transport for MCP servers.
  * Spawns a subprocess and communicates via stdin/stdout.
@@ -371,8 +566,13 @@ export class StdioTransport implements MCPTransport {
 	>();
 	#connected = false;
 	#readLoop: Promise<void> | null = null;
-	#protocolConfiguration: MCPTransportProtocolConfiguration | undefined;
-	#listeners = new Map<MCPRequestId, MCPStdioListenerState>();
+	/**
+	 * Set from `resolveStdioSpawnCommand()`'s `detached` flag in `connect()`.
+	 * Gates process-group signaling in `close()` — only a transport that
+	 * actually spawned into its own session may target it.
+	 */
+	#detached = false;
+	readonly #requestIds = new RequestIdAllocator();
 
 	onClose?: () => void;
 	onError?: (error: Error) => void;
@@ -412,12 +612,16 @@ export class StdioTransport implements MCPTransport {
 		});
 
 		// Platform-derived session and console-window handling come from
-		// `resolveStdioSpawnCommand`: POSIX detaches into its own session to
-		// escape terminal job-control signals (SIGTSTP, SIGTTIN); Windows stays
-		// attached, and only hides the child when the host has no console to
-		// share. See `StdioSpawnCommand`.
-		this.#process = spawn({
-			cmd: spawnCommand.cmd,
+		// `resolveStdioSpawnCommand`: Linux/other POSIX detach into their own
+		// session to escape terminal job-control signals (SIGTSTP, SIGTTIN);
+		// macOS stays attached so TCC can prompt for Apple Events automation;
+		// Windows stays attached, and only hides the child when the host has no
+		// console to share. See `StdioSpawnCommand`.
+		// Keep this on Bun's argv-first overload. The eval JS kernel path that
+		// triggers macOS Apple Events TCC prompts uses the same shape; the
+		// one-object `{ cmd }` overload timed out before prompting for `mcpbridge`
+		// even with `detached: false` (#5085).
+		this.#process = Bun.spawn(spawnCommand.cmd, {
 			cwd,
 			env,
 			stdin: "pipe",
@@ -425,7 +629,9 @@ export class StdioTransport implements MCPTransport {
 			stderr: "pipe",
 			windowsHide: spawnCommand.windowsHide,
 			detached: spawnCommand.detached,
+			windowsVerbatimArguments: spawnCommand.windowsVerbatimArguments,
 		});
+		this.#detached = spawnCommand.detached;
 
 		this.#connected = true;
 
@@ -847,14 +1053,7 @@ export class StdioTransport implements MCPTransport {
 			throw new Error("Transport not connected");
 		}
 
-		const timeout = resolveMCPTimeoutMs(this.config.timeout);
-		const signal = options?.signal;
-		if (signal?.aborted) {
-			const reason = signal.reason instanceof Error ? signal.reason : new Error("Aborted");
-			return Promise.reject(reason);
-		}
-
-		const id = Snowflake.next();
+		const id = this.#requestIds.next(this.config.requestIdFormat);
 		const request = {
 			jsonrpc: "2.0" as const,
 			id,
@@ -934,18 +1133,28 @@ export class StdioTransport implements MCPTransport {
 		}
 
 		const message = `${JSON.stringify(request)}\n`;
-		void (async () => {
-			try {
-				// Await both: Bun's FileSink can surface a broken pipe either as a
-				// synchronous throw or as a rejected Promise.
-				await stdin.write(message);
-				await stdin.flush();
-				requestSent = true;
-				sendCancellationIfNeeded();
-			} catch (error: unknown) {
-				settle(() => reject(error instanceof Error ? error : new Error(String(error))));
-			}
-		})();
+		const failFromSend = (error: unknown) => {
+			if (settled) return;
+			cleanup();
+			reject(error instanceof Error ? error : new Error(String(error)));
+		};
+		try {
+			// Never `await` write/flush. Bun's FileSink returns a pending Promise
+			// once the OS pipe buffer fills (default ~64 KB on POSIX), and a
+			// subprocess that stops draining stdin will park those awaits forever.
+			// Awaiting here would keep the async fn stuck above `return promise`,
+			// past the timeout timer and the abort handler, orphaning the deferred
+			// rejection and hanging the caller (#3945). Route sync throws (Windows
+			// EPIPE) and async rejections (POSIX EPIPE on processTicksAndRejections)
+			// into `reject()` while leaving the returned promise free to settle
+			// from the response, timer, abort signal, or read-loop transport-close.
+			const wrote = stdin.write(message);
+			if (isThenable(wrote)) wrote.then(undefined, failFromSend);
+			const flushed = stdin.flush();
+			if (isThenable(flushed)) flushed.then(undefined, failFromSend);
+		} catch (error) {
+			failFromSend(error);
+		}
 
 		return promise;
 	}
@@ -987,14 +1196,27 @@ export class StdioTransport implements MCPTransport {
 			this.#handleClose();
 		}
 
-		const proc = this.#process;
-		this.#process = null;
-		if (proc) {
+		if (this.#process) {
+			// Grab the handle and null the field immediately (before any
+			// `await`) so a concurrent/repeat `close()` sees `#process` already
+			// cleared and skips straight past this block — no double-signal.
+			const proc = this.#process;
+			this.#process = null;
+
+			// 1. Cooperative EOF first: a well-behaved server sees stdin close
+			// and can exit on its own before any signal is sent. Guarded — the
+			// sink can throw if the pipe is already closed/dead (e.g. the child
+			// already exited and the read loop got there first).
 			try {
-				proc.stdin?.end?.();
+				proc.stdin.end();
 			} catch {
-				// Ignore stdin close errors
+				// Already closed/dead.
 			}
+
+			// 2-3. Group-aware SIGTERM (when this transport actually spawned
+			// detached), bounded wait, then escalate to SIGKILL. See
+			// `terminateStdioProcess` for the exact signaling/escalation rules.
+			await terminateStdioProcess(proc, this.#detached);
 		}
 
 		if (this.#readLoop) {

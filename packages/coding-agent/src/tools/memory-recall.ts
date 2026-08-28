@@ -1,6 +1,6 @@
+import { type } from "@pk-nerdsaver-ai/omptype";
 import type { AgentTool, AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
 import { logger, untilAborted } from "@pk-nerdsaver-ai/pi-utils";
-import { type } from "arktype";
 import { formatCurrentTime, formatMemories } from "../hindsight/content";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import type { ToolSession } from ".";

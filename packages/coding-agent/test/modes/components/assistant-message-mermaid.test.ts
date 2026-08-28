@@ -4,6 +4,7 @@ import type { AssistantMessage } from "@pk-nerdsaver-ai/pi-ai";
 import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import type { AssistantThinkingRenderer } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions";
 import { AssistantMessageComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/assistant-message";
+import { TranscriptContainer } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/transcript-container";
 import { clearMermaidCache } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/mermaid-cache";
 import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
 import { ImageProtocol, setTerminalImageProtocol, TERMINAL, Text } from "@pk-nerdsaver-ai/pi-tui";
@@ -55,6 +56,97 @@ afterEach(() => {
 	clearMermaidCache();
 });
 
+describe("AssistantMessageComponent transcript lifecycle", () => {
+	it("keeps a revised streaming message mutable until finalization", () => {
+		const component = new AssistantMessageComponent();
+		const transcript = new TranscriptContainer();
+		transcript.addChild(component);
+		component.updateContent(
+			createAssistantMessage(
+				"First completed paragraph is deliberately long enough to wrap.\n\nCurrent partial paragraph",
+			),
+			{ transient: true },
+		);
+		transcript.renderViewport(80, 20, { now: 0, tick: 0 });
+
+		component.updateContent(
+			createAssistantMessage("Revised opening paragraph replaces the prior draft.\n\nCurrent partial paragraph"),
+			{ transient: true },
+		);
+		const live = Bun.stripANSI(transcript.renderViewport(80, 20, { now: 1, tick: 1 }).join("\n"));
+		expect(live).toContain("Revised opening paragraph");
+		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
+
+		component.markTranscriptBlockFinalized();
+		const batch = transcript.peekFlushBatch(80);
+		expect(Bun.stripANSI(batch?.rows.join("\n") ?? "")).toContain("Revised opening paragraph");
+	});
+
+	it("retires the frozen thinking prefix into history while still streaming", () => {
+		const thinkingMessage = (thinking: string): AssistantMessage => ({
+			...createAssistantMessage(""),
+			content: [{ type: "thinking", thinking }],
+		});
+		const component = new AssistantMessageComponent();
+		const transcript = new TranscriptContainer();
+		transcript.addChild(component);
+
+		component.updateContent(
+			thinkingMessage("Alpha reasoning paragraph.\n\nBeta reasoning paragraph.\n\nPartial tail"),
+			{ transient: true },
+		);
+		transcript.renderViewport(80, 20, { now: 0, tick: 0 });
+		component.updateContent(
+			thinkingMessage(
+				"Alpha reasoning paragraph.\n\nBeta reasoning paragraph.\n\nPartial tail keeps growing.\n\nNewer tail",
+			),
+			{ transient: true },
+		);
+		transcript.renderViewport(80, 20, { now: 1, tick: 1 });
+
+		// Under pressure the frozen thinking prefix retires while streaming.
+		const first = transcript.peekFinalizedBatch(80, 0);
+		expect(first).toBeDefined();
+		const firstText = Bun.stripANSI(first!.rows.join("\n"));
+		expect(firstText).toContain("Alpha reasoning paragraph.");
+		expect(firstText).not.toContain("Newer tail");
+		transcript.acknowledgeFinalizedBatch(first!.id);
+
+		// Emitted rows leave the mutable viewport; the streaming tail stays live.
+		const live = Bun.stripANSI(transcript.renderViewport(80, 20, { now: 2, tick: 2 }).join("\n"));
+		expect(live).not.toContain("Alpha reasoning paragraph.");
+		expect(live).toContain("Newer tail");
+
+		// Finalization retires exactly the un-emitted remainder — no duplicates.
+		component.markTranscriptBlockFinalized();
+		const flush = transcript.peekFlushBatch(80);
+		const flushText = Bun.stripANSI(flush?.rows.join("\n") ?? "");
+		expect(flushText).not.toContain("Alpha reasoning paragraph.");
+		expect(flushText).toContain("Newer tail");
+	});
+
+	it("appends a late cache-miss marker after assistant output", () => {
+		const component = new AssistantMessageComponent();
+		component.updateContent(
+			createAssistantMessage(
+				"First completed paragraph is deliberately long enough to wrap.\n\nCurrent partial paragraph",
+			),
+			{ transient: true },
+		);
+		const transcript = new TranscriptContainer();
+		transcript.addChild(component);
+		transcript.renderViewport(80, 20, { now: 0, tick: 0 });
+
+		component.setCacheInvalidation({ reprocessedTokens: 50_000 });
+		component.markTranscriptBlockFinalized();
+
+		const batch = transcript.peekFlushBatch(80);
+		const rendered = Bun.stripANSI(batch?.rows.join("\n") ?? "");
+		expect(rendered).toContain("Current partial paragraph");
+		expect(rendered.indexOf("cache miss")).toBeGreaterThan(rendered.indexOf("Current partial paragraph"));
+	});
+});
+
 describe("AssistantMessageComponent mermaid markdown", () => {
 	it("renders fenced Mermaid ASCII without terminal image protocol", () => {
 		const rendered = renderAssistantMessage("```mermaid\nflowchart TD\n  Start-->Stop\n```");
@@ -95,90 +187,6 @@ describe("AssistantMessageComponent mermaid markdown", () => {
 		expect(TERMINAL.imageProtocol).toBeNull();
 		expect(rendered).toContain("```mermaid");
 		expect(rendered).toContain("this is not mermaid");
-	});
-});
-
-describe("AssistantMessageComponent reflowing-markdown commit stability", () => {
-	// A streaming reply is built empty then fed via updateContent (the live path);
-	// passing a message to the constructor would mark it finalized.
-	it("is commit-unstable while a streaming reply still carries a mermaid fence", () => {
-		const component = new AssistantMessageComponent();
-		component.updateContent(createAssistantMessage("Here is the flow:\n\n```mermaid\nflowchart TD\n  A-->B"));
-		expect(component.isTranscriptBlockCommitStable()).toBe(false);
-	});
-
-	it("becomes commit-stable once the mermaid reply finalizes", () => {
-		const component = new AssistantMessageComponent();
-		component.updateContent(createAssistantMessage("```mermaid\nflowchart TD\n  A-->B\n```"));
-		expect(component.isTranscriptBlockCommitStable()).toBe(false);
-		component.markTranscriptBlockFinalized();
-		expect(component.isTranscriptBlockCommitStable()).toBe(true);
-	});
-
-	it("stays commit-stable for a streaming reply without a mermaid fence", () => {
-		const component = new AssistantMessageComponent();
-		component.updateContent(createAssistantMessage("A long normal reply.\n\n- one\n- two\n\nMore prose follows."));
-		expect(component.isTranscriptBlockCommitStable()).toBe(true);
-	});
-
-	it("does not trip on prose that mentions a mermaid fence inline", () => {
-		const component = new AssistantMessageComponent();
-		component.updateContent(createAssistantMessage("Wrap the diagram in a ```mermaid block to render it."));
-		expect(component.isTranscriptBlockCommitStable()).toBe(true);
-	});
-
-	it("is commit-unstable for intro prose followed by a streaming mermaid tail", () => {
-		const component = new AssistantMessageComponent();
-		component.updateContent(
-			createAssistantMessage("Intro prose above the diagram.\n\n```mermaid\nflowchart TD\n  A-->B"),
-		);
-		expect(component.isTranscriptBlockCommitStable()).toBe(false);
-	});
-
-	it("is commit-unstable while a streaming reply still renders a GFM table", () => {
-		const component = new AssistantMessageComponent();
-		component.updateContent(createAssistantMessage("Results:\n\n| Name | Score |\n| --- | --- |\n| a | 1 |"));
-		expect(component.isTranscriptBlockCommitStable()).toBe(false);
-	});
-
-	it("becomes commit-stable once a table reply finalizes", () => {
-		const component = new AssistantMessageComponent();
-		component.updateContent(createAssistantMessage("| Name | Score |\n| --- | --- |\n| a | 1 |\n| b | 2 |"));
-		expect(component.isTranscriptBlockCommitStable()).toBe(false);
-		component.markTranscriptBlockFinalized();
-		expect(component.isTranscriptBlockCommitStable()).toBe(true);
-	});
-
-	it("stays commit-stable for pipe-heavy prose with no table delimiter row", () => {
-		const component = new AssistantMessageComponent();
-		component.updateContent(
-			createAssistantMessage("Weigh cost | benefit | risk before deciding, and note `a || b` short-circuits."),
-		);
-		expect(component.isTranscriptBlockCommitStable()).toBe(true);
-	});
-
-	it("stays commit-stable for a streaming table header before its delimiter row arrives", () => {
-		// Header alone is just a paragraph with pipes — Markdown lays out no table,
-		// and nothing re-flows, until the delimiter row streams in.
-		const component = new AssistantMessageComponent();
-		component.updateContent(createAssistantMessage("| Name | Score |"));
-		expect(component.isTranscriptBlockCommitStable()).toBe(true);
-	});
-
-	it("stays commit-stable for a fenced code block containing a table delimiter", () => {
-		// A shell snippet with pipes and dashes inside a code fence is literal text,
-		// not a reflowing table, so a long code-heavy reply still commits normally.
-		const component = new AssistantMessageComponent();
-		component.updateContent(createAssistantMessage("Run it:\n\n```sh\necho '| --- | --- |'\ncat data | sort\n```"));
-		expect(component.isTranscriptBlockCommitStable()).toBe(true);
-	});
-
-	it("stays commit-stable for a mermaid fence shown as example content inside a code block", () => {
-		const component = new AssistantMessageComponent();
-		component.updateContent(
-			createAssistantMessage("Example:\n\n````md\n```mermaid\nflowchart TD\n  A-->B\n```\n````"),
-		);
-		expect(component.isTranscriptBlockCommitStable()).toBe(true);
 	});
 });
 
@@ -293,7 +301,25 @@ describe("AssistantMessageComponent thinking renderers", () => {
 	});
 });
 
-describe("AssistantMessageComponent tool images", () => {
+describe("AssistantMessageComponent images", () => {
+	it("renders native assistant images in content order and honors image visibility", () => {
+		const message: AssistantMessage = {
+			...createAssistantMessage(""),
+			content: [
+				{ type: "text", text: "Before image" },
+				{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+				{ type: "text", text: "After image" },
+			],
+		};
+		const component = new AssistantMessageComponent(message);
+
+		const rendered = Bun.stripANSI(component.render(80).join("\n"));
+		expect(rendered.indexOf("Before image")).toBeLessThan(rendered.indexOf("[Image: image/png]"));
+		expect(rendered.indexOf("[Image: image/png]")).toBeLessThan(rendered.indexOf("After image"));
+		component.setImagesVisible(false);
+		expect(Bun.stripANSI(component.render(80).join("\n"))).not.toContain("[Image: image/png]");
+	});
+
 	it("converts WebP tool images for Kitty terminal rendering", async () => {
 		const webpBase64 = Buffer.from(
 			await Bun.file(path.join(import.meta.dir, "../../../../../assets/python.webp")).arrayBuffer(),

@@ -7,20 +7,25 @@
  *     containing a `.git` *file* that points back at
  *     `<parent-repo>/.git/worktrees/<name>/`.
  *   - **Task-isolation dirs** (`task/worktree.ts`): a wrapper dir with a
- *     `merged` subdir mounted/cloned by `natives.isoStart`. These are ephemeral
- *     — `ensureIsolation` always `rm -rf`s the base before re-creating it, so
- *     any leftover on disk is a leak from a crashed run.
+ *     compact `m` subdir mounted/cloned by `natives.isoStart`. Legacy `merged`
+ *     subdirs are still recognized. `ensureIsolation` writes an ownership
+ *     marker naming the live omp process; a
+ *     sandbox whose owner is still running is reported `live` and never
+ *     removed without `--all`, so `clear` reclaims only crashed leftovers.
  *
  * Legacy entries from before the encoding change keep working because git still
  * tracks them by branch name. This command exists to GC them on demand.
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
 import { getWorktreesDir, isEnoent } from "@pk-nerdsaver-ai/pi-utils";
-import chalk from "chalk";
-import * as git from "../utils/git";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
+import { hasLiveIsolationOwner, ISOLATION_OWNER_FILE } from "../task/isolation-ownership";
 
 type WorktreeKind = "pr-checkout" | "task-isolation" | "empty" | "stray";
+
+const TASK_ISOLATION_MOUNT_DIRS = ["m", "merged"] as const;
 
 export interface WorktreeEntry {
 	/** Absolute path to the worktree dir (or stray container) under `~/.ompk/wt/`. */
@@ -103,7 +108,7 @@ export async function clearWorktrees(options: ClearWorktreesOptions): Promise<vo
 				// Live worktree: ask git to remove it cleanly. If git refuses (locked,
 				// dirty, etc.), fall back to fs.rm and rely on `worktree prune` to
 				// clean the bookkeeping on the parent side.
-				const removed = await git.worktree.tryRemove(target.parentRepo, target.path, { force: true });
+				const removed = await vcs.git(target.parentRepo)?.worktreeRemove(target.path, true);
 				if (!removed) {
 					await fs.rm(target.path, { recursive: true, force: true });
 					parentsToPrune.add(target.parentRepo);
@@ -121,7 +126,7 @@ export async function clearWorktrees(options: ClearWorktreesOptions): Promise<vo
 	// Best-effort: drop stale entries from each affected parent's `.git/worktrees/`.
 	for (const parent of parentsToPrune) {
 		try {
-			await git.worktree.prune(parent);
+			await vcs.requireGit(parent).worktreePrune();
 		} catch {
 			/* parent repo may already be gone or pruned — ignore */
 		}
@@ -209,15 +214,30 @@ async function classifyDir(dir: string): Promise<WorktreeEntry | null> {
 	if (gitStat?.isFile()) {
 		return classifyPrCheckout(dir, gitEntry);
 	}
-	const mergedStat = await fs.stat(path.join(dir, "merged")).catch(() => null);
-	if (mergedStat?.isDirectory()) {
-		return {
-			path: dir,
-			kind: "task-isolation",
-			orphanReason: "task-isolation leftover (no live task owns it)",
-		};
+	// A task-isolation sandbox is identified by its ownership marker — written
+	// before the backend materialises the mount — or by the `m`/`merged` mount
+	// dir itself (legacy dirs and crashed pre-marker runs). Recognizing the
+	// marker alone keeps an in-progress sandbox from being mistaken for a stray
+	// during the window between marker creation and mount materialisation.
+	let isIsolation = await Bun.file(path.join(dir, ISOLATION_OWNER_FILE)).exists();
+	if (!isIsolation) {
+		for (const mountDir of TASK_ISOLATION_MOUNT_DIRS) {
+			const mountStat = await fs.stat(path.join(dir, mountDir)).catch(() => null);
+			if (mountStat?.isDirectory()) {
+				isIsolation = true;
+				break;
+			}
+		}
 	}
-	return null;
+	if (!isIsolation) return null;
+	const live = await hasLiveIsolationOwner(dir);
+	return {
+		path: dir,
+		kind: "task-isolation",
+		// Only after confirming no live owner is the "no live task" claim true.
+		// A running subagent's sandbox stays live so `clear` won't delete it.
+		orphanReason: live ? undefined : "task-isolation leftover (no live task owns it)",
+	};
 }
 
 async function classifyPrCheckout(dir: string, gitEntry: string): Promise<WorktreeEntry> {

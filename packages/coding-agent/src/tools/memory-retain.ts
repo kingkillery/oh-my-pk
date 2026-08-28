@@ -1,5 +1,5 @@
+import { type } from "@pk-nerdsaver-ai/omptype";
 import type { AgentTool, AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
-import { type } from "arktype";
 import retainDescription from "../prompts/tools/retain.md" with { type: "text" };
 import type { ToolSession } from ".";
 

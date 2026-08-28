@@ -8,8 +8,13 @@
 //! Without these hooks, Bun receives only the bare
 //! `memory allocation of N bytes failed` line and aborts with no stack —
 //! see issue #2211 ("Windows crash: Rust allocator failure after tasklist.exe
-//! popup"). The hooks do not change the abort behavior (the cdylib release
-//! profile uses `panic = "abort"`); they make the next crash diagnosable.
+//! popup"). The cdylib builds with `panic = "unwind"`, so a panic in vendored
+//! uutils code unwinds to the shell boundary and is recovered as a failed
+//! command, and a panic in a `task::blocking` worker is caught at the napi
+//! boundary and surfaces as a rejected JS Promise; such recoverable panics are
+//! logged to disk only, while fatal crashes (allocation failure, or panics
+//! with no active recovery scope) still get the stderr dump + process exit.
+//! Either way the record stays diagnosable.
 //!
 //! Notes:
 //! - Backtraces are captured via [`Backtrace::force_capture`], so they work
@@ -24,6 +29,7 @@
 use std::{
 	alloc::Layout,
 	backtrace::Backtrace,
+	cell::Cell,
 	ffi::OsStr,
 	fmt::Write as _,
 	fs::{self, OpenOptions},
@@ -45,19 +51,47 @@ const DEFAULT_CONFIG_DIR: &str = ".ompk";
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 /// App name used as the XDG-root subdirectory (`$XDG_STATE_HOME/omp/`),
 /// matching `APP_NAME` in `packages/utils/src/dirs.ts`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const APP_NAME: &str = "omp";
 
 static INSTALL: Once = Once::new();
 static ALLOC_HOOK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+thread_local! {
+	/// Active `task::blocking` panic recovery frames on this thread.
+	///
+	/// The panic hook runs before [`std::panic::catch_unwind`] returns. A
+	/// borrow-free `Cell` lets the hook recognize panics that are already inside
+	/// a known recovery boundary without touching potentially borrowed task
+	/// state while the stack is unwinding.
+	static BLOCKING_TASK_PANIC_SCOPE_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PanicDisposition {
+	/// No recovery boundary is active: persist the report, echo it to stderr,
+	/// and chain to the default hook (which ends the process).
+	Fatal,
+	/// The panic will be caught and mapped to a failed command / rejected
+	/// Promise: persist the report to the crash log for diagnosis, but keep
+	/// stderr quiet and do not chain to the default hook.
+	LoggedRecoverable,
+}
+
 /// Install the panic and allocation-error hooks. Idempotent.
 pub fn install() {
 	INSTALL.call_once(|| {
 		let prev_panic = std::panic::take_hook();
-		std::panic::set_hook(Box::new(move |info| {
-			let report = format_panic_report(info);
-			persist(&report, CrashKind::Panic);
-			prev_panic(info);
+		std::panic::set_hook(Box::new(move |info| match panic_disposition() {
+			PanicDisposition::LoggedRecoverable => {
+				let report = format_panic_report(info);
+				persist(&report, CrashKind::Panic, false);
+			},
+			PanicDisposition::Fatal => {
+				let report = format_panic_report(info);
+				persist(&report, CrashKind::Panic, true);
+				prev_panic(info);
+			},
 		}));
 
 		std::alloc::set_alloc_error_hook(|layout| {
@@ -70,10 +104,44 @@ pub fn install() {
 				process::abort();
 			}
 			let report = format_alloc_report(layout);
-			persist(&report, CrashKind::Alloc);
+			persist(&report, CrashKind::Alloc, true);
 			process::abort();
 		});
 	});
+}
+
+/// Run `f` inside a `task::blocking` panic recovery boundary.
+///
+/// The global panic hook checks this thread-local scope before reporting a
+/// panic. When a blocking worker closure panics, [`std::panic::catch_unwind`]
+/// will turn it into a rejected JS Promise, so the hook downgrades the panic
+/// to [`PanicDisposition::LoggedRecoverable`]: the report (location +
+/// backtrace) is still persisted to the crash log, but nothing is echoed to
+/// stderr and the default hook is not chained.
+pub(crate) fn blocking_task_panic_scope<R>(f: impl FnOnce() -> R) -> R {
+	struct Guard;
+
+	impl Drop for Guard {
+		fn drop(&mut self) {
+			BLOCKING_TASK_PANIC_SCOPE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+		}
+	}
+
+	BLOCKING_TASK_PANIC_SCOPE_DEPTH.with(|d| d.set(d.get() + 1));
+	let _guard = Guard;
+	f()
+}
+
+fn blocking_task_panic_scope_active() -> bool {
+	BLOCKING_TASK_PANIC_SCOPE_DEPTH.with(|d| d.get() > 0)
+}
+
+fn panic_disposition() -> PanicDisposition {
+	if blocking_task_panic_scope_active() || pi_shell::panic_scope_active() {
+		PanicDisposition::LoggedRecoverable
+	} else {
+		PanicDisposition::Fatal
+	}
 }
 
 #[derive(Clone, Copy)]
@@ -147,7 +215,12 @@ fn write_alloc_failure_line(mut out: impl std::io::Write, size: usize) {
 	let _ = out.write_all(b" bytes failed\n");
 }
 
-fn panic_payload(payload: &(dyn std::any::Any + Send)) -> String {
+/// Extract a printable message from a panic payload captured by
+/// [`std::panic::catch_unwind`] or handed to the panic hook. Handles the two
+/// shapes `panic!` produces — `&'static str` (literal) and `String`
+/// (formatted) — and degrades to a sentinel for arbitrary
+/// [`panic_any`](std::panic::panic_any) payloads.
+pub(crate) fn panic_payload(payload: &(dyn std::any::Any + Send)) -> String {
 	if let Some(s) = payload.downcast_ref::<&'static str>() {
 		(*s).to_owned()
 	} else if let Some(s) = payload.downcast_ref::<String>() {
@@ -157,10 +230,14 @@ fn panic_payload(payload: &(dyn std::any::Any + Send)) -> String {
 	}
 }
 
-fn persist(report: &str, kind: CrashKind) {
-	// Echo to stderr unconditionally so the user still sees something even
-	// when the file write fails (read-only home, missing $HOME, etc.).
-	let _ = writeln!(std::io::stderr(), "{report}");
+fn persist(report: &str, kind: CrashKind, echo_stderr: bool) {
+	// Echo to stderr so the user sees something even when the file write fails
+	// (read-only home, missing $HOME, …). Suppressed for recoverable panics
+	// (uutils shell boundary, `task::blocking` workers), which surface as a
+	// failed command / rejected Promise instead of a crash.
+	if echo_stderr {
+		let _ = writeln!(std::io::stderr(), "{report}");
+	}
 
 	let Some(path) = crash_log_path(kind) else {
 		return;
@@ -172,7 +249,10 @@ fn persist(report: &str, kind: CrashKind) {
 		let _ = f.write_all(report.as_bytes());
 		let _ = f.flush();
 		let _ = f.sync_data();
-		let _ = writeln!(std::io::stderr(), "pi-natives crash report written to {}", path.display());
+		if echo_stderr {
+			let _ =
+				writeln!(std::io::stderr(), "pi-natives crash report written to {}", path.display());
+		}
 	}
 }
 
@@ -235,7 +315,7 @@ fn xdg_state_logs_from_env(_home: &Path, _config_dir_override: Option<&OsStr>) -
 /// Pure XDG-eligibility computation extracted for unit testing — no env
 /// reads, no fs reads. `omp_dir_exists` decides whether the candidate
 /// `<xdg_state_home>/omp` actually lives on disk.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn xdg_state_logs(
 	xdg_state_home: Option<&OsStr>,
 	agent_dir_override: Option<&OsStr>,
@@ -258,8 +338,7 @@ fn xdg_state_logs(
 	}
 	Some(omp_dir.join("logs"))
 }
-
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn default_agent_dir(home: &Path, config_dir_override: Option<&OsStr>) -> PathBuf {
 	let config_dir = config_dir_override
 		.filter(|s| !s.is_empty())
@@ -310,6 +389,26 @@ fn unix_millis() -> u128 {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn blocking_task_panic_scope_downgrades_to_logged_recoverable() {
+		assert_eq!(panic_disposition(), PanicDisposition::Fatal);
+		blocking_task_panic_scope(|| {
+			assert_eq!(panic_disposition(), PanicDisposition::LoggedRecoverable);
+		});
+		assert_eq!(panic_disposition(), PanicDisposition::Fatal);
+	}
+
+	#[test]
+	fn blocking_task_panic_scope_restores_after_unwind() {
+		// Silence the process-global hook for the injected panic (and serialize
+		// the swap with every other hook-mutating test — see `crate::testing`).
+		let _silence = crate::testing::SilenceHook::new();
+		let unwound = std::panic::catch_unwind(|| blocking_task_panic_scope(|| panic!("boom")));
+
+		assert!(unwound.is_err(), "panic propagated to catch_unwind");
+		assert_eq!(panic_disposition(), PanicDisposition::Fatal);
+	}
 
 	#[test]
 	fn alloc_report_contains_size_alignment_and_backtrace() {
@@ -387,6 +486,7 @@ mod tests {
 		assert_eq!(dir, PathBuf::from("/tmp/pi-natives-test-home/.omp-dev/logs"));
 	}
 
+	#[cfg(any(target_os = "linux", target_os = "macos"))]
 	#[test]
 	fn xdg_state_logs_ignores_empty_agent_dir_override() {
 		// An empty PI_CODING_AGENT_DIR is "unset", not a divergent override; it
@@ -417,6 +517,7 @@ mod tests {
 		assert_eq!(dir, PathBuf::from("/xdg/state/omp/logs"));
 	}
 
+	#[cfg(any(target_os = "linux", target_os = "macos"))]
 	#[test]
 	fn xdg_state_logs_resolves_when_dir_exists_and_no_agent_override() {
 		let dir = xdg_state_logs(
@@ -428,6 +529,7 @@ mod tests {
 		assert_eq!(dir, Some(PathBuf::from("/xdg/state/omp/logs")));
 	}
 
+	#[cfg(any(target_os = "linux", target_os = "macos"))]
 	#[test]
 	fn xdg_state_logs_skipped_when_omp_dir_missing() {
 		let dir = xdg_state_logs(
@@ -439,6 +541,7 @@ mod tests {
 		assert_eq!(dir, None);
 	}
 
+	#[cfg(any(target_os = "linux", target_os = "macos"))]
 	#[test]
 	fn xdg_state_logs_skipped_when_xdg_state_home_unset_or_empty() {
 		let default_agent = Path::new("/tmp/pi-natives-test-home/.ompk/agent");
@@ -446,6 +549,7 @@ mod tests {
 		assert_eq!(xdg_state_logs(Some(OsStr::new("")), None, default_agent, |_p| true), None);
 	}
 
+	#[cfg(any(target_os = "linux", target_os = "macos"))]
 	#[test]
 	fn xdg_state_logs_skipped_when_agent_dir_overridden() {
 		// `PI_CODING_AGENT_DIR` pointing elsewhere mirrors the JS `isDefault === false`
@@ -459,6 +563,7 @@ mod tests {
 		assert_eq!(dir, None);
 	}
 
+	#[cfg(any(target_os = "linux", target_os = "macos"))]
 	#[test]
 	fn xdg_state_logs_honored_when_agent_override_matches_default() {
 		let default_agent = std::path::absolute(Path::new("./.ompk/agent")).unwrap();
@@ -471,12 +576,13 @@ mod tests {
 		assert_eq!(dir, Some(PathBuf::from("/xdg/state/omp/logs")));
 	}
 
+	#[cfg(any(target_os = "linux", target_os = "macos"))]
 	#[test]
 	fn default_agent_dir_uses_dot_ompk_by_default() {
 		let dir = default_agent_dir(Path::new("/tmp/pi-natives-test-home"), None);
 		assert_eq!(dir, PathBuf::from("/tmp/pi-natives-test-home/.ompk/agent"));
 	}
-
+	#[cfg(any(target_os = "linux", target_os = "macos"))]
 	#[test]
 	fn default_agent_dir_respects_pi_config_dir() {
 		let dir =

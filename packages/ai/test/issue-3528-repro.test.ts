@@ -46,14 +46,7 @@ import {
 	applyChatCompletionsReasoningParams,
 	type OpenAICompletionsParams,
 } from "@pk-nerdsaver-ai/pi-ai/providers/openai-shared";
-import type {
-	AssistantMessage,
-	Message,
-	Model,
-	ModelSpec,
-	ThinkingContent,
-	UserMessage,
-} from "@pk-nerdsaver-ai/pi-ai/types";
+import type { AssistantMessage, Message, Model, ModelSpec, ThinkingContent, UserMessage } from "@pk-nerdsaver-ai/pi-ai/types";
 import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -291,7 +284,7 @@ describe("llama.cpp warm-prefix preservation (#3528)", () => {
 		const found = findAssistantMessage(wire) as Record<string, unknown> | undefined;
 		expect(found?.reasoning_content).toBeUndefined();
 		expect(found?.content).toBe(
-			`${renderDemotedThinking(target.id, "Cross-vendor reasoning chain that must survive the switch.")}Switched-in answer.`,
+			`${renderDemotedThinking(target.id, "Cross-vendor reasoning chain that must survive the switch.")}\nSwitched-in answer.`,
 		);
 		expect("EvAnthropicOpaqueContinuationBlob==" in (found ?? {})).toBe(false);
 	});

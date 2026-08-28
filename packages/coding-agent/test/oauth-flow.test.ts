@@ -64,7 +64,7 @@ async function completeLocalOAuthCallback(url: string): Promise<void> {
 }
 
 describe("mcp oauth flow", () => {
-	it("uses Codex client name for dynamic client registration", async () => {
+	it("uses oh-my-pi client name for dynamic client registration", async () => {
 		let registrationPayload: Record<string, unknown> | null = null;
 
 		const flow = new MCPOAuthFlow(
@@ -82,248 +82,53 @@ describe("mcp oauth flow", () => {
 		const { url } = await flow.generateAuthUrl("test-state", "http://127.0.0.1:53172/callback");
 		const authUrl = new URL(url);
 
-		expect(registrationPayload).not.toBeNull();
-		expect((registrationPayload as { client_name?: string } | null)?.client_name).toBe("Codex");
+		expect((registrationPayload as { client_name?: string } | null)?.client_name).toBe("oh-my-pi");
+		expect((registrationPayload as { scope?: string } | null)?.scope).toBeUndefined();
 		expect(authUrl.searchParams.get("client_id")).toBe("registered-client-id");
 		expect(authUrl.searchParams.get("state")).toBe("test-state");
 	});
 
-	it("uses a validated configured Client ID Metadata Document when the issuer advertises support", async () => {
-		const metadataUrl = "https://client.example/ompk/client-metadata.json";
-		let registrationRequested = false;
+	it("removes a whitespace-only embedded client id before authorization", async () => {
 		const flow = new MCPOAuthFlow(
 			{
-				authorizationUrl: "https://issuer.example/authorize",
-				issuer: "https://issuer.example/",
-				tokenUrl: "https://issuer.example/token",
-				clientMetadataUrl: metadataUrl,
-				clientIdMetadataDocumentSupported: true,
-				fetch: async input => {
-					if (String(input) === metadataUrl) {
-						return new Response(
-							JSON.stringify({
-								client_id: metadataUrl,
-								client_name: "OMP",
-								redirect_uris: ["http://127.0.0.1:53176/callback"],
-								token_endpoint_auth_method: "none",
-							}),
-							{ status: 200, headers: { "Content-Type": "application/json" } },
-						);
-					}
-					registrationRequested = true;
-					throw new Error(`Unexpected fetch: ${String(input)}`);
-				},
+				authorizationUrl: "https://provider.example/authorize?client_id=%20%09",
+				tokenUrl: "https://provider.example/token",
+				fetch: async () => new Response("not found", { status: 404 }),
 			},
 			{},
 		);
 
-		const { url } = await flow.generateAuthUrl("test-state", "http://127.0.0.1:53176/callback");
+		const { url } = await flow.generateAuthUrl("test-state", "http://127.0.0.1:53174/callback");
 
-		expect(new URL(url).searchParams.get("client_id")).toBe(metadataUrl);
-		expect(flow.resolvedClientId).toBe(metadataUrl);
-		expect(registrationRequested).toBe(false);
+		expect(new URL(url).searchParams.get("client_id")).toBeNull();
 	});
-	it("accepts a Client ID Metadata Document with omitted token_endpoint_auth_method", async () => {
-		const metadataUrl = "https://client.example/ompk/client-metadata-omitted.json";
+
+	it("includes discovered scopes in dynamic client registration", async () => {
+		let registrationPayload: Record<string, unknown> | null = null;
+		const scopes = "openid profile email offline_access";
+
 		const flow = new MCPOAuthFlow(
 			{
-				authorizationUrl: "https://issuer.example/authorize",
-				issuer: "https://issuer.example/",
-				tokenUrl: "https://issuer.example/token",
-				clientMetadataUrl: metadataUrl,
-				clientIdMetadataDocumentSupported: true,
-				fetch: async input => {
-					if (String(input) === metadataUrl) {
-						return new Response(
-							JSON.stringify({
-								client_id: metadataUrl,
-								client_name: "OMP",
-								redirect_uris: ["http://127.0.0.1:53190/callback"],
-							}),
-							{ status: 200, headers: { "Content-Type": "application/json" } },
-						);
-					}
-					throw new Error(`Unexpected fetch: ${String(input)}`);
-				},
+				authorizationUrl: "https://www.figma.com/oauth/mcp",
+				tokenUrl: "https://api.figma.com/v1/oauth/token",
+				registrationUrl: "https://www.figma.com/oauth/register",
+				scopes,
+				fetch: mockFigmaRegistration(payload => {
+					registrationPayload = payload;
+				}),
 			},
 			{},
 		);
 
-		const { url } = await flow.generateAuthUrl("test-state", "http://127.0.0.1:53190/callback");
-		expect(new URL(url).searchParams.get("client_id")).toBe(metadataUrl);
+		const { url } = await flow.generateAuthUrl("test-state", "http://127.0.0.1:53173/callback");
+		const authUrl = new URL(url);
+
+		expect((registrationPayload as { scope?: string } | null)?.scope).toBe(scopes);
+		expect(authUrl.searchParams.get("scope")).toBe(scopes);
+		expect(authUrl.searchParams.get("client_id")).toBe("registered-client-id");
 	});
 
-	it("rejects a Client ID Metadata Document specifying unsupported private_key_jwt before authorization", async () => {
-		const metadataUrl = "https://client.example/ompk/client-metadata-jwt.json";
-		const flow = new MCPOAuthFlow(
-			{
-				authorizationUrl: "https://issuer.example/authorize",
-				issuer: "https://issuer.example/",
-				tokenUrl: "https://issuer.example/token",
-				clientMetadataUrl: metadataUrl,
-				clientIdMetadataDocumentSupported: true,
-				fetch: async input => {
-					if (String(input) === metadataUrl) {
-						return new Response(
-							JSON.stringify({
-								client_id: metadataUrl,
-								client_name: "OMP",
-								redirect_uris: ["http://127.0.0.1:53191/callback"],
-								token_endpoint_auth_method: "private_key_jwt",
-							}),
-							{ status: 200, headers: { "Content-Type": "application/json" } },
-						);
-					}
-					throw new Error(`Unexpected fetch: ${String(input)}`);
-				},
-			},
-			{},
-		);
-
-		await expect(flow.generateAuthUrl("test-state", "http://127.0.0.1:53191/callback")).rejects.toThrow(
-			"unsupported token_endpoint_auth_method: private_key_jwt",
-		);
-	});
-
-	it("rejects a Client ID Metadata Document specifying unsupported client_secret_basic before authorization", async () => {
-		const metadataUrl = "https://client.example/ompk/client-metadata-secret.json";
-		const flow = new MCPOAuthFlow(
-			{
-				authorizationUrl: "https://issuer.example/authorize",
-				issuer: "https://issuer.example/",
-				tokenUrl: "https://issuer.example/token",
-				clientMetadataUrl: metadataUrl,
-				clientIdMetadataDocumentSupported: true,
-				fetch: async input => {
-					if (String(input) === metadataUrl) {
-						return new Response(
-							JSON.stringify({
-								client_id: metadataUrl,
-								client_name: "OMP",
-								redirect_uris: ["http://127.0.0.1:53192/callback"],
-								token_endpoint_auth_method: "client_secret_basic",
-							}),
-							{ status: 200, headers: { "Content-Type": "application/json" } },
-						);
-					}
-					throw new Error(`Unexpected fetch: ${String(input)}`);
-				},
-			},
-			{},
-		);
-
-		await expect(flow.generateAuthUrl("test-state", "http://127.0.0.1:53192/callback")).rejects.toThrow(
-			"unsupported token_endpoint_auth_method: client_secret_basic",
-		);
-	});
-
-	it("keeps an explicit pre-registered client ID ahead of Client ID Metadata Documents", async () => {
-		const flow = new MCPOAuthFlow(
-			{
-				authorizationUrl: "https://issuer.example/authorize",
-				issuer: "https://issuer.example/",
-				tokenUrl: "https://issuer.example/token",
-				clientId: "pre-registered-client",
-				clientMetadataUrl: "https://client.example/ompk/client-metadata.json",
-				clientIdMetadataDocumentSupported: true,
-				fetch: async input => {
-					throw new Error(`Unexpected fetch: ${String(input)}`);
-				},
-			},
-			{},
-		);
-
-		const { url } = await flow.generateAuthUrl("test-state", "http://127.0.0.1:53177/callback");
-
-		expect(new URL(url).searchParams.get("client_id")).toBe("pre-registered-client");
-	});
-
-	it("fails closed when selected Client ID Metadata Document misses OMP's exact redirect URI", async () => {
-		const metadataUrl = "https://client.example/ompk/client-metadata.json";
-		const flow = new MCPOAuthFlow(
-			{
-				authorizationUrl: "https://issuer.example/authorize",
-				issuer: "https://issuer.example/",
-				tokenUrl: "https://issuer.example/token",
-				clientMetadataUrl: metadataUrl,
-				clientIdMetadataDocumentSupported: true,
-				fetch: async () =>
-					new Response(
-						JSON.stringify({
-							client_id: metadataUrl,
-							client_name: "OMP",
-							redirect_uris: ["http://127.0.0.1:9999/callback"],
-						}),
-						{ status: 200, headers: { "Content-Type": "application/json" } },
-					),
-			},
-			{},
-		);
-
-		await expect(flow.generateAuthUrl("test-state", "http://127.0.0.1:53178/callback")).rejects.toThrow(
-			"must register the exact redirect URI",
-		);
-	});
-
-	it("rejects percent-encoded dot segments in selected Client ID Metadata Document URLs", async () => {
-		const flow = new MCPOAuthFlow(
-			{
-				authorizationUrl: "https://issuer.example/authorize",
-				issuer: "https://issuer.example/",
-				tokenUrl: "https://issuer.example/token",
-				clientMetadataUrl: "https://client.example/ompk/%2e%2e/client-metadata.json",
-				clientIdMetadataDocumentSupported: true,
-				fetch: async input => {
-					throw new Error(`Unexpected fetch: ${String(input)}`);
-				},
-			},
-			{},
-		);
-
-		await expect(flow.generateAuthUrl("test-state", "http://127.0.0.1:53179/callback")).rejects.toThrow(
-			"dot-segment-free path",
-		);
-	});
-
-	it("discovers dynamic registration from the issuer rather than the authorization endpoint", async () => {
-		const calls: string[] = [];
-		const flow = new MCPOAuthFlow(
-			{
-				authorizationUrl: "https://login.example.com/authorize",
-				issuer: "https://issuer.example.com/tenant",
-				tokenUrl: "https://tokens.example.com/token",
-				fetch: async (input, init) => {
-					const url = String(input);
-					calls.push(url);
-					if (url === "https://issuer.example.com/tenant/.well-known/oauth-authorization-server") {
-						return new Response(
-							JSON.stringify({
-								issuer: "https://issuer.example.com/tenant",
-								registration_endpoint: "https://issuer.example.com/register",
-							}),
-							{ status: 200, headers: { "Content-Type": "application/json" } },
-						);
-					}
-					if (url === "https://issuer.example.com/register" && init?.method === "POST") {
-						return new Response(JSON.stringify({ client_id: "issuer-bound-client" }), {
-							status: 201,
-							headers: { "Content-Type": "application/json" },
-						});
-					}
-					return new Response("not found", { status: 404 });
-				},
-			},
-			{},
-		);
-
-		const { url } = await flow.generateAuthUrl("test-state", "http://127.0.0.1:53175/callback");
-
-		expect(new URL(url).searchParams.get("client_id")).toBe("issuer-bound-client");
-		expect(calls).toContain("https://issuer.example.com/tenant/.well-known/oauth-authorization-server");
-		expect(calls.some(call => call.startsWith("https://login.example.com/.well-known/"))).toBe(false);
-	});
-
-	it("defaults prompt=consent so reauth can switch accounts despite an active browser session", async () => {
+	it("omits prompt by default so provider-specific reauth pages can use returning grants", async () => {
 		const flow = new MCPOAuthFlow(
 			{
 				authorizationUrl: "https://provider.example/authorize",
@@ -335,6 +140,22 @@ describe("mcp oauth flow", () => {
 		);
 
 		const { url } = await flow.generateAuthUrl("test-state", "http://127.0.0.1:53180/callback");
+
+		expect(new URL(url).searchParams.has("prompt")).toBe(false);
+	});
+
+	it("defaults prompt=consent when offline_access is requested", async () => {
+		const flow = new MCPOAuthFlow(
+			{
+				authorizationUrl: "https://provider.example/authorize",
+				tokenUrl: "https://provider.example/token",
+				clientId: "client-id",
+				scopes: "openid offline_access",
+			},
+			{},
+		);
+
+		const { url } = await flow.generateAuthUrl("test-state", "http://127.0.0.1:53184/callback");
 
 		expect(new URL(url).searchParams.get("prompt")).toBe("consent");
 	});
@@ -548,6 +369,44 @@ describe("mcp oauth flow", () => {
 		});
 	});
 
+	it("rejects an HTTP-200 token response that carries no access token", async () => {
+		let observedRedirectUri = "";
+		const flow = new MCPOAuthFlow(
+			{
+				authorizationUrl: "https://provider.example/authorize",
+				tokenUrl: "https://provider.example/token",
+				clientId: "client-id",
+				clientSecret: "client-secret",
+				callbackPort: 14569,
+				fetch: async input => {
+					const url = String(input);
+					if (url === "https://provider.example/token") {
+						// Slack Web API error shape: HTTP 200 with `ok:false` and no
+						// `access_token`. Accepting it would store an empty credential.
+						return new Response(JSON.stringify({ ok: false, error: "bad_client_secret" }), {
+							status: 200,
+							headers: { "Content-Type": "application/json" },
+						});
+					}
+					throw new Error(`Unexpected fetch: ${url}`);
+				},
+			},
+			{
+				onAuth: info => {
+					const authUrl = new URL(info.url);
+					observedRedirectUri = authUrl.searchParams.get("redirect_uri") ?? "";
+					const state = authUrl.searchParams.get("state") ?? "";
+					queueMicrotask(() => {
+						void completeLocalOAuthCallback(`${observedRedirectUri}?code=test-code&state=${state}`);
+					});
+				},
+				signal: AbortSignal.timeout(1_000),
+			},
+		);
+
+		await expect(flow.login()).rejects.toThrow(/bad_client_secret/);
+	});
+
 	it("preserves root redirectUri values without adding a trailing slash", async () => {
 		let observedRedirectUri = "";
 		let tokenRequestBody = "";
@@ -661,7 +520,7 @@ describe("mcp oauth flow", () => {
 		);
 
 		await expect(flow.login()).rejects.toThrow(
-			"OAuth callback port 80 unavailable; cannot fall back to a random port when oauth.redirectUri is set",
+			"OAuth callback port 80 is in use, but oauth.redirectUri (http://localhost/callback) requires this exact port",
 		);
 		expect(serveSpy).toHaveBeenCalledTimes(1);
 	});
@@ -683,7 +542,7 @@ describe("mcp oauth flow", () => {
 		);
 
 		await expect(flow.login()).rejects.toThrow(
-			"OAuth callback port 3000 unavailable; cannot fall back to a random port when oauth.redirectUri is set",
+			"OAuth callback port 3000 is in use, but oauth.redirectUri (http://localhost:3000/callback) requires this exact port",
 		);
 		expect(serveSpy).toHaveBeenCalledTimes(1);
 	});
@@ -705,7 +564,130 @@ describe("mcp oauth flow", () => {
 			{ signal: AbortSignal.timeout(1_000) },
 		);
 
-		await expect(flow.login()).rejects.toThrow("cannot fall back to a random port when oauth.redirectUri is set");
+		await expect(flow.login()).rejects.toThrow(
+			/oauth\.redirectUri \(https:\/\/public\.example\/slack\/oauth_redirect\) requires this exact port/,
+		);
+	});
+
+	it("fails fast when the preferred port is busy and a static clientId pins the registered redirect URI", async () => {
+		const serveSpy = vi.spyOn(Bun, "serve").mockImplementation(options => {
+			expect(options.port).toBe(14572);
+			throw new Error("EADDRINUSE");
+		});
+
+		const progress: string[] = [];
+		const onAuth = vi.fn();
+		const flow = new MCPOAuthFlow(
+			{
+				authorizationUrl: "https://provider.example/authorize",
+				tokenUrl: "https://provider.example/token",
+				clientId: "demo-client",
+				callbackPort: 14572,
+			},
+			{
+				onAuth,
+				onProgress: msg => progress.push(msg),
+				signal: AbortSignal.timeout(1_000),
+			},
+		);
+
+		await expect(flow.login()).rejects.toThrow(
+			/OAuth callback port 14572 is in use\. The OAuth provider validates redirect URIs/,
+		);
+		// Fallback must NOT have been attempted: only the preferred-port serve call.
+		expect(serveSpy).toHaveBeenCalledTimes(1);
+		// Browser must not be opened — the error fires before generateAuthUrl runs.
+		expect(onAuth).not.toHaveBeenCalled();
+		// And the silent "Preferred port X unavailable, using port Y" message must
+		// never reach the user — that's the regression this test guards against.
+		expect(progress.some(msg => msg.includes("Preferred port"))).toBe(false);
+	});
+
+	it("falls back to a random port when DCR will re-register with the actual loopback URI", async () => {
+		// The bot reviewer's concern: blocking fallback for *every* MCP flow
+		// would break first-install DCR users whose preferred port is busy.
+		// Here `clientId` is unset, so `MCPOAuthFlow.#tryRegisterClient` will
+		// register the actual fallback URI with the provider and the
+		// authorization request will use that fresh client_id.
+		// Occupy 127.0.0.1 explicitly — the interface callback flows bind for
+		// `localhost` — because macOS lets a specific-address bind coexist with a
+		// wildcard one, which would let the flow bind the "blocked" port.
+		const blocker = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("blocker") });
+		const blockerPort = blocker.port;
+		if (typeof blockerPort !== "number") {
+			blocker.stop(true);
+			throw new Error("Bun.serve({ port: 0 }) did not assign a numeric port");
+		}
+
+		const registrations: unknown[] = [];
+		const fetchImpl: FetchImpl = async (input, init) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+			if (url.endsWith("/.well-known/oauth-authorization-server")) {
+				return new Response(JSON.stringify({ registration_endpoint: "https://provider.example/register" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			if (url === "https://provider.example/register") {
+				registrations.push(JSON.parse(String(init?.body)));
+				return new Response(JSON.stringify({ client_id: "dcr-issued-client" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			return new Response("not implemented", { status: 501 });
+		};
+
+		const progress: string[] = [];
+		let authCalls = 0;
+		let advertisedUrl = "";
+		const callbackReady = new AbortController();
+		try {
+			const flow = new MCPOAuthFlow(
+				{
+					authorizationUrl: "https://provider.example/authorize",
+					tokenUrl: "https://provider.example/token",
+					registrationUrl: "https://provider.example/register",
+					// No clientId, no redirectUri — pure DCR flow.
+					callbackPort: blockerPort,
+					fetch: fetchImpl,
+				},
+				{
+					onAuth: ({ url }) => {
+						authCalls += 1;
+						advertisedUrl = url;
+						callbackReady.abort("callback URL captured");
+					},
+					onProgress: msg => progress.push(msg),
+					// Stop immediately once the fallback URL has been observed; no browser
+					// callback is needed for this port-selection/DCR contract.
+					signal: callbackReady.signal,
+				},
+			);
+
+			await expect(flow.login()).rejects.toThrow(); // aborted while awaiting callback
+
+			// 1. The user saw the silent-fallback notice — fallback was attempted, not refused.
+			const fallbackNotice = progress.find(msg => msg.startsWith(`Preferred port ${blockerPort} unavailable`));
+			expect(fallbackNotice).toBeDefined();
+			expect(fallbackNotice).not.toContain(`using port ${blockerPort}`);
+
+			// 2. generateAuthUrl ran with a random-port redirect URI.
+			expect(authCalls).toBe(1);
+			const authParams = new URL(advertisedUrl).searchParams;
+			const advertisedRedirect = authParams.get("redirect_uri") ?? "";
+			expect(advertisedRedirect).toMatch(/^http:\/\/localhost:\d+\/callback$/);
+			expect(advertisedRedirect).not.toContain(`:${blockerPort}/`);
+
+			// 3. DCR re-registered with that same fallback URI, so the
+			//    provider's authorization server will accept it.
+			expect(registrations).toEqual([expect.objectContaining({ redirect_uris: [advertisedRedirect] })]);
+			// And the issued client_id was used in the authorize request.
+			expect(authParams.get("client_id")).toBe("dcr-issued-client");
+			expect(flow.resolvedClientId).toBe("dcr-issued-client");
+		} finally {
+			blocker.stop(true);
+		}
 	});
 
 	it("exposes the dynamically registered client_id and client_secret after generateAuthUrl", async () => {
@@ -714,13 +696,11 @@ describe("mcp oauth flow", () => {
 				authorizationUrl: "https://www.figma.com/oauth/mcp",
 				issuer: "https://www.figma.com/",
 				tokenUrl: "https://api.figma.com/v1/oauth/token",
+				registrationUrl: "https://www.figma.com/oauth/register",
 				fetch: mockFigmaRegistration(() => {}),
 			},
 			{},
 		);
-
-		expect(flow.resolvedClientId).toBeUndefined();
-		expect(flow.registeredClientSecret).toBeUndefined();
 
 		await flow.generateAuthUrl("test-state", "http://127.0.0.1:53173/callback");
 
@@ -754,7 +734,107 @@ describe("mcp oauth flow", () => {
 		expect(registrationCalled).toBe(false);
 	});
 
-	it("accepts pasted redirect URLs without an authorization-response issuer", async () => {
+	// Issue #5852: a rejected DCR request must stop reauthentication before an
+	// authorization URL without client_id reaches the browser.
+	it("blocks authorization when dynamic client registration is rejected", async () => {
+		let authorizationRequests = 0;
+		const fetchImpl: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "https://cropwise.example/oauth/register") {
+				return new Response(
+					JSON.stringify({
+						error: "unapproved_client",
+						error_description: "client_name 'oh-my-pi' is not on the approved list.",
+					}),
+					{ status: 403, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			if (url.startsWith("https://cropwise.example/authorize?")) {
+				authorizationRequests += 1;
+				return new Response("Missing required parameter: client_id", { status: 400 });
+			}
+			throw new Error(`Unexpected fetch: ${url}`);
+		};
+		const flow = new MCPOAuthFlow(
+			{
+				authorizationUrl: "https://cropwise.example/authorize",
+				tokenUrl: "https://cropwise.example/token",
+				registrationUrl: "https://cropwise.example/oauth/register",
+				fetch: fetchImpl,
+			},
+			{},
+		);
+
+		await expect(flow.generateAuthUrl("state", "http://127.0.0.1:53190/callback")).rejects.toThrow(
+			/HTTP 403.*unapproved_client.*approved list.*oauth\.clientId/s,
+		);
+		expect(authorizationRequests).toBe(0);
+	});
+
+	it.each([
+		["server error", 503, "upstream unavailable"],
+		["rate limit", 429, "slow down"],
+		["invalid client metadata", 400, '{"error":"invalid_client_metadata"}'],
+		["unrelated forbidden response", 403, "Forbidden"],
+	] as const)("keeps the clientless authorization fallback after a %s DCR failure", async (_case, status, body) => {
+		let authorizationProbes = 0;
+		const fetchImpl: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "https://provider.example/oauth/register") {
+				return new Response(body, { status });
+			}
+			if (url.startsWith("https://provider.example/authorize?")) {
+				authorizationProbes += 1;
+				return new Response("ok", { status: 200 });
+			}
+			throw new Error(`Unexpected fetch: ${url}`);
+		};
+		const flow = new MCPOAuthFlow(
+			{
+				authorizationUrl: "https://provider.example/authorize",
+				tokenUrl: "https://provider.example/token",
+				registrationUrl: "https://provider.example/oauth/register",
+				fetch: fetchImpl,
+			},
+			{},
+		);
+
+		const { url } = await flow.generateAuthUrl("state", "http://127.0.0.1:53192/callback");
+
+		expect(new URL(url).searchParams.has("client_id")).toBe(false);
+		expect(authorizationProbes).toBe(1);
+	});
+
+	it("names the missing-DCR case when no registration endpoint is advertised", async () => {
+		const fetchImpl: FetchImpl = async input => {
+			const url = String(input);
+			// Well-known metadata exists but omits `registration_endpoint`.
+			if (url === "https://provider.example/.well-known/oauth-authorization-server") {
+				return new Response(JSON.stringify({ issuer: "https://provider.example" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			if (url.startsWith("https://provider.example/authorize?")) {
+				return new Response("client_id is required", { status: 400 });
+			}
+			throw new Error(`Unexpected fetch: ${url}`);
+		};
+		const flow = new MCPOAuthFlow(
+			{
+				authorizationUrl: "https://provider.example/authorize",
+				tokenUrl: "https://provider.example/token",
+				fetch: fetchImpl,
+			},
+			{},
+		);
+
+		await expect(flow.generateAuthUrl("state", "http://127.0.0.1:53191/callback")).rejects.toThrow(
+			/no dynamic-client-registration endpoint was advertised.*oauth\.clientId/s,
+		);
+	});
+
+	it("accepts pasted redirect URLs through manual input", async () => {
 		let tokenRequestBody = "";
 		let manualAuthUrl = "";
 
@@ -996,6 +1076,17 @@ describe("mcp oauth flow", () => {
 		expect(tokenParams.get("grant_type")).toBe("refresh_token");
 		expect(tokenParams.get("resource")).toBeNull();
 	});
+	it("omits a whitespace-only client id from token refresh", async () => {
+		let tokenRequestBody = "";
+
+		await refreshMCPOAuthToken("https://provider.example/token", "refresh-token", " \t ", undefined, {
+			fetch: mockProviderTokenEndpoint(body => {
+				tokenRequestBody = body;
+			}),
+		});
+
+		expect(new URLSearchParams(tokenRequestBody).has("client_id")).toBe(false);
+	});
 	describe("RFC 8707 resource indicator", () => {
 		// Provider-advertised resource indicators are authoritative, including
 		// origin-only values. Plane's fallback-resource case opts into
@@ -1012,7 +1103,6 @@ describe("mcp oauth flow", () => {
 			return new MCPOAuthFlow(
 				{
 					authorizationUrl: config.authorizationUrl,
-					issuer: `${new URL(config.authorizationUrl).origin}/`,
 					tokenUrl: "https://provider.example/token",
 					clientId: "client-id",
 					resource: config.resource,
@@ -1345,65 +1435,5 @@ describe("mcp oauth flow", () => {
 
 			expect(tokenParams.get("resource")).toBe("https://token.example.com");
 		});
-	});
-
-	it("exposes authorizationUrl via a getter so callers can persist it on the credential", () => {
-		const flow = new MCPOAuthFlow(
-			{
-				authorizationUrl: "https://auth.example.com/authorize",
-				issuer: TEST_ISSUER,
-				tokenUrl: "https://token.example.com/token",
-				clientId: "client-id",
-			},
-			{},
-		);
-
-		expect(flow.authorizationUrl).toBe("https://auth.example.com/authorize");
-	});
-});
-describe("Exa/Websets direct modern requests", () => {
-	it("sends 2026-07-28 protocol version in _meta and HTTP headers for direct requests", async () => {
-		const globalFetch = globalThis.fetch;
-		const capturedRequests: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = [];
-
-		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-			const url = String(input);
-			if (url.includes("mcp.exa.ai") || url.includes("websetsmcp.exa.ai")) {
-				const headers = new Headers(init?.headers);
-				const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-				capturedRequests.push({ url, headers, body });
-				return new Response(
-					JSON.stringify({
-						jsonrpc: "2.0",
-						id: body.id,
-						result: {
-							resultType: "complete",
-							tools: [{ name: "web_search", description: "Search the web" }],
-						},
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				);
-			}
-			return globalFetch(input, init);
-		}) as typeof fetch;
-
-		try {
-			const tools = await fetchExaTools("test-api-key", ["web_search"]);
-			expect(tools).toHaveLength(1);
-			expect(capturedRequests).toHaveLength(1);
-
-			const request = capturedRequests[0];
-			expect(request.headers.get("mcp-protocol-version")).toBe("2026-07-28");
-			expect(request.headers.get("mcp-method")).toBe("tools/list");
-			expect(request.body.method).toBe("tools/list");
-
-			const params = request.body.params as { _meta?: Record<string, unknown> };
-			expect(params._meta).toMatchObject({
-				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
-				"io.modelcontextprotocol/clientCapabilities": {},
-			});
-		} finally {
-			globalThis.fetch = globalFetch;
-		}
 	});
 });

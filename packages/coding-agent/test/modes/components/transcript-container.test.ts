@@ -1,730 +1,477 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { stripVTControlCharacters } from "node:util";
+import { beforeAll, describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@pk-nerdsaver-ai/pi-ai";
-import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/assistant-message";
-import { TranscriptContainer } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/transcript-container";
+import {
+	TranscriptContainer,
+	type TranscriptStableRow,
+} from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/transcript-container";
 import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
-import { USER_INTERRUPT_LABEL } from "@pk-nerdsaver-ai/pi-coding-agent/session/messages";
-import { type Component, Text } from "@pk-nerdsaver-ai/pi-tui";
+import type { Component } from "@pk-nerdsaver-ai/pi-tui";
 
-// Models a transcript block that re-lays-out (tool preview collapsing, assistant
-// message finalizing, late async result) after newer blocks were appended below
-// it — the window must always reflect its current content.
-class MutableBlock implements Component {
-	#lines: string[];
-	constructor(lines: string[]) {
-		this.#lines = lines;
-	}
-	set(lines: string[]): void {
-		this.#lines = lines;
-	}
-	invalidate(): void {}
-	render(_width: number): string[] {
-		return [...this.#lines];
-	}
-}
-
-// A block that can declare itself still-mutating (a foreground tool awaiting its
-// result). The container must keep such a block in the repaintable live region —
-// even with finalized blocks below it — until it finalizes.
-class StreamingBlock implements Component {
-	#lines: string[];
+class Block implements Component {
+	#rows: string[];
 	#finalized: boolean;
-	constructor(lines: string[], finalized = false) {
-		this.#lines = lines;
+	allocations: number[] = [];
+
+	constructor(rows: string[], finalized: boolean) {
+		this.#rows = rows;
 		this.#finalized = finalized;
 	}
-	set(lines: string[]): void {
-		this.#lines = lines;
-	}
-	finalize(lines?: string[]): void {
-		if (lines) this.#lines = lines;
+
+	finalize(rows: string[]): void {
+		this.#rows = rows;
 		this.#finalized = true;
 	}
+
 	isTranscriptBlockFinalized(): boolean {
 		return this.#finalized;
 	}
-	invalidate(): void {}
-	renderCount = 0;
-	render(_width: number): string[] {
-		this.renderCount++;
-		return [...this.#lines];
+
+	setTranscriptAllocation(rows: number): void {
+		this.allocations.push(rows);
+	}
+
+	render(): readonly string[] {
+		return this.#rows;
 	}
 }
 
-// A still-live block whose render is provisional (a tool call's tail-window
-// streaming preview): the result render replaces it wholesale, so its settled
-// rows must never be offered for native-scrollback commit.
-class ProvisionalStreamingBlock extends StreamingBlock {
-	isTranscriptBlockCommitStable(): boolean {
-		return false;
+/** A live block the container recognizes as dynamic tool-activity. */
+class ToolBlock extends Block {
+	setToolActivityVisible(): void {}
+}
+
+function literalStableRow(row: string): TranscriptStableRow {
+	return { key: row };
+}
+
+class AppendBlock extends Block {
+	readonly transcriptBlockMode = "appendOnly" as const;
+	#stable: readonly TranscriptStableRow[];
+	#stableRender: readonly string[];
+
+	constructor(rows: string[], stable: readonly string[], finalized = false) {
+		super(rows, finalized);
+		this.#stable = stable.map(literalStableRow);
+		this.#stableRender = stable;
+	}
+
+	publish(rows: readonly string[]): void {
+		this.#stable = rows.map(literalStableRow);
+		this.#stableRender = rows;
+	}
+
+	publishStable(rows: readonly TranscriptStableRow[], rendered: readonly string[]): void {
+		this.#stable = rows;
+		this.#stableRender = rendered;
+	}
+
+	getTranscriptStableRows(): readonly TranscriptStableRow[] {
+		return this.#stable;
+	}
+
+	renderTranscriptStableRows(count: number, _width: number): readonly string[] {
+		return this.#stableRender.slice(0, count);
 	}
 }
 
-class CountingFinalizedBlock implements Component {
-	renderCount = 0;
-	#lines: string[];
-
-	constructor(lines: string[]) {
-		this.#lines = lines;
-	}
-
-	set(lines: string[]): void {
-		this.#lines = lines;
-	}
-
-	invalidate(): void {}
-
-	render(_width: number): string[] {
-		this.renderCount++;
-		return [...this.#lines];
-	}
-}
-
-// A finalized block that can still mutate afterwards (an assistant message whose
-// suppressed inline error is restored at the next turn, late tool-result images)
-// and reports each mutation through the transcript block version protocol.
-class VersionedFinalizedBlock implements Component {
-	renderCount = 0;
-	#lines: string[];
-	#version = 0;
-
-	constructor(lines: string[]) {
-		this.#lines = lines;
-	}
-
-	mutate(lines: string[]): void {
-		this.#lines = lines;
-		this.#version++;
-	}
+class ReflowingAppendBlock implements Component {
+	readonly transcriptBlockMode = "appendOnly" as const;
+	#finalized = false;
+	readonly #stable: TranscriptStableRow = { key: "abcdefgh" };
 
 	isTranscriptBlockFinalized(): boolean {
-		return true;
+		return this.#finalized;
 	}
 
-	getTranscriptBlockVersion(): number {
-		return this.#version;
+	finalize(): void {
+		this.#finalized = true;
 	}
 
-	invalidate(): void {}
+	getTranscriptStableRows(): readonly TranscriptStableRow[] {
+		return [this.#stable];
+	}
 
-	render(_width: number): string[] {
-		this.renderCount++;
-		return [...this.#lines];
+	renderTranscriptStableRows(count: number, width: number): readonly string[] {
+		if (count <= 0) return [];
+		const rows: string[] = [];
+		for (let offset = 0; offset < 8; offset += width) rows.push("abcdefgh".slice(offset, offset + width));
+		return rows;
+	}
+
+	render(width: number): readonly string[] {
+		return [...this.renderTranscriptStableRows(1, width), this.#finalized ? "final" : "partial"];
 	}
 }
+const finalAnswer: AssistantMessage = {
+	role: "assistant",
+	content: [
+		{ type: "thinking", thinking: "Reasoning first" },
+		{ type: "text", text: "## Implemented" },
+	],
+	api: "openai-codex-responses",
+	provider: "openai-codex",
+	model: "gpt-5.6-sol",
+	stopReason: "stop",
+	usage: {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	},
+	timestamp: 1,
+};
 
-beforeAll(() => {
-	initTheme();
-});
-
-beforeEach(async () => {
-	resetSettingsForTest();
-	await Settings.init({ inMemory: true, cwd: process.cwd() });
-});
-
-afterEach(() => {
-	resetSettingsForTest();
-});
-
-function makeAssistantMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
-	return {
-		role: "assistant",
-		content: [{ type: "text", text: "Continuing." }],
-		api: "anthropic-messages",
-		provider: "anthropic",
-		model: "claude-sonnet-4-5",
-		stopReason: "stop",
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-		timestamp: Date.now(),
-		...overrides,
-	};
-}
-
-function plain(lines: readonly string[]): string {
-	return stripVTControlCharacters(lines.join("\n"));
-}
+const frame = { tick: 0, now: 0 };
 
 describe("TranscriptContainer", () => {
-	it("always renders a block's current content, even after newer blocks append below it", () => {
-		const container = new TranscriptContainer();
-		const a = new MutableBlock(["a1"]);
-		container.addChild(a);
-		expect(container.render(40)).toEqual(["a1"]);
+	it("captures mutable by default and append-only declarations permanently", () => {
+		const transcript = new TranscriptContainer();
+		const mutable = new Block(["mutable"], false) as Block & {
+			transcriptBlockMode?: "appendOnly";
+			getTranscriptStableRows?: () => readonly TranscriptStableRow[];
+		};
+		transcript.addChild(mutable);
+		mutable.transcriptBlockMode = "appendOnly";
+		mutable.getTranscriptStableRows = () => [literalStableRow("mutable")];
+		transcript.addChild(new AppendBlock(["stable", "partial"], ["stable"]));
 
-		a.set(["a2"]);
-		expect(container.render(40)).toEqual(["a2"]);
-
-		const b = new MutableBlock(["b1"]);
-		container.addChild(b);
-		expect(container.render(40)).toEqual(["a2", "", "b1"]);
-
-		// A late re-layout of `a` (collapse, late async result, expand toggle) is
-		// reflected immediately: committed history keeps its old bytes, but the
-		// visible window always shows the present state.
-		a.set(["a3-collapsed"]);
-		expect(container.render(40)).toEqual(["a3-collapsed", "", "b1"]);
-
-		b.set(["b2"]);
-		expect(container.render(40)).toEqual(["a3-collapsed", "", "b2"]);
-
-		// Width changes recompute like any other frame.
-		a.set(["a-reflowed"]);
-		expect(container.render(80)).toEqual(["a-reflowed", "", "b2"]);
+		expect(transcript.blockModes()).toEqual(["mutable", "appendOnly"]);
 	});
 
-	it("reports the live block start that gates native scrollback commits", () => {
-		const container = new TranscriptContainer();
-		const a = new MutableBlock(["a1", "a2"]);
-		const b = new MutableBlock(["b1"]);
-		container.addChild(a);
-		container.addChild(b);
+	it("freezes a retracting publication and keeps rendering the block", () => {
+		const transcript = new TranscriptContainer();
+		const block = new AppendBlock(["one", "two"], ["one"]);
+		transcript.addChild(block);
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["one", "two"]);
 
-		expect(container.render(40)).toEqual(["a1", "a2", "", "b1"]);
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(3);
-
-		b.set(["b1", "b2"]);
-		expect(container.render(40)).toEqual(["a1", "a2", "", "b1", "b2"]);
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(3);
+		// Retraction cannot be honored (rows may already sit in scrollback):
+		// the block demotes to finalize-time retirement but never fails a render.
+		block.publish(["changed"]);
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["one", "two"]);
+		expect(transcript.blockModes()).toEqual(["appendOnly"]);
 	});
 
-	it("keeps an unfinalized block below the seam when a finalized block is appended below it", () => {
-		const container = new TranscriptContainer();
-		// A foreground tool whose args are still streaming (no result yet).
-		const tool = new StreamingBlock(["write (streaming)"]);
-		container.addChild(tool);
-		expect(container.render(40)).toEqual(["write (streaming)"]);
+	it("freezes drifted stable bytes, keeps the emitted slice, and retires the remainder once", () => {
+		const transcript = new TranscriptContainer();
+		const block = new AppendBlock(["one", "two"], ["one"]);
+		transcript.addChild(block);
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["one", "two"]);
 
-		// An out-of-band card (TTSR/todo reminder) is appended below the in-flight
-		// tool while it is still streaming. The tool's rows must not commit here.
-		const card = new MutableBlock(["rule card"]);
-		container.addChild(card);
-		expect(container.render(40)).toEqual(["write (streaming)", "", "rule card"]);
-		// The live region begins at the unfinalized tool, not the bottom card.
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(0);
+		const emitted = transcript.peekFinalizedBatch(80, 0)!;
+		expect(emitted.rows).toEqual(["one"]);
+		transcript.acknowledgeFinalizedBatch(emitted.id);
 
-		// The tool's result lands after the card is already below it.
-		tool.finalize(["✔ write: 4 lines"]);
-		expect(container.render(40)).toEqual(["✔ write: 4 lines", "", "rule card"]);
-		// The seam moves past the now-finalized tool.
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(2);
+		// Published bytes drift (e.g. a mid-stream theme change): the emitted
+		// slice stays retired, the live tail keeps rendering, and no further
+		// mid-stream row is offered.
+		block.publishStable([literalStableRow("one"), literalStableRow("two")], ["one", "changed physical row"]);
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["two"]);
+		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
 
-		// Even after finalizing, a late re-layout still repaints in the window.
-		tool.set(["collapsed"]);
-		expect(container.render(40)).toEqual(["collapsed", "", "rule card"]);
+		// Finalization retires exactly the un-emitted suffix.
+		block.finalize(["one", "two"]);
+		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual(["two", ""]);
 	});
 
-	it("keeps a streaming assistant live so final interrupted content can land after status rows below it", () => {
-		const container = new TranscriptContainer();
-		const assistant = new AssistantMessageComponent();
-		assistant.updateContent(
-			makeAssistantMessage({
-				content: [{ type: "text", text: "The config file write went through." }],
-			}),
-		);
-		container.addChild(assistant);
-		expect(assistant.isTranscriptBlockFinalized()).toBe(false);
-		expect(plain(container.render(80))).toContain("The config file write went through.");
+	it("emits only the stable current head under row pressure", () => {
+		const transcript = new TranscriptContainer();
+		const head = new Block(["mutable head"], false);
+		const later = new AppendBlock(["later stable", "later partial"], ["later stable"]);
+		transcript.addChild(head);
+		transcript.addChild(later);
 
-		// Status/notice rows can arrive below the still-streaming assistant before
-		// message_end finalizes the interrupted message. The assistant must stay repaintable.
-		container.addChild(new Text("Copied raw SSE stream", 0, 0));
-		expect(plain(container.render(80))).toContain("Copied raw SSE stream");
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(0);
+		expect(transcript.peekFinalizedBatch(80, 1)).toBeUndefined();
 
-		assistant.updateContent(
-			makeAssistantMessage({
-				content: [{ type: "text", text: "The config file write went through despite the interruption." }],
-				stopReason: "aborted",
-				errorMessage: USER_INTERRUPT_LABEL,
-			}),
-		);
-		assistant.markTranscriptBlockFinalized();
+		head.finalize(["mutable head"]);
+		const retired = transcript.peekFinalizedBatch(80, 1);
+		expect(retired?.rows).toEqual(["mutable head", ""]);
+		transcript.acknowledgeFinalizedBatch(retired!.id);
 
-		const rendered = plain(container.render(80));
-		expect(rendered).toContain("The config file write went through despite the interruption.");
-		expect(rendered).not.toContain(USER_INTERRUPT_LABEL);
-		expect(rendered).toContain("Copied raw SSE stream");
-		expect(container.getNativeScrollbackLiveRegionStart()).not.toBe(0);
+		const emitted = transcript.peekFinalizedBatch(80, 1);
+		expect(emitted?.rows).toEqual(["later stable"]);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["later partial"]);
 	});
 
-	it("starts the live region at the earliest of several unfinalized blocks", () => {
-		const container = new TranscriptContainer();
-		const sealed = new StreamingBlock(["done"], true);
-		const pending = new StreamingBlock(["pending"]);
-		const card = new MutableBlock(["card"]);
-		container.addChild(sealed);
-		container.addChild(pending);
-		container.addChild(card);
-		expect(container.render(40)).toEqual(["done", "", "pending", "", "card"]);
-		// Live region starts at the pending block (offset 1), so the already-sealed
-		// leading block can commit while pending + card stay repaintable.
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(2);
+	it("retires only the un-emitted final suffix", () => {
+		const transcript = new TranscriptContainer();
+		const block = new AppendBlock(["one", "two", "partial"], ["one", "two"]);
+		transcript.addChild(block);
 
-		// The sealed block's late re-layout still renders current content; the
-		// seam is unaffected (it keys off finalization, not row diffs).
-		sealed.set(["done-collapsed"]);
-		expect(container.render(40)).toEqual(["done-collapsed", "", "pending", "", "card"]);
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(2);
+		const first = transcript.peekFinalizedBatch(80, 2)!;
+		expect(first.rows).toEqual(["one"]);
+		transcript.acknowledgeFinalizedBatch(first.id);
+		const second = transcript.peekFinalizedBatch(80, 1)!;
+		expect(second.rows).toEqual(["two"]);
+		transcript.acknowledgeFinalizedBatch(second.id);
 
-		// The pending block updates freely while live.
-		pending.finalize(["pending-final"]);
-		expect(container.render(40)).toEqual(["done-collapsed", "", "pending-final", "", "card"]);
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(4);
+		block.finalize(["one", "two", "final"]);
+		const suffix = transcript.peekFinalizedBatch(80, 0)!;
+		expect(suffix.rows).toEqual(["final", ""]);
 	});
 
-	it("never offers a commit-unstable live block's settled rows for native scrollback", () => {
-		const container = new TranscriptContainer();
-		container.addChild(new MutableBlock(["history"]));
-		// A pending collapsed tool preview: byte-static while the tool executes
-		// (the spinner stops once args complete), but replaced wholesale by the
-		// result render — committing any of it would strand a stale call-box
-		// fragment in terminal history above the final block.
-		const preview = new ProvisionalStreamingBlock([
-			"┌ Edit: foo.ts",
-			"… (2 more hunks above)",
-			"-old-a",
-			"+new-a",
-			"-old-b",
-			"+new-b",
-			"└ (streaming)",
-		]);
-		container.addChild(preview);
+	it("advances a fully emitted finalized head without a physical write", () => {
+		const transcript = new TranscriptContainer();
+		const block = new AppendBlock(["complete"], ["complete"]);
+		transcript.addChild(block);
+		const emitted = transcript.peekFinalizedBatch(80, 0)!;
+		transcript.acknowledgeFinalizedBatch(emitted.id);
 
-		// Far past STABLE_PREFIX_COMMIT_FRAMES: a durable block's settled head
-		// would have been promoted long ago.
-		for (let frame = 0; frame < 40; frame++) container.render(40);
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(2);
-		expect(container.getNativeScrollbackCommitSafeEnd()).toBeUndefined();
-
-		// The result render re-anchors the block top-first; nothing of the stale
-		// preview was committed, so nothing can be duplicated. Finalizing makes
-		// the full body commit-safe like any settled block.
-		preview.finalize(["✔ Edit: foo.ts (+2/-2)", "-old-a", "+new-a", "context"]);
-		container.render(40);
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(2);
-		expect(container.getNativeScrollbackCommitSafeEnd()).toBe(6);
+		block.finalize(["complete"]);
+		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
+		expect(transcript.blockStates()).toEqual(["committed"]);
 	});
 
-	it("still promotes a durable live block's settled head after the stability window", () => {
-		const container = new TranscriptContainer();
-		container.addChild(new MutableBlock(["history"]));
-		// Default contract (no isTranscriptBlockCommitStable): settled leading
-		// rows are durable — a streaming assistant message, a top-anchored
-		// expanded tool stream — and promote once they sit visibly unchanged for
-		// the whole stability window, holding back only the volatile tail.
-		const streaming = new StreamingBlock(["head-0", "head-1", "head-2", "head-3", "head-4", "head-5", "tail"]);
-		container.addChild(streaming);
+	it("replays and retires semantic stable rows after they reflow at a new width", () => {
+		const transcript = new TranscriptContainer();
+		const block = new ReflowingAppendBlock();
+		transcript.addChild(block);
 
-		for (let frame = 0; frame < 40; frame++) container.render(40);
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(2);
-		// blockStart 2 + (7 rows - TAIL_VOLATILITY_ROWS holdback of 4) = 5.
-		expect(container.getNativeScrollbackCommitSafeEnd()).toBe(5);
+		const emitted = transcript.peekFinalizedBatch(4, 2)!;
+		expect(emitted.rows).toEqual(["abcd", "efgh"]);
+		transcript.acknowledgeFinalizedBatch(emitted.id);
+		expect(transcript.renderViewport(8, 1, frame)).toEqual(["partial"]);
+
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(8)!;
+		expect(replay.rows).toEqual(["abcdefgh"]);
+		transcript.acknowledgeFinalizedBatch(replay.id);
+
+		block.finalize();
+		const suffix = transcript.peekFinalizedBatch(8, 0)!;
+		expect(suffix.rows).toEqual(["final", ""]);
 	});
 
-	it("withholds the durable snapshot commit for a streaming mermaid reply, then promotes it on finalize", () => {
-		// A fenced mermaid diagram re-lays-out its whole body every frame as the
-		// reply streams. If its scrolled-off rows were committed to immutable
-		// native scrollback (the durable-snapshot path) the later re-layout would
-		// strand a stale diagram fragment in history that only Ctrl+L clears, so
-		// the live mermaid reply must advertise no durable snapshot end.
-		const container = new TranscriptContainer();
-		container.addChild(new StreamingBlock(["earlier turn"], true));
-		const assistant = new AssistantMessageComponent();
-		assistant.updateContent(
-			makeAssistantMessage({ content: [{ type: "text", text: "```mermaid\nflowchart TD\n  A-->B\n```" }] }),
-		);
-		container.addChild(assistant);
-
-		for (let frame = 0; frame < 4; frame++) container.render(60);
-		expect(container.getNativeScrollbackSnapshotSafeEnd()).toBeUndefined();
-
-		// Finalized: the final layout is permanent and commits like any block.
-		assistant.markTranscriptBlockFinalized();
-		container.render(60);
-		expect(container.getNativeScrollbackSnapshotSafeEnd()).toBeGreaterThan(0);
+	beforeAll(async () => {
+		await initTheme(false);
 	});
 
-	it("withholds the durable snapshot commit for a streaming GFM table, then promotes it on finalize", () => {
-		// A streaming table re-aligns its columns as rows arrive; its scrolled-off
-		// rows must not commit an intermediate alignment to immutable scrollback.
-		const container = new TranscriptContainer();
-		container.addChild(new StreamingBlock(["earlier turn"], true));
-		const assistant = new AssistantMessageComponent();
-		assistant.updateContent(
-			makeAssistantMessage({ content: [{ type: "text", text: "| Name | Score |\n| --- | --- |\n| a | 1 |" }] }),
-		);
-		container.addChild(assistant);
+	it("keeps settled blocks live while the viewport has room", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["settled"], true));
+		transcript.addChild(new Block(["streaming"], false));
 
-		for (let frame = 0; frame < 4; frame++) container.render(60);
-		expect(container.getNativeScrollbackSnapshotSafeEnd()).toBeUndefined();
-
-		assistant.markTranscriptBlockFinalized();
-		container.render(60);
-		expect(container.getNativeScrollbackSnapshotSafeEnd()).toBeGreaterThan(0);
+		// Both fit: nothing retires, the settled block still renders live.
+		expect(transcript.peekFinalizedBatch(80, 10)).toBeUndefined();
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["settled", "", "streaming"]);
 	});
 
-	it("still commits the durable snapshot of a streaming reply without a mermaid fence", () => {
-		// Guard the narrow scope: an ordinary streaming reply stays commit-stable,
-		// so its settled rows still reach native scrollback while it streams.
-		const container = new TranscriptContainer();
-		container.addChild(new StreamingBlock(["earlier turn"], true));
-		const assistant = new AssistantMessageComponent();
-		assistant.updateContent(
-			makeAssistantMessage({ content: [{ type: "text", text: "A normal streamed answer with **bold** text." }] }),
-		);
-		container.addChild(assistant);
+	it("retires the settled prefix only under capacity pressure, in order", () => {
+		const transcript = new TranscriptContainer();
+		const first = new Block(["first final"], true);
+		const second = new Block(["second live", "row", "row"], false);
+		transcript.addChild(first);
+		transcript.addChild(second);
 
-		for (let frame = 0; frame < 4; frame++) container.render(60);
-		expect(container.getNativeScrollbackSnapshotSafeEnd()).toBeGreaterThan(0);
-	});
-	it("does not re-render finalized rows already committed to native scrollback", () => {
-		const container = new TranscriptContainer();
-		const committed = new CountingFinalizedBlock(["committed"]);
-		const liveTail = new CountingFinalizedBlock(["tail"]);
-		container.addChild(committed);
-		container.addChild(liveTail);
-
-		expect(container.render(40)).toEqual(["committed", "", "tail"]);
-		expect(committed.renderCount).toBe(1);
-		expect(liveTail.renderCount).toBe(1);
-
-		container.setNativeScrollbackCommittedRows(1);
-		expect(container.render(40)).toEqual(["committed", "", "tail"]);
-		expect(committed.renderCount).toBe(1);
-		expect(liveTail.renderCount).toBe(2);
-
-		container.invalidate();
-		expect(container.render(40)).toEqual(["committed", "", "tail"]);
-		expect(committed.renderCount).toBe(2);
-	});
-	it("re-renders a committed finalized block when its version changes", () => {
-		const container = new TranscriptContainer();
-		const block = new VersionedFinalizedBlock(["original"]);
-		container.addChild(block);
-
-		expect(container.render(40)).toEqual(["original"]);
-		container.setNativeScrollbackCommittedRows(1);
-		expect(container.render(40)).toEqual(["original"]);
-		expect(block.renderCount).toBe(1);
-
-		// Post-finalize mutation (e.g. setErrorPinned(false) restoring the inline
-		// error) must surface even though the rows sit in committed scrollback —
-		// the render is what lets the TUI's committed-prefix audit re-anchor.
-		block.mutate(["original", "Error: boom"]);
-		expect(container.render(40)).toEqual(["original", "Error: boom"]);
-		expect(block.renderCount).toBe(2);
-
-		// Once observed, the bypass re-engages at the new version.
-		container.setNativeScrollbackCommittedRows(2);
-		expect(container.render(40)).toEqual(["original", "Error: boom"]);
-		expect(block.renderCount).toBe(2);
-	});
-	it("renders once after a block finalizes with rows already inside committed scrollback", () => {
-		const container = new TranscriptContainer();
-		const block = new StreamingBlock(["streaming"]);
-		const counting = new CountingFinalizedBlock(["tail"]);
-		container.addChild(block);
-		container.addChild(counting);
-
-		expect(container.render(40)).toEqual(["streaming", "", "tail"]);
-
-		// The block's rows settle into committed scrollback while it is still
-		// live (append-only commit path), then it finalizes with different bytes.
-		// The first post-transition frame must render — the previous segment was
-		// produced by a non-finalized render and is not trustworthy history.
-		container.setNativeScrollbackCommittedRows(3);
-		block.finalize(["streaming", "done"]);
-		const rendersBeforeTransition = block.renderCount;
-		expect(container.render(40)).toEqual(["streaming", "done", "", "tail"]);
-		expect(block.renderCount).toBe(rendersBeforeTransition + 1);
-
-		// The post-finalize render is now trustworthy history: once its rows are
-		// committed, the bypass replays it without calling render().
-		container.setNativeScrollbackCommittedRows(2);
-		const rendersAfterTransition = block.renderCount;
-		expect(container.render(40)).toEqual(["streaming", "done", "", "tail"]);
-		expect(block.renderCount).toBe(rendersAfterTransition);
-	});
-	it("reports a new assistant block version after post-finalize error unpinning", () => {
-		const message: AssistantMessage = {
-			role: "assistant",
-			content: [{ type: "text", text: "hello" }],
-			timestamp: Date.now(),
-			stopReason: "error",
-			errorMessage: "boom",
-		} as AssistantMessage;
-		const component = new AssistantMessageComponent(message);
-		expect(component.isTranscriptBlockFinalized()).toBe(true);
-
-		component.setErrorPinned(true);
-		const pinnedVersion = component.getTranscriptBlockVersion();
-		// The restore path at the next turn's agent_start must be observable by
-		// the transcript container's committed-scrollback bypass.
-		component.setErrorPinned(false);
-		expect(component.getTranscriptBlockVersion()).toBeGreaterThan(pinnedVersion);
-	});
-});
-
-describe("TranscriptContainer spacing", () => {
-	it("inserts exactly one blank line between consecutive blocks", () => {
-		const container = new TranscriptContainer();
-		container.addChild(new MutableBlock(["a"]));
-		container.addChild(new MutableBlock(["b"]));
-		container.addChild(new MutableBlock(["c"]));
-		// One separator between each block; none above the first.
-		expect(container.render(40)).toEqual(["a", "", "b", "", "c"]);
+		// 5 rows fit everything (1 + separator + 3).
+		expect(transcript.peekFinalizedBatch(80, 5)).toBeUndefined();
+		// 3 rows force the settled prefix out.
+		expect(transcript.peekFinalizedBatch(80, 3)?.rows).toEqual(["first final", ""]);
 	});
 
-	it("strips a block's plain-blank top/bottom padding", () => {
-		const container = new TranscriptContainer();
-		container.addChild(new MutableBlock(["a"]));
-		// Leading Spacer rows + a trailing paddingY row collapse to just the body.
-		container.addChild(new MutableBlock(["", "   ", "body", ""]));
-		expect(container.render(40)).toEqual(["a", "", "body"]);
+	it("never retires a finalized successor past an active predecessor", () => {
+		const transcript = new TranscriptContainer();
+		const active = new Block(["active live"], false);
+		const settled = new Block(["settled final"], true);
+		transcript.addChild(active);
+		transcript.addChild(settled);
+
+		// Pressure exists but the prefix starts with an active block: no batch,
+		// and both blocks still render (clipped by the viewport).
+		expect(transcript.peekFinalizedBatch(80, 1)).toBeUndefined();
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["active live", "", "settled final"]);
+
+		active.finalize(["active final"]);
+		// Capacity 1 fits the remaining settled block, so only the first retires.
+		expect(transcript.peekFinalizedBatch(80, 1)?.rows).toEqual(["active final", ""]);
 	});
 
-	it("preserves background-colored padding rows (block-internal design)", () => {
-		const bgPad = "\x1b[48;2;0;0;0m   \x1b[0m";
-		const container = new TranscriptContainer();
-		container.addChild(new MutableBlock(["a"]));
-		// The ANSI-bearing padding row is not "plain blank", so it survives stripping.
-		container.addChild(new MutableBlock([bgPad, "x", bgPad]));
-		expect(container.render(40)).toEqual(["a", "", bgPad, "x", bgPad]);
+	it("reoffers an unacknowledged batch and retires it exactly once", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["final one"], true));
+		transcript.addChild(new Block(["final two"], true));
+		const first = transcript.peekFinalizedBatch(80, 0);
+		const second = transcript.peekFinalizedBatch(80, 50);
+
+		expect(second).toEqual(first);
+		if (first === undefined) throw new Error("expected a batch under zero capacity");
+		transcript.acknowledgeFinalizedBatch(first.id);
+		// Committed blocks leave the live tail and never render again.
+		expect(transcript.renderViewport(80, 10, frame)).toEqual([]);
+		expect(transcript.peekFinalizedBatch(80, 10)).toBeUndefined();
 	});
 
-	it("does not double the gap when a block carries its own trailing blank", () => {
-		const container = new TranscriptContainer();
-		// The trailing blank is stripped, so only the container's separator remains.
-		container.addChild(new MutableBlock(["note", ""]));
-		container.addChild(new MutableBlock(["b"]));
-		expect(container.render(40)).toEqual(["note", "", "b"]);
+	it("excludes an offered batch from the live viewport in the same frame", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["old settled"], true));
+		transcript.addChild(new Block(["fresh live"], false));
+
+		const batch = transcript.peekFinalizedBatch(80, 1);
+		expect(batch?.rows).toEqual(["old settled", ""]);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["fresh live"]);
 	});
 
-	it("does not inject separators within a single block's rows", () => {
-		const container = new TranscriptContainer();
-		// An IRC card / file-mention list wrapped as one block stays tight inside.
-		container.addChild(new MutableBlock(["header", "  body1", "  body2"]));
-		expect(container.render(40)).toEqual(["header", "  body1", "  body2"]);
+	it("assigns one row per live block until pressure requires aggregation", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["first"], false));
+		transcript.addChild(new Block(["second"], false));
+
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["first", "second"]);
+		expect(transcript.canAdmit(2)).toBe(false);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["1 more transcript blocks active"]);
+	});
+	it("does not report settled resume backlog as active", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["settled one"], true));
+		transcript.addChild(new Block(["settled two"], true));
+		transcript.addChild(new Block(["current tool"], false));
+
+		// The welcome header can consume the first history offer, leaving the
+		// settled transcript prefix live for one frame while it drains next.
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["current tool"]);
+	});
+	it("excludes empty blocks so pressure never emits blank rows (issue 9483)", () => {
+		const transcript = new TranscriptContainer();
+		// Text blocks interleaved with empty (hidden tool-activity) blocks that
+		// render nothing but stay live until retired.
+		for (let i = 0; i < 6; i++) {
+			transcript.addChild(new Block([`t${i}a`, `t${i}b`, `t${i}c`], true));
+			for (let j = 0; j < 8; j++) transcript.addChild(new Block([], true));
+		}
+		// Emergency path: more non-empty blocks than rows. Every row carries real
+		// text — no block's tail is dropped as blank padding.
+		const out = transcript.renderViewport(80, 12, frame);
+		expect(out).toHaveLength(12);
+		expect(out.every(row => /\S/.test(row))).toBe(true);
 	});
 
-	it("drops a blank-only block without leaving a stray gap", () => {
-		const container = new TranscriptContainer();
-		container.addChild(new MutableBlock(["a"]));
-		container.addChild(new MutableBlock(["", "  "]));
-		container.addChild(new MutableBlock(["b"]));
-		expect(container.render(40)).toEqual(["a", "", "b"]);
+	it("empty blocks do not reserve capacity from real text under pressure (issue 9483)", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["A1", "A2", "A3", "A4"], true));
+		transcript.addChild(new Block([], true));
+		transcript.addChild(new Block(["B1", "B2", "B3", "B4"], true));
+		transcript.addChild(new Block([], true));
+		transcript.addChild(new Block(["C1", "C2", "C3", "C4"], true));
+		// Capacity 10 fits all real content once the two empty blocks stop
+		// stealing a base row each; the older block keeps its tail rows.
+		const out = transcript.renderViewport(80, 10, frame);
+		expect(out).toEqual(["A3", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4"]);
 	});
 
-	it("counts the separator into the committed prefix below the live region (ED3-risk)", () => {
-		const container = new TranscriptContainer();
-		// A finalized block, then a still-live block below it.
-		container.addChild(new MutableBlock(["a1", "a2"]));
-		container.addChild(new StreamingBlock(["b"]));
-		// Separator sits at index 2; the live block's content begins at index 3.
-		expect(container.render(40)).toEqual(["a1", "a2", "", "b"]);
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(3);
-	});
-});
+	it("keeps a completed assistant answer visible behind an active prefix", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["stale active"], false));
+		transcript.addChild(new AssistantMessageComponent(finalAnswer));
+		transcript.addChild(new Block(["continued turn"], false));
+		transcript.addChild(new Block(["task running"], false));
 
-// The consumable stable-prefix floor (RenderStablePrefix): render() returns
-// the SAME persistent array every call, mutated in place, so the engine relies
-// on this report — not reference equality — to know which leading rows
-// survived. Reading consumes the report (re-bases the baseline to the current
-// array state); between reads the floor accumulates the MIN across renders.
-// `Text` children are ref-stable per (text, width), so an unchanged block's
-// segment is reused and counts toward the floor.
-describe("TranscriptContainer getRenderStablePrefixRows", () => {
-	it("reports 0 until a second render proves the rows, then the full length", () => {
-		const container = new TranscriptContainer();
-		container.addChild(new Text("alpha", 0, 0));
-		container.addChild(new Text("beta", 0, 0));
-
-		// First render only pushed rows; nothing is proven stable yet.
-		expect(container.render(40)).toHaveLength(3); // alpha, separator, beta
-		expect(container.getRenderStablePrefixRows()).toBe(0);
-
-		// Unchanged finalized blocks: the second render reuses every row.
-		const second = container.render(40);
-		expect(container.getRenderStablePrefixRows()).toBe(second.length);
+		expect(transcript.peekFinalizedBatch(80, 3)).toBeUndefined();
+		const rows = transcript.renderViewport(80, 3, frame);
+		expect(rows[0]).toBe("2 more transcript blocks active");
+		expect(Bun.stripANSI(rows[1] ?? "").trim()).toBe("Implemented");
+		expect(rows[2]).toBe("task running");
 	});
 
-	it("keeps the previous rows stable when a finalized block is appended", () => {
-		const container = new TranscriptContainer();
-		container.addChild(new Text("alpha", 0, 0));
-		container.addChild(new Text("beta", 0, 0));
-		const before = container.render(40).length;
-		container.getRenderStablePrefixRows(); // consume: re-base to the current rows
-
-		container.addChild(new Text("gamma", 0, 0));
-		const grown = container.render(40);
-		expect(grown.length).toBeGreaterThan(before);
-		// Only the appended block's separator + body are new rows.
-		expect(container.getRenderStablePrefixRows()).toBe(before);
+	it("gives surplus rows to assistant text before a growing tool card (issue 9718)", () => {
+		const transcript = new TranscriptContainer();
+		const assistant = new Block(["A1", "A2", "A3", "A4"], false);
+		const tool = new ToolBlock(["T1", "T2", "T3", "T4"], false);
+		transcript.addChild(assistant);
+		transcript.addChild(tool);
+		// Capacity 5 cannot fit both blocks in full. Surplus (3 rows) goes to the
+		// assistant block first; the tool card collapses to its one-row minimum
+		// instead of clipping already-visible assistant text.
+		const out = transcript.renderViewport(80, 5, frame);
+		expect(out).toEqual(["A1", "A2", "A3", "A4", "T4"]);
+		expect(assistant.allocations.at(-1)).toBe(4);
+		expect(tool.allocations.at(-1)).toBe(1);
 	});
 
-	it("lowers the report to a mutated early block's start row", () => {
-		const container = new TranscriptContainer();
-		const beta = new Text("beta", 0, 0);
-		container.addChild(new Text("alpha", 0, 0));
-		container.addChild(beta);
-		container.addChild(new Text("gamma", 0, 0));
-		expect(container.render(40)).toHaveLength(5);
-		container.getRenderStablePrefixRows(); // consume: re-base to the current rows
+	it("permits removing settled blocks until they are offered or committed", () => {
+		const transcript = new TranscriptContainer();
+		const settled = new Block(["settled snapshot"], true);
+		const live = new Block(["live", "live", "live"], false);
+		transcript.addChild(settled);
+		transcript.addChild(live);
 
-		beta.setText("beta-edited");
-		container.render(40);
-		// alpha's single row survives; beta's segment (separator + body, start
-		// row 1) and everything below it was re-pushed.
-		expect(container.getRenderStablePrefixRows()).toBe(1);
+		// Settled but still in the mutable viewport: removable without a trace,
+		// so a follow-up displaceable snapshot can retract it.
+		expect(transcript.canRemoveBlock(settled)).toBe(true);
+
+		// Offered to the terminal: mid-write, no longer removable.
+		const batch = transcript.peekFinalizedBatch(80, 2);
+		expect(batch?.rows).toEqual(["settled snapshot", ""]);
+		expect(transcript.canRemoveBlock(settled)).toBe(false);
+
+		// Committed: immutable history; removal must be refused outright.
+		transcript.acknowledgeFinalizedBatch(batch!.id);
+		expect(transcript.canRemoveBlock(settled)).toBe(false);
+		transcript.removeChild(settled);
+		expect(transcript.blockStates()).toEqual(["committed", "active"]);
 	});
 
-	it("accumulates the minimum across renders between reads", () => {
-		const container = new TranscriptContainer();
-		const gamma = new Text("gamma", 0, 0);
-		container.addChild(new Text("alpha", 0, 0));
-		container.addChild(new Text("beta", 0, 0));
-		container.addChild(gamma);
-		expect(container.render(40)).toHaveLength(5);
-		container.getRenderStablePrefixRows(); // consume: re-base to the current rows
+	it("replays committed history without rewinding lifecycle state", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["final"], true));
+		const first = transcript.peekFinalizedBatch(80, 0);
+		if (first === undefined) throw new Error("expected initial batch");
+		transcript.acknowledgeFinalizedBatch(first.id);
+		expect(transcript.blockStates()).toEqual(["committed"]);
 
-		// First render after the edit drops the floor to gamma's segment start
-		// (row 3); a second, fully stable render must NOT lift it back — an
-		// out-of-band render between engine frames can only lower the report.
-		gamma.setText("gamma-edited");
-		container.render(40);
-		container.render(40);
-		expect(container.getRenderStablePrefixRows()).toBe(3);
+		transcript.beginReplay();
+		expect(transcript.renderViewport(80, 10, frame)).toEqual([]);
+		const replay = transcript.peekFinalizedBatch(80, 10);
+		expect(replay?.id).toBeGreaterThan(first.id);
+		expect(replay?.rows).toEqual(["final", ""]);
+		transcript.acknowledgeFinalizedBatch(replay!.id);
+		expect(transcript.blockStates()).toEqual(["committed"]);
+		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
 	});
 
-	it("reports 0 after a width change", () => {
-		const container = new TranscriptContainer();
-		container.addChild(new Text("alpha", 0, 0));
-		container.addChild(new Text("beta", 0, 0));
-		container.render(40);
-		container.getRenderStablePrefixRows(); // consume: re-base to the current rows
+	it("flushes a finalized prefix without viewport pressure", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["fits"], true));
 
-		// A width change re-renders every block; no row carries over.
-		container.render(80);
-		expect(container.getRenderStablePrefixRows()).toBe(0);
+		expect(transcript.peekFinalizedBatch(80, 10)).toBeUndefined();
+		expect(transcript.peekFlushBatch(80)?.rows).toEqual(["fits", ""]);
 	});
 
-	it("consumes on read: an immediate second read re-bases to the current rows", () => {
-		const container = new TranscriptContainer();
-		container.addChild(new Text("alpha", 0, 0));
-		container.addChild(new Text("beta", 0, 0));
-		container.render(40);
-		container.getRenderStablePrefixRows(); // consume: re-base to the current rows
+	it("keeps the live viewport while an independent replay is offered", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["committed"], true));
+		const committed = transcript.peekFinalizedBatch(80, 0)!;
+		transcript.acknowledgeFinalizedBatch(committed.id);
+		transcript.addChild(new Block(["active"], false));
 
-		const reflowed = container.render(80);
-		expect(container.getRenderStablePrefixRows()).toBe(0);
-		// The read above re-based the baseline to the just-returned state, so
-		// without any render in between the full array now counts as stable.
-		expect(container.getRenderStablePrefixRows()).toBe(reflowed.length);
+		transcript.beginReplay();
+		expect(transcript.peekFinalizedBatch(80, 10)?.rows).toEqual(["committed", ""]);
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["active"]);
 	});
-});
+	it("renders exactly the trailing semantic rows without walking the full ledger", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["a1", "a2"], true));
+		transcript.addChild(new Block([], true));
+		transcript.addChild(new AppendBlock(["b1", "b2"], ["b1"], true));
+		transcript.addChild(new Block(["c1"], false));
 
-describe("TranscriptContainer isBlockInLiveRegion", () => {
-	it("opens at the first still-mutating block and includes everything below it", () => {
-		const container = new TranscriptContainer();
-		const above = new StreamingBlock(["above"], true);
-		const live = new StreamingBlock(["live"], false);
-		const below = new StreamingBlock(["below"], true);
-		container.addChild(above);
-		container.addChild(live);
-		container.addChild(below);
-
-		expect(container.isBlockInLiveRegion(above)).toBe(false);
-		expect(container.isBlockInLiveRegion(live)).toBe(true);
-		expect(container.isBlockInLiveRegion(below)).toBe(true);
+		const full = transcript.render(80);
+		for (const cap of [1, 3, 4, full.length, full.length + 5]) {
+			expect(transcript.renderTail(80, cap)).toEqual(full.slice(-Math.min(cap, full.length)));
+		}
+		expect(transcript.renderTail(80, 0)).toEqual([]);
 	});
 
-	it("anchors on the tail block when every block has finalized", () => {
-		const container = new TranscriptContainer();
-		const first = new StreamingBlock(["first"], true);
-		const tail = new StreamingBlock(["tail"], false);
-		container.addChild(first);
-		container.addChild(tail);
+	it("cancels a pending replay so shutdown flush emits only un-retired rows", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["committed"], true));
+		const committed = transcript.peekFinalizedBatch(80, 0)!;
+		transcript.acknowledgeFinalizedBatch(committed.id);
+		transcript.addChild(new Block(["tail"], true));
 
-		expect(container.isBlockInLiveRegion(tail)).toBe(true);
-		tail.finalize();
-		// All finalized: only the tail anchors the live region — a finalized
-		// block above it is commit-eligible history (a detached task block
-		// stops animating exactly on this transition).
-		expect(container.isBlockInLiveRegion(first)).toBe(false);
-		expect(container.isBlockInLiveRegion(tail)).toBe(true);
-	});
-
-	it("returns false for a component that is not a child", () => {
-		const container = new TranscriptContainer();
-		container.addChild(new StreamingBlock(["a"], true));
-		expect(container.isBlockInLiveRegion(new StreamingBlock(["x"], false))).toBe(false);
-	});
-});
-
-describe("TranscriptContainer renderViewportTail", () => {
-	const W = 40;
-	// Four two-row blocks. A full render joins them with one blank separator:
-	//   b0a b0b ""  b1a b1b ""  b2a b2b ""  b3a b3b   → 11 rows.
-	function fourBlocks(): { container: TranscriptContainer; blocks: CountingFinalizedBlock[] } {
-		const blocks = [0, 1, 2, 3].map(i => new CountingFinalizedBlock([`b${i}a`, `b${i}b`]));
-		const container = new TranscriptContainer();
-		for (const b of blocks) container.addChild(b);
-		return { container, blocks };
-	}
-
-	it("returns exactly the bottom rows of a full render", () => {
-		const { container } = fourBlocks();
-		const full = [...container.render(W)];
-		expect(full).toEqual(["b0a", "b0b", "", "b1a", "b1b", "", "b2a", "b2b", "", "b3a", "b3b"]);
-		// A clean block boundary (the separator before b2) lands at the fold.
-		expect([...container.renderViewportTail(W, 5)]).toEqual(full.slice(full.length - 5));
-		// A mid-block fold still yields the exact bottom rows.
-		expect([...container.renderViewportTail(W, 4)]).toEqual(full.slice(full.length - 4));
-		expect([...container.renderViewportTail(W, 1)]).toEqual(["b3b"]);
-	});
-
-	it("renders only the blocks needed to fill the request", () => {
-		const { container, blocks } = fourBlocks();
-		container.render(W);
-		for (const b of blocks) b.renderCount = 0;
-		// Bottom 4 rows span b3 (whole) and b2 (its last row visible): blocks
-		// above the fold must never be rendered.
-		container.renderViewportTail(W, 4);
-		expect(blocks.map(b => b.renderCount)).toEqual([0, 0, 1, 1]);
-	});
-
-	it("returns the whole transcript top-aligned when it is shorter than the request", () => {
-		const { container } = fourBlocks();
-		const full = [...container.render(W)];
-		expect([...container.renderViewportTail(W, 100)]).toEqual(full);
-	});
-
-	it("never mutates persistent full-compose state", () => {
-		const { container } = fourBlocks();
-		const before = [...container.render(W)];
-		const liveBefore = container.getNativeScrollbackLiveRegionStart();
-		// Interleave tail renders at other widths and sizes.
-		container.renderViewportTail(80, 3);
-		container.renderViewportTail(20, 7);
-		container.renderViewportTail(W, 2);
-		const after = [...container.render(W)];
-		expect(after).toEqual(before);
-		expect(container.getNativeScrollbackLiveRegionStart()).toBe(liveBefore);
-	});
-
-	it("handles empty and zero-row requests", () => {
-		const empty = new TranscriptContainer();
-		expect([...empty.renderViewportTail(W, 10)]).toEqual([]);
-		const { container } = fourBlocks();
-		expect([...container.renderViewportTail(W, 0)]).toEqual([]);
+		transcript.beginReplay();
+		transcript.cancelReplay();
+		expect(transcript.peekFlushBatch(80)?.rows).toEqual(["tail", ""]);
 	});
 });

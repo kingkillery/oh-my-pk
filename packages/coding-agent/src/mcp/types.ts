@@ -1,8 +1,8 @@
 /**
  * MCP (Model Context Protocol) type definitions.
  *
- * Supports both the 2026-07-28 per-request-metadata protocol and
- * initialization-based legacy protocol revisions.
+ * Based on MCP specification 2025-11-25:
+ * https://modelcontextprotocol.io/specification/2025-11-25/
  */
 
 // =============================================================================
@@ -75,20 +75,8 @@ export interface MCPAuthConfig {
 	resource?: string;
 }
 
-/** Local opt-in policy for one explicitly registered MCP extension. */
-export interface MCPServerExtensionConfig {
-	/** Extensions are inert unless explicitly enabled. */
-	enabled?: boolean;
-	/** Provider-defined settings validated by the compiled-in provider. */
-	settings?: Record<string, unknown>;
-}
-
-/** Connection-scoped state produced by trusted extension negotiation. */
-export interface MCPNegotiatedExtensionState {
-	readonly id: string;
-	readonly serverSettings: Record<string, unknown> | undefined;
-	readonly clientSettings: Record<string, unknown>;
-}
+/** Encoding used for outgoing JSON-RPC request ids. */
+export type MCPRequestIdFormat = "string" | "number";
 
 /** Base server config with shared options */
 interface MCPServerConfigBase {
@@ -96,6 +84,18 @@ interface MCPServerConfigBase {
 	enabled?: boolean;
 	/** MCP request timeout in milliseconds (default: 30000, 0 to disable) */
 	timeout?: number;
+	/**
+	 * Encoding for outgoing JSON-RPC request ids (default: `"number"`).
+	 *
+	 * Set `"string"` for servers that need collision-resistant snowflake string
+	 * ids instead of per-transport integers. See `RequestIdAllocator` in
+	 * `./request-id`.
+	 *
+	 * OMP-specific, so only the OMP-owned discovery providers parse it (native,
+	 * standalone `mcp.json`, OMP plugins). Providers that translate another
+	 * tool's config do not, since the key is not part of those formats.
+	 */
+	requestIdFormat?: MCPRequestIdFormat;
 	/** Authentication configuration (optional) */
 	auth?: MCPAuthConfig;
 	/** OAuth configuration for servers requiring explicit client credentials */
@@ -104,6 +104,7 @@ interface MCPServerConfigBase {
 		/** HTTPS OAuth Client ID Metadata Document URL used as a URL-form client_id when supported by the authorization server */
 		clientMetadataUrl?: string;
 		clientSecret?: string;
+		scope?: string;
 		redirectUri?: string;
 		callbackPort?: number;
 		callbackPath?: string;
@@ -120,6 +121,13 @@ export interface MCPStdioServerConfig extends MCPServerConfigBase {
 	command: string;
 	args?: string[];
 	env?: Record<string, string>;
+	/**
+	 * `literal`: env values are opaque plugin package data (Agent Plugins
+	 * §§4.1/9.2) — no env-name lookup, no `!command` execution, no dropping of
+	 * empty values. The provider already applied the only permitted expansion
+	 * (`${PLUGIN_ROOT}`/`${PLUGIN_DATA}`).
+	 */
+	envPolicy?: "literal";
 	cwd?: string;
 }
 
@@ -128,6 +136,12 @@ export interface MCPHttpServerConfig extends MCPServerConfigBase {
 	type: "http";
 	url: string;
 	headers?: Record<string, string>;
+	/**
+	 * `origin-locked`: configured headers are literal package data pinned to the
+	 * configured URL's origin (Agent Plugins §7.2.1) — never expanded, never
+	 * forwarded cross-origin, and client-generated headers win case-insensitively.
+	 */
+	headerPolicy?: "origin-locked";
 }
 
 /** SSE server configuration (deprecated, use HTTP) */
@@ -135,6 +149,8 @@ export interface MCPSseServerConfig extends MCPServerConfigBase {
 	type: "sse";
 	url: string;
 	headers?: Record<string, string>;
+	/** See {@link MCPHttpServerConfig.headerPolicy}. */
+	headerPolicy?: "origin-locked";
 }
 
 export type MCPServerConfig = MCPStdioServerConfig | MCPHttpServerConfig | MCPSseServerConfig;
@@ -146,17 +162,45 @@ export const MCP_CONFIG_SCHEMA_URL =
 export interface MCPConfigFile {
 	$schema?: string;
 	mcpServers?: Record<string, MCPServerConfig>;
+	/** Names to hide regardless of any source `enabled` flag. Highest precedence. */
 	disabledServers?: string[];
+	/** Names to force-enable when a non-writable source reports `enabled: false`. */
+	enabledServers?: string[];
 }
 
 // =============================================================================
 // MCP Protocol Types
 // =============================================================================
 
-/** MCP implementation info */
+/**
+ * Latest MCP protocol revision this client negotiates.
+ *
+ * Sent as `protocolVersion` in the `initialize` request and, for Streamable
+ * HTTP, echoed back to the server in the `MCP-Protocol-Version` header on every
+ * subsequent request (per the MCP HTTP transport spec). Must track the current
+ * stable revision: AWS Bedrock AgentCore Gateway refuses tool calls on an
+ * outbound per-user OAuth (`AUTHORIZATION_CODE`) target below `2025-11-25`, and
+ * it checks the version *before* consulting its token vault, so an older client
+ * is refused even for a caller whose consent is already stored.
+ */
+export const MCP_PROTOCOL_VERSION = "2025-11-25";
+
+/** Optionally-sized icon for MCP UI metadata (implementation, tools, resources). */
+export interface MCPIcon {
+	src: string;
+	mimeType?: string;
+	sizes?: string[];
+	theme?: "light" | "dark";
+}
+
+/** MCP implementation info (`InitializeRequest.params.clientInfo` / `InitializeResult.serverInfo`). */
 export interface MCPImplementation {
 	name: string;
+	title?: string;
 	version: string;
+	description?: string;
+	websiteUrl?: string;
+	icons?: MCPIcon[];
 }
 
 /**
@@ -366,341 +410,36 @@ export interface MCPInitializeResult {
 	instructions?: string;
 }
 
-/** Result metadata sent by modern servers. */
-export interface MCPResultMetadata extends MCPMeta {
-	"io.modelcontextprotocol/serverInfo"?: MCPImplementation;
+/** Tool annotations from the 2025-11-25 tools spec. */
+export interface MCPToolAnnotations {
+	title?: string;
+	readOnlyHint?: boolean;
+	destructiveHint?: boolean;
+	idempotentHint?: boolean;
+	openWorldHint?: boolean;
 }
 
-/** Metadata common to a legacy-compatible complete result. */
-export interface MCPResultEnvelope {
-	/**
-	 * Omitted by legacy servers. Modern servers must return `complete` or
-	 * `input_required`; operation-specific legacy result types use `complete`.
-	 */
-	resultType?: "complete";
-	_meta?: MCPResultMetadata;
+/** Execution metadata from the 2025-11-25 tools spec. */
+export interface MCPToolExecution {
+	taskSupport?: "forbidden" | "optional" | "required";
 }
 
-/** A modern completed result. */
-export interface MCPCompleteResult {
-	resultType: "complete";
-	_meta?: MCPResultMetadata;
-}
-
-/** Server-provided cache scope for a completed cacheable operation. */
-export type MCPCacheScope = "public" | "private";
-
-/**
- * Opaque, monotonically increasing transport revision for the authentication
- * context used to send requests. It never contains credentials. A transport
- * that rotates identity-bearing headers increments this value before its next
- * request so connection-local private cache entries cannot cross identities.
- */
-export type MCPAuthenticationContextRevision = number;
-
-/** Cacheable operations defined by the 2026-07-28 protocol revision. */
-export type MCPCacheableOperation =
-	| "server/discover"
-	| "tools/list"
-	| "prompts/list"
-	| "resources/list"
-	| "resources/templates/list"
-	| "resources/read";
-
-/** Server-provided cache hints on a result that may also come from a legacy server. */
-export interface MCPCacheableResultFields extends MCPResultEnvelope {
-	ttlMs?: number;
-	cacheScope?: MCPCacheScope;
-}
-
-/** A strictly modern completed cacheable result. */
-export interface MCPCacheableResult extends MCPCompleteResult {
-	ttlMs: number;
-	cacheScope: MCPCacheScope;
-}
-
-/** Exact cache metadata retained for one response page without mutating the result. */
-export interface MCPResultCachePage {
-	requestCursor?: string;
-	receivedAt: number;
-	expiresAt?: number;
-	resultType: unknown;
-	ttlMs: unknown;
-	cacheScope: unknown;
-	_meta: unknown;
-}
-
-/** Validated, conservatively merged modern cache metadata for one logical result. */
-export interface MCPModernResultCacheHint {
-	era: "modern";
-	operation: MCPCacheableOperation;
-	pages: MCPResultCachePage[];
-	receivedAt: number;
-	expiresAt: number;
-	ttlMs: number;
-	cacheScope: MCPCacheScope;
-	/** False when paginated pages violate the required common cache scope. */
-	scopeConsistent: boolean;
-	/**
-	 * Client-side binding for private entries. Absent for public results and
-	 * transports that do not expose an authentication-context revision.
-	 */
-	authenticationContextRevision?: MCPAuthenticationContextRevision;
-}
-
-/**
- * Explicit compatibility descriptor for initialize-era results. Legacy list
- * caching remains connection-local and notification-invalidated.
- */
-export interface MCPLegacyResultCacheHint {
-	era: "legacy-compatibility";
-	operation: MCPCacheableOperation;
-	pages: MCPResultCachePage[];
-	receivedAt: number;
-}
-
-export type MCPResultCacheHint = MCPModernResultCacheHint | MCPLegacyResultCacheHint;
-
-/** Protocol failure for a malformed modern cacheable result. */
-export class MCPCacheProtocolError extends Error {
-	readonly operation: MCPCacheableOperation;
-
-	constructor(operation: MCPCacheableOperation, message: string) {
-		super(`Invalid modern MCP ${operation} cache metadata: ${message}`);
-		this.name = "MCPCacheProtocolError";
-		this.operation = operation;
-	}
-}
-
-/**
- * Validate one modern cacheable result and retain its result metadata exactly.
- * Validation is deliberately strict for a negotiated modern connection:
- * omission is legacy compatibility, not a modern default.
- */
-export function validateMCPModernCacheableResult(
-	operation: MCPCacheableOperation,
-	value: unknown,
-	receivedAt = Date.now(),
-	requestCursor?: string,
-): MCPModernResultCacheHint {
-	const result = asMCPRecord(value);
-	if (!result) throw new MCPCacheProtocolError(operation, "result must be an object");
-	if (result.resultType !== "complete") {
-		throw new MCPCacheProtocolError(operation, 'resultType must be "complete"');
-	}
-	if (!Number.isSafeInteger(result.ttlMs) || (result.ttlMs as number) < 0) {
-		throw new MCPCacheProtocolError(operation, "ttlMs must be a non-negative safe integer");
-	}
-	if (result.cacheScope !== "public" && result.cacheScope !== "private") {
-		throw new MCPCacheProtocolError(operation, 'cacheScope must be "public" or "private"');
-	}
-	if (result._meta !== undefined && !asMCPRecord(result._meta)) {
-		throw new MCPCacheProtocolError(operation, "_meta must be an object when provided");
-	}
-
-	const ttlMs = result.ttlMs as number;
-	const expiresAt = receivedAt + ttlMs;
-	if (!Number.isSafeInteger(expiresAt)) {
-		throw new MCPCacheProtocolError(operation, "ttlMs produces an unsafe expiry timestamp");
-	}
-
-	return {
-		era: "modern",
-		operation,
-		pages: [
-			{
-				...(requestCursor !== undefined ? { requestCursor } : {}),
-				receivedAt,
-				expiresAt,
-				resultType: result.resultType,
-				ttlMs: result.ttlMs,
-				cacheScope: result.cacheScope,
-				_meta: result._meta,
-			},
-		],
-		receivedAt,
-		expiresAt,
-		ttlMs,
-		cacheScope: result.cacheScope,
-		scopeConsistent: true,
-	};
-}
-
-/**
- * Merge independently cacheable pages into the full-list policy used by this
- * client. The earliest page expiry wins. Scope disagreement is retained as a
- * protocol inconsistency and disables reuse rather than risking a wider scope.
- */
-export function mergeMCPModernResultCacheHints(
-	left: MCPModernResultCacheHint | undefined,
-	right: MCPModernResultCacheHint,
-): MCPModernResultCacheHint {
-	if (!left) return right;
-	if (left.operation !== right.operation) {
-		throw new Error(`Cannot merge MCP cache hints for ${left.operation} and ${right.operation}`);
-	}
-	const scopeConsistent = left.scopeConsistent && right.scopeConsistent && left.cacheScope === right.cacheScope;
-	return {
-		era: "modern",
-		operation: left.operation,
-		pages: [...left.pages, ...right.pages],
-		receivedAt: Math.min(left.receivedAt, right.receivedAt),
-		expiresAt: Math.min(left.expiresAt, right.expiresAt),
-		ttlMs: Math.min(left.ttlMs, right.ttlMs),
-		cacheScope: left.cacheScope === "private" || right.cacheScope === "private" ? "private" : "public",
-		scopeConsistent,
-	};
-}
-
-/** Retain metadata while explicitly applying initialize-era compatibility. */
-export function createMCPLegacyResultCacheHint(
-	operation: MCPCacheableOperation,
-	pages: Array<{ value: unknown; receivedAt: number; requestCursor?: string }>,
-): MCPLegacyResultCacheHint {
-	if (pages.length === 0) throw new Error(`Cannot create an empty legacy MCP cache hint for ${operation}`);
-	return {
-		era: "legacy-compatibility",
-		operation,
-		receivedAt: Math.min(...pages.map(page => page.receivedAt)),
-		pages: pages.map(page => {
-			const result = asMCPRecord(page.value);
-			return {
-				...(page.requestCursor !== undefined ? { requestCursor: page.requestCursor } : {}),
-				receivedAt: page.receivedAt,
-				resultType: result?.resultType,
-				ttlMs: result?.ttlMs,
-				cacheScope: result?.cacheScope,
-				_meta: result?._meta,
-			};
-		}),
-	};
-}
-
-/** A cache hint is reusable only during its negotiated freshness window. */
-export function isMCPResultCacheFresh(hint: MCPResultCacheHint | undefined, now = Date.now()): boolean {
-	if (!hint) return false;
-	if (hint.era === "legacy-compatibility") return true;
-	return hint.scopeConsistent && now < hint.expiresAt;
-}
-
-/** Server discover response used to establish a modern connection descriptor. */
-export interface MCPDiscoverResult extends MCPCacheableResult {
-	supportedVersions: string[];
-	capabilities: MCPModernServerCapabilities;
-	instructions?: string;
-}
-
-/** The server requests client input before a modern operation can complete. */
-export type MCPInputRequest =
-	| {
-			method: "elicitation/create" | "sampling/createMessage";
-			params: Record<string, unknown>;
-	  }
-	| {
-			method: "roots/list";
-			/** roots/list may omit params; when present, only request metadata is meaningful. */
-			params?: Record<string, unknown>;
-	  };
-
-export type MCPInputRequests = Record<string, MCPInputRequest>;
-export type MCPInputResponses = Record<string, unknown>;
-
-/**
- * MRTR interim result. It is typed here for downstream interaction owners,
- * but this shared client slice does not yet collect input or retry requests.
- */
-type MCPInputRequiredResultBase = {
-	resultType: "input_required";
-	_meta?: MCPResultMetadata;
-};
-
-/** Every input-required result carries requests, opaque retry state, or both. */
-export type MCPInputRequiredResult = MCPInputRequiredResultBase &
-	({ inputRequests: MCPInputRequests; requestState?: string } | { inputRequests?: undefined; requestState: string });
-
-/** Modern operations permitted to use the MRTR interaction pattern. */
-export type MCPMRTRMethod = "tools/call" | "resources/read" | "prompts/get";
-
-/**
- * Host-owned input collection policy. No default policy is installed: hosts
- * must explicitly advertise the capabilities they can safely satisfy.
- */
-export interface MCPHostInteraction {
-	readonly clientCapabilities: MCPModernClientCapabilities;
-	collectInput(context: MCPInputCollectionContext): Promise<MCPInputResponses>;
-}
-
-/** Immutable context supplied once for each server-directed input round. */
-export interface MCPInputCollectionContext {
-	connection: Pick<MCPServerConnection, "name" | "serverInfo" | "protocol">;
-	method: MCPMRTRMethod;
-	originalParams: Readonly<Record<string, unknown>>;
-	round: number;
-	inputRequired: Readonly<MCPInputRequiredResult>;
-	signal?: AbortSignal;
-}
-
-/** Base client failure after a server has started an MRTR interaction. */
-export class MCPInputRequiredError extends Error {
-	constructor(message: string, options?: ErrorOptions) {
-		super(message, options);
-		this.name = "MCPInputRequiredError";
-	}
-}
-
-/** A server requested input for an unsupported or unadvertised interaction kind. */
-export class MCPInputRequestUnsupportedError extends MCPInputRequiredError {
-	constructor(method: MCPMRTRMethod, reason: string) {
-		super(`MCP ${method} input request is unsupported: ${reason}`);
-		this.name = "MCPInputRequestUnsupportedError";
-	}
-}
-
-/** A server sent an invalid MRTR interim result or policy response map. */
-export class MCPInputRequiredMalformedError extends MCPInputRequiredError {
-	constructor(method: MCPMRTRMethod, reason: string) {
-		super(`Malformed MCP ${method} input-required result: ${reason}`);
-		this.name = "MCPInputRequiredMalformedError";
-	}
-}
-
-/** The server exceeded the bounded number of MRTR input-response rounds. */
-export class MCPInputRequiredRoundsExceededError extends MCPInputRequiredError {
-	constructor(method: MCPMRTRMethod, maxRounds: number) {
-		super(`MCP ${method} exceeded the ${maxRounds}-round input-required limit`);
-		this.name = "MCPInputRequiredRoundsExceededError";
-	}
-}
-
-/**
- * A retry transport failure after an MRTR round has begun. Callers must not
- * reconnect by replaying the original operation because that drops its state.
- */
-export class MCPInputRequiredRetryError extends MCPInputRequiredError {
-	constructor(method: MCPMRTRMethod, cause: unknown) {
-		super(`MCP ${method} retry failed after input was collected`, { cause });
-		this.name = "MCPInputRequiredRetryError";
-	}
-}
-
-/** Retry additions used only for the original MRTR operation. */
-export interface MCPInputResponseParams {
-	inputResponses?: MCPInputResponses;
-	requestState?: string;
-}
-
-/** MCP tool definition. */
+/** MCP tool definition */
 export interface MCPToolDefinition {
 	name: string;
+	title?: string;
 	description?: string;
+	icons?: MCPIcon[];
 	inputSchema: {
 		type: "object";
 		properties?: Record<string, unknown>;
 		required?: string[];
 		[key: string]: unknown;
 	};
-	/** Declared structured output schema, retained for a future bridge validator. */
 	outputSchema?: Record<string, unknown>;
+	execution?: MCPToolExecution;
+	annotations?: MCPToolAnnotations;
+	_meta?: Record<string, unknown>;
 }
 
 /** Primitive JSON-schema types that may be safely mirrored into MCP HTTP headers. */
@@ -895,12 +634,17 @@ export interface MCPResourceContent {
 
 export type MCPContent = MCPTextContent | MCPImageContent | MCPResourceContent;
 
-/** tools/call completed response, compatible with legacy result shapes. */
-export interface MCPToolCallResult extends MCPResultEnvelope {
+/** Structured authentication challenge returned in a tool result. */
+export interface MCPAuthChallenge {
+	/** Values from `_meta["mcp/www_authenticate"]`. */
+	readonly wwwAuthenticate: readonly string[];
+}
+
+/** tools/call response */
+export interface MCPToolCallResult {
 	content: MCPContent[];
 	isError?: boolean;
-	/** Structured output retained alongside content for a future bridge validator. */
-	structuredContent?: MCPJsonValue;
+	_meta?: Record<string, unknown>;
 }
 
 /** Modern tools/call response, including the MRTR interim alternative. */
@@ -1201,7 +945,15 @@ export interface MCPTransport extends MCPTransportProtocolHooks {
 	/** Close the transport. */
 	close(): Promise<void>;
 
-	/** Whether the transport is connected. */
+	/**
+	 * Record the protocol version negotiated in the `initialize` response.
+	 * Streamable HTTP transports echo it in the `MCP-Protocol-Version` header on
+	 * every subsequent request; transports that need no per-request version
+	 * (stdio) omit this.
+	 */
+	setProtocolVersion?(version: string): void;
+
+	/** Whether the transport is connected */
 	readonly connected: boolean;
 
 	/** Event handlers. */

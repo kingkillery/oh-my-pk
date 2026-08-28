@@ -1,5 +1,5 @@
+import { type } from "@pk-nerdsaver-ai/omptype";
 import type { AgentTool, AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core/types";
-import { type } from "arktype";
 
 export interface CalculateResult extends AgentToolResult<undefined> {
 	content: Array<{ type: "text"; text: string }>;

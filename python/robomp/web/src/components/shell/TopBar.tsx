@@ -11,7 +11,6 @@ const TITLES: Record<View, string> = {
   operations: "Operations",
   activity: "Activity",
   triage: "Triage",
-  conversation: "Conversation mode",
 };
 
 function MenuIcon(): JSX.Element {

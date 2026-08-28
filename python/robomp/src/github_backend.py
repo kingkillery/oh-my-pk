@@ -13,14 +13,18 @@ from typing import Any, Protocol
 
 from robomp.github_client import (
     CommentInfo,
+    IssueIndexEntry,
     IssueInfo,
     IssueSummary,
     PullRequestFileInfo,
     PullRequestInfo,
     PullRequestReviewInfo,
     ReactionInfo,
+    ReleaseInfo,
     RepoInfo,
     ReviewCommentInfo,
+    WorkflowJobInfo,
+    WorkflowRunInfo,
 )
 
 
@@ -29,6 +33,12 @@ class GitHubBackend(Protocol):
 
     # ---- reads ----
     async def get_repo(self, repo: str) -> RepoInfo: ...
+
+    async def list_workflow_runs(self, repo: str, *, head_sha: str) -> list[WorkflowRunInfo]: ...
+    async def list_workflow_jobs(self, repo: str, run_id: int) -> list[WorkflowJobInfo]: ...
+    async def get_job_log_tail(self, repo: str, job_id: int, *, tail_lines: int = 200) -> str: ...
+    async def get_tag_sha(self, repo: str, tag: str) -> str | None: ...
+    async def get_release_by_tag(self, repo: str, tag: str) -> ReleaseInfo | None: ...
 
     async def get_issue(self, repo: str, number: int) -> IssueInfo: ...
 
@@ -45,6 +55,16 @@ class GitHubBackend(Protocol):
         state: str = "open",
         limit: int = 30,
     ) -> list[IssueSummary]: ...
+
+    async def search_issues(self, repo: str, query: str, *, limit: int = 10) -> list[IssueSummary]: ...
+    async def list_issue_index_entries(
+        self,
+        repo: str,
+        *,
+        since: str | None = None,
+        page: int = 1,
+        per_page: int = 100,
+    ) -> list[IssueIndexEntry]: ...
 
     async def list_comments(self, repo: str, number: int) -> list[CommentInfo]: ...
 
@@ -89,6 +109,7 @@ class GitHubBackend(Protocol):
         body: str,
         event: str,
         comments: list[Mapping[str, Any]],
+        commit_id: str | None = None,
     ) -> PullRequestReviewInfo: ...
 
     async def add_assignees(self, repo: str, number: int, assignees: list[str]) -> None: ...

@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { $which, getRemoteHostDir, getSshControlDir, isEnoent, logger, postmortem } from "@pk-nerdsaver-ai/pi-utils";
-import { $ } from "bun";
+import { $which, getRemoteHostDir, getSshControlDir, isEnoent, logger, postmortem, ptree } from "@pk-nerdsaver-ai/pi-utils";
 import { buildSshTarget, sanitizeHostName } from "./utils";
 
 export interface SSHConnectionTarget {
@@ -25,14 +24,121 @@ export interface SSHHostInfo {
 	version: number;
 	os: SSHHostOs;
 	shell: SSHHostShell;
+	/**
+	 * Shell name OMP verified can execute the POSIX transfer snippets
+	 * (`head`/`cat`/`mv`/`test`/`ls`) `ssh://` uses. Probed by running
+	 * `sh -lc` / `bash -lc` / `zsh -lc` against the remote and keeping the
+	 * first one that round-trips a known marker. Independent of `shell`
+	 * (the self-reported login shell), which may be noisy, exotic, or simply
+	 * mis-classified — only `transferShell` gates ssh:// transfers.
+	 */
+	transferShell?: "sh" | "bash" | "zsh";
 	compatShell?: "bash" | "sh";
 	compatEnabled: boolean;
 }
 
-const CONTROL_DIR = getSshControlDir();
-const CONTROL_PATH = path.join(CONTROL_DIR, "%C.sock");
+/**
+ * OpenSSH ControlPath sizing.
+ *
+ * The multiplexing master binds its listening socket at `ControlPath`, but
+ * `muxserver_listen` first binds a *temporary* path — the expanded `ControlPath`
+ * plus a "." and a 16-char random suffix — before atomically renaming it into
+ * place. That temporary path, not the final `%C.sock`, is what OpenSSH's
+ * `unix_listener()` length-checks against `sizeof(sockaddr_un.sun_path)`, so the
+ * budget below reserves it (issue #9070). A path whose length reaches the
+ * platform limit is rejected outright ("... too long for Unix domain socket").
+ */
+const CONTROL_SOCKET_BASENAME = "%C.sock";
+/** Bytes `%C.sock` expands to: a 40-char connection digest plus ".sock". */
+const CONTROL_SOCKET_NAME_BYTES = 40 + ".sock".length;
+/** "." + 16 random chars appended by `muxserver_listen` while binding. */
+const MUX_TEMP_SUFFIX_BYTES = 1 + 16;
+
+/**
+ * Whether `controlDir` leaves room for the whole `%C.sock` plus OpenSSH's mux
+ * temp bind within `sun_path` (104 bytes on macOS, 108 elsewhere; OpenSSH
+ * rejects lengths >= that). The worst case is dir + "/" + expanded `%C.sock`
+ * (40-hex digest + ".sock") + the mux temp suffix.
+ */
+export function controlPathFitsBudget(controlDir: string, platform: SshPlatform): boolean {
+	const sunPathLimit = platform === "darwin" ? 104 : 108;
+	const worstCase = Buffer.byteLength(controlDir) + 1 + CONTROL_SOCKET_NAME_BYTES + MUX_TEMP_SUFFIX_BYTES;
+	return worstCase < sunPathLimit;
+}
+
+/**
+ * Deterministic, depth-bounded control directory used when the canonical
+ * control directory would overflow `sun_path` (#9070). The digest keys both
+ * uid and the fully resolved canonical control directory, separated by NUL so
+ * their boundaries are unambiguous. This preserves isolation when the same
+ * profile resolves through different XDG state roots without spending variable
+ * path bytes on the decimal uid.
+ */
+export function sshControlFallbackDir(canonicalDir: string, uid: number, tmpBase = "/tmp"): string {
+	const key = new Bun.CryptoHasher("sha256")
+		.update(String(uid))
+		.update("\0")
+		.update(canonicalDir)
+		.digest("hex")
+		.slice(0, 20);
+	return path.join(tmpBase, `omp-${key}`);
+}
+
+interface ControlDirChoice {
+	dir: string;
+	/** True when `dir` is the shared-temp fallback and needs owner-private hardening. */
+	shared: boolean;
+}
+
+/**
+ * Choose the SSH control directory. Prefers the canonical profile-rooted path
+ * and only relocates to {@link sshControlFallbackDir} when the canonical path
+ * cannot hold the full `%C.sock` + mux temp bind within `sun_path`. Platforms
+ * without ControlMaster (Windows) or without a uid keep the canonical path.
+ */
+export function resolveSshControlDir(opts: {
+	canonicalDir: string;
+	platform: SshPlatform;
+	uid: number | undefined;
+	tmpBase?: string;
+}): ControlDirChoice {
+	const { canonicalDir, platform, uid, tmpBase } = opts;
+	if (!supportsSshControlMaster(platform) || uid === undefined) return { dir: canonicalDir, shared: false };
+	if (controlPathFitsBudget(canonicalDir, platform)) return { dir: canonicalDir, shared: false };
+	return { dir: sshControlFallbackDir(canonicalDir, uid, tmpBase), shared: true };
+}
+
+interface ControlDirGuardStat {
+	isSymlink: boolean;
+	isDir: boolean;
+	uid: number;
+	mode: number;
+}
+
+/**
+ * Reject reasons for an owner-private control directory reused from a shared
+ * temp base: it must be a real directory (not a symlink an attacker planted),
+ * owned by us, with no group/other access. Returns `null` when the directory is
+ * safe to use. Pure so the rejection matrix is testable without root.
+ */
+export function controlDirGuardError(stat: ControlDirGuardStat, expectedUid: number | undefined): string | null {
+	if (stat.isSymlink) return "is a symlink";
+	if (!stat.isDir) return "is not a directory";
+	if (expectedUid !== undefined && stat.uid !== expectedUid) {
+		return `is owned by uid ${stat.uid}, not ${expectedUid}`;
+	}
+	if ((stat.mode & 0o777) !== 0o700) return `must be mode 0700, got ${(stat.mode & 0o777).toString(8)}`;
+	return null;
+}
+
+const { dir: CONTROL_DIR, shared: CONTROL_DIR_SHARED } = resolveSshControlDir({
+	canonicalDir: getSshControlDir(),
+	platform: process.platform,
+	uid: process.getuid?.(),
+});
+const CONTROL_PATH = path.join(CONTROL_DIR, CONTROL_SOCKET_BASENAME);
 const HOST_INFO_DIR = getRemoteHostDir();
-const HOST_INFO_VERSION = 3;
+const HOST_INFO_VERSION = 4;
 
 const activeHosts = new Map<string, SSHConnectionTarget>();
 const pendingConnections = new Map<string, Promise<void>>();
@@ -44,12 +150,79 @@ interface SSHArgsOptions {
 	allowStdin?: boolean;
 }
 
-function ensureControlDir() {
+/**
+ * Create the shared SSH ControlMaster directory and enforce its trust boundary.
+ *
+ * Both direct SSH connections and sshfs mounts MUST call this before launching
+ * OpenSSH so the bounded `/tmp` fallback cannot bypass the symlink, owner, or
+ * mode checks.
+ */
+export function ensureSshControlDir(): void {
 	fs.mkdirSync(CONTROL_DIR, { recursive: true, mode: 0o700 });
+	if (CONTROL_DIR_SHARED) {
+		assertOwnerPrivateDir(CONTROL_DIR);
+		return;
+	}
 	try {
 		fs.chmodSync(CONTROL_DIR, 0o700);
 	} catch (err) {
 		logger.debug("SSH control dir chmod failed", { path: CONTROL_DIR, error: String(err) });
+	}
+}
+
+/**
+ * Harden a control directory pulled from a shared temp base ({@link CONTROL_DIR_SHARED}).
+ *
+ * Opens the final path component with `O_NOFOLLOW | O_DIRECTORY` so a symlink or
+ * non-directory is refused atomically at open time, then inspects and normalizes
+ * that one pinned inode through the fd (`fstat`/`fchmod`) — never a second
+ * pathname lookup. This closes the swap window where another local user could
+ * replace the entry with a symlink between two `stat`s and slip a victim-owned
+ * 0700 target past the checks (#9070). Rejects a symlink, a non-directory, a
+ * foreign owner, or lingering group/other access via {@link controlDirGuardError}.
+ * Exported as a test seam.
+ */
+export function assertOwnerPrivateDir(dir: string): void {
+	const uid = process.getuid?.();
+	let fd: number;
+	try {
+		fd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_DIRECTORY);
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		// O_NOFOLLOW rejects a symlinked final component; kernels report it as
+		// either ELOOP or (with O_DIRECTORY) ENOTDIR. Either way the entry is
+		// already refused — we only lstat here to label the failure precisely, so
+		// a swap after this point cannot weaken the (already-final) rejection.
+		if (code === "ELOOP" || code === "ENOTDIR") {
+			let isSymlink = false;
+			try {
+				isSymlink = fs.lstatSync(dir).isSymbolicLink();
+			} catch {}
+			throw new Error(`SSH control directory ${dir} ${isSymlink ? "is a symlink" : "is not a directory"}`);
+		}
+		throw err;
+	}
+	try {
+		let st = fs.fstatSync(fd);
+		// Normalize perms on the pinned inode only when it is ours; never fchmod a
+		// directory another user owns.
+		if ((uid === undefined || st.uid === uid) && (st.mode & 0o777) !== 0o700) {
+			try {
+				fs.fchmodSync(fd, 0o700);
+				st = fs.fstatSync(fd);
+			} catch (err) {
+				logger.debug("SSH control dir chmod failed", { path: dir, error: String(err) });
+			}
+		}
+		const reason = controlDirGuardError(
+			{ isSymlink: false, isDir: st.isDirectory(), uid: st.uid, mode: st.mode },
+			uid,
+		);
+		if (reason) {
+			throw new Error(`SSH control directory ${dir} ${reason}`);
+		}
+	} finally {
+		fs.closeSync(fd);
 	}
 }
 
@@ -107,19 +280,53 @@ function buildCommonArgs(host: SSHConnectionTarget, options?: SSHArgsOptions): s
 	return args;
 }
 
-async function runSshSync(args: string[]): Promise<{ exitCode: number | null; stderr: string }> {
-	const result = await $`ssh ${args}`.quiet().nothrow();
-	return { exitCode: result.exitCode, stderr: result.stderr.toString().trim() };
+/**
+ * Per-call timeout for the pre-command SSH setup/probe helpers. These sit on
+ * the `ensureHostInfo` → `probeHostInfo` / `ensureConnection` path that runs
+ * *before* `SshTool.execute` applies the user-provided command timeout, so an
+ * unreachable host or wedged control-master would otherwise hang forever
+ * (#4232). `allowNonZero`/`allowAbort` keep the "return a failure result"
+ * contract that these helpers had under `.quiet().nothrow()`.
+ */
+const SSH_HELPER_TIMEOUT_MS = 30_000;
+
+async function runSshSync(
+	args: string[],
+	timeoutMs = SSH_HELPER_TIMEOUT_MS,
+): Promise<{ exitCode: number | null; stderr: string }> {
+	const result = await ptree.exec(["ssh", ...args], {
+		timeout: timeoutMs,
+		allowNonZero: true,
+		allowAbort: true,
+		stderr: "full",
+	});
+	return { exitCode: result.exitCode, stderr: result.stderr.trim() };
 }
 
-async function runSshCaptureSync(args: string[]): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
-	const result = await $`ssh ${args}`.quiet().nothrow();
+async function runSshCaptureSync(
+	args: string[],
+	timeoutMs = SSH_HELPER_TIMEOUT_MS,
+): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
+	const result = await ptree.exec(["ssh", ...args], {
+		timeout: timeoutMs,
+		allowNonZero: true,
+		allowAbort: true,
+		stderr: "full",
+	});
 	return {
 		exitCode: result.exitCode,
-		stdout: result.stdout.toString().trim(),
-		stderr: result.stderr.toString().trim(),
+		stdout: result.stdout.trim(),
+		stderr: result.stderr.trim(),
 	};
 }
+
+/**
+ * Test-only surface for exercising the pre-command SSH helpers against a
+ * fake `ssh` binary with a shortened timeout. External code MUST NOT depend
+ * on this — call `ensureConnection` / `ensureHostInfo` instead.
+ * @internal
+ */
+export const _sshHelpersForTests = { runSshSync, runSshCaptureSync };
 
 function ensureSshBinary(): void {
 	if (!$which("ssh")) {
@@ -166,6 +373,11 @@ function parseCompatShell(value: unknown): "bash" | "sh" | undefined {
 	return undefined;
 }
 
+function parseTransferShell(value: unknown): SSHHostInfo["transferShell"] {
+	if (value === "sh" || value === "bash" || value === "zsh") return value;
+	return undefined;
+}
+
 function applyCompatOverride(host: SSHConnectionTarget, info: SSHHostInfo): SSHHostInfo {
 	const compatShell =
 		info.compatShell ??
@@ -184,18 +396,26 @@ function applyCompatOverride(host: SSHConnectionTarget, info: SSHHostInfo): SSHH
 	return { ...info, version: info.version ?? 0, compatShell, compatEnabled };
 }
 
-function parseHostInfo(value: unknown): SSHHostInfo | null {
+/**
+ * Parse a raw cache-file value (or any unknown) into a normalized
+ * {@link SSHHostInfo}, dropping fields that don't pass the per-field guards.
+ * Exported so cache-layer round-tripping (incl. the new `transferShell`
+ * field, #3719) is testable without touching disk.
+ */
+export function parseHostInfo(value: unknown): SSHHostInfo | null {
 	if (!value || typeof value !== "object") return null;
 	const record = value as Record<string, unknown>;
 	const os = parseOs(record.os) ?? "unknown";
 	const shell = parseShell(record.shell) ?? "unknown";
 	const compatShell = parseCompatShell(record.compatShell);
+	const transferShell = parseTransferShell(record.transferShell);
 	const compatEnabled = typeof record.compatEnabled === "boolean" ? record.compatEnabled : false;
 	const version = typeof record.version === "number" ? record.version : 0;
 	return {
 		version,
 		os,
 		shell,
+		transferShell,
 		compatShell,
 		compatEnabled,
 	};
@@ -208,6 +428,11 @@ function shouldRefreshHostInfo(host: SSHConnectionTarget, info: SSHHostInfo): bo
 	if (info.os === "windows" && info.compatEnabled && !info.compatShell) return true;
 	if (info.os === "windows" && info.compatShell === "bash" && info.shell === "unknown") return true;
 	if (host.compat === true && info.os === "windows" && !info.compatShell) return true;
+	// A non-Windows host with no verified POSIX transfer shell is ambiguous —
+	// either the probe never ran capability checks, or every candidate failed.
+	// Re-probe rather than letting the ssh:// transfer guard reject it on a
+	// stale `shell: "unknown"` classification (#3719).
+	if (info.os !== "windows" && !info.transferShell) return true;
 	return false;
 }
 
@@ -252,15 +477,99 @@ async function persistHostInfo(host: SSHConnectionTarget, info: SSHHostInfo): Pr
 	}
 }
 
+/**
+ * Frame marker emitted by the remote OS/shell probe. The probe wraps its
+ * payload in this prefix so the parser can ignore startup-file noise (banners,
+ * `motd`, login messages, `Last login: …`) instead of trusting only the first
+ * line of stdout. See #3719.
+ */
+export const HOST_PROBE_MARKER = "PI_HOST_PROBE=";
+
+/** Marker for the transfer-shell capability probe. */
+export const TRANSFER_PROBE_MARKER = "PI_TRANSFER_OK|";
+
+/** sh / bash / zsh, in the order we'll try as `transferShell` candidates. */
+const TRANSFER_SHELL_CANDIDATES = ["sh", "bash", "zsh"] as const;
+
+/**
+ * Find the first line of `stdout`/`stderr` that begins with `marker` and
+ * return everything after it. Used by the SSH host probe so noisy login
+ * dotfiles can't corrupt OS/shell classification by emitting text on the
+ * first line of `ssh` output.
+ *
+ * Returns `null` when no marker line is found in either stream.
+ */
+export function extractProbePayload(stdout: string, stderr: string, marker = HOST_PROBE_MARKER): string | null {
+	for (const blob of [stdout, stderr]) {
+		if (!blob) continue;
+		for (const line of blob.split("\n")) {
+			const trimmed = line.trim();
+			if (trimmed.startsWith(marker)) {
+				return trimmed.slice(marker.length);
+			}
+		}
+	}
+	return null;
+}
+
+/**
+ * Find `marker` anywhere in `stdout` or `stderr` and return everything that
+ * follows it, scanning stdout first. Returns `null` when the marker is in
+ * neither stream.
+ *
+ * Used by the transfer-shell capability probe. Some remotes have broken
+ * login dotfiles that swap fd 1/2, so the marker can land on stderr even
+ * though the probe ran the printf successfully (matches the host-info
+ * probe's stderr fallback). See #3719.
+ */
+export function findProbeMarker(stdout: string, stderr: string, marker: string): string | null {
+	for (const blob of [stdout, stderr]) {
+		if (!blob) continue;
+		const idx = blob.indexOf(marker);
+		if (idx !== -1) return blob.slice(idx + marker.length);
+	}
+	return null;
+}
+
+/** Classify a POSIX-ish `uname -s` payload from the transfer-shell probe. */
+export function osFromUname(value: string): SSHHostOs | undefined {
+	const uname = value.toLowerCase();
+	if (uname.includes("darwin")) return "macos";
+	if (uname.includes("linux") || uname.includes("gnu")) return "linux";
+	if (uname.includes("mingw") || uname.includes("msys") || uname.includes("cygwin") || uname.includes("windows")) {
+		return "windows";
+	}
+	return undefined;
+}
+
+async function probeTransferShell(
+	host: SSHConnectionTarget,
+): Promise<{ shell: SSHHostInfo["transferShell"]; uname: string }> {
+	for (const candidate of TRANSFER_SHELL_CANDIDATES) {
+		// `printf` is POSIX and emits no trailing newline, so we can pin the
+		// marker right against the uname output and split on it cleanly.
+		const remote = `${candidate} -lc 'printf "${TRANSFER_PROBE_MARKER}"; uname -s 2>/dev/null || true'`;
+		const probe = await runSshCaptureSync(await buildRemoteCommand(host, remote));
+		if (probe.exitCode !== 0) continue;
+		const tail = findProbeMarker(probe.stdout, probe.stderr, TRANSFER_PROBE_MARKER);
+		if (tail === null) continue;
+		return { shell: candidate, uname: tail.trim() };
+	}
+	return { shell: undefined, uname: "" };
+}
+
 async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
-	const command = 'echo "$OSTYPE|$SHELL|$BASH_VERSION" 2>/dev/null || echo "%OS%|%COMSPEC%|"';
+	const command = `echo "${HOST_PROBE_MARKER}$OSTYPE|$SHELL|$BASH_VERSION" 2>/dev/null || echo "${HOST_PROBE_MARKER}%OS%|%COMSPEC%|"`;
 	const result = await runSshCaptureSync(await buildRemoteCommand(host, command));
-	if (result.exitCode !== 0 && !result.stdout) {
+	const payload = extractProbePayload(result.stdout, result.stderr);
+	if (payload === null) {
 		logger.debug("SSH host probe failed", { host: host.name, error: result.stderr });
+		const transferProbe = await probeTransferShell(host);
 		const fallback: SSHHostInfo = {
 			version: HOST_INFO_VERSION,
-			os: "unknown",
+			os: transferProbe.shell ? (osFromUname(transferProbe.uname) ?? "unknown") : "unknown",
 			shell: "unknown",
+			transferShell: transferProbe.shell,
 			compatShell: undefined,
 			compatEnabled: false,
 		};
@@ -268,27 +577,26 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 		return fallback;
 	}
 
-	const output = (result.stdout || result.stderr).split("\n")[0]?.trim() ?? "";
-	const [rawOs = "", rawShell = "", rawBash = ""] = output.split("|");
+	const [rawOs = "", rawShell = "", rawBash = ""] = payload.split("|");
 	const ostype = rawOs.trim();
 	const shellRaw = rawShell.trim();
 	const bashVersion = rawBash.trim();
-	const outputLower = output.toLowerCase();
+	const payloadLower = payload.toLowerCase();
 	const osLower = ostype.toLowerCase();
 	const shellLower = shellRaw.toLowerCase();
 	const unexpandedPosixVars =
-		output.includes("$OSTYPE") || output.includes("$SHELL") || output.includes("$BASH_VERSION");
+		payload.includes("$OSTYPE") || payload.includes("$SHELL") || payload.includes("$BASH_VERSION");
 	const windowsDetected =
 		osLower.includes("windows") ||
 		osLower.includes("msys") ||
 		osLower.includes("cygwin") ||
 		osLower.includes("mingw") ||
-		outputLower.includes("windows_nt") ||
-		outputLower.includes("comspec") ||
+		payloadLower.includes("windows_nt") ||
+		payloadLower.includes("comspec") ||
 		shellLower.includes("cmd") ||
 		shellLower.includes("powershell") ||
 		unexpandedPosixVars ||
-		output.includes("%OS%");
+		payload.includes("%OS%");
 
 	let os: SSHHostOs = "unknown";
 	if (windowsDetected) {
@@ -303,6 +611,22 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 	let shell = parseShell(shellLower) ?? "unknown";
 	if (shell === "unknown" && os === "windows" && !shellLower) {
 		shell = "cmd";
+	}
+
+	// For any non-Windows host (including `unknown`, which is often a misclassified
+	// POSIX remote with noisy login output) verify a working transfer shell by
+	// running `sh -lc` / `bash -lc` / `zsh -lc` against it. The first one whose
+	// printf round-trips becomes `transferShell`; ssh:// gates on this rather
+	// than the self-reported login-shell name (#3719).
+	let transferShell: SSHHostInfo["transferShell"];
+	if (os !== "windows") {
+		const probe = await probeTransferShell(host);
+		transferShell = probe.shell;
+		// `uname -s` from the same probe lets us recover the OS when the first
+		// probe couldn't classify it (e.g. the remote silently nuked `$OSTYPE`).
+		if (transferShell && os === "unknown") {
+			os = osFromUname(probe.uname) ?? os;
+		}
 	}
 
 	const hasBash = !unexpandedPosixVars && (Boolean(bashVersion) || shell === "bash");
@@ -328,6 +652,7 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 		version: HOST_INFO_VERSION,
 		os,
 		shell,
+		transferShell,
 		compatShell,
 		compatEnabled,
 	});
@@ -416,7 +741,7 @@ export async function ensureConnection(host: SSHConnectionTarget): Promise<void>
 
 	const promise = (async () => {
 		ensureSshBinary();
-		ensureControlDir();
+		ensureSshControlDir();
 		await validateKeyPermissions(host.keyPath);
 
 		if (!registered) {

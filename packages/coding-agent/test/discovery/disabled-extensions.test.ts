@@ -5,14 +5,26 @@ import * as path from "node:path";
 import { type ContextFile, contextFileCapability } from "@pk-nerdsaver-ai/pi-coding-agent/capability/context-file";
 import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import { initializeWithSettings, loadCapability } from "@pk-nerdsaver-ai/pi-coding-agent/discovery";
-import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
+import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@pk-nerdsaver-ai/pi-utils";
 
-const PROJECT_CONTEXT_ID = "context-file:project:./.ompk/AGENTS.md";
+function restoreEnvValue(key: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[key];
+		delete Bun.env[key];
+		return;
+	}
+	process.env[key] = value;
+	Bun.env[key] = value;
+}
 
 describe("disabledExtensions runtime filtering", () => {
 	let tempDir = "";
 	let tempHomeDir = "";
 	let originalHome: string | undefined;
+	let originalAgentDirEnv: string | undefined;
+	let originalOmpProfileEnv: string | undefined;
+	let originalPiProfileEnv: string | undefined;
+	let originalUserProfile: string | undefined;
 
 	// Restore this spy individually rather than via `vi.restoreAllMocks()`.
 	// That call IS `mock.restore()` (same native function), and the global
@@ -22,10 +34,16 @@ describe("disabledExtensions runtime filtering", () => {
 	let homedirSpy: { mockRestore: () => void } | undefined;
 	beforeEach(async () => {
 		resetSettingsForTest();
+		originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
+		originalOmpProfileEnv = process.env.OMP_PROFILE;
+		originalPiProfileEnv = process.env.PI_PROFILE;
 		originalHome = process.env.HOME;
+		originalUserProfile = process.env.USERPROFILE;
 		tempHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-disabled-ext-home-"));
 		process.env.HOME = tempHomeDir;
-		homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(tempHomeDir);
+		process.env.USERPROFILE = tempHomeDir;
+		vi.spyOn(os, "homedir").mockReturnValue(tempHomeDir);
+		setAgentDir(path.join(tempHomeDir, ".omp", "agent"));
 		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-disabled-ext-"));
 		await fs.mkdir(path.join(tempDir, ".git"), { recursive: true });
 		await fs.mkdir(path.join(tempDir, ".ompk"), { recursive: true });
@@ -34,13 +52,13 @@ describe("disabledExtensions runtime filtering", () => {
 
 	afterEach(async () => {
 		resetSettingsForTest();
-		homedirSpy?.mockRestore();
-		homedirSpy = undefined;
-		if (originalHome === undefined) {
-			delete process.env.HOME;
-		} else {
-			process.env.HOME = originalHome;
-		}
+		vi.restoreAllMocks();
+		restoreEnvValue("HOME", originalHome);
+		restoreEnvValue("OMP_PROFILE", originalOmpProfileEnv);
+		restoreEnvValue("PI_PROFILE", originalPiProfileEnv);
+		restoreEnvValue("PI_CODING_AGENT_DIR", originalAgentDirEnv);
+		restoreEnvValue("USERPROFILE", originalUserProfile);
+		__resetDirsFromEnvForTests();
 		await removeWithRetries(tempHomeDir);
 		await removeWithRetries(tempDir);
 	});

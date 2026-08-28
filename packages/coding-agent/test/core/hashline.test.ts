@@ -7,6 +7,7 @@ import {
 	formatHashlineHeader,
 	MismatchError as HashlineMismatchError,
 } from "@pk-nerdsaver-ai/hashline";
+import { type Type, type } from "@pk-nerdsaver-ai/omptype";
 import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import {
 	canonicalSnapshotKey,
@@ -19,7 +20,6 @@ import {
 import { resolveLocalUrlToPath } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls";
 import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
 import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
-import { type Type, type } from "arktype";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -48,7 +48,7 @@ function header(filePath: string, tag: string): string {
 }
 
 function sameLineRange(anchor: string): string {
-	return `SWAP ${anchor}..${anchor}:`;
+	return `PUT ${anchor}.=${anchor}:`;
 }
 
 async function withTempDir(fn: (tempDir: string) => Promise<void>): Promise<void> {
@@ -88,7 +88,7 @@ function hashlineExecuteOptions(
 describe("hashline executor", () => {
 	it("rejects file creation and directs to the write tool", async () => {
 		await withTempDir(async tempDir => {
-			const input = `[new.ts]\nINS.HEAD:\n${repl("export const x = 1;")}\n`;
+			const input = `[new.ts]\nPUT <1:\n${repl("export const x = 1;")}\n`;
 			await expect(executeHashlineSingle(hashlineExecuteOptions(tempDir, input))).rejects.toThrow(/write tool/);
 			expect(await Bun.file(path.join(tempDir, "new.ts")).exists()).toBe(false);
 		});
@@ -101,13 +101,63 @@ describe("hashline executor", () => {
 
 			await Bun.write(filePath, source);
 			const sourceTag = recordFullSnapshot(getFileReadCache(session), filePath, source);
-			const input = `${header("a.ts", sourceTag)}\nINS.TAIL:\n${repl("bbb")}\n${repl("ccc")}\n${repl("NEW")}\n`;
+			const input = `${header("a.ts", sourceTag)}\nPUT >$:\n${repl("bbb")}\n${repl("ccc")}\n${repl("NEW")}\n`;
 			const result = await executeHashlineSingle(hashlineExecuteOptions(tempDir, input, undefined, session));
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 
 			expect(await Bun.file(filePath).text()).toBe("aaa\nbbb\nccc\nbbb\nccc\nNEW");
 			expect(text).not.toContain("Auto-dropped");
 			expect(text).not.toContain("Auto-absorbed");
+		});
+	});
+
+	it("preserves UTF-8 BOM bytes when hashline edits decoded text", async () => {
+		await withTempDir(async tempDir => {
+			const filePath = path.join(tempDir, "Program.cs");
+			const source = "using A;\n";
+			await Bun.write(filePath, new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(source)]));
+			const session = makeHashlineSession(tempDir);
+			const sourceTag = recordFullSnapshot(getFileReadCache(session), filePath, source);
+			const input = `${header("Program.cs", sourceTag)}\n${sameLineRange(tag(1, source))}\n${repl("using B;")}\n`;
+
+			await executeHashlineSingle(hashlineExecuteOptions(tempDir, input, undefined, session));
+
+			const bytes = await fs.readFile(filePath);
+			expect(Array.from(bytes.subarray(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
+			expect(new TextDecoder().decode(bytes.subarray(3))).toBe("using B;\n");
+		});
+	});
+
+	it("edits BOM-prefixed notebooks through the virtual cell text", async () => {
+		await withTempDir(async tempDir => {
+			const filePath = path.join(tempDir, "notebook.ipynb");
+			const notebook = {
+				cells: [
+					{
+						cell_type: "markdown",
+						metadata: { keep: true },
+						source: ["# Title\n"],
+					},
+				],
+				metadata: {},
+				nbformat: 4,
+				nbformat_minor: 5,
+			};
+			await Bun.write(
+				filePath,
+				new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(JSON.stringify(notebook))]),
+			);
+			const session = makeHashlineSession(tempDir);
+			const editableText = "# %% [markdown] cell:0\n# Title\n";
+			const sourceTag = recordFullSnapshot(getFileReadCache(session), filePath, editableText);
+			const input = `${header("notebook.ipynb", sourceTag)}\n${sameLineRange(tag(2, "# Title"))}\n${repl("# Updated")}\n`;
+
+			await executeHashlineSingle(hashlineExecuteOptions(tempDir, input, undefined, session));
+
+			const updated = await Bun.file(filePath).json();
+			expect(updated.cells).toHaveLength(1);
+			expect(updated.cells[0].source).toEqual(["# Updated\n"]);
+			expect(updated.cells[0].metadata).toEqual({ keep: true });
 		});
 	});
 
@@ -206,7 +256,7 @@ describe("hashline executor", () => {
 				repl("L2h"),
 				repl("L2i"),
 				header("a.ts", originalTag),
-				`INS.POST ${tag(8, "L8")}:`,
+				`PUT >${tag(8, "L8")}:`,
 				repl("INSERTED"),
 			].join("\n");
 
@@ -256,11 +306,7 @@ describe("hashlineEditParamsSchema — payload shape", () => {
 	}
 
 	it("declares only `input` as the model-facing field", () => {
-		// Create an arktype schema that mirrors hashlineEditParamsSchema structure
-		const testSchema = type({
-			input: "string",
-		});
-		const jsonSchema = getJsonSchema(testSchema) as {
+		const jsonSchema = getJsonSchema(hashlineEditParamsSchema) as {
 			properties?: Record<string, unknown>;
 			required?: string[];
 		};
@@ -272,17 +318,16 @@ describe("hashlineEditParamsSchema — payload shape", () => {
 	it("tolerates provider extra fields without declaring `path`", () => {
 		const result = arkSafeParse(hashlineEditParamsSchema, {
 			path: "x.ts",
-			input: `[x.ts]\nINS.HEAD:\n${repl("x")}`,
+			input: `[x.ts]\nPUT <1:\n${repl("x")}`,
 		});
 		expect(result.success).toBe(true);
 	});
 
-	it("accepts `_input` as a provider-emitted alias for `input`", () => {
+	it("rejects `_input` as an alias for `input`", () => {
 		const result = arkSafeParse(hashlineEditParamsSchema, {
-			_input: `[x.ts]\nINS.HEAD:\n${repl("x")}`,
+			_input: `[x.ts]\nPUT <1:\n${repl("x")}`,
 		});
-		expect(result.success).toBe(true);
-		if (result.success) expect(result.data.input).toBe(`[x.ts]\nINS.HEAD:\n${repl("x")}`);
+		expect(result.success).toBe(false);
 	});
 
 	it("still requires `input`", () => {
@@ -324,7 +369,7 @@ describe("hashline — anchor-stale recovery via read snapshot cache", () => {
 			expect(finalLines).toContain("L8");
 
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-			expect(text).toMatch(/Recovered from a stale file hash using a previous read snapshot/);
+			expect(text).toMatch(/Recovered by remapping stale line anchors to unchanged current lines/);
 		});
 	});
 
@@ -392,7 +437,7 @@ describe("hashline — anchor-stale recovery via read snapshot cache", () => {
 			expect(finalLines).toContain("GAMMA");
 			expect(finalLines).not.toContain("gamma");
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-			expect(text).toMatch(/Recovered from a stale file hash using a previous read snapshot/);
+			expect(text).toMatch(/Recovered by remapping stale line anchors to unchanged current lines/);
 		});
 	});
 

@@ -3,6 +3,7 @@ import {
 	createUnavailableWorker,
 	createWorkerHandle,
 	createWorkerSubprocess,
+	inferenceWorkerEnv,
 	logWorkerMessage,
 	resolveWorkerSpawnCmd,
 	SMOKE_TEST_TIMEOUT_MS,
@@ -10,7 +11,6 @@ import {
 	smokeTestWorker,
 	spawnWorkerOrUnavailable,
 	type WorkerHandle,
-	workerEnvFromParent,
 } from "../subprocess/worker-client";
 import type { MnemopiEmbedModelId, MnemopiEmbedWorkerInbound, MnemopiEmbedWorkerOutbound } from "./embed-protocol";
 
@@ -28,17 +28,6 @@ type PendingRequest =
 	| { kind: "init"; model: MnemopiEmbedModelId; resolve: (ok: boolean) => void }
 	| { kind: "embed"; model: MnemopiEmbedModelId; resolve: (vectors: number[][] | Error) => void };
 
-const DEFAULT_IDLE_TERMINATE_MS = 5 * 60 * 1000;
-const IDLE_TERMINATE_ENV = "OMP_MNEMOPI_EMBED_IDLE_TIMEOUT_MS";
-
-function resolveIdleTerminateMs(overrideMs: number | undefined): number {
-	if (overrideMs !== undefined) return overrideMs;
-	const raw = Bun.env[IDLE_TERMINATE_ENV];
-	if (raw === undefined || raw.trim() === "") return DEFAULT_IDLE_TERMINATE_MS;
-	const parsed = Number(raw);
-	return Number.isFinite(parsed) ? parsed : DEFAULT_IDLE_TERMINATE_MS;
-}
-
 /**
  * Hidden subcommand on the main CLI that boots the mnemopi embeddings worker
  * in the spawned subprocess. Kept in sync with the dispatch in `cli.ts`.
@@ -48,14 +37,14 @@ export const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
 /**
  * Spawn the mnemopi embeddings worker as a subprocess. Exported for tests and
  * the smoke probe; production callers go through {@link spawnMnemopiEmbedWorker}.
- * The child inherits the parent env verbatim — fastembed honours `HF_HUB_*`,
+ * The child inherits the parent env — fastembed honours `HF_HUB_*`,
  * `HTTPS_PROXY`, etc., and our `loadFastembed()` reads the same `OMP_*`
  * runtime-install knobs the parent uses.
  */
 export function createMnemopiEmbedSubprocess(): SpawnedSubprocess<MnemopiEmbedWorkerOutbound> {
 	return createWorkerSubprocess<MnemopiEmbedWorkerOutbound>({
 		spawnCommand: resolveWorkerSpawnCmd(MNEMOPI_EMBED_WORKER_ARG),
-		env: workerEnvFromParent(),
+		env: inferenceWorkerEnv(),
 		exitLabel: "mnemopi embed subprocess",
 	});
 }
@@ -95,6 +84,22 @@ export interface MnemopiSubprocessEmbeddingModel {
 	embed(texts: string[], batchSize?: number): AsyncIterable<number[][]>;
 }
 
+/**
+ * Upper bound on a steady-state embed IPC round-trip. Initialization is
+ * intentionally exempt: bundled installs may spend several minutes installing
+ * fastembed and bootstrapping the model, and killing that worker can strand the
+ * runtime install lock. Once initialization succeeds, a longer embed stall
+ * means a hung native runtime (issue #4792) that would otherwise pin whatever
+ * awaits the embed — a turn's memory recall or the headless shutdown
+ * consolidation — indefinitely, leaving the process alive with an unreaped
+ * `__omp_worker_mnemopi_embed` child (issue #7352). On expiry the embed fails
+ * and the worker is SIGKILL-reaped so the next request respawns a fresh one.
+ */
+const EMBED_REQUEST_TIMEOUT_MS = 120_000;
+
+/** Race marker for {@link MnemopiEmbedClient.#awaitRequest}. */
+const REQUEST_TIMED_OUT = Symbol("mnemopi.embed.timedOut");
+
 export class MnemopiEmbedClient {
 	#worker: MnemopiEmbedWorkerHandle | null = null;
 	#unsubscribeMessage: (() => void) | null = null;
@@ -102,16 +107,14 @@ export class MnemopiEmbedClient {
 	#pending = new Map<string, PendingRequest>();
 	#nextRequestId = 0;
 	#spawnWorker: () => MnemopiEmbedWorkerHandle;
-
-	#idleTerminateMs: number;
-	#idleTimer: Timer | null = null;
+	#requestTimeoutMs: number;
 
 	constructor(
 		spawnWorker: () => MnemopiEmbedWorkerHandle = spawnMnemopiEmbedWorker,
-		options: { idleTimeoutMs?: number } = {},
+		requestTimeoutMs: number = EMBED_REQUEST_TIMEOUT_MS,
 	) {
 		this.#spawnWorker = spawnWorker;
-		this.#idleTerminateMs = resolveIdleTerminateMs(options.idleTimeoutMs);
+		this.#requestTimeoutMs = requestTimeoutMs;
 	}
 
 	/**
@@ -184,12 +187,38 @@ export class MnemopiEmbedClient {
 			// `LocalEmbeddingModel` handle would otherwise hit a fresh
 			// worker's "embed before init" guard. Worker `ensureLoaded` is
 			// idempotent so steady-state embeds pay no extra cost.
-			this.#send(worker, { type: "embed", id, model, cacheDir, texts, batchSize });
-			const result = await promise;
+			worker.send({ type: "embed", id, model, cacheDir, texts, batchSize });
+			const result = await this.#awaitRequest(promise);
 			if (result instanceof Error) throw result;
 			return result;
 		} finally {
 			this.#pending.delete(id);
+		}
+	}
+
+	/**
+	 * Await one steady-state embed reply, bounded by
+	 * {@link EMBED_REQUEST_TIMEOUT_MS}. The timeout timer is `unref`'d so a
+	 * pending request never keeps the parent event loop alive on its own (the
+	 * awaiting caller does). On expiry the wedged worker is SIGKILL-reaped via
+	 * {@link terminate} — faulting any other in-flight request and letting the
+	 * next call respawn a fresh child — before the request rejects, so a hung
+	 * native runtime cannot pin a turn's recall or shutdown consolidation
+	 * forever (issue #7352).
+	 */
+	async #awaitRequest<T>(promise: Promise<T>): Promise<T> {
+		const { promise: timedOut, resolve: fire } = Promise.withResolvers<typeof REQUEST_TIMED_OUT>();
+		const timer = setTimeout(() => fire(REQUEST_TIMED_OUT), this.#requestTimeoutMs);
+		timer.unref();
+		try {
+			const winner = await Promise.race([promise, timedOut]);
+			if (winner === REQUEST_TIMED_OUT) {
+				void this.terminate();
+				throw new Error("mnemopi embed worker request timed out");
+			}
+			return winner;
+		} finally {
+			clearTimeout(timer);
 		}
 	}
 

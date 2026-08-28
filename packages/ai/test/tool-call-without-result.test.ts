@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import { complete } from "@pk-nerdsaver-ai/pi-ai/stream";
 import type { Api, Context, Model, OptionsForApi, Tool } from "@pk-nerdsaver-ai/pi-ai/types";
 import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
-import { type } from "arktype";
 import { e2eApiKey, resolveApiKey } from "./oauth";
 
 // Resolve OAuth tokens at module level (async, runs before tests)

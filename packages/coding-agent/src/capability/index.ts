@@ -136,9 +136,10 @@ async function loadImpl<T>(
 	capability: Capability<T>,
 	providers: Provider<T>[],
 	ctx: LoadContext,
-	options: LoadOptions,
+	options: LoadOptions<T>,
 ): Promise<CapabilityResult<T>> {
 	const allItems: Array<T & { _source: SourceMeta; _shadowed?: boolean }> = [];
+	const suppressedItems = new Set<T & { _source: SourceMeta; _shadowed?: boolean }>();
 	const allWarnings: string[] = [];
 	const contributingProviders: string[] = [];
 	const disabledExtensionIds = options.includeDisabled
@@ -196,6 +197,21 @@ async function loadImpl<T>(
 				}
 			}
 
+			if (options.filter && !options.filter(itemWithSource)) {
+				continue;
+			}
+
+			if (options.suppress?.(itemWithSource)) {
+				// Suppressed items still claim their dedupe key below, so a
+				// suppressed higher-priority item shadows same-key lower-priority
+				// ones, but they never survive or equivalence-shadow survivors.
+				itemWithSource._source.providerName = provider.displayName;
+				const suppressed = itemWithSource as T & { _source: SourceMeta; _shadowed?: boolean };
+				suppressedItems.add(suppressed);
+				allItems.push(suppressed);
+				continue;
+			}
+
 			itemWithSource._source.providerName = provider.displayName;
 			allItems.push(itemWithSource as T & { _source: SourceMeta; _shadowed?: boolean });
 			contributedItemCount += 1;
@@ -206,21 +222,33 @@ async function loadImpl<T>(
 		}
 	}
 
-	// Deduplicate by key (first wins = highest priority)
-	const seen = new Map<string, number>();
+	// Deduplicate by key or semantic equivalence (first wins = highest priority)
+	const seen = new Set<string>();
 	const deduped: Array<T & { _source: SourceMeta }> = [];
+	const equivalent = capability.equivalent;
 
-	for (let i = 0; i < allItems.length; i++) {
-		const item = allItems[i];
+	for (const item of allItems) {
 		const key = capability.key(item);
+
+		if (suppressedItems.has(item)) {
+			// Claim key ownership (same-name precedence, including disabled
+			// state) without surviving or equivalence-shadowing survivors.
+			if (key !== undefined) seen.add(key);
+			continue;
+		}
 
 		if (key === undefined) {
 			deduped.push(item);
-		} else if (!seen.has(key)) {
-			seen.set(key, i);
-			deduped.push(item);
-		} else {
+			continue;
+		}
+
+		const keySeen = seen.has(key);
+		seen.add(key);
+		const aliasSeen = !keySeen && equivalent !== undefined && deduped.some(existing => equivalent(existing, item));
+		if (keySeen || aliasSeen) {
 			item._shadowed = true;
+		} else {
+			deduped.push(item);
 		}
 	}
 
@@ -240,7 +268,7 @@ async function loadImpl<T>(
 
 	return {
 		items: deduped,
-		all: allItems,
+		all: suppressedItems.size > 0 ? allItems.filter(item => !suppressedItems.has(item)) : allItems,
 		warnings: allWarnings,
 		providers: contributingProviders,
 	};
@@ -249,7 +277,7 @@ async function loadImpl<T>(
 /**
  * Filter providers based on options and disabled state.
  */
-function filterProviders<T>(capability: Capability<T>, options: LoadOptions): Provider<T>[] {
+function filterProviders<T>(capability: Capability<T>, options: LoadOptions<T>): Provider<T>[] {
 	let providers = (capability.providers as Provider<T>[]).filter(p => !disabledProviders.has(p.id));
 
 	if (options.providers) {
@@ -283,7 +311,10 @@ async function canonicalizePath(p: string): Promise<string> {
 /**
  * Load a capability by ID.
  */
-export async function loadCapability<T>(capabilityId: string, options: LoadOptions = {}): Promise<CapabilityResult<T>> {
+export async function loadCapability<T>(
+	capabilityId: string,
+	options: LoadOptions<T> = {},
+): Promise<CapabilityResult<T>> {
 	const capability = capabilities.get(capabilityId) as Capability<T> | undefined;
 	if (!capability) {
 		throw new Error(`Unknown capability: "${capabilityId}"`);
@@ -293,6 +324,7 @@ export async function loadCapability<T>(capabilityId: string, options: LoadOptio
 	const home = await canonicalizePath(os.homedir());
 	const repoRoot = await findRepoRoot(cwd);
 	const ctx: LoadContext = { cwd, home, repoRoot };
+	if (options.extensionRoots !== undefined) ctx.extensionRoots = options.extensionRoots;
 	const providers = filterProviders(capability, options);
 
 	return await loadImpl(capability, providers, ctx, options);

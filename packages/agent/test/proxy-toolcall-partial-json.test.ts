@@ -9,14 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import type { ProxyAssistantMessageEvent } from "@pk-nerdsaver-ai/pi-agent-core/proxy";
 import { type ProxyMessageEventStream, streamProxy } from "@pk-nerdsaver-ai/pi-agent-core/proxy";
-import type {
-	AssistantMessage,
-	AssistantMessageEvent,
-	Context,
-	FetchImpl,
-	Model,
-	ToolCall,
-} from "@pk-nerdsaver-ai/pi-ai";
+import type { AssistantMessage, AssistantMessageEvent, Context, FetchImpl, Model, ToolCall } from "@pk-nerdsaver-ai/pi-ai";
 import { getStreamingPartialJson } from "@pk-nerdsaver-ai/pi-ai/utils/block-symbols";
 import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 
@@ -94,7 +87,12 @@ describe("streamProxy — tool-call streaming and partialJson isolation", () => 
 			{ type: "toolcall_delta", contentIndex: 0, delta: '{"comm' },
 			{ type: "toolcall_delta", contentIndex: 0, delta: 'and":"ls"}' },
 			{ type: "toolcall_end", contentIndex: 0 },
-			{ type: "done", reason: "toolUse", usage: { ...baseUsage } },
+			{
+				type: "done",
+				reason: "toolUse",
+				usage: { ...baseUsage },
+				content: [{ type: "toolCall", id: "call_1", name: "bash", arguments: { command: "ls" } }],
+			},
 		];
 		const body = buildSseBody(events);
 		const fetchMock: FetchImpl = () => Promise.resolve(new Response(body, { status: 200 }));
@@ -126,7 +124,12 @@ describe("streamProxy — tool-call streaming and partialJson isolation", () => 
 			{ type: "toolcall_delta", contentIndex: 0, delta: '{"comm' },
 			{ type: "toolcall_delta", contentIndex: 0, delta: 'and":"ls"}' },
 			{ type: "toolcall_end", contentIndex: 0 },
-			{ type: "done", reason: "toolUse", usage: { ...baseUsage } },
+			{
+				type: "done",
+				reason: "toolUse",
+				usage: { ...baseUsage },
+				content: [{ type: "toolCall", id: "call_1", name: "bash", arguments: { command: "ls" } }],
+			},
 		];
 		const body = buildSseBody(events);
 		const fetchMock: FetchImpl = () => Promise.resolve(new Response(body, { status: 200 }));
@@ -180,7 +183,12 @@ describe("streamProxy — tool-call streaming and partialJson isolation", () => 
 			{ type: "toolcall_delta", contentIndex: 0, delta: '{"path' },
 			{ type: "toolcall_delta", contentIndex: 0, delta: '":"/tmp/x"}' },
 			{ type: "toolcall_end", contentIndex: 0 },
-			{ type: "done", reason: "toolUse", usage: { ...baseUsage } },
+			{
+				type: "done",
+				reason: "toolUse",
+				usage: { ...baseUsage },
+				content: [{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "/tmp/x" } }],
+			},
 		];
 		const body = buildSseBody(events);
 		const fetchMock: FetchImpl = () => Promise.resolve(new Response(body, { status: 200 }));
@@ -209,7 +217,12 @@ describe("streamProxy — tool-call streaming and partialJson isolation", () => 
 			{ type: "toolcall_delta", contentIndex: 0, delta: '{"path' },
 			{ type: "toolcall_delta", contentIndex: 0, delta: '":"/a"}' },
 			// Missing toolcall_end — stream goes straight to done
-			{ type: "done", reason: "toolUse", usage: { ...baseUsage } },
+			{
+				type: "done",
+				reason: "toolUse",
+				usage: { ...baseUsage },
+				content: [{ type: "toolCall", id: "call_1", name: "edit", arguments: { path: "/a" } }],
+			},
 		];
 		const body = buildSseBody(events);
 		const fetchMock: FetchImpl = () => Promise.resolve(new Response(body, { status: 200 }));
@@ -238,7 +251,15 @@ describe("streamProxy — tool-call streaming and partialJson isolation", () => 
 			{ type: "toolcall_delta", contentIndex: 1, delta: 'ls"}' },
 			{ type: "toolcall_end", contentIndex: 0 },
 			{ type: "toolcall_end", contentIndex: 1 },
-			{ type: "done", reason: "toolUse", usage: { ...baseUsage } },
+			{
+				type: "done",
+				reason: "toolUse",
+				usage: { ...baseUsage },
+				content: [
+					{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "a" } },
+					{ type: "toolCall", id: "call_2", name: "bash", arguments: { command: "ls" } },
+				],
+			},
 		];
 		const body = buildSseBody(events);
 		const fetchMock: FetchImpl = () => Promise.resolve(new Response(body, { status: 200 }));

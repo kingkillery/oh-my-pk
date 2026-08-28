@@ -6,12 +6,14 @@ import { executeBuiltinSlashCommand } from "@pk-nerdsaver-ai/pi-coding-agent/sla
 function createRuntime() {
 	const handleTanCommand = vi.fn(async () => {});
 	const setText = vi.fn();
+	const addToHistory = vi.fn();
 	return {
 		handleTanCommand,
 		setText,
+		addToHistory,
 		runtime: {
 			ctx: {
-				editor: { setText } as unknown as InteractiveModeContext["editor"],
+				editor: { setText, addToHistory } as unknown as InteractiveModeContext["editor"],
 				handleTanCommand,
 				sessionManager: {
 					getCwd: vi.fn(() => process.cwd()),
@@ -56,5 +58,15 @@ describe("/tan slash command", () => {
 
 		expect(handled).toBe(true);
 		expect(harness.handleTanCommand).toHaveBeenCalledWith("check nearby files", path.resolve(process.cwd(), "."));
+	});
+
+	it("handles a blank /tan invocation without error", async () => {
+		const harness = createRuntime();
+
+		const handled = await executeBuiltinSlashCommand("/tan   ", harness.runtime);
+
+		expect(handled).toBe(true);
+		expect(harness.setText).toHaveBeenCalledWith("");
+		expect(harness.handleTanCommand).toHaveBeenCalledWith("");
 	});
 });

@@ -1,14 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { type } from "@pk-nerdsaver-ai/omptype";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
 import { Text } from "@pk-nerdsaver-ai/pi-tui";
 import { formatBytes } from "@pk-nerdsaver-ai/pi-utils";
-import { type } from "arktype";
 import { executeBash } from "../../exec/bash-executor";
 import type { ToolDefinition } from "../../extensibility/extensions";
 import type { Theme } from "../../modes/theme/theme";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TailBuffer, truncateTail } from "../../session/streaming-output";
 import { replaceTabs, shortenPath } from "../../tools/render-utils";
-import * as git from "../../utils/git";
 import { parseWorkDirDirtyPaths } from "../git";
 import {
 	EXPERIMENT_MAX_BYTES,
@@ -56,7 +56,7 @@ export function createRunExperimentTool(
 		defaultInactive: true,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const storage = await openAutoresearchStorageIfExists(ctx.cwd);
-			const currentBranch = (await git.branch.current(ctx.cwd)) ?? null;
+			const currentBranch = (await vcs.git(ctx.cwd)?.currentBranch()) ?? null;
 			const session = storage?.getActiveSessionForBranch(currentBranch) ?? null;
 			if (!storage || !session) {
 				return {

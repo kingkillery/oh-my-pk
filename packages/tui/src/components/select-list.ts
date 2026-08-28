@@ -12,6 +12,8 @@ const DEFAULT_PRIMARY_COLUMN_WIDTH = 32;
 const PRIMARY_COLUMN_GAP = 2;
 const MIN_DESCRIPTION_WIDTH = 10;
 
+const DEFAULT_CURSOR_SYMBOL = ">";
+
 function sanitizeSingleLine(text: string): string {
 	return replaceTabs(text)
 		.replace(/[\r\n]+/g, " ")
@@ -25,6 +27,8 @@ export interface SelectItem {
 	value: string;
 	label: string;
 	description?: string;
+	/** Optional type-indicator glyph rendered in an aligned column before the label */
+	icon?: string;
 	/** Dim hint text shown inline after cursor when this item is selected */
 	hint?: string;
 }
@@ -36,6 +40,8 @@ export interface SelectListTheme {
 	scrollInfo: (text: string) => string;
 	noMatch: (text: string) => string;
 	symbols: SymbolTheme;
+	/** Style for the type-icon column on unselected rows. Defaults to plain text. */
+	icon?: (text: string) => string;
 	/** Hover band applied to the full row under the mouse pointer. */
 	hovered?: (text: string) => string;
 }
@@ -62,12 +68,18 @@ export interface SelectListLayoutOptions {
 	 * wrap unevenly.
 	 */
 	wrapDescription?: boolean;
+	/**
+	 * Cap wrapped descriptions at this many visual rows; the last kept row is
+	 * ellipsized. Only meaningful with `wrapDescription`.
+	 */
+	maxDescriptionRows?: number;
 }
 
 type SelectItemLayout =
 	| {
 			kind: "description";
 			prefix: string;
+			iconCell: string;
 			truncatedValue: string;
 			spacing: string;
 			descriptionSingleLine: string;
@@ -77,11 +89,13 @@ type SelectItemLayout =
 	| {
 			kind: "primary";
 			prefix: string;
+			iconCell: string;
 			truncatedValue: string;
 			spacing: "";
 	  };
 
 export class SelectList implements Component, MouseRoutable {
+	#maxVisible: number;
 	#filteredItems: ReadonlyArray<SelectItem>;
 	#filterQuery = "";
 	#selectedIndex: number = 0;
@@ -95,11 +109,17 @@ export class SelectList implements Component, MouseRoutable {
 
 	constructor(
 		private readonly items: ReadonlyArray<SelectItem>,
-		private readonly maxVisible: number,
+		maxVisible: number,
 		private readonly theme: SelectListTheme,
 		private readonly layout: SelectListLayoutOptions = {},
 	) {
+		this.#maxVisible = Math.max(1, Math.trunc(maxVisible));
 		this.#filteredItems = items;
+	}
+
+	/** Refit the visible row budget (hosts clamp the list to available height). */
+	setMaxVisible(rows: number): void {
+		this.#maxVisible = Math.max(1, Math.trunc(rows));
 	}
 
 	setFilter(filter: string): void {
@@ -163,10 +183,11 @@ export class SelectList implements Component, MouseRoutable {
 		}
 
 		const primaryColumnWidth = this.#getPrimaryColumnWidth();
+		const iconColumnWidth = this.#getIconColumnWidth();
 		const wrapEnabled = this.layout.wrapDescription === true;
 		// `maxVisible` is the picker's visual row budget. For non-wrap layouts
 		// every item is one row, so the budget matches the original item count.
-		const visualBudget = this.maxVisible;
+		const visualBudget = this.#maxVisible;
 
 		// Compute per-item visual row counts at the conservative width (i.e.
 		// assume the scrollbar column might be reserved). For non-wrap layouts
@@ -181,7 +202,9 @@ export class SelectList implements Component, MouseRoutable {
 				rowCounts[i] = 0;
 				continue;
 			}
-			rowCounts[i] = wrapEnabled ? this.#computeItemRowCount(item, conservativeRowWidth, primaryColumnWidth) : 1;
+			rowCounts[i] = wrapEnabled
+				? this.#computeItemRowCount(item, conservativeRowWidth, primaryColumnWidth, iconColumnWidth)
+				: 1;
 			visualTotal += rowCounts[i];
 		}
 
@@ -202,7 +225,13 @@ export class SelectList implements Component, MouseRoutable {
 			const item = this.#filteredItems[i];
 			if (!item) continue;
 			const hovered = this.theme.hovered !== undefined && i === this.#hoveredIndex && i !== this.#selectedIndex;
-			const itemRows = this.#renderItem(item, i === this.#selectedIndex, rowWidth, primaryColumnWidth);
+			const itemRows = this.#renderItem(
+				item,
+				i === this.#selectedIndex,
+				rowWidth,
+				primaryColumnWidth,
+				iconColumnWidth,
+			);
 			for (const row of itemRows) {
 				if (rows.length >= visualBudget) break;
 				this.#hitRows[rows.length] = i;
@@ -254,12 +283,12 @@ export class SelectList implements Component, MouseRoutable {
 		}
 		// PageUp - jump up by one visible page
 		else if (kb.matches(keyData, "tui.select.pageUp")) {
-			this.#selectedIndex = Math.max(0, this.#selectedIndex - this.maxVisible);
+			this.#selectedIndex = Math.max(0, this.#selectedIndex - this.#maxVisible);
 			this.#notifySelectionChange();
 		}
 		// PageDown - jump down by one visible page
 		else if (kb.matches(keyData, "tui.select.pageDown")) {
-			this.#selectedIndex = Math.min(this.#filteredItems.length - 1, this.#selectedIndex + this.maxVisible);
+			this.#selectedIndex = Math.min(this.#filteredItems.length - 1, this.#selectedIndex + this.#maxVisible);
 			this.#notifySelectionChange();
 		}
 		// Enter
@@ -271,25 +300,33 @@ export class SelectList implements Component, MouseRoutable {
 		}
 	}
 
-	#renderItem(item: SelectItem, isSelected: boolean, width: number, primaryColumnWidth: number): string[] {
-		const layout = this.#computeItemLayout(item, isSelected, width, primaryColumnWidth);
+	#renderItem(
+		item: SelectItem,
+		isSelected: boolean,
+		width: number,
+		primaryColumnWidth: number,
+		iconColumnWidth: number,
+	): string[] {
+		const layout = this.#computeItemLayout(item, isSelected, width, primaryColumnWidth, iconColumnWidth);
 		const { prefix, truncatedValue, spacing } = layout;
+		const iconCell =
+			layout.iconCell && !isSelected && this.theme.icon ? this.theme.icon(layout.iconCell) : layout.iconCell;
 
 		if (layout.kind === "description") {
 			const { descriptionSingleLine, descriptionStart, remainingWidth } = layout;
 			if (this.layout.wrapDescription) {
-				const wrapped = wrapTextWithAnsi(descriptionSingleLine, remainingWidth);
+				const wrapped = this.#wrapDescription(descriptionSingleLine, remainingWidth);
 				if (wrapped.length === 0) wrapped.push("");
 				const indent = padding(descriptionStart);
 				const first = wrapped[0] ?? "";
 				if (isSelected) {
-					const rows = [this.theme.selectedText(`${prefix}${truncatedValue}${spacing}${first}`)];
+					const rows = [this.theme.selectedText(`${prefix}${iconCell}${truncatedValue}${spacing}${first}`)];
 					for (let i = 1; i < wrapped.length; i++) {
 						rows.push(this.theme.selectedText(`${indent}${wrapped[i]}`));
 					}
 					return rows;
 				}
-				const rows = [prefix + truncatedValue + this.theme.description(spacing + first)];
+				const rows = [prefix + iconCell + truncatedValue + this.theme.description(spacing + first)];
 				for (let i = 1; i < wrapped.length; i++) {
 					rows.push(this.theme.description(`${indent}${wrapped[i]}`));
 				}
@@ -298,24 +335,33 @@ export class SelectList implements Component, MouseRoutable {
 
 			const truncatedDesc = truncateToWidth(descriptionSingleLine, remainingWidth, Ellipsis.Omit);
 			if (isSelected) {
-				return [this.theme.selectedText(`${prefix}${truncatedValue}${spacing}${truncatedDesc}`)];
+				return [this.theme.selectedText(`${prefix}${iconCell}${truncatedValue}${spacing}${truncatedDesc}`)];
 			}
-			return [prefix + truncatedValue + this.theme.description(spacing + truncatedDesc)];
+			return [prefix + iconCell + truncatedValue + this.theme.description(spacing + truncatedDesc)];
 		}
 
 		if (isSelected) {
-			return [this.theme.selectedText(`${prefix}${truncatedValue}`)];
+			return [this.theme.selectedText(`${prefix}${iconCell}${truncatedValue}`)];
 		}
-		return [prefix + truncatedValue];
+		return [prefix + iconCell + truncatedValue];
 	}
 
-	#computeItemRowCount(item: SelectItem, width: number, primaryColumnWidth: number): number {
+	#computeItemRowCount(item: SelectItem, width: number, primaryColumnWidth: number, iconColumnWidth: number): number {
 		// Selection style does not change row count; pass isSelected=false to
 		// keep the cheap path uniform for items outside the visible window.
-		const layout = this.#computeItemLayout(item, false, width, primaryColumnWidth);
+		const layout = this.#computeItemLayout(item, false, width, primaryColumnWidth, iconColumnWidth);
 		if (layout.kind !== "description") return 1;
-		const wrapped = wrapTextWithAnsi(layout.descriptionSingleLine, layout.remainingWidth);
+		const wrapped = this.#wrapDescription(layout.descriptionSingleLine, layout.remainingWidth);
 		return Math.max(1, wrapped.length);
+	}
+	/** Wrap a description, capping it at `maxDescriptionRows` with a trailing ellipsis. */
+	#wrapDescription(description: string, width: number): string[] {
+		const wrapped = wrapTextWithAnsi(description, width);
+		const cap = this.layout.maxDescriptionRows;
+		if (cap === undefined || cap < 1 || wrapped.length <= cap) return wrapped;
+		const kept = wrapped.slice(0, cap);
+		kept[cap - 1] = truncateToWidth(`${kept[cap - 1]} …`, width, Ellipsis.Unicode);
+		return kept;
 	}
 
 	/**
@@ -371,11 +417,15 @@ export class SelectList implements Component, MouseRoutable {
 		isSelected: boolean,
 		width: number,
 		primaryColumnWidth: number,
+		iconColumnWidth: number,
 	): SelectItemLayout {
-		const prefix = isSelected
-			? `${this.theme.symbols.cursor} `
-			: padding(visibleWidth(this.theme.symbols.cursor) + 1);
-		const prefixWidth = visibleWidth(prefix);
+		const cursor = this.theme.symbols?.cursor ?? DEFAULT_CURSOR_SYMBOL;
+		const prefix = isSelected ? `${cursor} ` : padding(visibleWidth(cursor) + 1);
+		// Icon column: every row reserves the same width so labels stay aligned
+		// whether or not an individual item carries an icon.
+		const iconWidth = item.icon ? visibleWidth(item.icon) : 0;
+		const iconCell = iconColumnWidth > 0 ? (item.icon ?? "") + padding(iconColumnWidth - iconWidth + 1) : "";
+		const prefixWidth = visibleWidth(prefix) + (iconColumnWidth > 0 ? iconColumnWidth + 1 : 0);
 		const descriptionSingleLine = item.description ? sanitizeSingleLine(item.description) : undefined;
 
 		if (descriptionSingleLine && width > 40) {
@@ -391,6 +441,7 @@ export class SelectList implements Component, MouseRoutable {
 				return {
 					kind: "description",
 					prefix,
+					iconCell,
 					truncatedValue,
 					spacing,
 					descriptionSingleLine,
@@ -405,9 +456,18 @@ export class SelectList implements Component, MouseRoutable {
 		return {
 			kind: "primary",
 			prefix,
+			iconCell,
 			truncatedValue,
 			spacing: "",
 		};
+	}
+
+	#getIconColumnWidth(): number {
+		let widest = 0;
+		for (const item of this.#filteredItems) {
+			if (item.icon) widest = Math.max(widest, visibleWidth(item.icon));
+		}
+		return widest;
 	}
 
 	#getPrimaryColumnWidth(): number {
@@ -458,12 +518,12 @@ export class SelectList implements Component, MouseRoutable {
 
 	#shouldRenderSearchStatus(): boolean {
 		return (
-			this.layout.overflowSearch !== false && (this.items.length > this.maxVisible || this.#filterQuery.length > 0)
+			this.layout.overflowSearch !== false && (this.items.length > this.#maxVisible || this.#filterQuery.length > 0)
 		);
 	}
 
 	#canEditSearch(): boolean {
-		return this.layout.overflowSearch !== false && this.items.length > this.maxVisible;
+		return this.layout.overflowSearch !== false && this.items.length > this.#maxVisible;
 	}
 
 	#handleSearchInput(keyData: string): boolean {

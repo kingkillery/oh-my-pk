@@ -8,6 +8,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import { Agent, type AgentTool } from "@pk-nerdsaver-ai/pi-agent-core";
 import { type Api, Effort, type Model } from "@pk-nerdsaver-ai/pi-ai";
 import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
@@ -20,7 +21,6 @@ import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-stora
 import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
 import type { AutocompleteProvider } from "@pk-nerdsaver-ai/pi-tui";
 import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
-import { type } from "arktype";
 
 function makeTool(name: string): AgentTool {
 	return {

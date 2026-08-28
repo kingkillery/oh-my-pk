@@ -7,9 +7,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
-import { $env, getAgentDir, isEnoent } from "@pk-nerdsaver-ai/pi-utils";
+import { $env, getAgentDir } from "@pk-nerdsaver-ai/pi-utils";
 import packageJson from "../../../package.json" with { type: "json" };
 import * as AIError from "../../error";
+import { isRecord } from "../../utils";
 import type { OAuthController, OAuthCredentials } from "./types";
 
 const CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098";
@@ -57,21 +58,29 @@ function getDeviceModel(): string {
 	return formatDeviceModel(label, release, arch);
 }
 
+// Device id identifies this install to Kimi. Persistence is best-effort: a
+// missing/unwritable agent dir must never break header construction (and with
+// it every usage probe / request that spreads getKimiCommonHeaders()) — fall
+// back to a per-process ephemeral id instead.
 let getDeviceId = (): string => {
 	const deviceIdPath = path.join(getAgentDir(), DEVICE_ID_FILENAME);
 	try {
-		const existing = fs.readFileSync(deviceIdPath, "utf-8");
-		const trimmed = existing.trim();
-		if (trimmed) {
-			getDeviceId = () => trimmed;
-			return trimmed;
+		const existing = fs.readFileSync(deviceIdPath, "utf-8").trim();
+		if (existing) {
+			getDeviceId = () => existing;
+			return existing;
 		}
-	} catch (error) {
-		if (!isEnoent(error)) throw error;
+	} catch {
+		// Unreadable device-id file: regenerate below.
 	}
 
 	const deviceId = crypto.randomUUID().replace(/-/g, "");
-	fs.writeFileSync(deviceIdPath, `${deviceId}\n`, { mode: 0o600 });
+	try {
+		fs.mkdirSync(path.dirname(deviceIdPath), { recursive: true });
+		fs.writeFileSync(deviceIdPath, `${deviceId}\n`, { mode: 0o600 });
+	} catch {
+		// Persist failure → ephemeral id for this process.
+	}
 	getDeviceId = () => deviceId;
 	return deviceId;
 };
@@ -164,10 +173,29 @@ function parseTokenPayload(payload: TokenResponse, refreshTokenFallback?: string
 		});
 	}
 
+	let accountId: string | undefined;
+	const tokenParts = payload.access_token.split(".");
+	const jwtPayloadPart = tokenParts.length === 3 ? tokenParts[1] : undefined;
+	if (jwtPayloadPart) {
+		try {
+			const jwtPayload: unknown = JSON.parse(
+				new TextDecoder("utf-8").decode(Uint8Array.fromBase64(jwtPayloadPart, { alphabet: "base64url" })),
+			);
+			if (isRecord(jwtPayload)) {
+				const userId = typeof jwtPayload.user_id === "string" ? jwtPayload.user_id.trim() : "";
+				const subject = typeof jwtPayload.sub === "string" ? jwtPayload.sub.trim() : "";
+				accountId = userId || subject || undefined;
+			}
+		} catch {
+			// Opaque access tokens remain valid credentials without account metadata.
+		}
+	}
+
 	return {
 		access: payload.access_token,
 		refresh,
 		expires: Date.now() + payload.expires_in * 1000 - OAUTH_EXPIRY_SKEW_MS,
+		accountId,
 	};
 }
 

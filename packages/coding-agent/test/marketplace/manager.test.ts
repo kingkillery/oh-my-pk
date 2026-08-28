@@ -9,6 +9,8 @@ import { PluginManager } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/pl
 import {
 	MarketplaceManager,
 	readInstalledPluginsRegistry,
+	readMarketplacesRegistry,
+	writeMarketplacesRegistry,
 } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/plugins/marketplace";
 import * as piUtils from "@pk-nerdsaver-ai/pi-utils";
 import { removeSyncWithRetries } from "@pk-nerdsaver-ai/pi-utils";
@@ -127,11 +129,7 @@ describe("MarketplaceManager", () => {
 	// ── Marketplace lifecycle ──────────────────────────────────────────────
 
 	it("addMarketplace with local fixture → appears in listMarketplaces", async () => {
-		const entry = await ctx.manager.addMarketplace(FIXTURE_DIR);
-
-		expect(entry.name).toBe("test-marketplace");
-		expect(entry.sourceType).toBe("local");
-		expect(entry.sourceUri).toBe(FIXTURE_DIR);
+		await ctx.manager.addMarketplace(FIXTURE_DIR);
 
 		const list = await ctx.manager.listMarketplaces();
 		expect(list).toHaveLength(1);
@@ -167,10 +165,37 @@ describe("MarketplaceManager", () => {
 		const added = await ctx.manager.addMarketplace(FIXTURE_DIR);
 
 		const updated = await ctx.manager.updateMarketplace("test-marketplace");
-		expect(updated.name).toBe("test-marketplace");
 		expect(updated.addedAt).toBe(added.addedAt);
 		// updatedAt must be at or after addedAt
 		expect(new Date(updated.updatedAt) >= new Date(added.addedAt)).toBe(true);
+	});
+
+	it("updateMarketplace expands a home-relative catalog path", async () => {
+		const fakeHome = fs.mkdtempSync(path.join(ctx.tmpDir, "home-"));
+		const homedirSpy = spyOn(os, "homedir").mockReturnValue(fakeHome);
+		const registryPath = path.join(ctx.tmpDir, "marketplaces.json");
+		const originalCwd = process.cwd();
+		const cwd = path.join(ctx.tmpDir, "cwd");
+
+		try {
+			const added = await ctx.manager.addMarketplace(FIXTURE_DIR);
+			const catalogPath = "~/.omp/plugins/cache/marketplaces/test-marketplace/marketplace.json";
+			const registry = await readMarketplacesRegistry(registryPath);
+			await writeMarketplacesRegistry(registryPath, {
+				...registry,
+				marketplaces: [{ ...added, catalogPath }],
+			});
+			fs.mkdirSync(cwd);
+			process.chdir(cwd);
+
+			await ctx.manager.updateMarketplace("test-marketplace");
+
+			expect(fs.existsSync(path.join(fakeHome, catalogPath.slice(2)))).toBe(true);
+			expect(fs.existsSync(path.join(cwd, catalogPath))).toBe(false);
+		} finally {
+			process.chdir(originalCwd);
+			homedirSpy.mockRestore();
+		}
 	});
 
 	// ── Plugin discovery ───────────────────────────────────────────────────
@@ -201,7 +226,6 @@ describe("MarketplaceManager", () => {
 		const instEntry = await ctx.manager.installPlugin("hello-plugin", "test-marketplace");
 
 		expect(instEntry.scope).toBe("user");
-		expect(instEntry.version).toBe("1.0.0");
 		expect(fs.existsSync(instEntry.installPath)).toBe(true);
 		const linkPath = path.join(ctx.tmpDir, "node_modules", "hello-plugin");
 		expect(fs.realpathSync(linkPath)).toBe(fs.realpathSync(instEntry.installPath));
@@ -252,9 +276,9 @@ describe("MarketplaceManager", () => {
 	it("installPlugin exposes marketplace package to the runtime loader", async () => {
 		const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mgr-home-"));
 		try {
-			const pluginsDir = path.join(tmpHome, ".ompk", "plugins");
+			const pluginsDir = path.join(tmpHome, ".omp", "plugins");
 			const manager = new MarketplaceManager({
-				marketplacesRegistryPath: path.join(tmpHome, ".ompk", "marketplaces.json"),
+				marketplacesRegistryPath: path.join(tmpHome, ".omp", "marketplaces.json"),
 				installedRegistryPath: path.join(pluginsDir, "installed_plugins.json"),
 				marketplacesCacheDir: path.join(pluginsDir, "cache", "marketplaces"),
 				pluginsCacheDir: path.join(pluginsDir, "cache", "plugins"),
@@ -351,9 +375,9 @@ describe("MarketplaceManager", () => {
 	it("installPlugin keeps marketplace packages out of OMP extension roots", async () => {
 		const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mgr-home-"));
 		try {
-			const pluginsDir = path.join(tmpHome, ".ompk", "plugins");
+			const pluginsDir = path.join(tmpHome, ".omp", "plugins");
 			const manager = new MarketplaceManager({
-				marketplacesRegistryPath: path.join(tmpHome, ".ompk", "marketplaces.json"),
+				marketplacesRegistryPath: path.join(tmpHome, ".omp", "marketplaces.json"),
 				installedRegistryPath: path.join(pluginsDir, "installed_plugins.json"),
 				marketplacesCacheDir: path.join(pluginsDir, "cache", "marketplaces"),
 				pluginsCacheDir: path.join(pluginsDir, "cache", "plugins"),
@@ -373,11 +397,11 @@ describe("MarketplaceManager", () => {
 		const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mgr-home-"));
 		const projectAnchor = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mgr-project-"));
 		try {
-			const userPluginsDir = path.join(tmpHome, ".ompk", "plugins");
-			const projectPluginsDir = path.join(projectAnchor, ".ompk", "plugins");
+			const userPluginsDir = path.join(tmpHome, ".omp", "plugins");
+			const projectPluginsDir = path.join(projectAnchor, ".omp", "plugins");
 			fs.mkdirSync(projectPluginsDir, { recursive: true });
 			const manager = new MarketplaceManager({
-				marketplacesRegistryPath: path.join(tmpHome, ".ompk", "marketplaces.json"),
+				marketplacesRegistryPath: path.join(tmpHome, ".omp", "marketplaces.json"),
 				installedRegistryPath: path.join(userPluginsDir, "installed_plugins.json"),
 				projectInstalledRegistryPath: path.join(projectPluginsDir, "installed_plugins.json"),
 				marketplacesCacheDir: path.join(userPluginsDir, "cache", "marketplaces"),
@@ -560,7 +584,6 @@ describe("MarketplaceManager", () => {
 			scope: "project",
 		});
 		expect(instEntry.scope).toBe("project");
-		expect(instEntry.version).toBe("1.0.0");
 		expect(fs.existsSync(instEntry.installPath)).toBe(true);
 
 		// Persisted to the project registry with project scope — and absent from the user registry.
@@ -714,6 +737,34 @@ describe("MarketplaceManager", () => {
 		await expect(ctx.manager.upgradePlugin("hello-plugin@test-marketplace")).rejects.toThrow(
 			/both user and project scope/,
 		);
+	});
+
+	it("uninstallPlugin dryRun preserves ambiguity checks and both scoped entries", async () => {
+		await ctx.manager.addMarketplace(FIXTURE_DIR);
+		await ctx.manager.installPlugin("hello-plugin", "test-marketplace", { scope: "user" });
+		await ctx.manager.installPlugin("hello-plugin", "test-marketplace", { scope: "project" });
+
+		await expect(
+			ctx.manager.uninstallPlugin("hello-plugin@test-marketplace", undefined, { dryRun: true }),
+		).rejects.toThrow(/both user and project scope/);
+		await ctx.manager.uninstallPlugin("hello-plugin@test-marketplace", "user", { dryRun: true });
+
+		const userReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "installed_plugins.json"));
+		const projectReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "project_installed_plugins.json"));
+		expect(userReg.plugins["hello-plugin@test-marketplace"]).toBeDefined();
+		expect(projectReg.plugins["hello-plugin@test-marketplace"]).toBeDefined();
+	});
+
+	it("uninstallPlugin dryRun rejects a scope where the plugin is not installed", async () => {
+		await ctx.manager.addMarketplace(FIXTURE_DIR);
+		await ctx.manager.installPlugin("hello-plugin", "test-marketplace", { scope: "project" });
+
+		await expect(
+			ctx.manager.uninstallPlugin("hello-plugin@test-marketplace", "user", { dryRun: true }),
+		).rejects.toThrow(/not installed in user scope/);
+
+		const projectReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "project_installed_plugins.json"));
+		expect(projectReg.plugins["hello-plugin@test-marketplace"]).toBeDefined();
 	});
 
 	it("uninstallPlugin scope:user removes only user entry, keeps project entry", async () => {

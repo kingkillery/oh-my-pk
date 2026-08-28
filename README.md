@@ -24,9 +24,12 @@
 
 The most capable agent surface that ships. Continuously tuned by real-world use — complete out of the box, open all the way down.
 
-Canonical product name: `oh-my-pk`. Canonical install endpoint: `https://oh-my-pk.pkking.computer`. Complete documentation home: [`https://oh-my-pk.pkking.computer/docs`](https://oh-my-pk.pkking.computer/docs). Legacy repository URLs and the old `oh-my-pi.pkking.computer` route may remain during migration.
+**60+** providers · **31** built-in tools · **14** lsp ops · **28** dap ops · **~80k** lines of Rust core.
 
-**59** bundled provider namespaces · **3,991** catalog entries · **34** built-in tools · **14** LSP ops · **28** DAP ops · **63,239** maintained lines of Rust.
+> [!NOTE]
+> Pull requests require a **vouch** before they can be accepted. This fork
+> maintains a vouch system to ensure quality contributions. See
+> [CONTRIBUTING.md](CONTRIBUTING.md) for how to get vouched and open a PR.
 
 ## Install
 
@@ -36,7 +39,46 @@ The installer scripts install or validate Bun and then install the
 **macOS · Linux**
 
 ```sh
-curl -fsSL https://oh-my-pk.pkking.computer/install.sh | sh
+curl -fsSL https://oh-my-pk.pkking.computer/install | sh
+```
+
+> **Alpine / musl:** the prebuilt musl binary links `libstdc++`/`libgcc` dynamically, which stock Alpine does not ship. Install them first: `apk add libstdc++ libgcc`.
+
+**Homebrew**
+
+```sh
+# Homebrew tap not available for this fork
+```
+
+**Bun (recommended)**
+
+```sh
+bun install -g @pk-nerdsaver-ai/pi-coding-agent
+```
+
+**Nix**
+
+```sh
+# Run without installing
+nix run github:kingkillery/oh-my-pk
+
+# Or install into the active profile
+nix profile install github:kingkillery/oh-my-pk
+```
+
+Flake consumers can use `packages.<system>.omp`, `overlays.default`, `nixosModules.default`, or `homeManagerModules.default`. A Home Manager configuration can install OMP and own its settings declaratively:
+
+```nix
+{
+  inputs.omp.url = "github:kingkillery/oh-my-pk";
+
+  # In your Home Manager module:
+  imports = [ inputs.omp.homeManagerModules.default ];
+  programs.omp = {
+    enable = true;
+    settings.startup.quiet = true;
+  };
+}
 ```
 
 **Windows (PowerShell)**
@@ -82,7 +124,7 @@ GitHub, Hugging Face, and npm release gates.
 
 There is no Homebrew tap or mise registry entry for this fork — don't use
 `brew install kingkillery/tap/omp` or
-`mise use -g github:kingkillery/oh-my-pi`; neither is published.
+`mise use -g github:kingkillery/oh-my-pk`; neither is published.
 
 ### Shell completions
 
@@ -101,7 +143,7 @@ oh-my-pk completions fish > ~/.config/fish/completions/oh-my-pk.fish
 
 ## Every tool, _benchmaxxed_.
 
-Edits that land on the first attempt. Reads that summarize files instead of dumping their content. Searches that return instantly. Pick any model — omp will get it right.
+Edits that land on the first attempt. Reads that summarize files instead of dumping their content. Searches that return instantly. Pick any model — oh-my-pk will get it right.
 
 | model            | metric       | what                                                                  |
 | ---------------- | ------------ | --------------------------------------------------------------------- |
@@ -119,15 +161,21 @@ Edits that land on the first attempt. Reads that summarize files instead of dump
 
 ## The Pi _you love_, with **batteries included**.
 
-Originally built on [Mario Zechner](https://github.com/mariozechner)'s wonderful [Pi](https://github.com/badlogic/pi-mono), omp adds everything you're missing.
+Originally built on [Mario Zechner](https://github.com/mariozechner)'s wonderful [Pi](https://github.com/badlogic/pi-mono), oh-my-pk adds everything you're missing.
 
 ### 01 · Code execution w/ tool-calling
 
-Most harnesses give the agent a Python sandbox and call it done. Ours runs persistent Python and a Bun worker, and either kernel can call back into the agent's own tools — `read`, `grep`, `task` — over a loopback bridge. The agent loads a CSV with `tool.read` from inside Python, charts it from JavaScript, and never leaves the cell.
+Most harnesses give the agent a Python sandbox and call it done. Ours runs persistent Python and a Bun worker, and either kernel can call back into the agent's own tools — read, search, task — over a loopback bridge. The agent loads a CSV with tool.read from inside Python, charts it from JavaScript, and never leaves the cell.
+
+![omp TUI running Python code and rendering a chart.](assets/python.webp)
 
 ### 02 · LSP wired into every write
 
 Ask for a rename and you get a rename. The call goes through workspace/willRenameFiles, so re-exports, barrel files, and aliased imports update before the file moves. Everything your IDE knows, the agent knows.
+
+![omp TUI with TypeScript and Biome language servers active.](assets/lspv.webp)
+
+_[Read the LSP config docs](docs/lsp-config.md)_
 
 ### 03 · Drives a real debugger
 
@@ -147,6 +195,8 @@ For whole-repository coverage, the bundled `agentic-mapreduce` skill turns deter
 
 Agent Hub can sync background agents into pk-kanban, keeping long-running worker state visible on the same local board you use for project coordination.
 
+Watch the fan-out while it runs: `Alt+A` opens [Agent Hub](docs/agent-hub.md), where the roster shows current activity and usage for every subagent. Open one to read its live transcript, type a steering message, revive a parked worker, or kill a stuck one without aborting the parent session.
+
 ### 06 · A second model, watching every turn.
 
 Pair a reviewer model to the 'advisor' role and it reads every turn the main agent takes, injecting notes inline — a quiet aside, a concern, or a hard blocker. It runs on its own context and its own model, so it catches what the doer rushed past. The main agent sees the note and course-corrects, or tells you why it won't.
@@ -161,11 +211,15 @@ Need the second model to do work instead of review it? `/fusion on` keeps a warm
 
 ### 08 · Read a pdf on arxiv, why not?
 
-`web_search` walks an eighteen-provider availability/fallback chain and hands whatever URLs it finds straight to `read`. Arxiv PDFs, GitHub pages, Stack Overflow threads come back as structured markdown with anchors intact — the same tool surface you use on local files. Cite, follow, quote, never lose where you came from.
+web_search chains twenty-three ranked providers and hands whatever URLs it finds straight to read. Arxiv PDFs, GitHub pages, Stack Overflow threads come back as structured markdown with anchors intact — the same tool surface you use on local files. Cite, follow, quote, never lose where you came from.
+
+![omp TUI: web_search returns 10 ranked Perplexity sources for inference-time compute scaling, the agent picks an arxiv paper, calls read https://arxiv.org/pdf/2604.10739v1, and summarizes the paper's headline result with real numbers.](https://oh-my-pk.pkking.computer/clips/web-poster.webp)
+
+_[Watch the capture ↗](https://oh-my-pk.pkking.computer/clips/web.mp4)_
 
 ### 09 · Unapologetically native. Even on Windows.
 
-Other agents shell out to rg, grep, find, and bash. On many machines those binaries don't exist, and on the ones where they do, every call costs a fork-exec round-trip. omp links the real implementations into the process. ripgrep, glob, find: in-process. brush is the bash, with sessions that survive across calls. The same omp binary runs on macOS, Linux, and Windows — no WSL bridge.
+Other agents shell out to rg, grep, find, and bash. On many machines those binaries don't exist, and on the ones where they do, every call costs a fork-exec round-trip. omp links the real implementations into the process. ripgrep, glob, find: in-process. brush is the bash — with sessions that survive across calls, and 58 command-line utilities (ls, sed, sort, xargs, even jq) ported into the builtins crate and run in-process, zero fork/exec. The same omp binary runs on macOS, Linux, and Windows — no WSL bridge.
 
 ### 10 · Code review with priorities and a verdict
 
@@ -179,9 +233,9 @@ Perfect edits, fewer tokens. The model points at anchors instead of retyping the
 
 Other harnesses bolt on gh_issue_view, gh_pr_view, gh_search — each with its own parameters the agent has to learn and you have to debug. We skipped that. read already handles paths; PRs are paths. One interface to teach the model, one surface to keep correct.
 
-### 13 · Hindsight: memory the agent curates
+### 13 · Memory the agent curates
 
-The agent remembers your codebase between sessions. It writes facts mid-run with retain, pulls them back with recall, and compresses each session into a mental model that loads on the first turn of the next one. Project-scoped by default, so what it learns about this repo stays with this repo.
+The agent remembers your codebase between sessions. It writes facts mid-run with retain, captures reusable lessons with learn, pulls them back with recall, and compresses each session into a mental model that loads on the first turn of the next one. Pick the engine with `memory.backend` — local, Hindsight, or Mnemopi. Project-scoped by default, so what it learns about this repo stays with this repo.
 
 ### 14 · ACP: editor-drivable agent
 
@@ -197,7 +251,7 @@ oh-my-pk commit reads the working tree through git_overview, git_file_diff, and 
 
 ### 17 · Read PRs. _Walk skills._ Pull JSON out of subagents.
 
-Fifteen internal schemes — `pr://`, `issue://`, `agent://`, `skill://`, `rule://`, and the rest — resolve transparently inside every FS-shaped tool the agent already calls. `read pr://1428` returns the same shape as `read src/foo.ts`. `grep` walks a diff like a directory. `agent://<id>/findings.0.path` pulls a field out of a subagent's output by path.
+Sixteen internal schemes — `pr://`, `issue://`, `agent://`, `skill://`, `ssh://`, and the rest — resolve transparently inside every FS-shaped tool the agent already calls. `read pr://1428` returns the same shape as `read src/foo.ts`. `grep` walks a diff like a directory. `agent://<id>/findings.0.path` pulls a field out of a subagent's output by path.
 
 ### 18 · Conflict resolution, made easy.
 
@@ -205,87 +259,92 @@ Each merge conflict becomes one URL. The agent writes `@theirs`, `@ours`, or `@b
 
 ### 19 · Preview, then accept.
 
-`ast_edit` returns a _(proposed)_ card with the replacement count. The change is staged. The agent calls `resolve` with a reason; the TUI turns it into an **Accept** card and the disk move happens — atomic, all or nothing.
+`ast_edit` returns a _(proposed)_ card with the replacement count. The change is staged. The agent writes a one-line reason to `xd://resolve`; the TUI turns it into an **Accept** card and the disk move happens — atomic, all or nothing.
 
 ### 20 · Drives a _real browser_. _Or your Slack?_
 
-Stealth's on by default, so pages see a normal user instead of a headless bot. The same API drives any Electron app in place — point it at Slack and the agent reads your DMs the way it reads the web.
+Stealth's on by default, so pages see a normal user instead of a headless bot. The same API drives any Electron app in place — point it at Slack and the agent reads your DMs the way it reads the web. Or skip the sandbox entirely: the browser relay extension lets the agent adopt the Chrome tabs you already have open, without stealing focus.
+
+### 21 · Hands on the desktop itself
+
+`computer` runs persistent JavaScript against the real host: enumerate windows and displays, capture screenshots, send native input, walk the OS accessibility tree, touch the clipboard. Not the browser tool, no DOM — the same desktop you're looking at.
 
 ## Whatever the task needs, _it's already in the box_.
 
-34 canonical built-ins live in the same namespace as `read` and `bash`. Pin the active set with `--tools read,edit,bash,…`; discoverable tools can stay out of the prompt until `search_tool_bm25` surfaces them when discovery is enabled.
+31 tools live in the same namespace as `read` and `bash`. Pin the active set with `--tools read,edit,bash,…`; rarely used discoverable tools stay behind `xd://` devices. `read xd://` lists them, and `write xd://<tool>` runs one when `tools.xdev` is enabled.
 
 **Files & search**
 
-- `read` — files, dirs, archives, SQLite, PDFs, notebooks, URLs, and internal `://` schemes through one path.
+- `read` — files, dirs, archives, SQLite, PDFs, notebooks, URLs, remote `ssh://` paths, and internal `://` schemes through one path.
 - `write` — create or overwrite a file, archive entry, or SQLite row.
 - `edit` — hashline patches with content-hash anchors and stale-anchor recovery.
 - `ast_edit` — structural rewrites previewed before apply, via ast-grep.
 - `ast_grep` — structural code queries over 50+ tree-sitter grammars.
-- `grep` — regex content search over files, globs, and internal URLs; legacy alias: `search`.
-- `glob` — glob-based path lookup; legacy alias: `find`.
-- `context_oracle` — ask a lightweight repository-context service for cited LSP, file, diagnostic, and edit-impact evidence.
+- `grep` — regex over files, globs, and internal URLs.
+- `glob` — glob-based path lookup; reach for `grep` when you need content matches.
 
 **Runtime**
 
-- `bash` — workspace shell, with optional PTY or background-job dispatch.
+- `bash` — workspace shell with 46 in-process coreutils, optional PTY, and background-job dispatch.
 - `eval` — persistent Python and JavaScript cells with shared prelude and tool re-entry.
-- `ssh` — one remote command against a configured host.
 
 **Code intelligence**
 
-- `lsp` — diagnostics, navigation, symbols, renames, code actions, and raw requests.
-- `debug` — drive a DAP session: breakpoints, stepping, threads, stack, and variables.
+- `lsp` — diagnostics, navigation, symbols, renames, code actions, raw requests.
+- `debug` — drive a DAP session — breakpoints, stepping, threads, stack, variables.
+- `security_scan` — plan and run native security reviews; drives Codex Security cloud scans.
 
 **Coordination**
 
 - `task` — fan out subagents in parallel, optionally workspace-isolated.
-- `irc` — short prose between live agents in this process.
+- `hub` — message live agents, wait on or cancel background jobs, and supervise long-running processes.
 - `todo` — ordered mutations over the session todo list with phase tracking.
-- `job` — wait on or cancel background jobs.
 - `ask` — structured follow-up questions for interactive runs.
 
-**Outside the box**
+**Desktop & web**
 
-- `browser` — cmux WKWebView tabs when available, otherwise Puppeteer over local/headless Chromium or CDP-attached/spawned apps.
-- `web_search` — query configured providers, returning an answer plus citations.
-- `deep_research` — run multi-step web research and produce a cited report.
-- `ix_bridge` — drive the local IX Bridge daemon/Chrome extension with status, guide, and command actions.
-- `github` — GitHub CLI operations for repos, PRs, issues, code search, and Actions run-watch.
+- `browser` — Puppeteer tabs over headless Chromium, CDP-attached apps, or your own Chrome via the relay.
+- `computer` — persistent JS against the host desktop: windows, screenshots, native input, AX tree, clipboard.
+- `web_search` — one query across configured providers, returning answer plus citations.
+- `github` — GitHub CLI ops — repo, PR, issues, code search, Actions run-watch.
+- `generate_image` — generate or edit raster images via Gemini, GPT, or xAI Grok image models.
 - `inspect_image` — vision-model analysis of a local image file.
 
-**Memory & state**
+**Memory & skills**
 
 - `checkpoint` — mark conversation state for a later collapse-and-report.
-- `rewind` — prune exploratory context and keep a concise report.
-- `memory_edit` — edit durable memory through the active Mnemopi backend.
-- `retain` — queue durable facts into the active Hindsight or Mnemopi backend.
-- `recall` — search the active Hindsight or Mnemopi backend for raw memories.
-- `reflect` — synthesize an answer over the active Hindsight or Mnemopi memory bank.
-- `learn` — capture a reusable lesson in long-term memory and optionally create or update a managed skill.
+- `rewind` — prune exploratory context, keep a concise report.
+- `retain` — queue durable facts into the active memory bank.
+- `recall` — search the memory bank for raw memories.
+- `reflect` — synthesize an answer over the bank.
+- `memory_edit` — update, forget, or invalidate stored memories by id.
+- `learn` — capture a reusable lesson; optionally promote it into a managed skill.
 - `manage_skill` — create, update, or delete an isolated managed skill.
-- `activity` — read the local Activity Memory timeline by calendar day or trailing hours; local-only and read-only.
 
-**Misc**
-
-- `search_tool_bm25` — BM25 over the discoverable tool index; activates top matches mid-session.
-
-**Bundled session extensions — not included in the 34 built-ins**
-
-- `generate_image` — generate or edit raster images via Gemini, GPT, or xAI Grok image models.
-- `tts` — local Kokoro-82M WAV/PCM16 or xAI Grok Voice WAV/MP3; automatic backend selection prefers local.
-
-**Hidden control tool — not included in the 34 built-ins**
-
-- `resolve` — apply or discard a queued preview action.
-
-Availability for canonical built-ins: off by default — `github` (`github.enabled`), `inspect_image` (`inspect_image.enabled`), `checkpoint`/`rewind` (`checkpoint.enabled`), `activity` (`gopkClips.enabled`), `memory_edit` (`memory.backend: mnemopi`), `retain`/`recall`/`reflect` (`memory.backend: hindsight` or `mnemopi`), `manage_skill` (`autolearn.enabled`; top-level only), and `learn` (`autolearn.enabled`; top-level only; memory backend `local`, `hindsight`, or `mnemopi`). `search_tool_bm25` is available whenever discovery is enabled; `tools.discoveryMode` defaults to `all`. Bundled extension `tts` is separately gated by `speechgen.enabled` and is off by default.
+Setting-gated, off by default: `github`, `security_scan`, `generate_image`, `tts`, `checkpoint`, `rewind`, and the memory tools (`retain`/`recall`/`reflect`/`memory_edit`, per `memory.backend`). `inspect_image` activates automatically when the active model can't see.
 
 [Full tool reference →](https://oh-my-pk.pkking.computer/docs)
 
-## 59 bundled provider namespaces, 3,991 catalog entries, _one /model away_.
+### Prompt controls
 
-Roles route work by intent. Common roles are `default`, `smol` (fast/cheap), `slow` (thinking), `vision`, `plan`, `designer`, `commit`, `task`, and `advisor`; specialized roles cover browser operation/control, route prediction, fast context, and `budget`/`balanced`/`max-intelligence`/`free` tiers. `title` and `tiny` are functional but hidden. General delegated agents use `task`; quick mechanical agents can use `smol`; `commit` drives commit generation, including changelog work. Override at launch with `--smol`, `--slow`, or `--plan`; cycle through configured models for the active role with `Ctrl+P`; swap the active model mid-session with `/model`.
+Three standalone, lowercase words opt a turn into specialized agent behavior:
+
+- `ultrathink` — request careful multi-step reasoning and the highest supported automatic thinking effort.
+- `orchestrate` — run substantial independent work through parallel subagents and verify each phase.
+- `workflowz` — build a deterministic multi-subagent workflow with the active `task` tool.
+
+They trigger only in prose, not inside code spans, fenced code blocks, XML/HTML sections, identifiers, or paths. See [Magic keywords](docs/magic-keywords.md) for exact matching rules and configuration.
+
+### Session controls
+
+Slash commands shift how a whole session runs:
+
+- `/vibe` — enter [Vibe mode](docs/vibe-mode.md): act as a director driving persistent `fast`/`good` worker sessions with a `read`-only toolset.
+- `/fresh` — reset the provider stream state (stale prompt cache, wedged stream) without changing the local transcript. See [Session operations](docs/session-operations-export-share-fork-resume.md#fresh).
+
+## Sixty-plus providers, a thousand models, _one /model away_.
+
+Ten roles route work by intent. `default` for normal turns. `smol` for cheap subagent fan-out. `slow` for deep reasoning. `plan` for plan mode. `commit` for changelogs. Plus `vision`, `designer`, `task`, `advisor`, and `tiny` for their namesakes. Override at launch with `--smol`, `--slow`, or `--plan`; cycle through the configured models for the active role with `Ctrl+P`. Swap the active model mid-session with the `/model` slash command.
 
 The lists below are selected bundled providers, not the exhaustive 59-namespace catalog. `/login` handles supported OAuth/account-backed providers; API-key-backed APIs and coding gateways use their provider credentials.
 
@@ -293,52 +352,87 @@ The lists below are selected bundled providers, not the exhaustive 59-namespace 
 
 Anthropic · OpenAI · Google Gemini · Google Vertex · Azure OpenAI · Amazon Bedrock · xAI · Z.AI (direct) · DeepSeek · Mistral · Groq · Cerebras · Fireworks · Together · Hugging Face · NVIDIA · OpenRouter · Synthetic · Vercel AI Gateway · Cloudflare AI Gateway
 
-### Selected accounts, coding plans, and gateways
+Anthropic `oauth` · OpenAI · OpenAI Codex `oauth` · Google Gemini · Google Vertex · Google Antigravity `oauth` · xAI · SuperGrok `oauth` · DeepSeek · Mistral · Groq · Cerebras · Fireworks · Together · Baseten · DeepInfra · Hugging Face · NVIDIA · Meta · Amazon Bedrock · Azure OpenAI · SiliconFlow · GMI Cloud · CoreWeave · Sakana AI · OpenRouter · Synthetic · Vercel AI Gateway · Cloudflare AI Gateway · Wafer Serverless
 
 OpenAI Codex `oauth` · Google Antigravity `oauth` · Google Gemini CLI `oauth` · Cursor `oauth` · GitHub Copilot `oauth` · Cline `oauth` · Qwen Portal `oauth` · Ollama Cloud `oauth` · Wafer Serverless `oauth` · GitLab Duo · Kimi Code · MiniMax Coding Plan · Alibaba Coding Plan · Zhipu Coding Plan · Xiaomi token plans · Wafer Pass · OpenCode Go · OpenCode Zen · Moonshot · Qianfan · NanoGPT · Venice · Kilo · ZenMux
 
 Perplexity is a `web_search` backend, not a bundled `/model` provider.
 
-### Local and self-hosted
+Cursor `oauth` · GitHub Copilot `oauth` · GitLab Duo · Devin `oauth` · Kimi Code `plan` · Moonshot · MiniMax Coding Plan `plan` · MiniMax Coding Plan CN `plan` · Alibaba Coding Plan `plan` · Qwen Portal `oauth` · Z.AI / GLM Coding Plan `plan` · Zhipu Coding Plan `plan` · Xiaomi MiMo · Qianfan · Umans `plan` · NanoGPT · Novita · Venice · Kilo · ZenMux · OpenCode Go · OpenCode Zen
 
 The three implicit keyless engines are Ollama, llama.cpp, and LM Studio. Ollama discovers through native `/api/tags` and `/api/show`; llama.cpp uses its model endpoints; LM Studio uses `/v1/models`. vLLM and LiteLLM also support runtime discovery and can be configured keyless when the server permits it. Ollama Cloud is hosted and requires API-key or OAuth authentication.
 
+### Custom OpenAI-compatible providers
+
+Define custom providers in `~/.omp/agent/models.yml`:
+
+```yaml
+providers:
+  spark:
+    baseUrl: http://192.168.10.223:8000/v1
+    api: openai-completions
+    apiKey: dummy
+    models:
+      - id: minimax-m3
+        name: MiniMax M3
+        contextWindow: 100000
+        maxTokens: 32000
+```
+
+Run `omp models spark` to verify discovery. Then run `omp setup` and choose the model in the default-model step, or open `/model` in a session and assign it to the `default` role.
+
+To preconfigure the default without the picker, add the selector to `~/.omp/agent/config.yml`:
+
+```yaml
+modelRoles:
+  default: spark/minimax-m3
+```
+
 ### Four knobs that make routing useful
 
-- **Custom providers** — Declare providers in `~/.ompk/agent/models.yml` with any supported transport: `openai-completions`, `openai-responses`, `openai-codex-responses`, `azure-openai-responses`, `anthropic-messages`, `google-generative-ai`, `google-gemini-cli`, or `google-vertex`.
-- **Fallback chains** — Per-role chains under `retry.fallbackChains`. When the primary throws 429s or hits a quota wall, the next entry takes the rest of the turn — restored on cooldown.
+- **Custom providers** — Declare anything that speaks `openai-completions`, `openai-responses`, `openai-codex-responses`, `azure-openai-responses`, `anthropic-messages`, `bedrock-converse-stream`, `google-generative-ai`, `google-gemini-cli`, or `google-vertex` in `~/.omp/agent/models.yml`.
+- **Fallback chains** — Per-role or per-model chains under `retry.fallbackChains`. When the primary throws 429s or hits a quota wall, the next entry takes the rest of the turn — restored on cooldown.
 - **Path-scoped models** — Scope `enabledModels` and `disabledProviders` entries to a `path:` prefix to pin a different model set on one repo without touching the global config. Scoped entries cover the path and everything under it.
 - **Round-robin credentials** — Stack API keys per provider and the runtime rotates with session affinity and per-credential backoff. Useful when one key would burn its quota by lunch.
 
 Full provider & routing reference at [oh-my-pk.pkking.computer/docs](https://oh-my-pk.pkking.computer/docs).
 
-## Eighteen backends. _One tool the agent already knows_.
+## Twenty-three backends. _One tool the agent already knows_.
 
-`web_search` is built in, not bolted on. `auto` walks an eighteen-provider availability/fallback chain in the order below. Choose a preferred provider to try it first, or use `auto` for the normal order; failures and empty results continue through the remaining available providers. Exclude providers explicitly when they must never be used. Behind every hit, site-aware extraction turns GitHub, registries, arXiv, Stack Overflow, and docs into structured Markdown — anchors and link targets survive.
+`web_search` is built in, not bolted on. `auto` walks a twenty-three-provider chain; pin one by name if you already pay for it. Behind every hit, site-aware extraction turns GitHub, registries, arXiv, Stack Overflow, and docs into structured markdown — anchors and link targets survive.
 
 ### Search providers
 
-| provider | auth / availability |
-| --- | --- |
-| `auto` | ordered availability-and-failure fallback |
-| `perplexity` | `PERPLEXITY_COOKIES`, OAuth, or `PERPLEXITY_API_KEY`; explicit selection also has anonymous fallback |
-| `gemini` | `google-gemini-cli` or `google-antigravity` OAuth |
-| `anthropic` | `ANTHROPIC_SEARCH_API_KEY`, or Anthropic OAuth / `ANTHROPIC_API_KEY` |
-| `codex` | OpenAI Codex / ChatGPT OAuth |
-| `xai` | `XAI_API_KEY` |
-| `zai` | `ZAI_API_KEY` or stored `zai` credential |
-| `exa` | `EXA_API_KEY` or stored Exa credential; explicit selection can use public Exa MCP |
-| `tinyfish` | `TINYFISH_API_KEY` |
-| `jina` | `JINA_API_KEY` |
-| `kagi` | `KAGI_API_KEY` (Search API beta access) |
-| `tavily` | `TAVILY_API_KEY` |
-| `firecrawl` | `FIRECRAWL_API_KEY` |
-| `brave` | `BRAVE_API_KEY` |
-| `kimi` | `MOONSHOT_SEARCH_API_KEY` or `KIMI_SEARCH_API_KEY`, then stored `moonshot` / `kimi-code` auth |
-| `parallel` | `PARALLEL_API_KEY` |
-| `synthetic` | `SYNTHETIC_API_KEY` |
-| `searxng` | `SEARXNG_ENDPOINT` or `searxng.endpoint`; optional bearer/basic auth |
-| `duckduckgo` | no key; official Instant Answer API |
+Twenty-three backends. Pin one, or let `auto` walk the chain in order.
+
+| provider     | auth                                      |
+| ------------ | ----------------------------------------- |
+| `auto`       | chain                                     |
+| `perplexity` | `PERPLEXITY_API_KEY` (anonymous fallback) |
+| `gemini`     | oauth                                     |
+| `anthropic`  | oauth                                     |
+| `codex`      | oauth                                     |
+| `xai`        | oauth or `XAI_API_KEY`                    |
+| `zai`        | `ZAI_API_KEY`                             |
+| `exa`        | `EXA_API_KEY` (or mcp)                    |
+| `tinyfish`   | `TINYFISH_API_KEY`                        |
+| `jina`       | `JINA_API_KEY`                            |
+| `kagi`       | `KAGI_API_KEY`                            |
+| `tavily`     | `TAVILY_API_KEY`                          |
+| `firecrawl`  | `FIRECRAWL_API_KEY` (keyless fallback)    |
+| `brave`      | `BRAVE_API_KEY`                           |
+| `kimi`       | `/login kimi-code` or search key          |
+| `parallel`   | `PARALLEL_API_KEY`                        |
+| `synthetic`  | `SYNTHETIC_API_KEY`                       |
+| `searxng`    | self-hosted                               |
+| `duckduckgo` | no key                                    |
+| `startpage`  | no key                                    |
+| `google`     | no key (browser)                          |
+| `ecosia`     | no key (browser)                          |
+| `mojeek`     | no key (browser)                          |
+| `public`     | no key (all of the above, consolidated)   |
+
+Exa also accepts a stored API key through `/login exa`; explicit keyless selection uses the public MCP fallback.
 
 ### Specialised handlers
 
@@ -362,16 +456,51 @@ Vuln lookups answer with vendor data, not blog summaries.
 
 [`web_search` reference ↗](docs/tools/web_search.md)
 
-## More than **63,000 lines of maintained Rust**, doing the work other harnesses shell out for.
+## Roughly **~80,000** lines of Rust, doing the work other harnesses shell out for.
 
-`pi-natives` is the aggregate N-API `cdylib`, linking `pi-shell`, `pi-ast`, and `pi-iso`. The maintained Cargo workspace has seven packages: those four, shell-support libraries `pi-uutils-ctx` and `pi_uu_grep`, and the separate Windows-only `desktop-tag-host` helper. The 63,239-line audited total counts tracked Rust source, including maintained tests and build files, and excludes `crates/vendor` and both Brush mirrors.
+Six crates, one platform-tagged N-API addon. Search, shell, AST, highlight, PTY, desktop control, image decode, BPE counting — all in-process on the libuv pool. No fork/exec on the hot path. Another ~80k lines ride along vendored: the brush bash fork, plus 58 command-line utilities — coreutils, findutils, sed, jq, ripgrep-backed grep, fd, diff, moreutils — ported into the builtins crate and compiled straight into the shell.
 
-Search, globbing, AST operations, text processing, highlighting, image rendering, and many shell builtins run in process. CPU/blocking N-API jobs use libuv, async shell/PTY/isolation paths use Tokio with blocking syscalls offloaded, and token batches use Rayon. External shell commands and some isolation backends/fallbacks still launch child processes.
+- Crates: `pi-natives`, `pi-shell`, `pi-ast`, `pi-iso`, `pi-voice`, `pi-walker`
+- Platforms: `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `win32-x64` — x64 ships dual AVX2 and baseline binaries
 
-- Maintained workspace packages: `pi-natives`, `pi-shell`, `pi-ast`, `pi-iso`, `pi-uutils-ctx`, `pi_uu_grep`, `desktop-tag-host`
-- Release npm leaf-package tags: `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `win32-x64`
+Per crate, code lines only:
 
-The table below is a responsibility-oriented breakdown of maintained native runtime code; glue and tests are omitted, and deliberately volatile per-module LoC estimates are not duplicated.
+| Crate         | What it does                                                                           |   ~LoC |
+| ------------- | -------------------------------------------------------------------------------------- | -----: |
+| pi-shell      | Embedded bash engine · persistent sessions · in-process coreutils dispatch · minimizer | 38,000 |
+| pi-natives    | The N-API surface — every module in the table below                                    | 25,000 |
+| pi-walker     | Parallel ignore-aware walker + scan cache shared by grep · glob · workspace · shell    |  5,200 |
+| pi-iso        | Workspace isolation · apfs · btrfs · zfs · reflink · overlayfs · projfs · rcopy        |  3,300 |
+| pi-ast        | tree-sitter + ast-grep matching, block resolution, structural summaries                |  2,900 |
+| pi-voice      | Audio capture/playback · Opus · live WebRTC                                            |  1,000 |
+
+Inside `pi-natives`, the per-module breakdown (glue and tests omitted):
+
+| Module        | What it does                                                                      | Powered by                                |   ~LoC |
+| ------------- | --------------------------------------------------------------------------------- | ----------------------------------------- | -----: |
+| desktop       | Window/display enumeration · screenshot · native input · AX tree for `computer`   | xcap · enigo · OS AX FFI                  | 10,600 |
+| grep          | Regex search · parallel/sequential · glob & type filters · fuzzy find             | grep-regex · grep-searcher                |  3,280 |
+| text          | ANSI-aware width · truncation · column slicing · SGR-preserving wrap              | unicode-width · segmentation              |  2,070 |
+| snapcompact   | Bitmap-frame rasterization + PNG encode for context compression                   | image · png                               |  1,760 |
+| keys          | Kitty keyboard protocol with xterm fallback · PHF perfect-hash lookup             | phf                                       |  1,740 |
+| ast           | ast-grep pattern matching and structural rewrites                                 | ast-grep-core                             |  1,510 |
+| diff          | Structured file diffing for tools and previews                                    | in-tree                                   |  1,030 |
+| pty           | Native PTY allocation for sudo · ssh interactive prompts                          | portable-pty                              |    630 |
+| crash_handler | Native crash capture and reporting                                                | in-tree                                   |    610 |
+| highlight     | Syntax highlighting · 11 semantic categories · 30+ aliases                        | syntect                                   |    550 |
+| appearance    | Mode 2031 + native macOS dark/light via CoreFoundation FFI                        | core-foundation                           |    450 |
+| task          | Blocking work on libuv thread pool · cancellation · timeout · profiling           | tokio · napi                              |    440 |
+| glob          | Discovery with glob · type filters · mtime sort · gitignore respect               | ignore · globset                          |    430 |
+| fd            | Filesystem walker for find-tool replacement                                       | ignore                                    |    385 |
+| clipboard     | Text copy and image read from system clipboard · no xclip/pbcopy                  | arboard                                   |    370 |
+| workspace     | Workspace walker with gitignore + AGENTS.md discovery in one pass                 | ignore                                    |    275 |
+| power         | macOS power-assertion API for idle/system/display-sleep prevention                | IOKit FFI                                 |    270 |
+| prof          | Circular buffer profiler with folded-stack and SVG flamegraph output              | inferno                                   |    240 |
+| file_lock     | Cross-process advisory file locking                                               | in-tree                                   |    210 |
+| ps            | Cross-platform process-tree kill and descendant listing                           | libc · libproc · CreateToolhelp32Snapshot |    195 |
+| tokens        | O200k / Cl100k BPE token counting · both tables embedded                          | tiktoken-rs                               |     70 |
+| html          | HTML to Markdown with optional content cleaning                                   | html-to-markdown-rs                       |     60 |
+| sixel         | Terminal image rendering · decode PNG · JPEG · WebP · GIF · resize · SIXEL encode | icy_sixel · image                         |     55 |
 
 | Module | What it does |
 | --- | --- |
@@ -411,11 +540,7 @@ The TUI is the default surface. Tool calls render as cards, edits preview before
 
 The same prompt cards surface over ACP, so editors get the picker without writing one.
 
-### Ephemeral — isolate the whole session
-
-`oh-my-pk -p "fix the failing tests" --ethereal`
-
-`--ethereal` runs the entire session against a throwaway copy of your repo, so the agent never touches your working tree. The default `auto` mode reflink-copies a Git repo (falling back to a `git worktree` overlay, or a plain copy off-Git); `.env` files and secrets stay home unless you opt in with `--copy-env`/`--copy-secret`, `--export-patch out.patch` hands back the diff, and `--preserve-workspace` keeps the sandbox for inspection. See [Ethereal Workspaces](docs/ethereal-workspaces.md).
+![omp TUI showing a multi-select question from the ask tool.](assets/ask.webp)
 
 ### SDK — embed in Node
 
@@ -472,12 +597,12 @@ $ oh-my-pk --mode rpc --no-session
 
 The [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) over JSON-RPC. When the editor advertises capabilities, tool I/O routes through it and writes are gated by `session/request_permission`.
 
-| omp tool                      | ACP route                           |
-| ----------------------------- | ----------------------------------- |
-| `bash`                        | `terminal/create + terminal/output` |
-| `read`                        | `fs/read_text_file`                 |
-| `write`                       | `fs/write_text_file`                |
-| `edit, bash`                  | `session/request_permission`        |
+| omp tool     | ACP route                           |
+| ------------ | ----------------------------------- |
+| `bash`       | `terminal/create + terminal/output` |
+| `read`       | `fs/read_text_file`                 |
+| `write`      | `fs/write_text_file`                |
+| `edit, bash` | `session/request_permission`        |
 
 Full references: [SDK docs](docs/sdk.md) · [RPC protocol](docs/rpc.md) · [ACP specification](https://github.com/zed-industries/agent-client-protocol).
 
@@ -563,6 +688,22 @@ bun dev
 
 `bun setup` installs Bun workspaces and builds `@pk-nerdsaver-ai/pi-natives`. Re-run `bun run build:native` after changing Rust crates or `packages/natives`.
 
+Nix users get the pinned Bun and Rust toolchains plus all native build dependencies:
+
+```sh
+nix develop
+bun setup
+bun dev
+```
+
+Build and smoke-test the distributable Nix package with `nix build .#omp`. Wayland screencast support is off by default (linking libpipewire adds ~750 MB of runtime closure); enable it with `omp.override { withWaylandScreencast = true; }`. `nix/bun.nix` is generated only when `bun.lock` changes; releases regenerate it automatically. For dependency changes, run:
+
+```sh
+bun run gen:nix
+```
+
+The command uses `bun2nix` from `nix develop` when available, otherwise enters the development shell through Nix, then falls back to the pinned `bunx bun2nix@2.1.2`. Do not edit `nix/bun.nix` manually.
+
 For a non-interactive smoke check:
 
 ```sh
@@ -579,67 +720,60 @@ For architecture and contribution guidelines, see [packages/coding-agent/DEVELOP
 
 ## Monorepo Packages
 
-| Package | Description |
-| --- | --- |
-| **[@pk-nerdsaver-ai/pi-activity-journal](packages/activity-journal)** | Local, evidence-backed activity journal with privacy-first clip ingestion |
-| **[@pk-nerdsaver-ai/pi-ai](packages/ai)** | Multi-provider LLM client with streaming and model/provider integration |
-| **[@pk-nerdsaver-ai/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
-| **[@pk-nerdsaver-ai/pi-catalog](packages/catalog)** | Model catalog: bundled model database, provider descriptors, and identity |
-| **[@pk-nerdsaver-ai/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI and SDK |
-| **[@pk-nerdsaver-ai/clips-extension](packages/clips-extension)** | Extension that feeds Clips (gopk.xyz) screen recordings to agents |
-| **[@pk-nerdsaver-ai/collab-relay](packages/collab-relay)** | Cloudflare relay and share service for oh-my-pk collaboration |
-| **[@pk-nerdsaver-ai/collab-web](packages/collab-web)** | Browser guest client, mock host, and local relay for collab live sessions |
-| **[@pk-nerdsaver-ai/pi-context-policy](packages/context-policy)** | Consent and retention policy primitives for opt-in persistent context |
-| **[@pk-nerdsaver-ai/pi-context-storage](packages/context-storage)** | Storage contracts and pressure controls for opt-in persistent context |
-| **[@pk-nerdsaver-ai/pi-deep-research](packages/deep-research)** | Supervisor/researcher deep-research agent built on `pi-ai` |
-| **[@pk-nerdsaver-ai/pi-desktop-tag](packages/desktop-tag)** | Desktop extension for triggering agents with screenshots, selected text, and screen regions |
-| **[@pk-nerdsaver-ai/hashline](packages/hashline)** | Line-anchored patch language and applier behind the `edit` tool |
-| **[@pk/llm-router-agent](packages/llm-router-agent)** | Configurable LLM-routing extension and standalone router |
-| **[@pk-nerdsaver-ai/pi-mnemopi](packages/mnemopi)** | Local SQLite memory engine for oh-my-pk agents |
-| **[@pk-nerdsaver-ai/ompk-linear-agent](packages/ompk-linear-agent)** | Cloudflare Worker and job queue dispatching Linear-triggered ompk, Claude Code, or Codex runs over Tailscale |
-| **[@pk-nerdsaver-ai/pi-natives](packages/natives)** | N-API bindings for grep, shell, image, text, syntax highlighting, and more |
-| **[@pk-nerdsaver-ai/pi-remote-workspace](packages/remote-workspace)** | Docker-backed ephemeral workspace job runner for oh-my-pk |
-| **[@pk-nerdsaver-ai/pi-screenpipe-bridge](packages/screenpipe-bridge)** | Bridges a local screenpipe capture daemon into the activity-journal gopk sink |
-| **[@pk-nerdsaver-ai/snapcompact](packages/snapcompact)** | Bitmap-frame context compression package and SQuAD eval suite |
-| **[@pk-nerdsaver-ai/omp-stats](packages/stats)** | Local observability dashboard for AI usage statistics |
-| **[@pk-nerdsaver-ai/swarm-extension](packages/swarm-extension)** | Swarm orchestration extension package |
-| **[@pk-nerdsaver-ai/terminal-bench](packages/terminal-bench)** | Terminal Bench 2 runner for the local oh-my-pk build with live progress and spend reporting |
-| **[@pk-nerdsaver-ai/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
-| **[@pk-nerdsaver-ai/typescript-edit-benchmark](packages/typescript-edit-benchmark)** | Edit benchmark suite built from TypeScript source-code mutations |
-| **[@pk-nerdsaver-ai/pi-utils](packages/utils)** | Shared utilities for logging, streams, directories, environment, and processes |
-| **[@pk-nerdsaver-ai/verifier-extension](packages/verifier-extension)** | LLM-as-verifier candidate comparison and audit extension package |
-| **[@pk-nerdsaver-ai/pi-wire](packages/wire)** | Shared collab live-session protocol types and relay constants |
+| Package                                                                       | Description                                                                 |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| **[@pk-nerdsaver-ai/collab-web](packages/collab-web)**                               | Browser guest client, mock host, and local relay for collab live sessions   |
+| **[@pk-nerdsaver-ai/pi-ai](packages/ai)**                                            | Multi-provider LLM client with streaming and model/provider integration     |
+| **[@pk-nerdsaver-ai/pi-catalog](packages/catalog)**                                  | Model catalog: bundled model database, provider descriptors, and identity   |
+| **[@pk-nerdsaver-ai/pi-agent-core](packages/agent)**                                 | Agent runtime with tool calling and state management                        |
+| **[@pk-nerdsaver-ai/pi-coding-agent](packages/coding-agent)**                        | Interactive coding agent CLI and SDK                                        |
+| **[@pk-nerdsaver-ai/pi-tui](packages/tui)**                                          | Terminal UI library with differential rendering                             |
+| **[@pk-nerdsaver-ai/pi-natives](packages/natives)**                                  | N-API bindings for grep, shell, image, text, syntax highlighting, and more  |
+| **[@pk-nerdsaver-ai/omp-stats](packages/stats)**                                     | Local observability dashboard for AI usage statistics                       |
+| **[@pk-nerdsaver-ai/omptype](packages/omptype)**                                     | ArkType-compatible schema validation with lazy JIT compilation              |
+| **[@pk-nerdsaver-ai/pi-utils](packages/utils)**                                      | Shared utilities (logging, streams, dirs/env/process helpers)               |
+| **[@pk-nerdsaver-ai/pi-wire](packages/wire)**                                        | Shared collab live-session protocol types and relay constants               |
+| **[@pk-nerdsaver-ai/hashline](packages/hashline)**                                   | Line-anchored patch language and applier behind the `edit` tool             |
+| **[@pk-nerdsaver-ai/pi-mnemopi](packages/mnemopi)**                                  | Local SQLite memory engine for oh-my-pk agents                              |
+| **[@pk-nerdsaver-ai/snapcompact](packages/snapcompact)**                             | Bitmap-frame context compression package and SQuAD eval suite               |
+| **[@pk-nerdsaver-ai/browser-relay](packages/browser-relay)**                         | Chrome extension that lets the browser tool drive your existing tabs        |
+| **[@pk-nerdsaver-ai/pi-metaharness](packages/metaharness)**                          | Unified benchmark runners, Harbor run storage, REST/SSE API, live dashboard |
+| **[@pk-nerdsaver-ai/typescript-edit-benchmark](packages/typescript-edit-benchmark)** | Edit benchmark suite built on TypeScript source mutations                   |
 
 ### Rust Crates
 
-| Crate | Description |
-| --- | --- |
-| **[pi-natives](crates/pi-natives)** | Aggregate N-API `cdylib` for `@pk-nerdsaver-ai/pi-natives`; owns the N-API modules and links `pi-shell`, `pi-ast`, and `pi-iso` |
-| **[pi-shell](crates/pi-shell)** | Embedded Brush shell sessions, output minimization, in-process coreutils/grep, fixups/cancellation, and process management; PTY allocation remains in `pi-natives` |
-| **[pi-ast](crates/pi-ast)** | Tree-sitter summaries, syntactic block resolution, and AST search/rewrite across 58 supported language variants |
-| **[pi-iso](crates/pi-iso)** | Isolation PAL and diff capture: APFS clonefile, btrfs snapshots, ZFS snapshot+clone, Linux reflinks, OverlayFS, Windows block clones, ProjFS, and git-worktree/recursive-copy fallback |
-| **[pi-uutils-ctx](crates/pi-uutils-ctx)** | Thread-local stdio/cwd/environment/cancellation shim for embedded uutils |
-| **[pi_uu_grep](crates/pi-uu-grep)** | ripgrep-library-backed in-process `grep` and `rg` shell builtins |
-| **[desktop-tag-host](crates/desktop-tag-host)** | Unpublished Windows tray/hotkey/capture host that supervises the ompk-tag gateway |
-
-Vendored dependency inputs are separate from the maintained workspace: [`brush-core`](crates/brush-core-vendored) and [`brush-builtins`](crates/brush-builtins-vendored) are local Brush mirrors, and additional upstream mirrors live under `crates/vendor`. They are excluded from the 63,239 maintained-line total.
+| Crate                                              | Description                                                                                         |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| **[pi-natives](crates/pi-natives)**                | Core Rust native addon (N-API `cdylib`) used by `@pk-nerdsaver-ai/pi-natives`; aggregates the crates below |
+| **[pi-shell](crates/pi-shell)**                    | Embedded shell / PTY / process management split out of `pi-natives` (wraps `brush-*`)               |
+| **[pi-ast](crates/pi-ast)**                        | tree-sitter-based code summarizer and AST utilities (50+ language grammars)                         |
+| **[pi-iso](crates/pi-iso)**                        | Task isolation backend resolver: APFS clones, btrfs/zfs reflinks, overlayfs, projfs, rcopy          |
+| **[pi-voice](crates/pi-voice)**                    | Audio capture/playback, Opus codecs, and live WebRTC streaming primitives                           |
+| **[pi-walker](crates/pi-walker)**                  | Parallel ignore-aware filesystem walker with the scan cache shared by grep, glob, and workspace     |
+| **[brush-core](crates/vendor/brush-core)**         | Vendored fork of [brush-shell](https://github.com/reubeno/brush) for embedded bash execution        |
+| **[pi-builtins](crates/pi-builtins)**              | Bash builtins (cd, echo, test, printf, read, export, …) plus 67 in-process command-line utilities |
 
 ## Contributing
 
-Issues are open to everyone. **Pull requests require a vouch** — PRs from
-unvouched or denounced authors are closed automatically. If you're not yet
-vouched, ask a maintainer to `!vouch` you rather than opening a PR (which would
-be closed on sight). See **[CONTRIBUTING.md](CONTRIBUTING.md)** and
-[`.github/VOUCHED.td`](.github/VOUCHED.td) for the full policy.
+Pull requests require a vouch before they can be accepted. This fork maintains
+a vouch system to ensure quality contributions. See
+**[CONTRIBUTING.md](CONTRIBUTING.md)** for how to get vouched and open a PR.
+Issues are open to everyone.
 
 ---
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+OMP is licensed under the [MIT License](LICENSE).
+
+Third-party and vendored code, including `crates/vendor/brush-core` and the
+third-party portions identified in `crates/pi-builtins/LICENSE`, remains under
+its respective upstream license. See `THIRD-PARTY-NOTICES.txt` and
+component-local notices for attribution and additional terms.
 
 © 2025 Mario Zechner  
-© 2025-2026 Can Bölük
+© 2025-2026 Can Bölük  
+© 2026 Stencil Labs, Inc.
 
 _made for terminals that stay open_
 

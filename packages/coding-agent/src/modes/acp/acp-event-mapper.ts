@@ -5,7 +5,8 @@ import type {
 	ToolCallContent,
 	ToolCallLocation,
 	ToolKind,
-} from "@agentclientprotocol/sdk";
+} from "@pk-nerdsaver-ai/pi-utils/acp";
+import { parseXdUrl } from "../../internal-urls/xd-protocol";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { resolveToCwd } from "../../tools/path-utils";
 import type { TodoStatus } from "../../tools/todo";
@@ -128,7 +129,57 @@ interface TextMessageLike {
 
 const ACP_TEXT_LIMIT = 4_000;
 
-export function mapToolKind(toolName: string): ToolKind {
+/**
+ * Device name when the call is an `xd://` device dispatch riding the
+ * read/write transport (`write xd://<tool>` executes the mounted tool,
+ * `read xd://` is discovery). Returns `undefined` for plain file paths.
+ */
+function xdevDispatchDevice(toolName: string, args: unknown): string | undefined {
+	if (toolName !== "write" && toolName !== "read") return undefined;
+	const path = extractStringProperty<PathContainer>(args, "path");
+	if (!path) return undefined;
+	return parseXdUrl(path)?.name ?? undefined;
+}
+
+/** Whether a Hub call carries peer-to-peer coordination rather than process control. */
+function isInternalHubMessageTool(toolName: string, args: unknown): boolean {
+	let hubArgs = args;
+	if (toolName !== "hub") {
+		if (xdevDispatchDevice(toolName, args) !== "hub" || typeof args !== "object" || args === null) {
+			return false;
+		}
+		const content = Reflect.get(args, "content");
+		if (typeof content !== "string") return false;
+		try {
+			hubArgs = JSON.parse(content);
+		} catch {
+			return false;
+		}
+	}
+	if (typeof hubArgs !== "object" || hubArgs === null) return false;
+	const op = Reflect.get(hubArgs, "op");
+	switch (op) {
+		case "list":
+		case "inbox":
+			return true;
+		case "send":
+			return typeof Reflect.get(hubArgs, "to") === "string";
+		case "wait":
+			// A bare wait or an `ids` wait settles on background-job delivery,
+			// whose snapshot IS the job result (hub.md) — keep those visible.
+			// Only a peer-scoped wait (`from`, no jobs) is internal messaging.
+			return typeof Reflect.get(hubArgs, "from") === "string" && Reflect.get(hubArgs, "ids") === undefined;
+		default:
+			return false;
+	}
+}
+
+export function mapToolKind(toolName: string, args?: unknown): ToolKind {
+	// An xd:// device write executes the mounted tool — "edit" would make ACP
+	// clients render it as a file modification to a nonexistent path (and
+	// auto-approve it under edit-tier policies). Reads stay "read": listing
+	// devices or fetching docs is discovery.
+	if (toolName === "write" && xdevDispatchDevice(toolName, args)) return "execute";
 	switch (toolName) {
 		case "read":
 			return "read";
@@ -168,6 +219,7 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 		case "message_end":
 			return mapAssistantMessageEnd(event, sessionId, options);
 		case "tool_execution_start": {
+			if (isInternalHubMessageTool(event.toolName, event.args)) return [];
 			const update = buildToolCallStartUpdate({
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
@@ -178,6 +230,7 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 			return [toSessionNotification(sessionId, update)];
 		}
 		case "tool_execution_update": {
+			if (isInternalHubMessageTool(event.toolName, event.args)) return [];
 			const content = mergeToolUpdateContent(
 				buildToolStartContent(event.toolName, event.args),
 				extractToolCallContent(event.partialResult, options),
@@ -198,14 +251,13 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 			return [toSessionNotification(sessionId, update)];
 		}
 		case "tool_execution_end": {
+			const args = getToolExecutionEndArgs(event, options);
+			if (isInternalHubMessageTool(event.toolName, args)) return [];
 			const resultContent = [
 				...extractDiffToolCallContent(event.result),
 				...extractToolCallContent(event.result, options),
 			];
-			const content = mergeToolUpdateContent(
-				buildToolStartContent(event.toolName, getToolExecutionEndArgs(event, options)),
-				resultContent,
-			);
+			const content = mergeToolUpdateContent(buildToolStartContent(event.toolName, args), resultContent);
 			const update: SessionUpdate = {
 				sessionUpdate: "tool_call_update",
 				toolCallId: event.toolCallId,
@@ -254,6 +306,14 @@ function mapAssistantMessageUpdate(
 	let text: string;
 	const progress = options.getMessageProgress?.(event.message);
 	switch (event.assistantMessageEvent.type) {
+		case "image_end":
+			return [
+				toSessionNotification(sessionId, {
+					sessionUpdate: "agent_message_chunk",
+					content: event.assistantMessageEvent.content,
+					messageId: options.getMessageId?.(event.message),
+				}),
+			];
 		case "text_delta":
 			sessionUpdate = "agent_message_chunk";
 			text = event.assistantMessageEvent.delta;
@@ -284,6 +344,11 @@ function mapAssistantMessageUpdate(
 		case "error":
 			sessionUpdate = "agent_message_chunk";
 			text = event.assistantMessageEvent.error.errorMessage ?? "Unknown error";
+			// The surfaced error is the message's visible text: keeps the
+			// message_end / agent_end fallbacks from emitting again.
+			if (text.length > 0 && progress) {
+				progress.textEmitted = true;
+			}
 			break;
 		default:
 			return [];
@@ -338,6 +403,7 @@ const todoStatusMap: Record<TodoStatus, "pending" | "in_progress" | "completed">
 	in_progress: "in_progress",
 	completed: "completed",
 	abandoned: "completed",
+	blocked: "pending",
 };
 
 function mapTodoStatus(status: TodoStatus): "pending" | "in_progress" | "completed" {
@@ -401,7 +467,13 @@ function extractTodoEntries(phases: unknown[]): Array<{ content: string; status:
 }
 
 function isTodoStatus(status: unknown): status is TodoStatus {
-	return status === "pending" || status === "in_progress" || status === "completed" || status === "abandoned";
+	return (
+		status === "pending" ||
+		status === "in_progress" ||
+		status === "completed" ||
+		status === "abandoned" ||
+		status === "blocked"
+	);
 }
 export function buildToolCallStartUpdate(input: {
 	toolCallId: string;
@@ -415,7 +487,7 @@ export function buildToolCallStartUpdate(input: {
 		sessionUpdate: "tool_call",
 		toolCallId: input.toolCallId,
 		title: buildToolTitle(input.toolName, input.args, input.intent),
-		kind: mapToolKind(input.toolName),
+		kind: mapToolKind(input.toolName, input.args),
 		status: input.status ?? "pending",
 		rawInput: input.args,
 	};
@@ -539,6 +611,9 @@ function buildToolTitle(toolName: string, args: unknown, intent: string | undefi
 		extractStringProperty<PatternContainer>(args, "pattern") ??
 		extractStringProperty<QueryContainer>(args, "query");
 	if (subject) {
+		// Internal URLs (xd://github, skill://react, …) name their target fully;
+		// prefixing the transport tool reads as a file write to a fake path.
+		if (INTERNAL_URL_SUBJECT.test(subject)) return subject;
 		return `${toolName}: ${subject}`;
 	}
 
@@ -560,11 +635,18 @@ function toAcpLocationPath(value: string, cwd?: string): string {
 	}
 }
 
+/**
+ * Scheme-qualified subjects (`xd://`, `skill://`, `agent://`, `https://`, …)
+ * are not local files: resolving them against cwd fabricates paths like
+ * `/repo/xd:/github` and makes editors focus nonexistent files.
+ */
+const INTERNAL_URL_SUBJECT = /^[a-z][a-z0-9+.-]*:\/\//i;
+
 function extractToolLocations(args: unknown, cwd?: string): ToolCallLocation[] {
 	const locations: ToolCallLocation[] = [];
 	const seen = new Set<string>();
 	const pushPath = (raw: string | undefined) => {
-		if (!raw) return;
+		if (!raw || INTERNAL_URL_SUBJECT.test(raw)) return;
 		const path = toAcpLocationPath(raw, cwd);
 		if (seen.has(path)) return;
 		seen.add(path);
@@ -897,9 +979,12 @@ function extractReadableText(value: unknown): string | undefined {
 		if (text.length > 0) {
 			return normalizeText(text);
 		}
-		if (hasBinaryContentBlock(contentBlocks)) {
-			return undefined;
-		}
+		// A structured result envelope (`{ content: [...] }`) whose blocks carry no
+		// plain text has nothing readable to surface, and its data already rides the
+		// ACP frame as `rawOutput`. Serializing the whole envelope to JSON would just
+		// render a raw blob as the tool row (e.g. hub wait progress, issue #9511), so
+		// stop here instead of falling through to the JSON fallback.
+		return undefined;
 	}
 	if (extractDetailsImages(value)) {
 		return undefined;
@@ -922,7 +1007,7 @@ function isTerminalOnlyDetails(value: unknown): boolean {
 	return content === undefined || (Array.isArray(content) && content.length === 0);
 }
 
-function extractAssistantMessageText(value: unknown): string {
+export function extractAssistantMessageText(value: unknown): string {
 	if (typeof value !== "object" || value === null || !("content" in value)) {
 		return "";
 	}

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { sanitizeText } from "@pk-nerdsaver-ai/pi-utils/sanitize-text";
 import {
 	parseJsonlLenient,
@@ -362,6 +362,19 @@ describe("readSseEvents", () => {
 		expect(events.map(e => e.data)).toEqual(['{"id":1}', "{}"]);
 	});
 
+	it("decodes all complete lines in a source chunk as one batch", async () => {
+		const decodeSpy = spyOn(TextDecoder.prototype, "decode");
+		try {
+			const stream = bytesStreamFromChunks([encoder.encode("event: first\ndata: 1\n\nevent: second\ndata: 2\n\n")]);
+			const events = await collectAsync(readSseEvents(stream));
+
+			expect(events.map(event => event.data)).toEqual(["1", "2"]);
+			expect(decodeSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			decodeSpy.mockRestore();
+		}
+	});
+
 	it("joins multiple data: lines with newlines", async () => {
 		const stream = bytesStreamFromChunks([encoder.encode("event: chunk\ndata: line1\ndata: line2\ndata: line3\n\n")]);
 		const [evt] = await collectAsync(readSseEvents(stream));
@@ -381,6 +394,21 @@ describe("readSseEvents", () => {
 		const stream = bytesStreamFromChunks([encoder.encode(": keepalive\n\nevent: ping\ndata: ok\n\n")]);
 		const [evt] = await collectAsync(readSseEvents(stream));
 		expect(evt.raw).toEqual(["event: ping", "data: ok"]);
+	});
+
+	it("yields control-only id/retry events for reconnecting transports", async () => {
+		const stream = bytesStreamFromChunks([encoder.encode("id: stream-1\nretry: 25\n\n")]);
+		const events = await collectAsync(readSseEvents(stream));
+
+		expect(events).toEqual([
+			{
+				event: null,
+				data: "",
+				raw: ["id: stream-1", "retry: 25"],
+				id: "stream-1",
+				retry: 25,
+			},
+		] satisfies ServerSentEvent[]);
 	});
 
 	it("strips a single optional space after the field colon (and only one)", async () => {

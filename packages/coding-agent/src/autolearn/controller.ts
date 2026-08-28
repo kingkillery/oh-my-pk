@@ -2,9 +2,9 @@
  * Auto-learn session controller (experimental).
  *
  * Subscribes to the session event stream and, after a substantive turn,
- * nudges the agent to capture reusable lessons. Default posture is passive
- * (a hidden reminder rides the next real turn); with `autolearn.autoContinue`
- * it auto-runs exactly one synthetic capture turn at stop.
+ * optionally auto-runs a synthetic capture turn. Passive mode is intentionally
+ * prompt-cache neutral: the standing system guidance remains available, but no
+ * hidden mid-session reminder is inserted into the conversation.
  *
  * Installed once per top-level session (taskDepth 0). The subscription lives
  * for the session's lifetime — `newSession` resets the session in place
@@ -14,11 +14,9 @@ import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { Settings } from "../config/settings";
 import autolearnGuidance from "../prompts/system/autolearn-guidance.md" with { type: "text" };
 import autolearnGuidanceLearn from "../prompts/system/autolearn-guidance-learn.md" with { type: "text" };
-import autolearnNudge from "../prompts/system/autolearn-nudge.md" with { type: "text" };
 import autolearnNudgeAutoContinue from "../prompts/system/autolearn-nudge-autocontinue.md" with { type: "text" };
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 
-const AUTOLEARN_NUDGE_PASSIVE = autolearnNudge.trim();
 const AUTOLEARN_NUDGE_AUTOCONTINUE = autolearnNudgeAutoContinue.trim();
 const DEFAULT_MIN_TOOL_CALLS = 5;
 
@@ -43,13 +41,14 @@ export function buildAutoLearnInstructions(available: { manageSkill: boolean; le
 export interface AutoLearnControllerOptions {
 	session: AgentSession;
 	settings: Settings;
+	capture: (content: string) => Promise<void>;
 }
 
 export class AutoLearnController {
 	readonly #session: AgentSession;
 	readonly #settings: Settings;
-	/** Successful tool completions in the current turn. Failures are counted separately by omission (isError tools never increment this). */
-	#successfulToolCalls = 0;
+	readonly #capture: (content: string) => Promise<void>;
+	#toolCalls = 0;
 	/**
 	 * Whether the in-flight turn BEGAN while goal mode was active. Captured at
 	 * agent_start because a `goal` tool can complete or drop the goal mid-turn,
@@ -57,12 +56,15 @@ export class AutoLearnController {
 	 * would let a goal-continuation turn slip through and get nudged.
 	 */
 	#turnStartedInGoalMode = false;
-	/** Swallow the agent_end produced by an auto-run capture turn so it cannot re-trigger. */
-	#suppressNext = false;
+	/** Prevent overlapping private capture runs while real primary turns continue. */
+	#captureInFlight = false;
+	/** One newer eligible primary stop arrived while capture was running. */
+	#capturePending = false;
 
 	constructor(options: AutoLearnControllerOptions) {
 		this.#session = options.session;
 		this.#settings = options.settings;
+		this.#capture = options.capture;
 		// The listener closure captures `this`, so the session's listener array
 		// keeps the controller alive — no stored unsubscribe needed.
 		this.#session.subscribe(event => this.#onEvent(event));
@@ -83,12 +85,12 @@ export class AutoLearnController {
 			return;
 		}
 		if (event.type === "agent_end") {
-			this.#onAgentEnd();
+			this.#onAgentEnd(event);
 		}
 	}
 
-	#onAgentEnd(): void {
-		// Snapshot and reset every turn: the counters describe only the
+	#onAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): void {
+		// Snapshot and reset every turn: the counter describes only the
 		// just-finished turn, so below-threshold, disabled, and plan-mode stops
 		// must not let tool calls accumulate into a later turn.
 		const successfulToolCalls = this.#successfulToolCalls;
@@ -98,9 +100,17 @@ export class AutoLearnController {
 		const startedInGoalMode = this.#turnStartedInGoalMode;
 		this.#turnStartedInGoalMode = false;
 
-		if (this.#suppressNext) {
-			this.#suppressNext = false;
-			return;
+		// Never nudge a turn that ended in an abort (ESC, cancel, etc.). The
+		// abort flag on the session is unreliable by the time agent_end is
+		// deferred to subscribers; read stopReason from the event messages.
+		for (let i = event.messages.length - 1; i >= 0; i--) {
+			const message = event.messages[i];
+			if (message && typeof message === "object" && "role" in message && message.role === "assistant") {
+				if ("stopReason" in message && message.stopReason === "aborted") {
+					return;
+				}
+				break;
+			}
 		}
 		// Honor a live opt-out: the subscription outlives the setting, so re-check
 		// the current flag rather than trusting install-time state.
@@ -115,45 +125,32 @@ export class AutoLearnController {
 		// auto-continue would compete with it.
 		if (startedInGoalMode || this.#session.getGoalModeState()?.enabled) return;
 
-		// Auto-run a capture turn only when explicitly enabled; otherwise the
-		// hidden reminder rides the next real turn passively.
-		//
-		// The two paths get DIFFERENT nudge text:
-		// - Auto-continue spawns a synthetic turn with the nudge as its only
-		//   user-role payload, so the prompt must be terminal — it tells the
-		//   agent to capture and STOP, and must not be read as the user's
-		//   reply to any pending question. Without that contract, the agent
-		//   conflates the synthetic prompt with user approval and resumes
-		//   prior work (e.g. commits/pushes an unanswered "want me to push?"
-		//   question — #3504).
-		// - Passive mode appends the nudge to the user's real next message,
-		//   so the agent must answer the user normally and treat the capture
-		//   as additive — not as the whole turn's job.
+		// Auto-run a capture turn only when explicitly enabled. Passive mode used to
+		// queue a hidden custom message for the next real turn, but that mutates the
+		// persisted conversation prefix after providers have cached it. The standing
+		// auto-learn system guidance is stable; keep passive mode to that guidance
+		// so Anthropic prompt-cache prefixes survive long sessions.
 		const autoContinue = this.#settings.get("autolearn.autoContinue") === true;
-		const content = autoContinue ? AUTOLEARN_NUDGE_AUTOCONTINUE : AUTOLEARN_NUDGE_PASSIVE;
-		// Arm suppression synchronously: the synthetic capture turn's agent_end
-		// fires inside sendCustomMessage (before it resolves), so the flag must be
-		// set before then. Disarm when no turn actually started — a deferred/queued
-		// dispatch or a failed send produces no agent_end, and a latched flag would
-		// otherwise swallow the next real stop.
-		if (autoContinue) this.#suppressNext = true;
+		if (!autoContinue) return;
 
-		this.#session
-			.sendCustomMessage(
-				{
-					customType: "autolearn-nudge",
-					content,
-					display: false,
-					attribution: "user",
-				},
-				{ deliverAs: "nextTurn", triggerTurn: autoContinue },
-			)
-			.then(started => {
-				if (!started) this.#suppressNext = false;
-			})
+		if (this.#captureInFlight) {
+			this.#capturePending = true;
+			return;
+		}
+		this.#startCapture();
+	}
+
+	#startCapture(): void {
+		this.#captureInFlight = true;
+		void this.#capture(AUTOLEARN_NUDGE_AUTOCONTINUE)
 			.catch(err => {
-				this.#suppressNext = false;
-				logger.warn("auto-learn nudge delivery failed", { err });
+				logger.warn("auto-learn capture failed", { err });
+			})
+			.finally(() => {
+				this.#captureInFlight = false;
+				if (!this.#capturePending) return;
+				this.#capturePending = false;
+				this.#startCapture();
 			});
 	}
 }

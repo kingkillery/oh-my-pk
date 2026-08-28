@@ -1,6 +1,11 @@
 import * as AIError from "../error";
 import type { AssistantMessage, AssistantMessageEvent } from "../types";
 
+/** Anything a stream watchdog can consult for in-flight consumer-side local work. */
+export interface LocalWorkSource {
+	readonly hasPendingLocalWork: boolean;
+}
+
 // Generic event stream class for async iteration
 export class EventStream<T, R = T> implements AsyncIterable<T> {
 	queue: T[] = [];
@@ -10,6 +15,21 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	resultSettled = false;
 	#failed = false;
 	#error: unknown = undefined;
+	/**
+	 * Consumer-side local operations currently in flight for this stream — a
+	 * provider transport waiting on a server-requested local tool bridge
+	 * (e.g. the Cursor exec channel) before it can send the result upstream.
+	 * While non-zero, event silence is attributable to our own pending work,
+	 * not a provider stall; idle watchdogs consult {@link hasPendingLocalWork}.
+	 */
+	#pendingLocalWork = 0;
+	/**
+	 * A downstream stream whose local work also counts as ours — set when this
+	 * stream forwards another stream's events (e.g. the Cursor discovered-id
+	 * retry drains an inner stream), so the watchdog on this stream sees the
+	 * inner exec bridge's busy state instead of aborting a healthy tool run.
+	 */
+	#localWorkDelegate: LocalWorkSource | undefined;
 	finalResultPromise: Promise<R>;
 	resolveFinalResult!: (result: R) => void;
 	rejectFinalResult!: (err: unknown) => void;
@@ -116,6 +136,34 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	result(): Promise<R> {
 		return this.finalResultPromise;
 	}
+
+	/** True while local work tracked via {@link trackLocalWork} — on this stream or a forwarded delegate — is pending. */
+	get hasPendingLocalWork(): boolean {
+		return this.#pendingLocalWork > 0 || (this.#localWorkDelegate?.hasPendingLocalWork ?? false);
+	}
+
+	/**
+	 * Count `source`'s pending local work as this stream's own. Used when this
+	 * stream forwards another's events (Cursor discovered-id retry) so the
+	 * watchdog does not abort a live tool run happening on the inner stream.
+	 * Pass `undefined` to detach once forwarding ends.
+	 */
+	forwardLocalWorkFrom(source: LocalWorkSource | undefined): void {
+		this.#localWorkDelegate = source;
+	}
+
+	/**
+	 * Track a local-work promise so idle watchdogs on this stream do not treat
+	 * the event silence while it is pending as a provider stall.
+	 */
+	async trackLocalWork<TWork>(work: Promise<TWork>): Promise<TWork> {
+		this.#pendingLocalWork++;
+		try {
+			return await work;
+		} finally {
+			this.#pendingLocalWork--;
+		}
+	}
 }
 
 export class AssistantMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -168,4 +216,9 @@ export class AssistantMessageEventStream extends EventStream<AssistantMessageEve
 		}
 		this.endWaiting();
 	}
+}
+
+/** Create an assistant-message event stream for legacy extension providers. */
+export function createAssistantMessageEventStream(): AssistantMessageEventStream {
+	return new AssistantMessageEventStream();
 }

@@ -7,7 +7,6 @@ import {
 	Ellipsis,
 	extractPrintableText,
 	fuzzyFilter,
-	Markdown,
 	type MarkdownTheme,
 	matchesKey,
 	padding,
@@ -28,7 +27,7 @@ import {
 	matchesSelectUp,
 } from "../../modes/utils/keybinding-matchers";
 import { CountdownTimer } from "./countdown-timer";
-import { DynamicBorder } from "./dynamic-border";
+import { OverlayPanel } from "./overlay-box";
 import { renderSegmentTrack } from "./segment-track";
 
 /** One segment of a {@link HookSelectorSlider} — a label and an optional
@@ -61,6 +60,8 @@ export interface HookSelectorOptions {
 	tui?: TUI;
 	timeout?: number;
 	onTimeout?: () => void;
+	onTimeoutStart?: () => void;
+	onTimeoutReset?: () => void;
 	initialIndex?: number;
 	outline?: boolean;
 	maxVisible?: number;
@@ -113,29 +114,41 @@ function splitLeadingSpacesForWrap(line: string, width: number): { indent: strin
 	};
 }
 
-class OutlinedList extends Container {
-	#lines: string[] = [];
+/** One row fed to {@link OutlinedList} or the plain list container. `highlight`
+ *  causes the row (and its wrapped continuations, plus trailing padding) to be
+ *  painted with the theme's `selectedBg` band — the focus cue that survives
+ *  themes where `accent` fg is close to the terminal foreground. */
+type SelectorRow = { text: string; highlight: boolean };
 
-	setLines(lines: string[]): void {
-		this.#lines = lines;
+/** Paint `content` with the `selectedBg` background, applied AFTER any inner
+ *  ANSI styling so the band spans padding as well as content. */
+function paintSelectedRow(content: string): string {
+	return theme.bg("selectedBg", content);
+}
+
+class OutlinedList extends Container {
+	#rows: SelectorRow[] = [];
+
+	setLines(rows: readonly SelectorRow[]): void {
+		this.#rows = rows.slice();
 		this.invalidate();
 	}
 
-	render(width: number): readonly string[] {
+	override render(width: number): readonly string[] {
 		const borderColor = (text: string) => theme.fg("border", text);
 		const horizontal = borderColor(theme.boxRound.horizontal.repeat(Math.max(1, width)));
 		const innerWidth = Math.max(1, width - 2);
 		const content: string[] = [];
-		for (const line of this.#lines) {
-			const normalized = replaceTabs(line);
+		for (const row of this.#rows) {
+			const normalized = replaceTabs(row.text);
 			const { indent, body } = splitLeadingSpacesForWrap(normalized, innerWidth);
 			const wrapped = wrapTextWithAnsi(body, Math.max(1, innerWidth - visibleWidth(indent)));
 			for (const wrappedBody of wrapped.length > 0 ? wrapped : [""]) {
 				const wrappedLine = `${indent}${wrappedBody}`;
 				const pad = Math.max(0, innerWidth - visibleWidth(wrappedLine));
-				content.push(
-					`${borderColor(theme.boxRound.vertical)}${wrappedLine}${padding(pad)}${borderColor(theme.boxRound.vertical)}`,
-				);
+				const filled = `${wrappedLine}${padding(pad)}`;
+				const painted = row.highlight ? paintSelectedRow(filled) : filled;
+				content.push(`${borderColor(theme.boxRound.vertical)}${painted}${borderColor(theme.boxRound.vertical)}`);
 			}
 		}
 		return [horizontal, ...content, horizontal];
@@ -146,7 +159,7 @@ class OutlinedList extends Container {
  *  disabled-index lookups survive fuzzy filtering and reordering. */
 type FilteredOption = { option: HookSelectorOption; index: number };
 
-export class HookSelectorComponent extends Container {
+export class HookSelectorComponent extends OverlayPanel {
 	#options: HookSelectorOption[];
 	#filteredOptions: FilteredOption[];
 	#searchQuery = "";
@@ -160,12 +173,12 @@ export class HookSelectorComponent extends Container {
 	#outlinedList: OutlinedList | undefined;
 	#onSelectCallback: (option: string) => void;
 	#onCancelCallback: () => void;
-	#titleComponent: Markdown;
 	#baseTitle: string;
 	#countdown: CountdownTimer | undefined;
 	#onLeftCallback: (() => void) | undefined;
 	#onRightCallback: (() => void) | undefined;
 	#onExternalEditorCallback: (() => void) | undefined;
+	#onTimeoutResetCallback: (() => void) | undefined;
 	#slider: HookSelectorSlider | undefined;
 	#sliderIndex: number = 0;
 	#sliderComponent: Text | undefined;
@@ -177,7 +190,7 @@ export class HookSelectorComponent extends Container {
 		onCancel: () => void,
 		opts?: HookSelectorOptions,
 	) {
-		super();
+		super(title.split(/\r?\n/, 1)[0] ?? "");
 
 		this.#options = options.map(normalizeHookSelectorOption);
 		this.#filteredOptions = this.#options.map((option, index) => ({ option, index }));
@@ -197,33 +210,34 @@ export class HookSelectorComponent extends Container {
 		this.#maxVisible = Math.max(3, opts?.maxVisible ?? 12);
 		this.#onSelectCallback = onSelect;
 		this.#onCancelCallback = onCancel;
-		this.#baseTitle = title;
+		this.#baseTitle = this.title;
 		this.#onLeftCallback = opts?.onLeft;
 		this.#onRightCallback = opts?.onRight;
 		this.#onExternalEditorCallback = opts?.onExternalEditor;
+		this.#onTimeoutResetCallback = opts?.onTimeoutReset;
 		if (opts?.slider && opts.slider.segments.length > 0) {
 			this.#slider = opts.slider;
 			this.#sliderIndex = Math.max(0, Math.min(opts.slider.index, opts.slider.segments.length - 1));
 		}
 
-		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
-
-		this.#titleComponent = new Markdown(title, 1, 0, getMarkdownTheme(), { color: t => theme.fg("accent", t) });
-		this.addChild(this.#titleComponent);
+		for (const line of title.split(/\r?\n/).slice(1)) {
+			this.addChild(new Text(theme.fg("accent", line), 0, 0));
+		}
 		this.addChild(new Spacer(1));
 
 		if (this.#slider) {
-			this.#sliderComponent = new Text(this.#renderSliderLine(), 1, 0);
+			this.#sliderComponent = new Text(this.#renderSliderLine(), 0, 0);
 			this.addChild(this.#sliderComponent);
 			this.addChild(new Spacer(1));
 		}
 
 		if (opts?.timeout && opts.timeout > 0 && opts.tui) {
+			opts.onTimeoutStart?.();
 			this.#countdown = new CountdownTimer(
 				opts.timeout,
 				opts.tui,
-				s => this.#titleComponent.setText(`${this.#baseTitle} (${s}s)`),
+				s => (this.title = `${this.#baseTitle} (${s}s)`),
 				() => {
 					opts?.onTimeout?.();
 					// Auto-select current option on timeout (typically the first/recommended option)
@@ -246,9 +260,8 @@ export class HookSelectorComponent extends Container {
 		}
 		this.addChild(new Spacer(1));
 		const controlsHint = opts?.helpText ?? "up/down navigate  enter select  esc cancel";
-		this.addChild(new Text(theme.fg("dim", controlsHint), 1, 0));
+		this.addChild(new Text(theme.fg("dim", controlsHint), 0, 0));
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
 
 		this.#updateList();
 	}
@@ -472,7 +485,7 @@ export class HookSelectorComponent extends Container {
 	}
 
 	#updateList(renderWidth = this.#lastRenderWidth): void {
-		const lines: string[] = [];
+		const rows: SelectorRow[] = [];
 		const total = this.#filteredOptions.length;
 		const mdTheme = getMarkdownTheme();
 		// Compact mode kicks in exactly when the fully-expanded list (all
@@ -500,34 +513,41 @@ export class HookSelectorComponent extends Container {
 			const filtered = this.#filteredOptions[i];
 			if (filtered === undefined) continue;
 			const isSelected = i === this.#selectedIndex;
+			const isDisabled = this.#isDisabled(filtered.index);
 			const descMode: number | "full" = compact ? (isSelected ? selectedDescRows : 0) : "full";
-			lines.push(
-				...this.#renderOptionLines(
-					filtered.option,
-					isSelected,
-					this.#isDisabled(filtered.index),
-					mdTheme,
-					descMode,
-					renderWidth,
-					filtered.index,
-				),
-			);
+			// Highlight the whole option block (label + wrapped description rows)
+			// so the focus band reads as one continuous bar rather than a stripe
+			// under the label alone. Disabled rows never claim focus even if the
+			// index momentarily lands on one during initial coercion.
+			const highlight = isSelected && !isDisabled;
+			for (const text of this.#renderOptionLines(
+				filtered.option,
+				isSelected,
+				isDisabled,
+				mdTheme,
+				descMode,
+				renderWidth,
+				filtered.index,
+			)) {
+				rows.push({ text, highlight });
+			}
 		}
 
 		if (total === 0) {
-			lines.push(theme.fg("dim", "  No matching options"));
+			rows.push({ text: theme.fg("dim", "  No matching options"), highlight: false });
 		}
 
 		if (startIndex > 0 || endIndex < total || this.#shouldRenderSearchStatus(renderWidth, mdTheme)) {
-			lines.push(this.#renderStatusLine(total));
+			rows.push({ text: this.#renderStatusLine(total), highlight: false });
 		}
 		if (this.#outlinedList) {
-			this.#outlinedList.setLines(lines);
+			this.#outlinedList.setLines(rows);
 			return;
 		}
 		this.#listContainer?.clear();
-		for (const line of lines) {
-			this.#listContainer?.addChild(new Text(line, 1, 0));
+		for (const row of rows) {
+			const bgFn = row.highlight ? paintSelectedRow : undefined;
+			this.#listContainer?.addChild(new Text(row.text, 1, 0, bgFn));
 		}
 	}
 
@@ -613,12 +633,35 @@ export class HookSelectorComponent extends Container {
 		return true;
 	}
 
+	/** Jump to (and, for single-select menus, immediately confirm) the option
+	 *  whose label starts with the pressed digit and a period. Numbered options
+	 *  can follow unnumbered rows, as in `/review` after a detected PR. Once
+	 *  type-to-search is active, digits stay searchable. Checkbox menus only
+	 *  move the cursor — confirmation stays on `enter`. */
+	#handleQuickSelect(keyData: string): boolean {
+		if (this.#searchQuery.length > 0 || keyData.length !== 1 || keyData < "1" || keyData > "9") return false;
+		const targetIndex = this.#filteredOptions.findIndex(({ option }) => option.label.startsWith(`${keyData}. `));
+		if (targetIndex < 0) return false;
+		const target = this.#filteredOptions[targetIndex];
+		if (!target || this.#isDisabled(target.index)) return true;
+		this.#selectedIndex = targetIndex;
+		this.#updateList();
+		if (this.#selectionMarker !== "checkbox") this.#onSelectCallback(target.option.label);
+		return true;
+	}
+
 	handleInput(keyData: string): void {
-		// Reset countdown on any interaction
-		this.#countdown?.reset();
+		if (this.#countdown) {
+			this.#countdown.reset();
+			this.#onTimeoutResetCallback?.();
+		}
 
 		if (matchesSelectCancel(keyData)) {
 			this.#onCancelCallback();
+			return;
+		}
+
+		if (this.#handleQuickSelect(keyData)) {
 			return;
 		}
 
@@ -626,17 +669,23 @@ export class HookSelectorComponent extends Container {
 			return;
 		}
 
-		if (matchesSelectUp(keyData) || (!this.#isSearchEnabled() && keyData === "k")) {
+		if (matchesSelectUp(keyData) || (!this.#isSearchEnabled() && matchesKey(keyData, "k"))) {
 			this.#moveSelection(-1);
-		} else if (matchesSelectDown(keyData) || (!this.#isSearchEnabled() && keyData === "j")) {
+		} else if (matchesSelectDown(keyData) || (!this.#isSearchEnabled() && matchesKey(keyData, "j"))) {
 			this.#moveSelection(1);
 		} else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
 			const selected = this.#filteredOptions[this.#selectedIndex];
 			if (selected && !this.#isDisabled(selected.index)) this.#onSelectCallback(selected.option.label);
-		} else if (matchesKey(keyData, "left") || (this.#slider && !this.#isSearchEnabled() && keyData === "h")) {
+		} else if (
+			matchesKey(keyData, "left") ||
+			(this.#slider && !this.#isSearchEnabled() && matchesKey(keyData, "h"))
+		) {
 			if (this.#slider) this.#moveSlider(-1);
 			else this.#onLeftCallback?.();
-		} else if (matchesKey(keyData, "right") || (this.#slider && !this.#isSearchEnabled() && keyData === "l")) {
+		} else if (
+			matchesKey(keyData, "right") ||
+			(this.#slider && !this.#isSearchEnabled() && matchesKey(keyData, "l"))
+		) {
 			if (this.#slider) this.#moveSlider(1);
 			else this.#onRightCallback?.();
 		} else if (this.#onExternalEditorCallback && matchesAppExternalEditor(keyData)) {
@@ -645,15 +694,15 @@ export class HookSelectorComponent extends Container {
 	}
 
 	override render(width: number): readonly string[] {
-		const renderWidth = Math.max(1, width);
+		const renderWidth = Math.max(1, width - 4);
 		if (this.#lastRenderWidth !== renderWidth) {
 			this.#lastRenderWidth = renderWidth;
 			this.#updateList(renderWidth);
 		}
-		return super.render(renderWidth);
+		return super.render(width);
 	}
 
-	dispose(): void {
+	override dispose(): void {
 		this.#countdown?.dispose();
 	}
 }

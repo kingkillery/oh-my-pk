@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { Writable } from "node:stream";
 import * as util from "node:util";
 
-import { logger } from "@pk-nerdsaver-ai/pi-utils";
+import * as logger from "@pk-nerdsaver-ai/pi-utils/logger";
 
 import { createHelpers, type HelperBundle } from "./helpers";
 import { awaitMaybePromise, indirectEval } from "./indirect-eval";
@@ -23,6 +23,29 @@ export interface RuntimeHooks {
 	onText(chunk: string): void;
 	onDisplay(output: JsDisplayOutput): void;
 	callTool(name: string, args: unknown): Promise<unknown>;
+}
+
+/**
+ * Bridged tool results carry image blocks as a base64 `images` array that no
+ * cell code consumes. Emit each block as an image display output so the model
+ * receives real image content — matching the direct tool path — and replace
+ * the payload with a note so echoing the result cannot flood the transcript
+ * with base64.
+ */
+function surfaceBridgedToolImages(value: unknown, hooks: RuntimeHooks): unknown {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+	const { images, ...rest } = value as { images?: unknown } & Record<string, unknown>;
+	if (!Array.isArray(images) || images.length === 0) return value;
+	let displayed = 0;
+	for (const image of images) {
+		if (!image || typeof image !== "object") continue;
+		const { data, mimeType } = image as { data?: unknown; mimeType?: unknown };
+		if (typeof data !== "string" || typeof mimeType !== "string") continue;
+		hooks.onDisplay({ type: "image", data, mimeType });
+		displayed++;
+	}
+	if (displayed === 0) return value;
+	return { ...rest, images: `(${displayed} image${displayed === 1 ? "" : "s"} displayed)` };
 }
 
 export interface RunContext {
@@ -163,6 +186,7 @@ export class JsRuntime {
 
 	readonly helpers: HelperBundle;
 	#cwd: string;
+	#session: { cwd: string; sessionId: string };
 	readonly sessionId: string;
 	#env: Map<string, string>;
 	#als = new AsyncLocalStorage<RunContext>();
@@ -171,6 +195,7 @@ export class JsRuntime {
 
 	constructor(opts: RuntimeOptions) {
 		this.#cwd = opts.initialCwd;
+		this.#session = { cwd: opts.initialCwd, sessionId: opts.sessionId };
 		this.sessionId = opts.sessionId;
 		this.#env = new Map();
 		this.#moduleLoader = new LocalModuleLoader(this.sessionId);
@@ -189,10 +214,19 @@ export class JsRuntime {
 	}
 
 	setCwd(cwd: string): void {
-		this.#activateGlobals("set cwd");
+		if (this.#disposed) throw new Error("Cannot set cwd on a disposed JS runtime");
+		// Always stamp the runtime and session state: WorkerCore/browser/cmux call
+		// setCwd from init and pre-run paths that may race another same-realm
+		// runtime, and a throw here used to escape the inline-worker microtask
+		// path as a fatal unhandledRejection that killed the whole session.
+		// #session is the same object saved in this owner's global stack entry,
+		// so the new cwd survives deferred activation and is visible to this
+		// runtime's next run; run()/setRunScope still assert exclusive ownership.
 		this.#cwd = cwd;
-		const session = (globalThis as { __omp_session__?: { cwd?: string } }).__omp_session__;
-		if (session) session.cwd = cwd;
+		this.#session.cwd = cwd;
+		if (activeGlobalRunOwner === null || activeGlobalRunOwner === this.#globalOwner) {
+			this.#activateGlobals("set cwd");
+		}
 	}
 
 	/**
@@ -318,13 +352,18 @@ export class JsRuntime {
 	}
 
 	#install(extraGlobals: Record<string, unknown> | undefined): void {
+		// Constructing a runtime while another same-realm runtime is mid-run would
+		// silently replace the live runtime's globals (Object.assign + prelude eval
+		// below). Fail before any global/stack mutation; WorkerCore reports it as
+		// init-failed instead of corrupting the active run.
+		assertCanUseGlobalOwner(this.#globalOwner, "initialize a JS runtime");
 		const injected: Record<string, unknown> = {
-			__omp_session__: { cwd: this.#cwd, sessionId: this.sessionId },
+			__omp_session__: this.#session,
 			__omp_helpers__: this.helpers,
 			__omp_call_tool__: async (name: string, args: unknown) => {
 				const hooks = this.#activeHooks("tool");
 				if (!hooks) return undefined;
-				return await hooks.callTool(name, args);
+				return surfaceBridgedToolImages(await hooks.callTool(name, args), hooks);
 			},
 			__omp_import__: async (source: string, options?: ImportCallOptions) => {
 				const resolved = await this.#moduleLoader.resolveForRun(this.#activeCwd(), source);

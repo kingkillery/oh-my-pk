@@ -4,14 +4,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import {
-	StatusLineComponent,
-	type StatusLineSettings,
-} from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/status-line";
+import { StatusLineComponent, type StatusLineSettings } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/status-line";
 import { STATUS_LINE_PRESETS } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/status-line/presets";
 import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
-import * as git from "@pk-nerdsaver-ai/pi-coding-agent/utils/git";
-import { setProjectDir } from "@pk-nerdsaver-ai/pi-utils";
+import * as vcs from "@pk-nerdsaver-ai/pi-natives/vcs";
+import { removeSyncWithRetries, setProjectDir } from "@pk-nerdsaver-ai/pi-utils";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 let settingsState: SettingsTestState | undefined;
@@ -37,16 +34,7 @@ afterEach(async () => {
 	restoreSettingsTestState(settingsState);
 	settingsState = undefined;
 	if (projectDir) {
-		// An in-flight async git-status probe can briefly hold a handle inside
-		// the temp dir on Windows; retry, then tolerate the leaked temp dir.
-		for (let attempt = 0; attempt < 10; attempt++) {
-			try {
-				fs.rmSync(projectDir, { recursive: true, force: true });
-				break;
-			} catch {
-				await Bun.sleep(50);
-			}
-		}
+		removeSyncWithRetries(projectDir);
 	}
 	projectDir = "";
 });
@@ -67,7 +55,7 @@ function makeSession(sessionName = "Cache Session") {
 		isFastModeEnabled: () => false,
 		isFastModeActive: () => false,
 		isAdvisorActive: () => false,
-		getGoalModeState: () => null,
+		getAdvisorStatusOverview: () => ({ configured: false, advisors: [] }),
 		getAsyncJobSnapshot: () => ({ running: [] }),
 		settings: { get: () => false, isConfigured: () => false },
 		modelRegistry: { isUsingOAuth: () => false },
@@ -78,6 +66,10 @@ function makeSession(sessionName = "Cache Session") {
 				output: 0,
 				cacheRead: 0,
 				cacheWrite: 0,
+				totalTokens: 0,
+				orchestrationInput: 0,
+				orchestrationOutput: 0,
+				orchestrationCacheRead: 0,
 				premiumRequests: 0,
 				cost: 0,
 			}),
@@ -175,7 +167,17 @@ describe("StatusLineComponent effective settings cache", () => {
 		const customComponent = makeComponent({ preset: "custom", leftSegments: [], rightSegments: [] });
 		expect(customComponent.getEffectiveSettingsForTest().leftSegments).toEqual([]);
 		expect(customComponent.getEffectiveSettingsForTest().rightSegments).toEqual([]);
-		expect(customComponent.getTopBorder(120)).toEqual({ content: "", width: 0 });
+		expect(customComponent.getTopBorder(120)).toEqual({ content: "", width: 0, revision: 0 });
+	});
+
+	it("surfaces active subagents even when custom segments omit subagents", () => {
+		const component = makeComponent({ preset: "custom", leftSegments: [], rightSegments: [] });
+
+		component.setRunningSubagents(["sub-1", "sub-2"]);
+
+		const content = stripVTControlCharacters(component.getTopBorder(120).content);
+		expect(content).toContain("2 agents");
+		expect(content).not.toContain("running");
 	});
 
 	it("keeps plan and hook state dynamic without settings invalidation", () => {
@@ -220,9 +222,9 @@ describe("StatusLineComponent effective settings cache", () => {
 		expect(component.getEffectiveSettingsForTest()).toBe(nextEffective);
 	});
 	it("skips git probes when git integration is disabled", async () => {
-		const headSpy = spyOn(git.head, "resolveSync").mockReturnValue(null);
-		const statusSpy = spyOn(git.status, "summary").mockResolvedValue({ staged: 0, unstaged: 0, untracked: 0 });
-		const repoSpy = spyOn(git.repo, "resolveSync").mockReturnValue(null);
+		const headSpy = spyOn(vcs, "gitInfo");
+		const statusSpy = spyOn(vcs, "watch");
+		const repoSpy = spyOn(vcs, "repo");
 		try {
 			Settings.instance.override("git.enabled", false);
 			const component = makeComponent({
@@ -248,10 +250,10 @@ describe("StatusLineComponent effective settings cache", () => {
 		}
 	});
 
-	it("skips git probes when no git-backed segment is visible and nobody subscribed", async () => {
-		const headSpy = spyOn(git.head, "resolveSync").mockReturnValue(null);
-		const statusSpy = spyOn(git.status, "summary").mockResolvedValue({ staged: 0, unstaged: 0, untracked: 0 });
-		const repoSpy = spyOn(git.repo, "resolveSync").mockReturnValue(null);
+	it("skips git probes when no git-backed segment is visible", async () => {
+		const headSpy = spyOn(vcs, "gitInfo");
+		const statusSpy = spyOn(vcs, "watch");
+		const repoSpy = spyOn(vcs, "repo");
 		try {
 			const component = makeComponent({
 				preset: "custom",
@@ -293,5 +295,15 @@ describe("StatusLineComponent effective settings cache", () => {
 		} finally {
 			repoSpy.mockRestore();
 		}
+	});
+});
+
+describe("StatusLineComponent hook statuses", () => {
+	it("renders every keyed status on a deterministic line", () => {
+		const component = makeComponent({ showHookStatus: true });
+		component.setHookStatus("project-time", "$0.04 (dev)");
+		component.setHookStatus("ponytail", "Ponytail");
+
+		expect(component.render(8)).toEqual(["Ponytail", "$0.04 (…"]);
 	});
 });

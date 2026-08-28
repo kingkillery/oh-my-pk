@@ -1,6 +1,7 @@
 import type { AutocompleteItem } from "@pk-nerdsaver-ai/pi-tui";
 import type { Settings } from "../config/settings";
-import type { InteractiveModeContext } from "../modes/types";
+import type { SlashCommandIconName } from "../modes/theme/symbols";
+import type { InteractiveModeContext, SubmittedUserInput } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionManager } from "../session/session-manager";
 
@@ -17,16 +18,16 @@ export interface BuiltinSlashCommand {
 	name: string;
 	aliases?: string[];
 	description: string;
+	/** Autocomplete type-indicator icon. Defaults to "action" (generic terminal glyph). */
+	icon?: SlashCommandIconName;
+	/** Whether the command consumes text after the command name. */
+	allowArgs?: boolean;
 	/** Subcommands for dropdown completion (e.g. /mcp add, /mcp list). */
 	subcommands?: SubcommandDef[];
 	/** Static inline hint when command takes a simple argument (no subcommands). */
 	inlineHint?: string;
-	/** False for commands whose arguments may contain credentials or encryption keys. */
-	persistInHistory?: boolean;
 	/** TUI-only dynamic status text for command-name autocomplete. Static `description` remains canonical for ACP/help. */
 	getTuiAutocompleteDescription?: (runtime: TuiSlashCommandRuntime) => string | undefined;
-	/** Custom argument completion provider (e.g. /move directory completion). Overrides subcommand-derived completions. */
-	getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
 }
 
 /** Parsed slash-command text after stripping the leading "/". */
@@ -48,7 +49,7 @@ export interface ParsedSlashCommand {
  * - `{ prompt: string }` — command handled, pass `prompt` through as the new
  *   user input (e.g. `/force <tool> <prompt>` keeps `<prompt>` as the message).
  */
-export type SlashCommandResult = undefined | { consumed: true } | { prompt: string };
+export type SlashCommandResult = undefined | { consumed: true; agentInvoked?: boolean } | { prompt: string };
 
 /**
  * Runtime visible to slash-command handlers that run in text/ACP mode.
@@ -67,12 +68,34 @@ export interface SlashCommandRuntime {
 	/** Re-advertise the available command list (no-op outside ACP). */
 	refreshCommands: () => Promise<void> | void;
 	/**
-	 * Reload plugin state (caches, slash command registry, project registries)
-	 * and re-emit available commands. Used by `/reload-plugins`, `/move`, and
-	 * `/marketplace`/`/plugins` mutations so the session sees a consistent view
-	 * after plugin or project-scope changes.
+	 * Reload plugin state (caches, skills, slash command registry, project
+	 * registries) and re-emit available commands. Used by `/reload-plugins`,
+	 * `/move`, and `/marketplace`/`/plugins` mutations so the session sees a
+	 * consistent view after plugin or project-scope changes.
 	 */
 	reloadPlugins: () => Promise<void>;
+	/**
+	 * Keep the host's prompt turn open until the session goes idle.
+	 *
+	 * Provided only by the ACP dispatcher, whose prompt turn owns the event
+	 * subscription and settles as soon as a builtin reports consumed: work a
+	 * command merely *schedules* (e.g. `/retry`'s post-prompt continuation)
+	 * would otherwise stream into an already-unsubscribed turn and be dropped.
+	 *
+	 * Deliberately absent in RPC and TUI: both observe the continuation through
+	 * their own always-on session subscription, and `RpcClient.prompt()`
+	 * documents an immediate return — blocking it there would also park the
+	 * serialized command queue, so a client could not `abort` the very turn it
+	 * is waiting on.
+	 */
+	keepTurnOpenUntilIdle?: () => Promise<void>;
+	/**
+	 * Start a local command operation without holding the host's prompt response.
+	 *
+	 * RPC provides this for provider-backed commands because its prompt API must
+	 * return immediately and leave the serialized queue free for `abort`.
+	 */
+	runCommandInBackground?: (task: () => Promise<void>) => void;
 	notifyTitleChanged?: () => Promise<void> | void;
 	notifyConfigChanged?: () => Promise<void> | void;
 }
@@ -86,6 +109,10 @@ export interface SlashCommandRuntime {
  */
 export interface TuiSlashCommandRuntime {
 	ctx: InteractiveModeContext;
+	/** Post-extension-hook attachments belonging to the submitted slash draft. */
+	input?: Pick<SubmittedUserInput, "images" | "imageLinks">;
+	/** The editor snapshot was cleared before asynchronous input hooks ran. */
+	draftDetached?: boolean;
 }
 
 /** Unified slash-command spec consumed by both TUI and ACP dispatchers. */
@@ -139,4 +166,4 @@ export interface SlashCommandSpec extends BuiltinSlashCommand {
 }
 
 /** Result returned by `executeAcpBuiltinSlashCommand`. */
-export type AcpBuiltinSlashCommandResult = false | { consumed: true } | { prompt: string };
+export type AcpBuiltinSlashCommandResult = false | { consumed: true; agentInvoked?: boolean } | { prompt: string };

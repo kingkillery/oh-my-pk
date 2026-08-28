@@ -147,6 +147,15 @@ export function parseParallelErrorResponse(statusCode: number, responseText: str
 	}
 }
 
+export async function parseParallelJsonResponse(response: Response, operation: "search" | "extract"): Promise<unknown> {
+	try {
+		return await response.json();
+	} catch (err) {
+		const detail = err instanceof Error ? err.message : String(err);
+		throw new ParallelApiError(`Parallel ${operation} returned invalid JSON: ${detail}`);
+	}
+}
+
 function getAuthHeaders(apiKey: string): {
 	Accept: string;
 	"Content-Type": string;
@@ -317,7 +326,7 @@ export async function searchWithParallel(
 		throw parseParallelErrorResponse(response.status, await response.text());
 	}
 
-	const payload: unknown = await response.json();
+	const payload = await parseParallelJsonResponse(response, "search");
 	return parseParallelSearchPayload(payload);
 }
 
@@ -350,6 +359,6 @@ export async function extractWithParallel(
 		throw parseParallelErrorResponse(response.status, await response.text());
 	}
 
-	const payload: unknown = await response.json();
+	const payload = await parseParallelJsonResponse(response, "extract");
 	return parseExtractPayload(payload);
 }

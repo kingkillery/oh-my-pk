@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
-import type { AgentMessage } from "@pk-nerdsaver-ai/pi-agent-core";
+import { type AgentMessage, Tokenizer } from "@pk-nerdsaver-ai/pi-agent-core";
 import {
 	type CompactionSettings,
 	calculateContextTokens,
@@ -10,7 +10,9 @@ import {
 	estimateTokens,
 	findCutPoint,
 	getLastAssistantUsage,
+	hasContextTokenUsage,
 	prepareCompaction,
+	resolveThresholdTokens,
 	shouldCompact,
 } from "@pk-nerdsaver-ai/pi-agent-core/compaction/compaction";
 import * as ai from "@pk-nerdsaver-ai/pi-ai";
@@ -29,6 +31,8 @@ import { parseSessionEntries } from "@pk-nerdsaver-ai/pi-coding-agent/session/se
 import { migrateSessionEntries } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-migrations";
 import { mockFetch } from "./helpers/fetch-mock";
 import { e2eApiKey } from "./utilities";
+
+const tokenizer = new Tokenizer();
 
 // ============================================================================
 // Test fixtures
@@ -186,6 +190,19 @@ describe("Token calculation", () => {
 		const usage = createMockUsage(0, 0, 0, 0);
 		expect(calculateContextTokens(usage)).toBe(0);
 	});
+
+	it("prefers positive provider context occupancy without accepting an explicit zero", () => {
+		const usage = { ...createMockUsage(0, 0, 0, 0), contextTokens: 120_000 };
+		expect(calculateContextTokens(usage)).toBe(120_000);
+		expect(hasContextTokenUsage(usage)).toBe(true);
+		expect(hasContextTokenUsage({ ...usage, contextTokens: 0 })).toBe(false);
+	});
+
+	it("preserves total-only provider context without accepting response-only totals", () => {
+		const responseOnly = createMockUsage(0, 29, 0, 0);
+		expect(hasContextTokenUsage(responseOnly)).toBe(false);
+		expect(hasContextTokenUsage({ ...responseOnly, totalTokens: 120_000 })).toBe(true);
+	});
 });
 
 describe("getLastAssistantUsage", () => {
@@ -198,7 +215,6 @@ describe("getLastAssistantUsage", () => {
 		];
 
 		const usage = getLastAssistantUsage(entries);
-		expect(usage).not.toBeNull();
 		expect(usage!.input).toBe(200);
 	});
 
@@ -216,7 +232,6 @@ describe("getLastAssistantUsage", () => {
 		];
 
 		const usage = getLastAssistantUsage(entries);
-		expect(usage).not.toBeNull();
 		expect(usage!.input).toBe(100);
 	});
 
@@ -239,6 +254,48 @@ describe("shouldCompact", () => {
 		expect(shouldCompact(95000, 100000, settings)).toBe(true);
 		expect(shouldCompact(86000, 100000, settings)).toBe(true);
 		expect(shouldCompact(84000, 100000, settings)).toBe(false);
+	});
+
+	it("uses proportional reserve when the DEFAULTED reserve nearly consumes a small window", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			thresholdPercent: -1,
+			// reserveTokens deliberately unset: provenance, not value equality,
+			// is what allows the proportional fallback.
+			keepRecentTokens: 20_000,
+		};
+
+		// 16,385-token GPT-3.5 windows should keep the same 15% reserve behavior
+		// used by smaller windows instead of collapsing the threshold to one token.
+		expect(shouldCompact(10_000, 16_385, settings)).toBe(false);
+		expect(shouldCompact(13_929, 16_385, settings)).toBe(true);
+	});
+
+	it("honors an EXPLICIT reserve equal to the old default on a small window", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			thresholdPercent: -1,
+			reserveTokens: 16_384,
+			keepRecentTokens: 20_000,
+		};
+
+		// The user chose 16,384 on purpose; it must not be mistaken for the
+		// defaulted reserve and silently replaced with the proportional one.
+		expect(resolveThresholdTokens(16_385, settings)).toBe(1);
+		expect(shouldCompact(2, 16_385, settings)).toBe(true);
+	});
+
+	it("respects a large valid configured reserve", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			thresholdPercent: -1,
+			reserveTokens: 90_000,
+			keepRecentTokens: 20_000,
+		};
+
+		expect(resolveThresholdTokens(100_000, settings)).toBe(10_000);
+		expect(shouldCompact(10_000, 100_000, settings)).toBe(false);
+		expect(shouldCompact(10_001, 100_000, settings)).toBe(true);
 	});
 
 	it("should use configured threshold percent", () => {
@@ -317,7 +374,7 @@ describe("compactionContextTokens", () => {
 	});
 });
 
-describe("estimateTokens excludeEncryptedReasoning (compaction floor)", () => {
+describe("Tokenizer.countMessage excludeEncryptedReasoning (compaction floor)", () => {
 	it("drops encrypted reasoning from the floor estimate but counts it by default", () => {
 		const blob = "blob ".repeat(8_000); // large opaque encrypted-reasoning payload
 		const msg: AssistantMessage = {
@@ -333,8 +390,8 @@ describe("estimateTokens excludeEncryptedReasoning (compaction floor)", () => {
 			provider: "openai",
 			model: "gpt-5.5",
 		};
-		const withBlob = estimateTokens(msg);
-		const flooredEstimate = estimateTokens(msg, { excludeEncryptedReasoning: true });
+		const withBlob = tokenizer.countMessage(msg);
+		const flooredEstimate = tokenizer.countMessage(msg, { excludeEncryptedReasoning: true });
 		// Default counts the blob (providers bill it on replay); the floor excludes it,
 		// so a thinking-heavy turn can't falsely trip compaction on local byte size.
 		expect(withBlob).toBeGreaterThan(flooredEstimate + 1_000);
@@ -353,7 +410,65 @@ describe("estimateTokens excludeEncryptedReasoning (compaction floor)", () => {
 		// Even with the floor option, tool-result content is fully counted — that is
 		// exactly what a before_provider_request compressor (e.g. Headroom) shrinks,
 		// so the floor must still see its real size.
-		expect(estimateTokens(toolMsg, { excludeEncryptedReasoning: true })).toBeGreaterThan(1_000);
+		expect(tokenizer.countMessage(toolMsg, { excludeEncryptedReasoning: true })).toBeGreaterThan(1_000);
+	});
+});
+
+describe("bigint tool arguments", () => {
+	it("preserves exact values through local compaction estimation and summary rendering", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected anthropic/claude-sonnet-4-5 model to exist");
+
+		const toolCallMessage: AssistantMessage = {
+			...createAssistantMessage("", createMockUsage(1_000, 100)),
+			content: [
+				{
+					type: "toolCall",
+					id: "call_bigint",
+					name: "lookup",
+					arguments: { rowId: 9_007_199_254_740_993n },
+				},
+			],
+			stopReason: "toolUse",
+		};
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("Look up the row")),
+			createMessageEntry(toolCallMessage),
+			createMessageEntry({
+				role: "toolResult",
+				toolCallId: "call_bigint",
+				toolName: "lookup",
+				content: [{ type: "text", text: "found" }],
+				isError: false,
+				timestamp: Date.now(),
+			}),
+			createMessageEntry(createUserMessage("Continue")),
+			createMessageEntry(createAssistantMessage("Done", createMockUsage(2_000, 100))),
+		];
+		const preparation = prepareCompaction(entries, {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 1,
+			remoteEnabled: false,
+		});
+		if (!preparation) throw new Error("Expected compaction preparation");
+
+		const completeSpy = vi.spyOn(ai, "completeSimple").mockResolvedValue(createAssistantMessage("summary"));
+		const result = await compact(preparation, model, "test-api-key");
+
+		let renderedPrompts = "";
+		for (const call of completeSpy.mock.calls) {
+			for (const message of call[1].messages) {
+				if (typeof message.content === "string") {
+					renderedPrompts += message.content;
+					continue;
+				}
+				for (const block of message.content) {
+					if (block.type === "text") renderedPrompts += block.text;
+				}
+			}
+		}
+		expect(renderedPrompts).toContain('"9007199254740993"');
+		expect(result.summary).toContain("summary");
 	});
 });
 
@@ -414,7 +529,6 @@ describe("remote compaction setting", () => {
 			remoteEnabled: false,
 			remoteEndpoint: "https://compaction.example.test/summarize",
 		});
-		expect(preparation).toBeDefined();
 		if (!preparation) {
 			throw new Error("Expected compaction preparation");
 		}
@@ -492,7 +606,6 @@ describe("remote compaction setting", () => {
 			keepRecentTokens: 1000,
 			remoteEnabled: true,
 		});
-		expect(preparation).toBeDefined();
 		if (!preparation) {
 			throw new Error("Expected compaction preparation");
 		}
@@ -510,10 +623,6 @@ describe("remote compaction setting", () => {
 		);
 		const fetchSpy = mockFetch(fetchHandler);
 		const completeSimpleSpy = vi.spyOn(ai, "completeSimple");
-		completeSimpleSpy
-			.mockResolvedValueOnce(createAssistantMessage("History summary"))
-			.mockResolvedValueOnce(createAssistantMessage("Turn prefix summary"))
-			.mockResolvedValueOnce(createAssistantMessage("Short summary"));
 
 		const result = await compact(preparation, model, "test-api-key", undefined, undefined, {
 			fetch: fetchSpy,
@@ -534,7 +643,10 @@ describe("remote compaction setting", () => {
 				item => item.type === "reasoning" && item.encrypted_content === "encrypted_reasoning_turn_1",
 			),
 		).toBe(true);
-		expect(result.summary).toContain("History summary");
+		// V1 now matches V2: the provider-native replay is preserved and local
+		// summarization is skipped (no redundant LLM round), leaving the placeholder.
+		expect(result.summary).toContain("Remote compaction preserved provider-native history");
+		expect(completeSimpleSpy).not.toHaveBeenCalled();
 		expect(result.preserveData).toEqual({
 			openaiRemoteCompaction: {
 				provider: "openai",
@@ -833,7 +945,6 @@ describe("remote compaction setting", () => {
 			})
 			.join("\n");
 
-		expect(promptText).toContain("Previous snapcompact archive source text:");
 		expect(promptText).toContain("Archived snapcompact source");
 		expect(result.preserveData).toEqual({ otherState: "keep-me" });
 	});
@@ -1025,7 +1136,7 @@ describe("findCutPoint", () => {
 
 		// 20 entries, last assistant has 10000 tokens
 		// keepRecentTokens = 2500: keep entries where diff < 2500
-		const result = findCutPoint(entries, 0, entries.length, 2500);
+		const result = findCutPoint(entries, tokenizer, 0, entries.length, 2500);
 
 		// Should cut at a valid cut point (user or assistant message)
 		expect(entries[result.firstKeptEntryIndex].type).toBe("message");
@@ -1035,7 +1146,7 @@ describe("findCutPoint", () => {
 
 	it("should return startIndex if no valid cut points in range", () => {
 		const entries: SessionEntry[] = [createMessageEntry(createAssistantMessage("a"))];
-		const result = findCutPoint(entries, 0, entries.length, 1000);
+		const result = findCutPoint(entries, tokenizer, 0, entries.length, 1000);
 		expect(result.firstKeptEntryIndex).toBe(0);
 	});
 
@@ -1047,7 +1158,7 @@ describe("findCutPoint", () => {
 			createMessageEntry(createAssistantMessage("b", createMockUsage(0, 50, 1000, 0))),
 		];
 
-		const result = findCutPoint(entries, 0, entries.length, 50000);
+		const result = findCutPoint(entries, tokenizer, 0, entries.length, 50000);
 		expect(result.firstKeptEntryIndex).toBe(0);
 	});
 
@@ -1063,7 +1174,7 @@ describe("findCutPoint", () => {
 		];
 
 		// With keepRecentTokens = 3000, should cut somewhere in Turn 2
-		const result = findCutPoint(entries, 0, entries.length, 3000);
+		const result = findCutPoint(entries, tokenizer, 0, entries.length, 3000);
 
 		// If cut at assistant message (not user), should indicate split turn
 		const cutEntry = entries[result.firstKeptEntryIndex] as SessionMessageEntry;
@@ -1243,7 +1354,9 @@ describe("buildSessionContext", () => {
 		const entries: SessionEntry[] = [u1, a1, compact1, u2, compact2, u3];
 
 		const transcript = buildSessionContext(entries, undefined, undefined, { transcript: true });
-		// Nothing erased: every message survives, compactions sit where they fired.
+		// Nothing dropped positionally: every message survives, compactions sit
+		// where they fired. Superseded compaction summaries are elided in the
+		// forward transcript; only the active (latest) compaction keeps its text.
 		expect(transcript.messages.map(m => m.role)).toEqual([
 			"user",
 			"assistant",
@@ -1254,7 +1367,8 @@ describe("buildSessionContext", () => {
 		]);
 		const first = transcript.messages[2] as { summary: string };
 		const second = transcript.messages[4] as { summary: string; images?: unknown };
-		expect(first.summary).toContain("First summary");
+		expect(first.summary).toContain("Superseded compaction summary elided");
+		expect(first.summary).not.toContain("First summary");
 		expect(second.summary).toContain("Second summary");
 		// Retired archive frames never ride along in the transcript.
 		expect(second.images).toBeUndefined();
@@ -1278,8 +1392,10 @@ describe("buildSessionContext", () => {
 			collapseCompactedHistory: true,
 		});
 
-		expect(transcript.messages.map(m => m.role)).toEqual(["compactionSummary", "user", "user"]);
-		expect((transcript.messages[0] as { summary: string }).summary).toContain("Second summary");
+		expect(transcript.messages.map(m => m.role)).toEqual(["user", "compactionSummary", "user"]);
+		const summaryMsg = transcript.messages[1];
+		if (summaryMsg?.role !== "compactionSummary") throw new Error("Expected compaction summary at index 1");
+		expect(summaryMsg.summary).toContain("Second summary");
 		expect(transcript.cacheMissExplainedAt).toEqual([false, false, false]);
 	});
 
@@ -1309,7 +1425,7 @@ describe("buildSessionContext", () => {
 		// The provider payload is attached to the summary for LLM replay only; the
 		// collapsed display must still emit the kept SessionEntry rows so a
 		// remotely-compacted session keeps its recent turns visible.
-		expect(transcript.messages.map(m => m.role)).toEqual(["compactionSummary", "user", "assistant", "user"]);
+		expect(transcript.messages.map(m => m.role)).toEqual(["user", "assistant", "compactionSummary", "user"]);
 		const dump = JSON.stringify(transcript.messages);
 		expect(dump).toContain("kept-user");
 		expect(dump).toContain("kept-assistant");
@@ -1375,7 +1491,7 @@ describe("buildSessionContext", () => {
 describe("Large session fixture", () => {
 	it("should find cut point in large session", async () => {
 		const entries = await loadLargeSessionEntries();
-		const result = findCutPoint(entries, 0, entries.length, DEFAULT_COMPACTION_SETTINGS.keepRecentTokens);
+		const result = findCutPoint(entries, tokenizer, 0, entries.length, DEFAULT_COMPACTION_SETTINGS.keepRecentTokens);
 
 		// Cut point should be at a message entry (user or assistant)
 		expect(entries[result.firstKeptEntryIndex].type).toBe("message");
@@ -1395,7 +1511,6 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("LLM summarization", () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 
 		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
-		expect(preparation).toBeDefined();
 
 		const compactionResult = await compact(preparation!, model, e2eApiKey("ANTHROPIC_API_KEY")!);
 

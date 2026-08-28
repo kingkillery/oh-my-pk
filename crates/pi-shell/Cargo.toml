@@ -2,7 +2,7 @@
 name = "pi-shell"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT"
 authors.workspace = true
 repository.workspace = true
 # Portions of the minimizer adapt MIT-licensed algorithms from rtk-ai/rtk.
@@ -14,13 +14,12 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 bytes.workspace = true
-brush-builtins.workspace = true
+pi-builtins.workspace = true
 brush-core.workspace = true
 brush-parser.workspace = true
 clap.workspace = true
 os_pipe.workspace = true
-globset.workspace = true
-ignore.workspace = true
+parking_lot.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -28,19 +27,8 @@ tokio.workspace = true
 tokio-util.workspace = true
 toml.workspace = true
 xxhash-rust.workspace = true
-pi-uutils-ctx = { path = "../pi-uutils-ctx" }
-uu_mkdir = { path = "../vendor/uu-mkdir" }
-uu_head = { path = "../vendor/uu-head" }
-uu_sort = { path = "../vendor/uu-sort" }
-uu_wc = { path = "../vendor/uu-wc" }
-uu_tail = { path = "../vendor/uu-tail" }
-uu_rm = { path = "../vendor/uu-rm" }
-uu_mv = { path = "../vendor/uu-mv" }
-uu_ls = { path = "../vendor/uu-ls" }
-uu_find = { path = "../vendor/uu-find" }
-pi_uu_grep = { path = "../pi-uu-grep" }
-uu_cat = { path = "../vendor/uu-cat" }
-uu_uniq = { path = "../vendor/uu-uniq" }
+flume.workspace = true
+jiff = { version = "0.2", features = ["tzdb-bundle-platform"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -49,3 +37,6 @@ libc.workspace = true
 smallvec.workspace = true
 windows-sys.workspace = true
 winreg.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

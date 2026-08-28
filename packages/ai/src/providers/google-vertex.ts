@@ -1,3 +1,4 @@
+import { resolveVertexEndpointHost } from "@pk-nerdsaver-ai/pi-catalog/hosts";
 import { $env } from "@pk-nerdsaver-ai/pi-utils";
 import * as AIError from "../error";
 import type { Context, Model, StreamFunction } from "../types";
@@ -21,8 +22,8 @@ export const streamGoogleVertex: StreamFunction<"google-vertex"> = (
 	model: Model<"google-vertex">,
 	context: Context,
 	options?: GoogleVertexOptions,
-): AssistantMessageEventStream =>
-	streamGoogleGenAI({
+): AssistantMessageEventStream => {
+	return streamGoogleGenAI({
 		model,
 		options,
 		api: "google-vertex",
@@ -30,17 +31,56 @@ export const streamGoogleVertex: StreamFunction<"google-vertex"> = (
 		prepare: async (): Promise<GoogleGenAIRequestPlan> => {
 			const apiKey = resolveApiKey(options);
 			const params = buildGoogleGenerateContentParams(model, context, options ?? {});
+			params.config ||= {};
+			if (!params.config.safetySettings) {
+				params.config.safetySettings = [
+					{
+						category: "HARM_CATEGORY_HATE_SPEECH",
+						threshold: "OFF",
+					},
+					{
+						category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+						threshold: "OFF",
+					},
+					{
+						category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+						threshold: "OFF",
+					},
+					{
+						category: "HARM_CATEGORY_HARASSMENT",
+						threshold: "OFF",
+					},
+				];
+			}
 			const baseHeaders: Record<string, string> = {
 				...(model.headers ?? {}),
 				...(options?.headers ?? {}),
 			};
+			// Vertex AI ignores a `serviceTier` request-body field (unlike the direct
+			// Gemini API); priority must travel as a request header. Only `priority`
+			// has a documented Vertex request control — `flex` has none, so it's a no-op.
+			if (options?.serviceTier === "priority") {
+				baseHeaders["X-Vertex-AI-LLM-Shared-Request-Type"] = "priority";
+			}
 
 			if (apiKey) {
-				const url = `https://aiplatform.googleapis.com/${API_VERSION}/publishers/google/models/${model.id}:streamGenerateContent?alt=sse`;
+				// Explicit `location` is a deliberate residency choice: honor it and let
+				// a 404 surface. An ambient env-derived region falls back to the global
+				// endpoint so a stray GOOGLE_*_LOCATION never breaks a previously-working
+				// global-only request.
+				const explicitLocation = options?.location;
+				const location = explicitLocation ?? resolveAmbientLocation() ?? "global";
+				const host = resolveVertexEndpointHost(location);
+				const path = `${API_VERSION}/publishers/google/models/${model.id}:streamGenerateContent?alt=sse`;
+				const useGlobalFallback = !explicitLocation && host !== "aiplatform.googleapis.com";
 				return {
 					params,
-					url,
-					headers: { ...baseHeaders, "x-goog-api-key": apiKey },
+					url: `https://${host}/${path}`,
+					fallbackUrl: useGlobalFallback ? `https://aiplatform.googleapis.com/${path}` : undefined,
+					headers: {
+						...baseHeaders,
+						"x-goog-api-key": apiKey,
+					},
 					fetch: options?.fetch,
 				};
 			}
@@ -48,7 +88,7 @@ export const streamGoogleVertex: StreamFunction<"google-vertex"> = (
 			const project = resolveProject(options);
 			const location = resolveLocation(options);
 			const accessToken = await getVertexAccessToken({ signal: options?.signal, fetch: options?.fetch });
-			const host = resolveEndpointHost(location);
+			const host = resolveVertexEndpointHost(location);
 			const url = `https://${host}/${API_VERSION}/projects/${project}/locations/${location}/publishers/google/models/${model.id}:streamGenerateContent?alt=sse`;
 			return {
 				params,
@@ -58,6 +98,7 @@ export const streamGoogleVertex: StreamFunction<"google-vertex"> = (
 			};
 		},
 	});
+};
 
 function resolveApiKey(options?: GoogleVertexOptions): string | undefined {
 	// options.apiKey may contain sentinel values like "<authenticated>" or "N/A"
@@ -77,12 +118,14 @@ function resolveProject(options?: GoogleVertexOptions): string {
 	return project;
 }
 
-function resolveEndpointHost(location: string): string {
-	return location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+function resolveAmbientLocation(): string | undefined {
+	return $env.GOOGLE_VERTEX_LOCATION || $env.GOOGLE_CLOUD_LOCATION || $env.VERTEX_LOCATION || undefined;
+}
+function resolveOptionalLocation(options?: GoogleVertexOptions): string | undefined {
+	return options?.location || resolveAmbientLocation();
 }
 function resolveLocation(options?: GoogleVertexOptions): string {
-	const location =
-		options?.location || $env.GOOGLE_VERTEX_LOCATION || $env.GOOGLE_CLOUD_LOCATION || $env.VERTEX_LOCATION;
+	const location = resolveOptionalLocation(options);
 	if (!location) {
 		throw new AIError.ConfigurationError(
 			"Vertex AI requires a location. Set GOOGLE_VERTEX_LOCATION/GOOGLE_CLOUD_LOCATION/VERTEX_LOCATION or pass location in options.",

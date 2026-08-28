@@ -9,7 +9,7 @@ import { Text } from "@pk-nerdsaver-ai/pi-tui/components/text";
 import { ProcessTerminal } from "@pk-nerdsaver-ai/pi-tui/terminal";
 import { TUI } from "@pk-nerdsaver-ai/pi-tui/tui";
 import { getProjectDir } from "@pk-nerdsaver-ai/pi-utils";
-import chalk from "chalk";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
 import { defaultEditorTheme, defaultMarkdownTheme } from "./test-themes";
 
 // Create terminal

@@ -4,26 +4,20 @@
  * paid for. Regression guard for issue #2190.
  */
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import { ThinkingLevel } from "@pk-nerdsaver-ai/pi-agent-core";
+import type { Model } from "@pk-nerdsaver-ai/pi-ai";
+import { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
+import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
 import type { Rule } from "@pk-nerdsaver-ai/pi-coding-agent/capability/rule";
 import type { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
 import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
+import { parseAgentFields } from "@pk-nerdsaver-ai/pi-coding-agent/discovery/helpers";
 import type { ToolPathWithSource } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/custom-tools";
-import type { LoadExtensionsResult } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions/types";
-import { resolveCollaborationPolicy } from "@pk-nerdsaver-ai/pi-coding-agent/orchestration/collaboration-policy";
-import { AgentRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-registry";
+import type { LoadExtensionsResult, PreparedExtension } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/extensions/types";
+import type { MCPManager } from "@pk-nerdsaver-ai/pi-coding-agent/mcp/manager";
 import type { CreateAgentSessionResult } from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
 import * as sdkModule from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
-import type {
-	AgentSession,
-	AgentSessionEvent,
-	PromptOptions,
-} from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
-import type { ClientBridge } from "@pk-nerdsaver-ai/pi-coding-agent/session/client-bridge";
-import {
-	ASSIGNMENT_CONTRACT_VERSION,
-	ASSIGNMENT_RESULT_VERSION,
-	withAssignmentContractDigest,
-} from "@pk-nerdsaver-ai/pi-coding-agent/task/assignment-contract";
+import type { AgentSession, AgentSessionEvent, PromptOptions } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@pk-nerdsaver-ai/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@pk-nerdsaver-ai/pi-coding-agent/task/types";
 import { EventBus } from "@pk-nerdsaver-ai/pi-coding-agent/utils/event-bus";
@@ -43,6 +37,7 @@ function createMockSession(
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: onSessionInit },
 		getActiveToolNames: () => ["read", "yield"],
+		getEnabledToolNames: () => ["read", "yield"],
 		setActiveToolsByName: async (_toolNames: string[]) => {},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
@@ -55,9 +50,13 @@ function createMockSession(
 			onPrompt({ emit });
 		},
 		waitForIdle: async () => {},
+		prepareForHeadlessAdvisorDrain: () => {},
+		waitForAdvisorCatchup: async () => true,
 		getLastAssistantMessage: () => undefined,
 		abort: async () => {},
 		dispose: async () => {},
+		setIrcWakeTurnObserver: () => {},
+		subscribeRunState: () => () => {},
 	};
 	return session as unknown as AgentSession;
 }
@@ -106,25 +105,50 @@ const baseOptions = {
 	enableLsp: false,
 };
 
+function createModelRegistry(model: Model): ModelRegistry {
+	return {
+		authStorage: {},
+		refresh: async () => {},
+		getAvailable: () => [model],
+		getApiKey: async () => "test-key",
+	} as unknown as ModelRegistry;
+}
+
 describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
 
-	it("forwards rules, preloadedExtensionPaths, and preloadedCustomToolPaths to createAgentSession", async () => {
+	it("forwards rules, extension-root policy, prepared extensions, and preloaded source paths to createAgentSession", async () => {
 		const session = yieldEmittingSession();
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
 
 		const rules: Rule[] = [{ name: "rule-a" } as unknown as Rule];
-		const preloadedExtensionPaths = ["/abs/parent/.ompk/extensions/foo.ts"];
+		const preloadedExtensionPaths = ["/abs/parent/.omp/extensions/foo.ts"];
+		const preloadedPreparedExtensions: PreparedExtension[] = [
+			{
+				path: preloadedExtensionPaths[0]!,
+				resolvedPath: preloadedExtensionPaths[0]!,
+				factory: () => {},
+				error: null,
+			},
+		];
 		const preloadedCustomToolPaths: ToolPathWithSource[] = [
 			{ path: "tools/x.ts", source: { provider: "config", providerName: "Config", level: "project" } },
 		];
+		const extensionRoots = () => ({
+			explicit: ["/abs/parent/explicit-extension"],
+			mode: "explicit-only" as const,
+			configured: ["/abs/parent/configured-extension"],
+			configuredLevel: "project" as const,
+		});
 
 		const result = await runSubprocess({
 			...baseOptions,
 			rules,
+			extensionRoots,
 			preloadedExtensionPaths,
+			preloadedPreparedExtensions,
 			preloadedCustomToolPaths,
 		});
 
@@ -133,22 +157,21 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		const forwarded = spy.mock.calls[0]?.[0];
 		// Identity, not equality: passing a clone would defeat the perf fix.
 		expect(forwarded?.rules).toBe(rules);
+		expect(forwarded?.extensionRoots).toBe(extensionRoots);
 		expect(forwarded?.preloadedExtensionPaths).toBe(preloadedExtensionPaths);
+		expect(forwarded?.preloadedPreparedExtensions).toBe(preloadedPreparedExtensions);
 		expect(forwarded?.preloadedCustomToolPaths).toBe(preloadedCustomToolPaths);
 	});
 
-	it("forwards the parent client bridge to child session creation", async () => {
+	it("forwards an exact credential resolver without replacing it", async () => {
 		const session = yieldEmittingSession();
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
-		const clientBridge: ClientBridge = {
-			capabilities: { requestPermission: true, toolApprovalMode: "always-ask" },
-			requestPermission: async () => ({ outcome: "cancelled" }),
-		};
+		const getApiKey = async () => "exact-account-key";
 
-		const result = await runSubprocess({ ...baseOptions, clientBridge });
+		const result = await runSubprocess({ ...baseOptions, getApiKey });
 
 		expect(result.exitCode).toBe(0);
-		expect(spy.mock.calls[0]?.[0]?.clientBridge).toBe(clientBridge);
+		expect(spy.mock.calls[0]?.[0]?.getApiKey).toBe(getApiKey);
 	});
 
 	it("forwards undefined when the parent has not pre-discovered state", async () => {
@@ -162,6 +185,29 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(forwarded?.rules).toBeUndefined();
 		expect(forwarded?.preloadedExtensionPaths).toBeUndefined();
 		expect(forwarded?.preloadedCustomToolPaths).toBeUndefined();
+	});
+	it("preserves empty and absent agent tool declarations through session creation", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const emptyFields = parseAgentFields({ name: "quiet", description: "desc", tools: [] });
+		const absentFields = parseAgentFields({ name: "default", description: "desc" });
+		if (!emptyFields || !absentFields) throw new Error("agent fields did not parse");
+
+		const emptyResult = await runSubprocess({
+			...baseOptions,
+			id: "empty-tools-child",
+			agent: { ...baseAgent, ...emptyFields },
+		});
+		const absentResult = await runSubprocess({
+			...baseOptions,
+			id: "default-tools-child",
+			agent: { ...baseAgent, ...absentFields },
+		});
+
+		expect(emptyResult.exitCode).toBe(0);
+		expect(absentResult.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.toolNames).toEqual(["yield", "hub"]);
+		expect(spy.mock.calls[1]?.[0]?.toolNames).toBeUndefined();
 	});
 
 	it("records the spawning agent as parentAgentId, distinct from the child's own id and prefix", async () => {
@@ -184,121 +230,265 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(forwarded?.parentTaskPrefix).toBe("ChildAgent");
 	});
 
-	it("filters the rendered IRC peer roster through the child's collaboration policy", async () => {
-		const registry = AgentRegistry.global();
-		registry.register({ id: "RosterParent", displayName: "parent", kind: "main", session: null });
-		registry.register({ id: "UnrelatedPeer", displayName: "unrelated", kind: "sub", session: null });
+	it("removes all MCP and discovered capability sources for a restricted child", async () => {
+		const session = yieldEmittingSession();
+		const persistedInits: Array<{ restrictToolNames?: boolean; tools: string[] }> = [];
+		vi.spyOn(session.sessionManager, "appendSessionInit").mockImplementation(init => {
+			persistedInits.push(init);
+			return "session-init";
+		});
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const preloadedExtensionPaths = ["/hostile/extensions/read.ts"];
+		const preloadedPreparedExtensions: PreparedExtension[] = [
+			{
+				path: preloadedExtensionPaths[0]!,
+				resolvedPath: preloadedExtensionPaths[0]!,
+				factory: () => {},
+				error: null,
+			},
+		];
+		const preloadedCustomToolPaths: ToolPathWithSource[] = [
+			{ path: "/hostile/tools/read.ts", source: { provider: "test", providerName: "Test", level: "project" } },
+		];
+		const getTools = vi.fn(() => [{ name: "read", label: "hostile/read" }]);
+		const mcpManager = { getTools } as unknown as MCPManager;
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "restricted-child",
+			restrictToolNames: true,
+			mcpManager,
+			preloadedExtensionPaths,
+			preloadedPreparedExtensions,
+			preloadedCustomToolPaths,
+			outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+			outputSchemaMode: "strict",
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.restrictToolNames).toBe(true);
+		expect(forwarded?.enableMCP).toBe(false);
+		expect(forwarded?.mcpManager).toBeUndefined();
+		expect(forwarded?.customTools).toBeUndefined();
+		expect(forwarded?.preloadedExtensionPaths).toEqual([]);
+		expect(forwarded?.preloadedPreparedExtensions).toEqual([]);
+		expect(forwarded?.preloadedCustomToolPaths).toEqual([]);
+		expect(getTools).not.toHaveBeenCalled();
+		expect(forwarded?.outputSchemaMode).toBe("strict");
+		expect(persistedInits).toHaveLength(1);
+		expect(persistedInits[0]).toMatchObject({ restrictToolNames: true, tools: ["read", "yield"] });
+	});
+
+	it("persists bridge-only tools in the enabled Code Mode set", async () => {
+		const session = yieldEmittingSession();
+		vi.spyOn(session, "getActiveToolNames").mockReturnValue(["eval", "yield"]);
+		vi.spyOn(session, "getEnabledToolNames").mockReturnValue(["eval", "read", "yield"]);
+		const appendSessionInit = vi.spyOn(session.sessionManager, "appendSessionInit");
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({ ...baseOptions, id: "code-mode-child" });
+
+		expect(result.exitCode).toBe(0);
+		expect(appendSessionInit).toHaveBeenCalledWith(expect.objectContaining({ tools: ["eval", "read", "yield"] }));
+	});
+
+	it("omits transport-only write from the persisted cold-revival contract", async () => {
+		const session = yieldEmittingSession();
+		vi.spyOn(session, "getEnabledToolNames").mockReturnValue(["read", "write", "yield"]);
+		const appendSessionInit = vi.spyOn(session.sessionManager, "appendSessionInit");
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "transport-only-child",
+			agent: { ...baseAgent, tools: ["read"] },
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(appendSessionInit).toHaveBeenCalledWith(expect.objectContaining({ tools: ["read", "yield"] }));
+	});
+
+	it("persists write when the original subagent contract grants it", async () => {
+		const session = yieldEmittingSession();
+		vi.spyOn(session, "getEnabledToolNames").mockReturnValue(["read", "write", "yield"]);
+		const appendSessionInit = vi.spyOn(session.sessionManager, "appendSessionInit");
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "writable-child",
+			agent: { ...baseAgent, tools: ["read", "write"] },
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(appendSessionInit).toHaveBeenCalledWith(expect.objectContaining({ tools: ["read", "write", "yield"] }));
+	});
+
+	it("retains inherited MCP proxy tools for normal children", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const mcpManager = {
+			getTools: () => [{ name: "mcp__private_read", label: "private/read" }],
+		} as unknown as MCPManager;
+
+		const result = await runSubprocess({ ...baseOptions, id: "normal-child", mcpManager });
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.enableMCP).toBe(true);
+		expect(forwarded?.mcpManager).toBe(mcpManager);
+		expect(forwarded?.customTools?.map(tool => tool.name)).toEqual(["mcp__private_read"]);
+	});
+
+	it("preserves the legacy result shape when no output schema is selected", async () => {
+		const session = yieldEmittingSession();
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({ ...baseOptions, id: "legacy-output-child" });
+
+		expect(result.exitCode).toBe(0);
+		expect(Object.hasOwn(result, "structuredOutput")).toBe(false);
+	});
+
+	it("caps caller-requested effort at task.maxEffort", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
+		const settings = Settings.isolated({ "task.maxEffort": "low" });
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
 		const session = yieldEmittingSession();
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
 
-		try {
-			await runSubprocess({
-				...baseOptions,
-				id: "RosterChild",
-				parentAgentId: "RosterParent",
-				collaborationPolicy: resolveCollaborationPolicy({ mode: "report-only", parentId: "RosterParent" }),
-			});
-			const systemPrompt = spy.mock.calls[0]?.[0]?.systemPrompt;
-			expect(typeof systemPrompt).toBe("function");
-			if (typeof systemPrompt !== "function") throw new Error("Expected a dynamic subagent system prompt.");
-			const rendered = systemPrompt(["default"]);
-			const text = Array.isArray(rendered) ? rendered.join("\n") : rendered;
-			expect(text).toContain("`RosterParent`");
-			expect(text).not.toContain("`UnrelatedPeer`");
-		} finally {
-			registry.unregister("RosterParent");
-			registry.unregister("UnrelatedPeer");
-		}
-	});
-
-	it("applies fusion.sidekickRequestBudget only to the explicit Fusion sidekick spawn", async () => {
-		const settings = Settings.isolated();
-		settings.set("fusion.enabled", true);
-		settings.set("fusion.mode", "escalate");
-		settings.set("fusion.sidekickRequestBudget", 3);
-		const normalInits: Array<{ maxModelRequestsPerRun?: number; fusionSidekick?: boolean }> = [];
-		const sidekickInits: Array<{ maxModelRequestsPerRun?: number; fusionSidekick?: boolean }> = [];
-		const normalSession = yieldEmittingSession(init => normalInits.push(init));
-		const sidekickSession = yieldEmittingSession(init => sidekickInits.push(init));
-		const spy = vi
-			.spyOn(sdkModule, "createAgentSession")
-			.mockResolvedValueOnce(createSessionResult(normalSession))
-			.mockResolvedValueOnce(createSessionResult(sidekickSession));
-
-		const normal = await runSubprocess({ ...baseOptions, settings, id: "Sidekick" });
-		const sidekick = await runSubprocess({ ...baseOptions, settings, id: "Sidekick", fusionSidekick: true });
-
-		expect(normal.exitCode).toBe(0);
-		expect(sidekick.exitCode).toBe(0);
-		const normalOptions = spy.mock.calls[0]?.[0];
-		const sidekickOptions = spy.mock.calls[1]?.[0];
-		expect(normalOptions).toBeDefined();
-		expect(sidekickOptions).toBeDefined();
-		expect(normalOptions?.maxModelRequestsPerRun).toBeUndefined();
-		expect(sidekickOptions?.maxModelRequestsPerRun).toBe(3);
-		expect(normalInits[0]?.fusionSidekick).toBeUndefined();
-		expect(normalInits[0]?.maxModelRequestsPerRun).toBeUndefined();
-		expect(sidekickInits[0]?.fusionSidekick).toBe(true);
-		expect(sidekickInits[0]?.maxModelRequestsPerRun).toBe(3);
-	});
-	it("seeds a fresh child session with its assignment-contract snapshot", async () => {
-		let activeContract: ReturnType<NonNullable<AgentSession["getActiveTaskContract"]>>;
-		const session = yieldEmittingSession();
-		session.setActiveTaskContract = snapshot => {
-			activeContract = snapshot;
-		};
-		session.getActiveTaskContract = () => activeContract;
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
-		const assignmentContract = withAssignmentContractDigest({
-			version: ASSIGNMENT_CONTRACT_VERSION,
-			id: "child-contract",
-			revision: 1,
-			role: "task",
-			workClass: "mechanical",
-			autonomy: "bound",
-			objective: "Seed the child completion contract",
-			deliverables: ["packages/coding-agent/src/task/executor.ts"],
-			scope: { allowedPaths: ["packages/coding-agent/src/task/executor.ts"] },
-			acceptance: [{ id: "seeded", description: "The child session is seeded", check: "content_match" }],
-			reporting: ASSIGNMENT_RESULT_VERSION,
-		});
-
-		await runSubprocess({ ...baseOptions, assignmentContract });
-		expect(session.getActiveTaskContract?.()).toMatchObject({
-			objective: assignmentContract.objective,
-			deliverables: assignmentContract.deliverables,
-			completionCriteria: [{ id: "seeded", description: "The child session is seeded" }],
-		});
-	});
-
-	it("does not seed assignment contracts into fork child sessions", async () => {
-		let activeContract: ReturnType<NonNullable<AgentSession["getActiveTaskContract"]>>;
-		const session = yieldEmittingSession();
-		session.setActiveTaskContract = snapshot => {
-			activeContract = snapshot;
-		};
-		session.getActiveTaskContract = () => activeContract;
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
-		const assignmentContract = withAssignmentContractDigest({
-			version: ASSIGNMENT_CONTRACT_VERSION,
-			id: "fork-contract",
-			revision: 1,
-			role: "task",
-			workClass: "mechanical",
-			autonomy: "bound",
-			objective: "Do not seed fork child contracts",
-			deliverables: [],
-			scope: { allowedPaths: [] },
-			acceptance: [],
-			reporting: ASSIGNMENT_RESULT_VERSION,
-		});
-
-		await runSubprocess({
+		const result = await runSubprocess({
 			...baseOptions,
-			assignmentContract,
-			contextMode: "fork",
-			forkContext: { systemPrompt: ["parent"], toolNames: ["read"], model: undefined, messages: [] },
+			agent: { ...baseAgent, model: ["@task"] },
+			id: "subagent-effort-ceiling",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
 		});
-		expect(session.getActiveTaskContract?.()).toBeUndefined();
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Low);
+		// The ceiling itself rides into the session so retry-fallback recovery
+		// can re-clamp to it after model swaps.
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevelCeiling).toBe(Effort.Low);
+	});
+
+	it("rejects a spawn when task.maxEffort is below the model floor", async () => {
+		const baseModel = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!baseModel) throw new Error("Expected gpt-5.6-sol model to exist");
+		const model = {
+			...baseModel,
+			id: "mock-high-only",
+			provider: "mock",
+			thinking: { mode: "effort", efforts: [Effort.High] },
+		} as Model;
+		const settings = Settings.isolated({ "task.maxEffort": "low" });
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const spy = vi.spyOn(sdkModule, "createAgentSession");
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, model: ["@task"] },
+			id: "subagent-effort-ceiling-below-floor",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain(
+			"mock/mock-high-only has no supported thinking effort at or below task.maxEffort=low",
+		);
+		expect(spy).not.toHaveBeenCalled();
+	});
+
+	it("preserves the model's full effort range by default", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, model: ["@task"] },
+			id: "subagent-default-effort-ceiling",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Max);
+	});
+
+	it("resolves an explicit task-role effort suffix over the agent-definition default", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}:high`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, model: ["@task"] },
+			id: "subagent-thinking-precedence",
+			settings,
+			modelRegistry: createModelRegistry(model),
+			thinkingLevel: ThinkingLevel.Low,
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		// The user's explicit `:high` suffix on the resolved role pattern wins over
+		// the agent definition's default level (e.g. task's `auto`).
+		expect(forwarded?.thinkingLevel).toBe(ThinkingLevel.High);
+	});
+
+	it("falls back to the agent-definition thinking level without an explicit suffix", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, model: ["@task"] },
+			id: "subagent-thinking-default",
+			settings,
+			modelRegistry: createModelRegistry(model),
+			thinkingLevel: ThinkingLevel.Low,
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.thinkingLevel).toBe(ThinkingLevel.Low);
+	});
+	it("persists an explicit role from a caller model override", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+		const settings = Settings.isolated({
+			modelRoles: { reviewer: `${model.provider}/${model.id}` },
+		});
+		const session = yieldEmittingSession();
+		const initSpy = vi.spyOn(session.sessionManager, "appendSessionInit");
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "subagent-model-override-role",
+			modelOverride: "@reviewer",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(initSpy).toHaveBeenCalledWith(expect.objectContaining({ modelRole: "reviewer" }));
 	});
 });

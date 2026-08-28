@@ -1,5 +1,5 @@
 # Dependencies
-node_modules/
+node_modules
 .npm/
 
 # Build output
@@ -8,9 +8,12 @@ packages/*/dist/
 packages/*/dist-chrome/
 packages/*/dist-firefox/
 target/
+.xwin-cache/
 *.tsbuildinfo
 *.node
 *.b64.js
+/result
+/result-*
 
 # Environment
 .env
@@ -26,6 +29,8 @@ target/
 
 # OS
 *.tmp
+# Bun compile temp artifacts, left in cwd if a `Bun.build({ compile })` run is killed mid-write
+*.bun-build
 .DS_Store
 
 # Logs & profiling
@@ -45,6 +50,7 @@ packages/ai/test/.temp-images/
 .pi_config/
 .opencode/
 .worktrees/
+.worktree/
 compaction-results/
 changes/
 __pycache__/
@@ -54,13 +60,14 @@ syntax.jsonl
 out.jsonl
 out.html
 pi-*.html
+.close_issue.sh
 
 # Generated files
 packages/coding-agent/src/export/html/tool-views.generated.js
 packages/natives/npm/
-packages/coding-agent/src/utils/mupdf-wasm.wasm
 /runs/
 python/omp-rpc/src/omp_rpc.egg-info/
+python/omp-rpc/build/
 # parallel-agent worktrees
 .wt/
 CPU*.md
@@ -71,6 +78,8 @@ python/robomp/data/
 python/robomp/.cache/
 python/robomp/src/robomp/static/
 python/robomp/web/dist/
+python/robomp/web/verify-out/
+/verify-out/
 python/robomp/.env
 
 # Fugu runtime state
@@ -82,50 +91,10 @@ python/fugu/**/__pycache__/
 # Local, machine-specific boot perf baseline (see packages/coding-agent/scripts/bench-guard.ts)
 packages/coding-agent/bench/boot-baseline.json
 
-# Local bun standalone-build artifacts and OMC orchestration state
-*.bun-build
-.omc/
-.release-binaries/
-# Local mnemopi + omp-config runtime state (agent subprocess writes these at runtime)
-packages/coding-agent/memories-runtime-*/
-packages/coding-agent/omp-config-cli-*/
-# Local research/scratch (ultraresearch passes, diff snapshots)
-.omo/
-.llm-router/
-scratch/
-# Side-agent/browser bridge runtime artifacts
-docs/improvements/
-/UsersprestAppDataLocalTemplin_snap*.json
-
-# Side-agent coordination runtime state (file-based multi-agent queue)
-.side-agent/
-.side-agent-archive/
-
-# Local CodeGraph index (per-machine, not source)
-.codegraph/
-
-# Generated local collaboration/runtime databases
-packages/coding-agent/omp-operational-*/
-packages/coding-agent/runtime-cli-*/
-packages/coding-agent/runtime-cli-state-*/
-
-# Generated Cloudflare Wrangler local state (miniflare caches, DO/R2 sqlite, dev bundles)
-.wrangler/
-
-# Local agent and generated evaluation artifacts
-.omx/
-evals/agent-gui/reports/
-mcps/
-# Wrangler local secret store (per-machine dev secrets)
-.dev.vars
-
-# Local review/triage scratch worktrees (agent audit workflows)
-.review-scratch/
-.triage-scratch/
-
-packages/coding-agent/dist/
-
-# codespace-sync transport artifacts (never commit)
-.codespace-sync.bundle
-.codespace-sync.stash.bundle
-.codespace-sync-incoming/
+# Bazel
+/bazel-bin
+/bazel-out
+/bazel-testlogs
+/bazel-pi
+/bazel-oh-my-pi
+/.bazelrc.user

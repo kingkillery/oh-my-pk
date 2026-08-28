@@ -1,31 +1,40 @@
-File-oriented diff format for frontier edit grammar. Every patch is wrapped in an envelope:
+Edit files: `apply_patch` shell command.
 
+`apply_patch`: stripped-down, file-oriented diff; easy to parse, safe to apply.
+
+Envelope:
+```
 *** Begin Patch
 [ one or more file sections ]
 *** End Patch
+```
+Contains file operations. Each MUST have an action header:
 
-Each operation starts with one of three headers:
+`*** Add File: <path>`: create file; every following line `+` (initial contents).
 
-*** Add File: <path> - create a new file. Every following line is a + line (the initial contents).
-*** Delete File: <path> - remove an existing file. Nothing follows.
-*** Update File: <path> - patch an existing file in place (optionally with a rename).
+`*** Delete File: <path>`: remove existing file; nothing follows.
 
-May be immediately followed by *** Move to: <new path> if you want to rename the file.
-Then one or more "hunks", each introduced by @@ (optionally followed by a hunk header).
-Within a hunk each line starts with:
+`*** Update File: <path>`: patch existing file in place; optional immediate `*** Move to: <new path>` renames it; then one or more `@@` hunks (optional hunk header). Hunk lines start with space, `-`, or `+`.
 
-For instructions on [context_before] and [context_after]:
-- By default, show 3 lines of code immediately above and 3 lines immediately below each change. If a change is within 3 lines of a previous change, do NOT duplicate the first change's [context_after] lines in the second change's [context_before] lines.
-- If 3 lines of context is insufficient to uniquely identify the snippet of code within the file, use the @@ operator to indicate the class or function to which the snippet belongs. Stack additional `@@` lines (most general first) to narrow further. For instance:
-
+Context: default 3 code lines immediately before and after each change. Changes within 3 lines: do NOT duplicate first change's context-after lines as second change's context-before lines. If 3 lines do not uniquely identify code in the file, use `@@` with its class/function; if one `@@` plus 3 context lines still cannot uniquely identify repeated code in a class/function, use multiple `@@` lines to reach it:
+```
+@@ class BaseClass
+[3 lines of pre-context]
+- [old_code]
++ [new_code]
+[3 lines of post-context]
+```
+```
 @@ class BaseClass
 @@   def method():
 [3 lines of pre-context]
 - [old_code]
 + [new_code]
 [3 lines of post-context]
+```
 
-The full grammar:
+Grammar:
+```
 Patch := Begin { FileOp } End
 Begin := "*** Begin Patch" NEWLINE
 End := "*** End Patch" NEWLINE
@@ -36,9 +45,10 @@ UpdateFile := "*** Update File: " path NEWLINE [ MoveTo ] { Hunk }
 MoveTo := "*** Move to: " newPath NEWLINE
 Hunk := "@@" [ header ] NEWLINE { HunkLine } [ "*** End of File" NEWLINE ]
 HunkLine := (" " | "-" | "+") text NEWLINE
+```
 
-A patch can combine several operations:
-
+Full patches may combine operations:
+```
 *** Begin Patch
 *** Add File: hello.txt
 +Hello world
@@ -49,6 +59,6 @@ A patch can combine several operations:
 +print("Hello, world!")
 *** Delete File: obsolete.txt
 *** End Patch
+```
 
-- You MUST prefix new lines with `+` even when creating a new file.
-- File references MUST be relative, NEVER ABSOLUTE.
+MUST use Add/Delete/Update header; new-file lines MUST start `+`; file references relative, NEVER absolute.

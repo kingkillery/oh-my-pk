@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import type { FetchImpl } from "@pk-nerdsaver-ai/pi-ai";
 import {
 	buildExtractionPrompt,
 	extractFacts,
@@ -13,6 +14,7 @@ import {
 	setHostLlmBackend,
 } from "@pk-nerdsaver-ai/pi-mnemopi/core/llm-backends";
 import {
+	type MnemopiLlmCompletionTask,
 	type ResolvedMnemopiRuntimeOptions,
 	withMnemopiRuntimeOptions,
 } from "@pk-nerdsaver-ai/pi-mnemopi/core/runtime-options";
@@ -52,6 +54,33 @@ describe("structured extraction", () => {
 		expect(parseFacts("NO_FACTS")).toEqual([]);
 	});
 
+	it("unwraps category-specific object facts and drops unrecognized objects", () => {
+		const modelJson = JSON.stringify({
+			facts: [{ fact: "The user prefers tabs over spaces" }, { nested: {} }, "The user likes concise replies."],
+			instructions: [{ instruction: "Always include verification details" }],
+			preferences: [{ preference: "Prefers dark mode" }],
+			timelines: [
+				{ date: "2026-08-01", description: "release" },
+				{ subject: "release", predicate: "on", object: "2026-08-01" },
+			],
+		});
+
+		expect(parseFacts(modelJson)).toEqual([
+			"The user prefers tabs over spaces",
+			"The user likes concise replies",
+			"Always include verification details",
+			"Prefers dark mode",
+			"release 2026-08-01",
+		]);
+	});
+
+	it("treats a valid empty structured extraction as no facts", () => {
+		expect(parseFacts('{"facts": [], "instructions": [], "preferences": [], "timelines": [], "kg": []}')).toEqual([]);
+		expect(
+			parseFacts('```json\n{"facts": [], "instructions": [], "preferences": [], "timelines": [], "kg": []}\n```'),
+		).toEqual([]);
+	});
+
 	it("uses deterministic heuristic extraction when no LLM is configured", async () => {
 		process.env.MNEMOPI_LLM_ENABLED = "false";
 		const facts = await extractFactsSafe("My name is Ada. I work at Example Corp and I prefer dark mode.");
@@ -87,10 +116,28 @@ describe("structured extraction", () => {
 		expect(getExtractionStats().by_tier.host.successes).toBe(1);
 	});
 
+	it("strips reasoning wrappers from remote extraction so facts are not reasoning prose", async () => {
+		process.env.MNEMOPI_LLM_ENABLED = "true";
+		process.env.MNEMOPI_HOST_LLM_ENABLED = "false";
+		process.env.MNEMOPI_LLM_BASE_URL = "http://reasoning.invalid/v1";
+		const content =
+			'<think>\nThe user is providing information in English. Let me analyze what qualifies:\n- candidate fact\n</think>\n{"facts":["My preferred shell is zsh"],"instructions":[],"preferences":[],"timelines":[],"kg":[]}';
+		const fetchMock: FetchImpl = async () =>
+			new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+
+		const facts = await extractFacts("I use zsh.", { fetch: fetchMock });
+		expect(facts).toEqual(["My preferred shell is zsh"]);
+		expect(getExtractionStats().by_tier.remote.successes).toBe(1);
+	});
+
 	it("prefers a configured completion with the extraction-prompt override at temperature zero", async () => {
 		process.env.MNEMOPI_LLM_ENABLED = "true";
 		let capturedPrompt = "";
 		let capturedTemperature = -1;
+		let capturedTask: MnemopiLlmCompletionTask | undefined;
 		const resolved: ResolvedMnemopiRuntimeOptions = {
 			llm: {
 				enabled: true,
@@ -98,6 +145,7 @@ describe("structured extraction", () => {
 				complete: (prompt, opts) => {
 					capturedPrompt = prompt;
 					capturedTemperature = opts?.temperature ?? -1;
+					capturedTask = opts?.task;
 					return "Sam works at Globex\nSam prefers dark mode";
 				},
 			},
@@ -110,6 +158,10 @@ describe("structured extraction", () => {
 		expect(facts).toEqual(["Sam works at Globex", "Sam prefers dark mode"]);
 		expect(capturedPrompt).toContain("ONLY-LINES for: Sam works at Globex and prefers dark mode.");
 		expect(capturedTemperature).toBe(0);
+		expect(capturedTask).toEqual({
+			kind: "memory-extraction",
+			input: "Sam works at Globex and prefers dark mode.",
+		});
 		expect(getExtractionStats().by_tier.host.successes).toBe(1);
 	});
 

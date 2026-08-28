@@ -10,7 +10,7 @@
  * The owned collab relay build writes this page into its static asset bundle.
  */
 import * as path from "node:path";
-import { generateThemeVars, getTemplate } from "../src/export/html";
+import { generateThemeStyles, getTemplate } from "../src/export/html";
 
 function inlineContentHashes(html: string, tagName: "script" | "style"): string[] {
 	const pattern = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`, "gi");
@@ -30,14 +30,12 @@ if (!outPath) {
 	process.exit(2);
 }
 
-const loaderJs = await Bun.file(new URL("../src/export/html/share-loader.js", import.meta.url)).text();
-// Pin the omp brand palette (collab-web pink/purple identity) — the viewer is
-// a public artifact matching the live oh-my-pk.pkking.computer/collab/ client, not a per-user export
-// that should mirror the host's terminal theme.
-const themeVars = await generateThemeVars("web");
+const loaderJs = await Bun.file(new URL("../src/export/html/share-loader.js", import.meta.url).pathname).text();
+// Public artifacts use the bundled omp web themes rather than TUI themes.
+const themeStyles = await generateThemeStyles("web");
 
 const html = getTemplate()
-	.replace("<theme-vars/>", () => `<style>:root { ${themeVars} }</style>`)
+	.replace("<theme-vars/>", () => `<style>${themeStyles}</style>`)
 	.replace("<title>Session Export</title>", () => "<title>omp session</title>")
 	.replace("{{SESSION_DATA}}</script>", () => `</script>\n  <script>${loaderJs}</script>`);
 

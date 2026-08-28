@@ -18,6 +18,380 @@
 ### Added
 
 - Added Mixture-of-Agents stream composition for read-only candidate lanes feeding private advice into a tool-capable synthesizer/verifier model.
+## [18.0.9] - 2026-08-28
+
+### Fixed
+
+- Fixed `/shake elide` handling of mixed tool results so images are preserved and token savings are reported accurately.
+
+## [18.0.7] - 2026-08-26
+
+### Fixed
+
+- Fixed Codex remote compaction to preserve images returned by image-reading tools, preventing them from being replayed as incorrect synthetic user messages.
+
+## [18.0.5] - 2026-08-25
+
+### Fixed
+
+- Corrected remote compaction summaries so they accurately report the number of input tokens processed.
+
+## [18.0.4] - 2026-08-24
+
+### Changed
+
+- Improved performance in append-only context mode by memoizing message serialization, keeping per-call sync overhead flat as conversations grow.
+
+### Fixed
+
+- Fixed an issue where `onTurnEnd` was skipped for turns ended by a terminal tool result (such as a subagent's final `yield`).
+
+## [18.0.0] - 2026-08-22
+
+### Fixed
+
+- Fixed Anthropic Claude tool calls containing provider-visible private-use icon glyphs by reversibly tokenizing glyphs at the wire boundary and rejecting model-invented or unresolved glyph tokens before execution.
+- Fixed agent identity confusion after session handoffs by clarifying context framing and ensuring successor instances seamlessly resume existing execution plans.
+
+## [17.4.1] - 2026-08-21
+
+### Fixed
+
+- Fixed Codex remote compaction requests failing for region-pinned enterprise ChatGPT workspaces when requests egress from a different region.
+
+## [17.4.0] - 2026-08-20
+
+### Breaking Changes
+
+- Replaced global token counting functions (`countTokens`, `countTokensConservatively`, `setTokenizerModel`, and `estimateTokens`) with model-scoped, immutable `Tokenizer` instances (`agent.tokenizer`). Use `tokenizer.countTokens(text, mode?)`, `tokenizer.countMessage(message)`, or `tokenizer.countMessages(messages)`.
+- Updated context management functions (`findCutPoint`, `prepareBranchEntries`, `collectShakeRegions`, `pruneToolOutputs`, `pruneSupersededToolResults`, and `trimRemoteCompactionInputToContextWindow`) to require an explicit `Tokenizer` instance.
+
+### Added
+
+- Added `Tokenizer.checkTokenBudget(text, budget)` to efficiently verify if text fits within a token limit using fast byte-bound checks before falling back to full tokenization.
+- Added provider-anchored transcript token estimation (`findTranscriptUsageAnchor`, `isTranscriptUsageAnchor`, `estimateTranscriptTokens`) to calculate transcript token counts incrementally from the latest reported assistant turn usage.
+- Added `remotePreserveReusable()` to check whether a previous remote compaction payload remains reusable with the active model.
+
+### Changed
+
+- Expanded native tokenizer support across catalog models, adding exact embedded token counting for Claude, Qwen 3.5+, DeepSeek V3/V4/R1, Kimi K2/K3, and GLM-5+ models. `Tokenizer` now constructs from a resolved catalog `Model`.
+- `createCompactionSummaryMessage` takes an options object after `(summary, tokensBefore, timestamp)`; `CompactionSummaryMessage` gained optional `method` and `tokensAfter` display metadata.
+
+## [17.3.8] - 2026-08-19
+
+### Fixed
+
+- Fixed `/compact` (and automatic compaction) resurrecting pre-`/clear` conversation turns: `prepareCompaction` now honors the latest `reset_boundary`, so a compaction after an in-place `/clear` only summarizes messages created after the reset ([#8718](https://github.com/can1357/oh-my-pi/issues/8718)).
+- Hardened compaction summarization against prompt injection: conversation history and previous summaries are now treated as untrusted, and embedded `<conversation>`/`<previous-summary>` boundary tags are neutralized before prompt assembly ([#8727](https://github.com/can1357/oh-my-pi/pull/8727) by [@koopmannleon19977-cmyk](https://github.com/koopmannleon19977-cmyk)).
+- Compaction summarization input is now bounded to the summary model's context (windowed fold for oversized spans) and deterministic context-overflow 400s are no longer retried up to the full retry budget; artifact ids containing `503` no longer misclassify hard 400s as transient.
+- Fixed remote compaction mirroring the #8789 Responses shape: `buildOpenAiNativeHistory` now hoists an assistant `message` wedged between a tool-call batch and its outputs ahead of the batch, so compaction requests to strict opencode-go gateways match the canonical `message(s) → calls → outputs` order ([#8789](https://github.com/can1357/oh-my-pi/issues/8789)).
+
+## [17.3.5] - 2026-08-16
+
+### Added
+
+- Added automatic retry support for transient provider failures during one-shot completions, allowing callers such as compaction to opt in to resilient request handling.
+
+### Fixed
+
+- Fixed /handoff, branch summarization, and manual /compact failing outright on transient provider errors (e.g. Anthropic overloaded/429/529 responses); these operations now retry automatically instead of leaving the user's context full.
+
+## [17.3.4] - 2026-08-14
+
+### Fixed
+
+- Fixed Codex-compatible V2 remote compaction with an explicit `v2Endpoint` by sending the required feature-negotiation header ([#8524](https://github.com/can1357/oh-my-pi/issues/8524)).
+
+## [17.3.0] - 2026-08-13
+
+### Fixed
+
+- Improved the manual `/shake` command to retain a small history of recent tool results, preventing the agent from losing its active working context.
+
+## [17.2.13] - 2026-08-11
+
+### Fixed
+
+- Fixed Cursor sessions re-executing settled tools when an owned dialect projector rebuilds toolCall blocks: `snapshotAssistantContentBlock` now copies `kCursorExecResolved` explicitly so agent-loop still skips already-settled calls.
+
+## [17.2.10] - 2026-08-06
+
+### Fixed
+
+- Fixed an issue in remote OpenAI response compaction replay where output-only `status` fields were incorrectly sent back as input, affecting persisted native and V1/V2 replacement history.
+
+## [17.2.9] - 2026-08-05
+
+### Fixed
+
+- Preserved queued steering and follow-up messages when a continuation is cancelled before or during pre-dequeue hooks, and propagated the caller's cancellation signal through every continuation model-call loop.
+
+## [17.2.6] - 2026-08-03
+
+### Fixed
+
+- Fixed an issue where peer-IRC interrupts (such as subagent messages) incorrectly skipped non-interruptible tool calls queued in the same batch.
+- Improved interruption messaging to clearly distinguish between parent-agent steering and system-advisory interruptions.
+
+## [17.2.5] - 2026-08-03
+
+### Breaking Changes
+
+- Tool examples embedded in tool descriptions now always render in Python call syntax, and the `exampleDialect` option has been removed from `AppendOnlyContextManager` build options.
+- Updated `normalizeTools` to accept a `NormalizeToolsOptions` configuration object (`{ injectIntent, pruneDescriptions }`) instead of positional booleans.
+
+### Fixed
+
+- Fixed an issue where runs would fail with an error if an Anthropic stream was truncated after complete tool calls were streamed; the agent now recovers and executes those tool calls.
+- Fixed an issue where artifact recovery reads could be incorrectly elided during compaction.
+
+## [17.2.4] - 2026-08-01
+
+### Fixed
+
+- Fixed Codex V2 remote compaction bypassing the provider's live WebSocket transport before trying SSE ([#7198](https://github.com/can1357/oh-my-pi/issues/7198)).
+- Tool calls skipped mid-batch to service queued steering/peer input now distinguish calls that never entered `tool.execute` (`SyntheticToolResultDetails`, `executed: false`) from in-flight calls that may have performed partial work (`execution: "started"`), allowing UI/telemetry consumers to render normal steering control flow without misreporting execution state ([#7199](https://github.com/can1357/oh-my-pi/issues/7199)).
+
+## [17.2.2] - 2026-07-31
+
+### Fixed
+
+- Fixed an issue where response-only usage records were incorrectly treated as authoritative context anchors, while ensuring prompt and total-only provider telemetry remains preserved.
+- Fixed context compaction summaries growing excessively with large context windows by capping the summary output budget to 16,384 tokens, ensuring conversations are properly compressed rather than duplicated.
+
+## [17.2.0] - 2026-07-30
+
+### Fixed
+
+- Provider-native compaction failures now surface their transport error instead of silently switching to generic summarization; streaming V2 still falls back to native V1 when available.
+
+## [17.1.7] - 2026-07-27
+
+### Changed
+
+- `beforeToolCall` now runs during arg-prep in a pre-dispatch prepare phase — on the streamed path before the assistant message's `message_start`/`message_end` are emitted, and always ahead of concurrency resolution, `tool_execution_start`, telemetry span start, and `tool.execute` — instead of inside the already-scheduled execution slot. It receives the resolved `tool` in its context and may return `args` to replace the call's arguments; a replacement is revalidated against the tool schema, written back to the assistant message's tool-call block, and re-resolves argument-dependent interruptibility, making it the single source of truth for history, persistence, provider replay, scheduling, execution events, and `tool.execute`. Argument validation moved into the same prepare phase, so functional `concurrency` resolvers now see validated (and possibly revised) arguments rather than raw pre-validation ones. The hook now receives the run's request abort signal rather than the per-tool signal.
+
+## [17.1.6] - 2026-07-27
+
+### Added
+
+- Added a pre-model-call gate: `AgentLoopConfig.beforeModelCall` receives the finalized provider context and run abort signal, and may return `{ stop: true, reason? }` to end the run before the provider is called, so a host can refuse a request it has decided not to pay for (prompt no longer fits, budget boundary crossed, session should hand off). `Agent.setBeforeModelCall` installs the host callback; `Agent.addBeforeModelCall` registers an additional one without displacing it and returns a disposer. A gate-stopped run retains pending soft tool reminders/escalations and an unserved hard tool choice for the next admitted request; deferred choices are revalidated against active tools and cleared with queued session state ([#6543](https://github.com/can1357/oh-my-pi/pull/6543) by [@paralin](https://github.com/paralin)).
+
+### Changed
+
+- Input message events (prompt, steering, soft reminders) are now emitted once provider-context preparation succeeds, so a pre-model gate can veto the request before any turn opens; gate-stopped and failed runs still commit their accepted inputs ([#6543](https://github.com/can1357/oh-my-pi/pull/6543) by [@paralin](https://github.com/paralin)).
+
+## [17.1.5] - 2026-07-27
+
+### Fixed
+
+- Fixed proxy-stream clients dropping finalized provider-only content blocks, including Anthropic native web-search history, by allowing `done` and `error` events to carry terminal assistant content while retaining delta-reconstructed content from older proxy servers that omit it ([#6703](https://github.com/can1357/oh-my-pi/issues/6703)).
+
+## [17.1.4] - 2026-07-26
+
+### Changed
+
+- Steering is now woken by an event instead of polled on a fixed interval while a tool batch runs. `AgentLoopConfig.waitForSteeringMessages` resolves when a steer is enqueued, so an interruption is observed as soon as it arrives rather than at the next tick, and idle batches stop burning wakeups. The interval timer remains for the IRC interrupt queue, which has no wake callback, and checks only IRC while the event watcher owns steering. Waits are raced against local abort, so a callback that does not observe its signal cannot hang batch teardown.
+
+### Fixed
+
+- Fixed a Cursor tool result being lost when a custom `cursorOnToolResult` transformer was still pending as the turn closed. The provider dispatches decoded messages without awaiting them, so a `message_end` from the same chunk could drain the buffer before the transformer resolved, dropping the result and leaving its `toolCall` block to be stripped as dangling on replay. The entry is now reserved synchronously and patched in place once the transformer resolves, preserving buffer order.
+- Fixed an async `cursorOnToolResult` transformer's rewrite being silently discarded when it resolved after the buffer drain. The reservation kept the call from dangling but the late patch mutated a detached entry, so the already-persisted message kept the pre-transform payload. The drain now awaits any transformer still in flight before persisting, matching the awaited exec-channel paths. A rejecting transformer is swallowed and the reserved payload stands in, so a failing hook cannot take the turn down or cost the result.
+- Fixed Cursor tool results being dropped for hosts that pass neither `cursorExecHandlers` nor `cursorOnToolResult`. Both are optional, but the Cursor provider resolves native todo calls server-side and synthesizes exec blocks regardless, marking both as resolved so no placeholder result is emitted for them. The result buffer callback was only installed when one of the options was present, so a bare SDK host discarded the provider's paired result and every rebuilt transcript stripped the interaction. It is now installed unconditionally.
+- Fixed an async `cursorOnToolResult` rewrite being lost when the provider errored mid-transform. The normal drain waits for a pending transformer, but the error path snapshotted the buffer without that await, so a transform still in flight patched an entry the catch path had already detached and the pre-transform payload was persisted. A provider error is exactly when a transform is most likely to be mid-flight.
+- Reduced oversized OpenAI native compaction requests by replacing only trailing tool-output bodies that exceed the model context window, while preserving calls, assistant history, and reasoning.
+
+## [17.1.2] - 2026-07-24
+
+### Added
+
+- Added `resolveFallbackTool` option to allow routing unadvertised tool calls to host-side transports (e.g., device mounts)
+
+## [17.1.1] - 2026-07-24
+
+### Added
+
+- Added the provider-neutral native computer-call lifecycle, preserving observation outputs and input actions across pending and acknowledged tool results.
+
+### Changed
+
+- Queued steering no longer hard-aborts non-interruptible tools (e.g. `bash`): it aborts interruptible waits only and raises a cooperative steering signal (`ToolCallContext.steeringSignal`) that long-running tools may observe to finish early or background themselves. The mid-batch steering/IRC watch now runs for every tool batch instead of only batches containing an interruptible tool.
+
+## [17.1.0] - 2026-07-24
+
+### Added
+
+- Added support for tracking Cloudflare AI Gateway cache status (hit, miss, bypass, unknown) on chat spans.
+
+### Changed
+
+- Improved tool execution steering behavior: queued steering now cooperatively signals long-running, non-interruptible tools (via ToolCallContext.steeringSignal) to allow graceful early termination or backgrounding, rather than hard-aborting them.
+
+### Fixed
+
+- Fixed an out-of-memory (OOM) crash caused by an infinite loop when a steer or follow-up message was queued on an agent session with an empty transcript.
+- Fixed an issue where switching providers or models on a session could lose compacted history; the agent now correctly falls back to a portable local summary if the new model cannot replay the prior provider's remote-compaction payload.
+- Fixed a compaction failure with Anthropic models where serializing prior assistant reasoning inside <thinking> tags triggered reasoning_extraction refusals.
+
+## [17.0.8] - 2026-07-22
+
+### Fixed
+
+- Improved resilience against transient stream JSON parse failures by recovering completed tool calls while safely preventing incomplete, unknown, refused, or sensitive calls from executing.
+
+## [17.0.5] - 2026-07-18
+
+### Added
+
+- Added a per-message token estimation cache to optimize performance by reusing token counts for settled message history, with automatic cache invalidation on message mutation.
+
+### Changed
+
+- Improved tool execution control by making tool interruptibility resolvable per call, allowing side-effecting operations to complete while passive waits can yield to queued steering.
+
+## [17.0.2] - 2026-07-17
+
+### Fixed
+
+- Improved error visibility in interactive clients by surfacing provider stream failures through the assistant message lifecycle, preventing silent loading spinners.
+- Fixed an issue where Cursor provider contexts omitted host-supplied MCP tools from main and side-channel requests.
+
+## [17.0.0] - 2026-07-15
+
+### Breaking Changes
+
+- Replaced the irc, job, and launch tools with a unified hub tool.
+- Removed the tool discovery system (including the search-tool-bm25 tool) and its associated configuration settings (tools.discoveryMode, tools.essentialOverride, mcp.discoveryMode, and mcp.discoveryDefaultServers).
+- Removed the resolve tool; plan approval and preview actions now use writes to the xd://propose virtual device path.
+
+### Added
+
+- Introduced the xd:// virtual device protocol for mounting tools as URLs readable/writable via read/write tools, configurable via the new tools.xdev setting (defaults to true).
+- Added the hub tool, consolidating agent peer messaging, background job control, and supervised long-running processes.
+- Added the edit.enforceSeenLines configuration setting (defaults to false) to optionally reject edits on lines that have not been fully displayed.
+- Added the ToolLoadMode type and an optional satisfies predicate to SoftToolRequirement to support compliance checks against specific invocation shapes (such as writing to a virtual device path).
+
+## [16.5.2] - 2026-07-14
+
+### Fixed
+
+- Improved session deadline abort signals to carry structured cancellation reasons, enabling timeout-aware tools to correctly classify deadline cancellations.
+- Fixed an issue where completed tool executions were incorrectly marked as skipped (clobbering their actual results) if a user message was queued while the tool was in flight.
+
+## [16.5.1] - 2026-07-14
+
+### Fixed
+
+- Fixed compatibility with Copilot gpt-5.6 models by correcting token escaping in compaction summaries.
+
+## [16.5.0] - 2026-07-13
+
+### Added
+
+- Added an automated image-dropping rescue tier to compaction dead-end recovery.
+- Added visual warnings and detailed recovery instructions to the session timeline when compaction fails to free sufficient space.
+
+## [16.4.5] - 2026-07-11
+
+### Added
+
+- Added a process-global pause gate (`agentPauseGate`) to safely pause agent loops before model calls or tool executions, allowing them to be resumed later or aborted cleanly.
+
+## [16.4.3] - 2026-07-11
+
+### Fixed
+
+- Fixed an issue where skipped sibling tool results incorrectly reported that a queued user message caused the skip.
+
+## [16.4.2] - 2026-07-10
+
+### Fixed
+
+- Fixed serialization of BigInt tool arguments to prevent data loss during remote compaction.
+
+## [16.4.1] - 2026-07-10
+
+### Fixed
+
+- Enabled reasoning encryption content for all Responses Lite compaction requests
+
+## [16.4.0] - 2026-07-10
+
+### Added
+
+- Added the `ThinkingLevel.Max` ("max") configuration option, mapping to the `Effort.Max` tier for supported models.
+
+### Fixed
+
+- Fixed remote compaction behavior for Codex Responses Lite (GPT-5.6 family) models across both V1 and V2 endpoints to ensure correct formatting and routing.
+- Fixed an issue where aborted tool-result hooks could trigger subsequent provider calls before the abort signal fully settled.
+
+## [16.3.12] - 2026-07-08
+
+### Added
+
+- Added per-tool abort metadata so stream-wide aborts can label matching tool-call placeholders separately from unaffected sibling calls ([#2783](https://github.com/can1357/oh-my-pi/issues/2783)).
+
+### Fixed
+
+- Fixed handoff generation retrying with `toolChoice: "auto"` when custom OpenAI-compatible providers reject `toolChoice: "none"` with an auto-only 400. ([#4715](https://github.com/can1357/oh-my-pi/issues/4715))
+- Fixed generic remote compaction against OpenAI-compatible `/chat/completions` endpoints (for example llama.cpp `openai-completions`) by sending chat messages instead of the custom `{ systemPrompt, prompt }` summarizer payload. ([#4630](https://github.com/can1357/oh-my-pi/issues/4630))
+
+## [16.3.7] - 2026-07-05
+
+### Fixed
+
+- Fixed an issue where provider orchestration tokens were incorrectly included in context token calculations, which could trigger premature context auto-compaction and promotion.
+
+## [16.3.3] - 2026-07-02
+
+### Changed
+
+- Enabled dynamic model resolution to support seamless mid-run model switching.
+
+### Fixed
+
+- Fixed an issue in the Cursor agent where assistant messages containing native tool calls could duplicate text blocks on replay.
+- Fixed a bug where Cursor agent exec-channel tools (such as bash, write, and delete) were executed a second time after server-side execution.
+- Improved error handling for tool calls interrupted by upstream provider stream errors, distinguishing transport/provider failures from local tool execution failures in the CLI, events, and messages.
+
+## [16.3.0] - 2026-07-02
+
+### Added
+
+- Added support for Anthropic fallback content blocks in agent-loop assistant messages, ensuring they are preserved across session persistence and event fanout.
+
+### Fixed
+
+- Fixed an issue where legacy steering messages were prematurely consumed and dropped during in-flight tool execution polls.
+- Fixed an issue where skipped tool results in queued messages were incorrectly treated as completed, preventing necessary retries.
+- Improved branch summaries to preserve informative tool results from abandoned branches while filtering out redundant output.
+- Fixed interruptible tool waits to properly abort on host-provided IRC interrupts in addition to user steering.
+- Fixed schema validation errors for closed union tools by correctly injecting intent tracing into each variant.
+- Fixed token compaction reserve-budget logic to honor explicit reserveTokens values equal to the built-in default, and clamped the fallback reserve to at least one token for very small context windows.
+
+## [16.2.4] - 2026-06-28
+
+### Changed
+
+- Improved the reliability of remote compaction by introducing transient error retries, configurable timeouts, and immediate termination upon user-initiated aborts.
+
+### Fixed
+
+- Fixed an issue where assistant responses and encrypted reasoning could be lost during local history trimming prior to remote compaction.
+- Fixed type compatibility for hosts with title audit entries by adding support for `title_change` session metadata.
+- Fixed an issue where transient stream read failures after a completed tool call were treated as terminal errors, allowing the agent to successfully execute the tool and continue the turn.
+
+## [16.2.3] - 2026-06-28
+
+### Changed
+
+- Enabled V2 streaming remote compaction by default for compatible AI and OpenAI-compatible models, which forwards full conversation history to the provider and supports session routing, prompt caching, provider-native tool history replay, transient error retries, and configurable timeouts.
+
+### Fixed
+
+- Fixed an issue where assistant responses and encrypted reasoning could be lost during local history trimming.
+- Added `title_change` session metadata to the compaction entry type union to maintain type compatibility for hosts with title audit entries.
 
 ## [16.2.2] - 2026-06-27
 
@@ -69,6 +443,7 @@
 ### Added
 
 - Added `generateHandoffFromContext(context, model, options)` to `@pk-nerdsaver-ai/pi-agent-core/compaction`: runs the handoff oneshot against a fully-built provider `Context` (system prompt, normalized tools, transformed history, trailing handoff prompt) with `streamOptions` mirroring the live turn's cache routing, so a host that owns the transform pipeline can make the handoff request share the prompt cache the main turn populated. `generateHandoff(messages, …)` is unchanged and now delegates to it.
+- Added `generateHandoffFromContext(context, model, options)` to `@oh-my-pi/pi-agent-core/compaction`: runs the handoff oneshot against a fully-built provider `Context` (system prompt, normalized tools, transformed history, trailing handoff prompt) with `streamOptions` mirroring the live turn's cache routing, so a host that owns the transform pipeline can make the handoff request share the prompt cache the main turn populated. `generateHandoff(messages, …)` is unchanged and now delegates to it.
 - Added an optional `systemPrompt` argument to `Agent.buildSideRequestContext(llmMessages, systemPrompt?)`, defaulting to the live agent prompt; callers can pin a different prompt (e.g. handoff generation, which uses the base prompt rather than a per-turn `before_agent_start` hook override).
 
 ### Changed

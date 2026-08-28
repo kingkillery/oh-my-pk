@@ -1,13 +1,15 @@
 #!/usr/bin/env bun
 
 import * as fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import * as path from "node:path";
+import { COMPILED_EXTERNAL_DEPENDENCIES, compileCodingAgent } from "../packages/coding-agent/scripts/compile-binary";
 
 interface BinaryTarget {
 	id: string;
 	platform: string;
 	arch: string;
-	target: string;
+	target: Bun.Build.CompileTarget;
 	outfile: string;
 }
 
@@ -17,12 +19,18 @@ const nativesDir = path.join(repoRoot, "packages", "natives");
 const statsDir = path.join(repoRoot, "packages", "stats");
 
 const binariesDir = path.join(repoRoot, "packages", "coding-agent", "binaries");
-const entrypoint = "./packages/coding-agent/src/cli.ts";
-// Worker threads spawn `new Worker(Bun.main, { argv })` — they re-enter the
-// binary's own entry module — so no separate worker modules are compiled.
-// Legacy pi-* extension compat surfaces are served through an in-process
-// virtual namespace (`legacy-pi-compat.ts`), reached via the main module
-// graph, so no extra `--compile` entrypoints are required (issue #3423).
+const entrypoint = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts");
+const transformersManifest: unknown = createRequire(import.meta.url)("@huggingface/transformers/package.json");
+if (
+	typeof transformersManifest !== "object" ||
+	transformersManifest === null ||
+	!("version" in transformersManifest) ||
+	typeof transformersManifest.version !== "string"
+) {
+	throw new Error("@huggingface/transformers package manifest has no string version");
+}
+const transformersVersion = transformersManifest.version;
+// Worker threads re-enter the binary's single CLI host entry.
 const isDryRun = process.argv.includes("--dry-run");
 const targets: BinaryTarget[] = [
 	{
@@ -54,10 +62,24 @@ const targets: BinaryTarget[] = [
 		outfile: "packages/coding-agent/binaries/omp-linux-arm64",
 	},
 	{
+		id: "linux-musl-x64",
+		platform: "linux",
+		arch: "x64",
+		target: "bun-linux-x64-musl-baseline",
+		outfile: "packages/coding-agent/binaries/omp-linux-musl-x64",
+	},
+	{
+		id: "linux-musl-arm64",
+		platform: "linux",
+		arch: "arm64",
+		target: "bun-linux-arm64-musl",
+		outfile: "packages/coding-agent/binaries/omp-linux-musl-arm64",
+	},
+	{
 		id: "win32-x64",
 		platform: "win32",
 		arch: "x64",
-		target: "bun-windows-x64-modern",
+		target: "bun-windows-x64-baseline",
 		outfile: "packages/coding-agent/binaries/omp-windows-x64.exe",
 	},
 ];
@@ -104,7 +126,7 @@ async function embedNative(target: BinaryTarget): Promise<void> {
 		return;
 	}
 
-	await runCommand(["bun", "run", "gen:native"], nativesDir, {
+	await runCommand(["bun", "run", "gen:native"], repoRoot, {
 		...Bun.env,
 		TARGET_PLATFORM: target.platform,
 		TARGET_ARCH: target.arch,
@@ -116,37 +138,20 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 	await embedNative(target);
 	if (isDryRun) {
 		console.log(
-			`DRY RUN bun build --compile --no-compile-autoload-bunfig --no-compile-autoload-dotenv --no-compile-autoload-tsconfig --no-compile-autoload-package-json --minify-identifiers --keep-names --define process.env.PI_COMPILED="true" --root . --target=${target.target} ${entrypoint} --outfile ${target.outfile}`,
+			`DRY RUN Bun.build target=${target.target} outfile=${target.outfile} external=${COMPILED_EXTERNAL_DEPENDENCIES.join(",")}`,
 		);
 		return;
 	}
 
-	const buildEnv = shouldAdhocSignDarwinBinary(target) ? { ...Bun.env, BUN_NO_CODESIGN_MACHO_BINARY: "1" } : Bun.env;
-	await runCommand(
-		[
-			"bun",
-			"build",
-			"--compile",
-			"--no-compile-autoload-bunfig",
-			"--no-compile-autoload-dotenv",
-			"--no-compile-autoload-tsconfig",
-			"--no-compile-autoload-package-json",
-			"--minify-identifiers",
-			"--keep-names",
-			"--define",
-			'process.env.PI_COMPILED="true"',
-			"--root",
-			".",
-			"--target",
-			target.target,
-			entrypoint,
-			"--outfile",
-			target.outfile,
-		],
+	await compileCodingAgent({
 		repoRoot,
-		buildEnv,
-	);
-
+		entrypoint,
+		outfile: path.join(repoRoot, target.outfile),
+		transformersVersion,
+		target: target.target,
+		minifyIdentifiers: true,
+		skipBuiltinCodesign: shouldAdhocSignDarwinBinary(target),
+	});
 	// Bun 1.3.12 emits a truncated Mach-O signature on darwin builds.
 	if (shouldAdhocSignDarwinBinary(target)) {
 		await runCommand(["codesign", "--force", "--sign", "-", path.join(repoRoot, target.outfile)], repoRoot);
@@ -156,27 +161,21 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 async function generateBundle(): Promise<void> {
 	if (isDryRun) {
 		console.log("DRY RUN bun run gen:stats");
-		console.log("DRY RUN bun run gen:docs");
-		console.log("DRY RUN bun run gen:mupdf");
+		console.log("DRY RUN bun --cwd=packages/collab-web run gen:tool-views");
 		return;
 	}
-	await runCommand(["bun", "run", "gen:stats"], statsDir);
-	await runCommand(["bun", "run", "gen:docs"], codingAgentDir);
-	await runCommand(["bun", "run", "gen:mupdf"], codingAgentDir);
+	await runCommand(["bun", "run", "gen:stats"], repoRoot);
+	await runCommand(["bun", "--cwd=packages/collab-web", "run", "gen:tool-views"], repoRoot);
 }
 
 async function resetArtifacts(): Promise<void> {
 	if (isDryRun) {
 		console.log("DRY RUN bun run gen:native:reset");
 		console.log("DRY RUN bun run gen:stats:reset");
-		console.log("DRY RUN bun run gen:docs:reset");
-		console.log("DRY RUN bun run gen:mupdf:reset");
 		return;
 	}
-	await runCommand(["bun", "run", "gen:native:reset"], nativesDir);
-	await runCommand(["bun", "run", "gen:stats:reset"], statsDir);
-	await runCommand(["bun", "run", "gen:docs:reset"], codingAgentDir);
-	await runCommand(["bun", "run", "gen:mupdf:reset"], codingAgentDir);
+	await runCommand(["bun", "run", "gen:native:reset"], repoRoot);
+	await runCommand(["bun", "run", "gen:stats:reset"], repoRoot);
 }
 
 async function main(): Promise<void> {

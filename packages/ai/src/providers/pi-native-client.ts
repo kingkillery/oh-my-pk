@@ -11,11 +11,12 @@
  *
  * Activated when a {@link Model} has `transport: "pi-native"` set; the
  * dispatch hook lives in `streamSimple()` (see `../stream.ts`). Used by
- * containerized omp deployments (robomp slots, the swarm extension) that
+ * containerized omp deployments (such as robomp slots) that
  * route every LLM call through a credential-holding sidecar so the slot
  * itself stays credential-free.
  */
-import { readSseJson } from "@pk-nerdsaver-ai/pi-utils";
+import * as os from "node:os";
+import { getAppName, getInstallId, readSseJson } from "@pk-nerdsaver-ai/pi-utils";
 import * as AIError from "../error";
 import type {
 	Api,
@@ -26,7 +27,10 @@ import type {
 	Model,
 	SimpleStreamOptions,
 } from "../types";
+import { createAbortSourceTracker } from "../utils/abort";
 import { AssistantMessageEventStream } from "../utils/event-stream";
+import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
+import { notifyProviderResponse } from "../utils/provider-response";
 
 /**
  * Fields that must not cross the wire — either non-serializable (functions,
@@ -47,6 +51,13 @@ const NON_WIRE_KEYS = new Set<keyof SimpleStreamOptions>([
 	"cursorOnToolResult",
 	"providerSessionState",
 ]);
+const PI_NATIVE_STREAM_IDLE_TIMEOUT_ERROR = "pi-native stream stalled while waiting for the next event";
+const PI_NATIVE_STREAM_FIRST_EVENT_TIMEOUT_ERROR = "pi-native stream timed out while waiting for the first event";
+
+function isPiNativeProgressEvent(event: unknown): boolean {
+	if (typeof event !== "object" || event === null || !("type" in event)) return true;
+	return event.type !== "start";
+}
 
 function buildWireOptions(options: SimpleStreamOptions | undefined): Record<string, unknown> {
 	if (!options) return {};
@@ -107,6 +118,13 @@ function buildHeaders(model: Model<Api>, apiKey: string | undefined): Record<str
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 		Accept: "text/event-stream",
+		// Usage-attribution identity: the gateway reports this request's token
+		// burn to the broker under the ORIGINATING client, not the gateway host.
+		// Attribution-only — the gateway never forwards x-omp-* upstream. Header
+		// values must stay ISO-8859-1-safe, hence the hostname scrub.
+		"x-omp-install-id": getInstallId(),
+		"x-omp-hostname": os.hostname().replace(/[^\x20-\x7e]/g, "?"),
+		"x-omp-app": getAppName(),
 		...(model.headers ?? {}),
 	};
 	if (apiKey && !headers.Authorization) {
@@ -134,7 +152,8 @@ export function streamPiNative<TApi extends Api>(
 	const stream = new AssistantMessageEventStream();
 
 	void (async () => {
-		const signal = options?.signal;
+		const callerSignal = options?.signal;
+		const abortTracker = createAbortSourceTracker(callerSignal);
 		// Abort propagation: cancel the response body when the caller's signal
 		// fires. Mirror `streamProxy`'s shape — explicit listener + finally
 		// cleanup — so we don't leak listeners on the long-running case.
@@ -143,12 +162,16 @@ export function streamPiNative<TApi extends Api>(
 			const body = response?.body;
 			if (body) body.cancel("Request aborted by caller").catch(() => {});
 		};
-		if (signal) {
-			if (signal.aborted) {
-				stream.fail(signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason ?? "aborted")));
+		if (callerSignal) {
+			if (callerSignal.aborted) {
+				stream.fail(
+					callerSignal.reason instanceof Error
+						? callerSignal.reason
+						: new Error(String(callerSignal.reason ?? "aborted")),
+				);
 				return;
 			}
-			signal.addEventListener("abort", onAbort, { once: true });
+			callerSignal.addEventListener("abort", onAbort, { once: true });
 		}
 
 		try {
@@ -165,11 +188,19 @@ export function streamPiNative<TApi extends Api>(
 				stream: true,
 			});
 
-			response = await fetchImpl(url, { method: "POST", headers, body, signal });
+			response = await fetchImpl(url, { method: "POST", headers, body, signal: abortTracker.requestSignal });
 			if (!response.ok) {
 				stream.fail(await decodeGatewayError(response));
 				return;
 			}
+			// Callers can truthfully inspect the gateway HTTP response, but its
+			// request body is opaque here; callbacks themselves never cross the wire.
+			await notifyProviderResponse(
+				options,
+				response,
+				model,
+				response.headers.get("x-request-id") ?? response.headers.get("request-id"),
+			);
 			if (!response.body) {
 				stream.fail(
 					new AIError.AuthGatewayError("auth-gateway returned empty body", response.status, response.headers),
@@ -177,11 +208,25 @@ export function streamPiNative<TApi extends Api>(
 				return;
 			}
 
-			let sawTerminal = false;
-			for await (const event of readSseJson<AssistantMessageEvent>(
+			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs();
+			const firstEventTimeoutMs = options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs);
+			const source = readSseJson<AssistantMessageEvent>(
 				response.body as ReadableStream<Uint8Array>,
-				signal,
-			)) {
+				abortTracker.requestSignal,
+			);
+			const watchedSource = iterateWithIdleTimeout(source, {
+				idleTimeoutMs,
+				firstItemTimeoutMs: firstEventTimeoutMs,
+				errorMessage: PI_NATIVE_STREAM_IDLE_TIMEOUT_ERROR,
+				firstItemErrorMessage: PI_NATIVE_STREAM_FIRST_EVENT_TIMEOUT_ERROR,
+				onIdle: () =>
+					abortTracker.abortLocally(new AIError.StreamTimeoutError(PI_NATIVE_STREAM_IDLE_TIMEOUT_ERROR)),
+				onFirstItemTimeout: () =>
+					abortTracker.abortLocally(new AIError.StreamTimeoutError(PI_NATIVE_STREAM_FIRST_EVENT_TIMEOUT_ERROR)),
+				isProgressItem: isPiNativeProgressEvent,
+			});
+			let sawTerminal = false;
+			for await (const event of watchedSource) {
 				if (event.type === "done" || event.type === "error") sawTerminal = true;
 				stream.push(event);
 				// `stream.push` resolves `.result()` on `done`/`error`; subsequent
@@ -195,7 +240,7 @@ export function streamPiNative<TApi extends Api>(
 				// so awaiters of `.result()` resolve instead of hanging forever.
 				// Matches the gateway's own defensive fallback in
 				// `pi-native-server.encodeStream`.
-				const aborted = signal?.aborted === true;
+				const aborted = abortTracker.wasCallerAbort();
 				const partial = makeSyntheticAssistant(model as Model<Api>);
 				if (aborted) {
 					partial.stopReason = "aborted";
@@ -210,7 +255,7 @@ export function streamPiNative<TApi extends Api>(
 		} catch (err) {
 			stream.fail(err);
 		} finally {
-			if (signal) signal.removeEventListener("abort", onAbort);
+			if (callerSignal) callerSignal.removeEventListener("abort", onAbort);
 		}
 	})();
 

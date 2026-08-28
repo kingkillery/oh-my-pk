@@ -1,8 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { isFastModeUnsupported } from "@pk-nerdsaver-ai/pi-ai/error";
-import { clearAnthropicFastModeFallback, streamAnthropic } from "@pk-nerdsaver-ai/pi-ai/providers/anthropic";
+import {
+	clearAnthropicFastModeFallback,
+	isAnthropicFastModeFallbackDisabled,
+	streamAnthropic,
+} from "@pk-nerdsaver-ai/pi-ai/providers/anthropic";
 import type { Context, Model, ProviderSessionState, ServiceTier } from "@pk-nerdsaver-ai/pi-ai/types";
 import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
+import { withOfficialAnthropicEndpoint } from "./helpers";
 
 function makeAnthropicModel(id: string): Model<"anthropic-messages"> {
 	return buildModel({
@@ -48,6 +53,8 @@ function capturePayload(model: Model<"anthropic-messages">, opts: CaptureOptions
 	return promise;
 }
 
+withOfficialAnthropicEndpoint();
+
 describe("Anthropic priority service tier → speed='fast'", () => {
 	it("sets speed='fast' for Claude Opus 4.7 when serviceTier='priority'", async () => {
 		const payload = (await capturePayload(makeAnthropicModel("claude-opus-4-7"), {
@@ -88,21 +95,48 @@ describe("Anthropic priority service tier → speed='fast'", () => {
 			expect(payload.speed).toBeUndefined();
 		}
 	});
+	describe("provider-session fallback scope", () => {
+		function stateKey(model: Model<"anthropic-messages">): string {
+			return `anthropic-messages:${model.baseUrl}\u0000${model.id}`;
+		}
 
-	it("sets speed='fast' on direct anthropic when serviceTier='claude-only'", async () => {
-		const payload = (await capturePayload(makeAnthropicModel("claude-opus-4-7"), {
-			serviceTier: "claude-only",
-		})) as { speed?: string };
-		expect(payload.speed).toBe("fast");
-	});
+		it("inspects the exact model and endpoint fallback without bleeding to other requests", async () => {
+			const model = makeAnthropicModel("claude-opus-4-7");
+			const otherModel = makeAnthropicModel("claude-opus-4-6");
+			const otherEndpoint = buildModel({
+				...model,
+				id: model.id,
+				name: `${model.id} gateway`,
+				baseUrl: "https://gateway.example/v1",
+			});
+			const state = new Map<string, ProviderSessionState>();
+			state.set(stateKey(model), {
+				strictToolsDisabled: false,
+				fastModeDisabled: true,
+				replayUnsignedThinkingDisabled: false,
+				close: () => {},
+			} as ProviderSessionState);
 
-	it("omits speed when serviceTier='openai-only' on an anthropic model", async () => {
-		// Scoped to OpenAI — on this anthropic request, the scope doesn't match,
-		// so `speed` must not be set on the wire.
-		const payload = (await capturePayload(makeAnthropicModel("claude-opus-4-7"), {
-			serviceTier: "openai-only",
-		})) as Record<string, unknown>;
-		expect(payload.speed).toBeUndefined();
+			const matching = (await capturePayload(model, {
+				serviceTier: "priority",
+				providerSessionState: state,
+			})) as Record<string, unknown>;
+			const differentModel = (await capturePayload(otherModel, {
+				serviceTier: "priority",
+				providerSessionState: state,
+			})) as Record<string, unknown>;
+			const differentEndpoint = (await capturePayload(otherEndpoint, {
+				serviceTier: "priority",
+				providerSessionState: state,
+			})) as Record<string, unknown>;
+
+			expect(isAnthropicFastModeFallbackDisabled(state, model)).toBe(true);
+			expect(isAnthropicFastModeFallbackDisabled(state, otherModel)).toBe(false);
+			expect(isAnthropicFastModeFallbackDisabled(state, otherEndpoint)).toBe(false);
+			expect(matching.speed).toBeUndefined();
+			expect(differentModel.speed).toBe("fast");
+			expect(differentEndpoint.speed).toBe("fast");
+		});
 	});
 });
 

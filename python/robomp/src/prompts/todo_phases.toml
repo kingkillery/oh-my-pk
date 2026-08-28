@@ -2,6 +2,7 @@
 name = "Classify"
 tasks = [
   "Read the issue body + every prior comment",
+  "gh_search_issues for duplicates and already-merged fixes",
   "Call classify_issue with primary type + labels",
 ]
 
@@ -46,4 +47,25 @@ tasks = [
   "Read the review comment in full",
   "Address the requested change in the worktree",
   "gh_push_branch, then gh_post_comment reply",
+]
+
+[[handle_release_ci]]
+name = "Diagnose"
+tasks = [
+  "Read the failure dossier and identify the root cause",
+  "Use release_job_log only when the dossier lacks detail",
+]
+
+[[handle_release_ci]]
+name = "Fix"
+tasks = [
+  "Apply the smallest root-cause fix",
+  "Run focused local verification",
+]
+
+[[handle_release_ci]]
+name = "Retag"
+tasks = [
+  "Commit with the mandated release subject",
+  "Call release_retag and end the turn",
 ]

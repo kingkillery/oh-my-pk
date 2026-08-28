@@ -8,7 +8,7 @@ import type { ExtensionAPI } from "@pk-nerdsaver-ai/pi-coding-agent";
 import ms from "ms";
 
 export default function (pi: ExtensionAPI) {
-	const { z } = pi.zod;
+	const z = pi.zod;
 
 	// Register a tool that uses ms
 	pi.registerTool({

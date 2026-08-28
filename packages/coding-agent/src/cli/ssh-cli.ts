@@ -4,8 +4,8 @@
  * Handles `omp ssh <command>` subcommands for SSH host configuration management.
  */
 
-import { APP_NAME, getSSHConfigPath } from "@pk-nerdsaver-ai/pi-utils";
-import chalk from "chalk";
+import { getSSHConfigPath } from "@pk-nerdsaver-ai/pi-utils";
+import chalk from "@pk-nerdsaver-ai/pi-utils/chalk";
 import { addSSHHost, readSSHConfigFile, removeSSHHost, type SSHHostConfig } from "../ssh/config-writer";
 
 // =============================================================================

@@ -1,21 +1,13 @@
 import { describe, expect, it } from "bun:test";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import { complete } from "@pk-nerdsaver-ai/pi-ai/stream";
-import type {
-	Api,
-	AssistantMessage,
-	Context,
-	Message,
-	Model,
-	Tool,
-	ToolResultMessage,
-} from "@pk-nerdsaver-ai/pi-ai/types";
+import type { Api, AssistantMessage, Context, Message, Model, Tool, ToolResultMessage } from "@pk-nerdsaver-ai/pi-ai/types";
 import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
-import { z } from "zod/v4";
 import { e2eApiKey } from "./oauth";
 
 // Tool for testing
-const weatherSchema = z.object({
-	location: z.string().describe("City name"),
+const weatherSchema = type({
+	location: type("string").describe("City name"),
 });
 
 const weatherTool: Tool<typeof weatherSchema> = {

@@ -10,6 +10,7 @@
  * Adding a mode is a single entry here: the command surface (autocomplete +
  * ACP hint), the parser, and the engine override all read this table.
  */
+import type { CompactionMethod } from "./compaction-methods";
 
 /** Shared error surfaced when callers request the retired snapcompact mode. */
 export const SNAPCOMPACT_RETIREMENT_ERROR =
@@ -19,13 +20,11 @@ export const SNAPCOMPACT_RETIREMENT_ERROR =
 export type CompactMode = "soft" | "remote";
 
 /**
- * Per-invocation overrides merged over the configured `compaction.*` settings.
- * Narrowed to the two knobs the modes actually flip; the result stays
- * assignable to the full `CompactionSettings`.
+ * Per-invocation ordered methods merged over the configured
+ * `compaction.methodOrder` for this run.
  */
 export interface CompactionOverride {
-	strategy?: "context-full";
-	remoteEnabled?: boolean;
+	methodOrder?: CompactionMethod[];
 }
 
 export interface CompactModeDef {
@@ -35,24 +34,29 @@ export interface CompactModeDef {
 	/** Settings overrides applied on top of `compaction.*` for this run. */
 	readonly overrides: CompactionOverride;
 	/**
-	 * When true, the mode explicitly demands a remote path; the engine warns and
-	 * falls back to a local summary if neither a remote endpoint nor a
-	 * provider-native compaction path is available.
+	 * When true, the mode produces no LLM summary, so trailing focus text is
+	 * meaningless and rejected by the parser (snapcompact archives history into
+	 * images without a directed summary).
 	 */
-	readonly requiresRemote?: boolean;
+	readonly rejectsFocus?: boolean;
 }
 
 export const COMPACT_MODES: readonly CompactModeDef[] = [
 	{
 		name: "soft",
-		description: "Summarize locally with the active model (skip remote endpoints)",
-		overrides: { strategy: "context-full", remoteEnabled: false },
+		description: "Summarize locally with the active model (skip server compaction)",
+		overrides: { methodOrder: ["soft"] },
 	},
 	{
 		name: "remote",
-		description: "Summarize via the remote endpoint / provider-native compaction",
-		overrides: { strategy: "context-full", remoteEnabled: true },
-		requiresRemote: true,
+		description: "Summarize via OpenAI-compatible server compaction, then fall back to a local summary",
+		overrides: { methodOrder: ["remote", "soft"] },
+	},
+	{
+		name: "snapcompact",
+		description: "Archive history onto dense bitmap images the model reads back (no LLM call)",
+		overrides: { methodOrder: ["snapcompact"] },
+		rejectsFocus: true,
 	},
 ];
 

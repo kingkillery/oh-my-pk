@@ -45,24 +45,35 @@ function makeFakeSession(
 ): InteractiveModeContext["session"] {
 	return {
 		model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+		isStreaming: false,
 		runEphemeralTurn,
 	} as unknown as InteractiveModeContext["session"];
 }
 
 function makeCtx(session: InteractiveModeContext["session"], btwContainer = new Container()): InteractiveModeContext {
 	let leafId: string | null = "leaf-1";
+	let sessionId = "session-1";
 	return {
 		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
 		btwContainer,
 		session,
-		sessionManager: { getLeafId: () => leafId } as unknown as InteractiveModeContext["sessionManager"],
+		sessionManager: {
+			getLeafId: () => leafId,
+			getSessionId: () => sessionId,
+		} as unknown as InteractiveModeContext["sessionManager"],
 		showStatus: vi.fn(),
 		showError: vi.fn(),
 		handleBtwBranch: vi.fn(async () => {}),
 		setTestLeafId(nextLeafId: string | null) {
 			leafId = nextLeafId;
 		},
-	} as unknown as InteractiveModeContext & { setTestLeafId(nextLeafId: string | null): void };
+		setTestSessionId(nextSessionId: string) {
+			sessionId = nextSessionId;
+		},
+	} as unknown as InteractiveModeContext & {
+		setTestLeafId(nextLeafId: string | null): void;
+		setTestSessionId(nextSessionId: string): void;
+	};
 }
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -100,6 +111,18 @@ describe("BtwPanelComponent", () => {
 		expect(rendered).toContain("c copy");
 		expect(rendered).toContain("b branch to chat");
 		expect(rendered).toContain("Esc dismiss");
+	});
+
+	it("hides the branch action when the controller rejects the current leaf", () => {
+		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
+		const panel = new BtwPanelComponent({ question: "Question?", tui: ui, canBranch: () => false });
+
+		panel.setAnswer("Answer");
+		panel.markComplete();
+
+		const rendered = Bun.stripANSI(panel.render(120).join("\n"));
+		expect(rendered).toContain("c copy");
+		expect(rendered).not.toContain("b branch to chat");
 	});
 });
 
@@ -229,6 +252,7 @@ describe("BtwController", () => {
 		await controller.start("Question?");
 
 		expect(controller.canBranch()).toBe(false);
+		expect(controller.handlesBranchKey()).toBe(false);
 	});
 
 	it("does not allow branch when the completed answer has no originating leaf", async () => {
@@ -244,6 +268,7 @@ describe("BtwController", () => {
 		await drainBtwRequest();
 
 		expect(controller.canBranch()).toBe(false);
+		expect(controller.handlesBranchKey()).toBe(true);
 	});
 
 	it("allows branch after a complete non-empty reply", async () => {
@@ -256,6 +281,54 @@ describe("BtwController", () => {
 		await drainBtwRequest();
 
 		expect(controller.canBranch()).toBe(true);
+		expect(controller.handlesBranchKey()).toBe(true);
+	});
+
+	it("refuses branch when the loaded session changed but the leaf id still matches", async () => {
+		const assistantMessage = createAssistantMessage("Answer");
+		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
+		const ctx = makeCtx(makeFakeSession(runEphemeralTurn)) as InteractiveModeContext & {
+			setTestSessionId(nextSessionId: string): void;
+		};
+		const controller = new BtwController(ctx);
+
+		await controller.start("Question?");
+		await drainBtwRequest();
+		expect(controller.canBranch()).toBe(true);
+
+		// A resumed/branched session preserves the entry id, so the leaf still matches;
+		// the session id must still gate the promotion.
+		ctx.setTestSessionId("session-2");
+
+		expect(controller.canBranch()).toBe(false);
+		expect(controller.handlesBranchKey()).toBe(true);
+		expect(await controller.handleBranch()).toBe(false);
+		expect(ctx.handleBtwBranch).not.toHaveBeenCalled();
+		expect(ctx.showStatus).toHaveBeenCalledWith("/btw branch unavailable: the session changed since /btw started", {
+			dim: true,
+		});
+	});
+
+	it("refuses a completed branch while the main turn is streaming", async () => {
+		const assistantMessage = createAssistantMessage("Answer");
+		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
+		const session = makeFakeSession(runEphemeralTurn);
+		Object.defineProperty(session, "isStreaming", { value: true });
+		const btwContainer = new Container();
+		const ctx = makeCtx(session, btwContainer);
+		const controller = new BtwController(ctx);
+
+		await controller.start("Question?");
+		await drainBtwRequest();
+
+		expect(controller.canBranch()).toBe(false);
+		expect(controller.handlesBranchKey()).toBe(true);
+		const panel = btwContainer.children[0];
+		expect(Bun.stripANSI(panel?.render(120).join("\n") ?? "")).not.toContain("b branch to chat");
+		expect(await controller.handleBranch()).toBe(false);
+		expect(ctx.showStatus).toHaveBeenCalledWith("/btw branch unavailable: a turn is still running", {
+			dim: true,
+		});
 	});
 
 	it("does not allow branch after a complete empty reply", async () => {
@@ -270,6 +343,7 @@ describe("BtwController", () => {
 		await drainBtwRequest();
 
 		expect(controller.canBranch()).toBe(false);
+		expect(controller.handlesBranchKey()).toBe(false);
 	});
 
 	it("does not allow branch after aborted or errored requests", async () => {
@@ -310,7 +384,34 @@ describe("BtwController", () => {
 		await drainBtwRequest();
 
 		expect(await controller.handleBranch()).toBe(true);
-		expect(ctx.handleBtwBranch).toHaveBeenCalledWith("Question?", assistantMessage);
+		expect(ctx.handleBtwBranch).toHaveBeenCalledWith("Question?", assistantMessage, "leaf-1", "session-1");
+	});
+
+	it("keeps a pending branch visible and refuses to dismiss it", async () => {
+		const branch = Promise.withResolvers<void>();
+		const assistantMessage = createAssistantMessage("Answer");
+		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
+		const btwContainer = new Container();
+		const ctx = makeCtx(makeFakeSession(runEphemeralTurn), btwContainer);
+		ctx.handleBtwBranch = vi.fn(async () => {
+			await branch.promise;
+		});
+		const controller = new BtwController(ctx);
+
+		await controller.start("Question?");
+		await drainBtwRequest();
+		const branchPromise = controller.handleBranch();
+		await Promise.resolve();
+		expect(controller.handlesBranchKey()).toBe(true);
+
+		const panel = btwContainer.children[0];
+		expect(Bun.stripANSI(panel?.render(120).join("\n") ?? "")).toContain("Branching to chat");
+		expect(controller.handleEscape()).toBe(true);
+		expect(btwContainer.children).toHaveLength(1);
+		expect(ctx.showStatus).toHaveBeenCalledWith("/btw branch is in progress", { dim: true });
+
+		branch.resolve();
+		await branchPromise;
 	});
 
 	it("branches the sanitized reply text while preserving non-text assistant content", async () => {
@@ -336,13 +437,68 @@ describe("BtwController", () => {
 		await drainBtwRequest();
 
 		expect(await controller.handleBranch()).toBe(true);
-		expect(ctx.handleBtwBranch).toHaveBeenCalledWith("Question?", {
-			...assistantMessage,
-			content: [
-				{ type: "thinking", thinking: "Keep this reasoning." },
-				{ type: "text", text: "sanitized" },
-			],
+		expect(ctx.handleBtwBranch).toHaveBeenCalledWith(
+			"Question?",
+			{
+				...assistantMessage,
+				content: [
+					{ type: "thinking", thinking: "Keep this reasoning." },
+					{ type: "text", text: "sanitized" },
+				],
+			},
+			"leaf-1",
+			"session-1",
+		);
+	});
+
+	it("copies the sanitized visible reply text after a complete non-empty reply", async () => {
+		const copySpy = vi.spyOn(clipboard, "copyToClipboard").mockResolvedValue(undefined);
+		const runEphemeralTurn = vi.fn(async (args: RunEphemeralTurnArgs) => {
+			args.onTextDelta?.("duplicate streaming draft");
+			return {
+				replyText: "  Visible\tanswer\n\nfrom /btw  ",
+				assistantMessage: createAssistantMessage("raw assistant payload"),
+			};
 		});
+		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
+		const controller = new BtwController(ctx);
+
+		await controller.start("Question?");
+		await drainBtwRequest();
+
+		expect(controller.canCopy()).toBe(true);
+		expect(await controller.handleCopy()).toBe(true);
+		expect(copySpy).toHaveBeenCalledWith(replaceTabs("Visible\tanswer\n\nfrom /btw"));
+		expect(ctx.showStatus).toHaveBeenCalledWith("Copied /btw answer to clipboard");
+	});
+
+	it("does not copy running, empty, or errored /btw answers", async () => {
+		const copySpy = vi.spyOn(clipboard, "copyToClipboard").mockResolvedValue(undefined);
+
+		const runningRun = vi.fn(async () => Promise.withResolvers<RunEphemeralTurnResult>().promise);
+		const runningController = new BtwController(makeCtx(makeFakeSession(runningRun)));
+		await runningController.start("Question?");
+		expect(runningController.canCopy()).toBe(false);
+		expect(await runningController.handleCopy()).toBe(false);
+		runningController.dispose();
+
+		const emptyRun = vi.fn(async () => ({ replyText: "   ", assistantMessage: createAssistantMessage("   ") }));
+		const emptyController = new BtwController(makeCtx(makeFakeSession(emptyRun)));
+		await emptyController.start("Question?");
+		await drainBtwRequest();
+		expect(emptyController.canCopy()).toBe(false);
+		expect(await emptyController.handleCopy()).toBe(false);
+
+		const erroredRun = vi.fn(async () => {
+			throw new Error("boom");
+		});
+		const erroredController = new BtwController(makeCtx(makeFakeSession(erroredRun)));
+		await erroredController.start("Question?");
+		await drainBtwRequest();
+		expect(erroredController.canCopy()).toBe(false);
+		expect(await erroredController.handleCopy()).toBe(false);
+
+		expect(copySpy).not.toHaveBeenCalled();
 	});
 
 	it("copies the sanitized visible reply text after a complete non-empty reply", async () => {
@@ -421,14 +577,19 @@ describe("BtwController", () => {
 		await drainBtwRequest();
 
 		expect(await controller.handleBranch()).toBe(true);
-		expect(ctx.handleBtwBranch).toHaveBeenCalledWith("Question?", {
-			...assistantMessage,
-			content: [
-				{ type: "thinking", thinking: "reasoning" },
-				{ type: "text", text: "sanitized" },
-			],
-			providerPayload: undefined,
-		});
+		expect(ctx.handleBtwBranch).toHaveBeenCalledWith(
+			"Question?",
+			{
+				...assistantMessage,
+				content: [
+					{ type: "thinking", thinking: "reasoning" },
+					{ type: "text", text: "sanitized" },
+				],
+				providerPayload: undefined,
+			},
+			"leaf-1",
+			"session-1",
+		);
 	});
 
 	it("ignores duplicate branch requests while branch promotion is in flight", async () => {

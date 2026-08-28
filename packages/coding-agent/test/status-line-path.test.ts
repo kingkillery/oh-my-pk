@@ -5,9 +5,17 @@ import * as path from "node:path";
 import type { SegmentContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/status-line/segments";
 import { renderSegment } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/status-line/segments";
 import { initTheme, theme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
-import { getProjectDir, removeSyncWithRetries, setProjectDir } from "@pk-nerdsaver-ai/pi-utils";
+import { getProjectDir, pathIsWithin, removeSyncWithRetries, setProjectDir } from "@pk-nerdsaver-ai/pi-utils";
 
 const originalProjectDir = getProjectDir();
+const SCRATCH_ROOT_PREFIXES: readonly string[] = [
+	os.tmpdir(),
+	path.join(os.homedir(), "tmp"),
+	"/tmp",
+	"/var/tmp",
+	"/private/tmp",
+	"/private/var/tmp",
+];
 beforeAll(async () => {
 	await initTheme();
 });
@@ -22,6 +30,7 @@ function createPathContext(): SegmentContext {
 			sessionManager: undefined,
 		} as unknown as SegmentContext["session"],
 		width: 120,
+		compactThinkingLevel: false,
 		options: {
 			path: {
 				abbreviate: false,
@@ -31,13 +40,19 @@ function createPathContext(): SegmentContext {
 		},
 		planMode: null,
 		loopMode: null,
+		prewalk: null,
 		goalMode: null,
+		vibeMode: null,
 		collab: null,
 		usageStats: {
 			input: 0,
 			output: 0,
 			cacheRead: 0,
 			cacheWrite: 0,
+			totalTokens: 0,
+			orchestrationInput: 0,
+			orchestrationOutput: 0,
+			orchestrationCacheRead: 0,
 			premiumRequests: 0,
 			cost: 0,
 			tokensPerSecond: null,
@@ -46,9 +61,12 @@ function createPathContext(): SegmentContext {
 		contextTokens: 0,
 		contextWindow: 0,
 		autoCompactEnabled: false,
+		compactionSpeculation: "idle",
+		speculationBlinkOn: true,
 		subagentCount: 0,
-		sessionStartTime: Date.now(),
+		activeMs: 0,
 		activeRepo: null,
+		worktree: null,
 		git: {
 			branch: null,
 			status: null,
@@ -71,6 +89,17 @@ function expectContentToContainPath(content: string, expected: string): void {
 	expect(content).toContain(expected);
 }
 
+// `createFakeHome` needs a directory outside every scratch root, and the only
+// location it can rely on is the checkout itself. `SCRATCH_ROOTS` in
+// `status-line/segments.ts` is a module-load constant covering `/tmp`,
+// `/var/tmp` and their `/private` twins, so a checkout inside one of them —
+// a CI scratch workspace, or a clone under `/tmp` — makes the fake home look
+// like scratch and renders the scratch icon instead of the folder icon. The
+// constant is frozen at import time and `os.tmpdir()` is already mocked
+// elsewhere in this file, so there is no seam to redirect it; the two tests
+// that need a non-scratch home skip instead of asserting the wrong icon.
+const CHECKOUT_IS_SCRATCH = SCRATCH_ROOT_PREFIXES.some(root => pathIsWithin(root, originalProjectDir));
+
 function createFakeHome(): { home: string; projectsRoot: string } {
 	const homeRoot = path.join(originalProjectDir, ".wt");
 	fs.mkdirSync(homeRoot, { recursive: true });
@@ -82,7 +111,7 @@ function createFakeHome(): { home: string; projectsRoot: string } {
 }
 
 describe("status line path segment", () => {
-	it("strips the Projects root for symlink-equivalent aliases", () => {
+	it.skipIf(CHECKOUT_IS_SCRATCH)("strips the Projects root for symlink-equivalent aliases", () => {
 		if (process.platform === "win32") return;
 
 		const { home, projectsRoot } = createFakeHome();
@@ -167,7 +196,7 @@ describe("status line path segment", () => {
 		}
 	});
 
-	it("keeps the folder icon for paths outside any scratch root", () => {
+	it.skipIf(CHECKOUT_IS_SCRATCH)("keeps the folder icon for paths outside any scratch root", () => {
 		const { home, projectsRoot } = createFakeHome();
 		const realProjectDir = fs.mkdtempSync(path.join(projectsRoot, "omp-status-line-real-"));
 		try {
@@ -231,5 +260,62 @@ describe("status line path segment", () => {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(parentDir);
 		}
+	});
+});
+
+describe("status line path segment in a linked worktree", () => {
+	function worktreeContext(
+		worktree: { projectName: string; worktreeName: string } | null,
+		branch: string | null,
+	): SegmentContext {
+		const ctx = createPathContext();
+		ctx.worktree = worktree;
+		ctx.git = { branch, status: null, pr: null };
+		return ctx;
+	}
+
+	it("collapses to the project name and drops the worktree dir when it equals the branch", () => {
+		const rendered = renderSegment("path", worktreeContext({ projectName: "pi", worktreeName: "xx" }, "xx"));
+		const content = Bun.stripANSI(rendered.content);
+		expect(rendered.visible).toBe(true);
+		expect(content).toBe(`${theme.icon.worktree} pi`);
+		// The base prefix, the worktree dir, and the folder icon are all gone.
+		expect(content).not.toContain(".tree");
+		expect(content).not.toContain("/xx");
+		expect(content).not.toContain(theme.icon.folder);
+	});
+
+	it("keeps the worktree dir when it diverges from the branch", () => {
+		const rendered = renderSegment("path", worktreeContext({ projectName: "pi", worktreeName: "wt-icon" }, "icon"));
+		expect(Bun.stripANSI(rendered.content)).toBe(`${theme.icon.worktree} pi/wt-icon`);
+	});
+
+	it("keeps the worktree dir when no branch is shown", () => {
+		const rendered = renderSegment("path", worktreeContext({ projectName: "pi", worktreeName: "xx" }, null));
+		expect(Bun.stripANSI(rendered.content)).toBe(`${theme.icon.worktree} pi/xx`);
+	});
+
+	it("falls back to the on-disk path when stripWorkPrefix is disabled", () => {
+		const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-wt-noprefix-"));
+		try {
+			setProjectDir(scratchDir);
+			const ctx = worktreeContext({ projectName: "pi", worktreeName: "xx" }, "xx");
+			ctx.options.path = { ...ctx.options.path, stripWorkPrefix: false };
+			const content = Bun.stripANSI(renderSegment("path", ctx).content);
+			expect(content).not.toContain(theme.icon.worktree);
+			expect(content).toContain(theme.icon.folder);
+		} finally {
+			setProjectDir(originalProjectDir);
+			removeSyncWithRetries(scratchDir);
+		}
+	});
+
+	it("clamps a long worktree label to maxLength so overflow shrink works", () => {
+		const ctx = worktreeContext({ projectName: "very-long-project-name", worktreeName: "feature" }, "other");
+		ctx.options.path = { ...ctx.options.path, maxLength: 10 };
+		const label = Bun.stripANSI(renderSegment("path", ctx).content).slice(theme.icon.worktree.length + 1);
+		expect(label.length).toBeLessThanOrEqual(10);
+		expect(label.startsWith("…")).toBe(true);
+		expect(label.endsWith("feature")).toBe(true);
 	});
 });

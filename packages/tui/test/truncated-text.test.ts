@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { TruncatedText } from "@pk-nerdsaver-ai/pi-tui/components/truncated-text";
 import { visibleWidth } from "@pk-nerdsaver-ai/pi-tui/utils";
-import { Chalk } from "chalk";
+import { Chalk } from "@pk-nerdsaver-ai/pi-utils/chalk";
 
 // Force full color in CI so ANSI assertions are deterministic
 const chalk = new Chalk({ level: 3 });

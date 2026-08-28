@@ -30,8 +30,10 @@
  * real implementations at the dispatch site.
  */
 
+import { isServiceTierOpenAISettingValue, SERVICE_TIER_OPENAI_VALUES } from "../config/service-tier";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { Args } from "./args";
+import { CliUsageError } from "./usage-error";
 
 /**
  * Runtime dependencies injected into setters that need to validate input or
@@ -44,9 +46,8 @@ import type { Args } from "./args";
  */
 export interface ParseDeps {
 	logger: { warn: (message: string, meta?: Record<string, unknown>) => void };
-	parseConfiguredThinkingLevel: (value: string | null | undefined) => ConfiguredThinkingLevel | undefined;
-	builtinToolNames: readonly string[];
-	normalizeToolNames: (names: Iterable<string>) => string[];
+	parseThinking: (value: string | null | undefined) => ConfiguredThinkingLevel | undefined;
+	normalizeToolNames: (values: Iterable<string>) => string[];
 	thinkingEfforts: readonly string[];
 }
 
@@ -85,6 +86,24 @@ const setResume: OptionalSetter = (result, value) => {
 	result.resume = value !== undefined ? value : true;
 };
 
+const MAX_TIME_DURATION_RE = /^(\d+(?:\.\d+)?)([smh])$/;
+
+function maxTimeMultiplier(unit: string | undefined): number {
+	if (unit === "h") return 3600;
+	if (unit === "m") return 60;
+	return 1;
+}
+
+function parseMaxTimeSeconds(value: string): number {
+	const trimmed = value.trim();
+	const duration = MAX_TIME_DURATION_RE.exec(trimmed);
+	const seconds = duration ? Number(duration[1]) * maxTimeMultiplier(duration[2]) : Number(trimmed);
+	if (Number.isFinite(seconds) && seconds > 0) return seconds;
+	throw new CliUsageError(
+		`Invalid --max-time value: ${JSON.stringify(value)}. Expected a positive number of seconds or duration like "5s", "10m", "1h".`,
+	);
+}
+
 /**
  * Setters for flags with string values. Most built-ins consume the next argv
  * token even when it starts with `-`; flags listed in
@@ -97,6 +116,9 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	},
 	"--config": (result, value) => {
 		result.config = [...(result.config ?? []), value];
+	},
+	"--add-dir": (result, value) => {
+		result.addDir = [...(result.addDir ?? []), value];
 	},
 	"--mode": (result, value) => {
 		if (value === "text" || value === "json" || value === "rpc" || value === "acp" || value === "rpc-ui") {
@@ -121,13 +143,22 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	"--plan": (result, value) => {
 		result.plan = value;
 	},
-	"--max-time": (result, value, deps) => {
-		const seconds = Number(value);
-		if (Number.isFinite(seconds) && seconds > 0) {
-			result.maxTime = seconds;
-		} else {
-			deps.logger.warn("Invalid seconds passed to --max-time", { value });
+	"--prewalk-into": (result, value) => {
+		result.prewalkInto = value;
+	},
+	"--plan-yolo-into": (result, value) => {
+		result.planYoloInto = value;
+	},
+	"--max-time": (result, value) => {
+		result.maxTime = parseMaxTimeSeconds(value);
+	},
+	"--service-tier": (result, value) => {
+		if (!isServiceTierOpenAISettingValue(value)) {
+			throw new CliUsageError(
+				`Invalid --service-tier value: ${JSON.stringify(value)}. Expected one of: ${SERVICE_TIER_OPENAI_VALUES.join(", ")}.`,
+			);
 		}
+		result.serviceTier = value;
 	},
 	"--api-key": (result, value) => {
 		result.apiKey = value;
@@ -140,6 +171,9 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	},
 	"--provider-session-id": (result, value) => {
 		result.providerSessionId = value;
+	},
+	"--prompt-cache-key": (result, value) => {
+		result.providerPromptCacheKey = value;
 	},
 	"--session-dir": (result, value) => {
 		result.sessionDir = value;
@@ -167,23 +201,13 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 				.map(s => s.trim())
 				.filter(Boolean),
 		);
-		const valid: string[] = [];
-		for (const name of names) {
-			if (deps.builtinToolNames.includes(name)) {
-				valid.push(name);
-			} else {
-				deps.logger.warn("Unknown tool passed to --tools", {
-					tool: name,
-					validTools: deps.builtinToolNames,
-				});
-			}
-		}
-		result.tools = valid;
+		// Validation runs after session tool discovery. At this point extension,
+		// custom, plugin-manifest, and MCP tools are not all known yet.
+		result.tools = names;
 	},
 	"--thinking": (result, value, deps) => {
-		const thinking = deps.parseConfiguredThinkingLevel(value);
-		// `inherit` is the internal scoped-model sentinel, not a CLI-facing level.
-		if (thinking !== undefined && thinking !== "inherit") {
+		const thinking = deps.parseThinking(value);
+		if (thinking !== undefined) {
 			result.thinking = thinking;
 		} else {
 			deps.logger.warn("Invalid thinking level passed to --thinking", {
@@ -216,6 +240,10 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	},
 	"--extension": setExtension,
 	"-e": setExtension,
+	"--trusted-extension": (result, value) => {
+		result.trustedExtensions = result.trustedExtensions ?? [];
+		result.trustedExtensions.push(value);
+	},
 	"--plugin-dir": (result, value) => {
 		result.pluginDirs = result.pluginDirs ?? [];
 		result.pluginDirs.push(value);
@@ -295,6 +323,8 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--version",
 	"--allow-home",
 	"--continue",
+	"--from-claude",
+	"--from-codex",
 	"--no-session",
 	"--no-tools",
 	"--no-irc",
@@ -302,6 +332,10 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--no-pty",
 	"--hide-thinking",
 	"--advisor",
+	"--external-thinking",
+	"--prewalk",
+	"--no-prewalk",
+	"--plan-yolo",
 	"--print",
 	"--print-thoughts",
 	"--no-extensions",
@@ -318,18 +352,43 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * True for a `--`-prefixed token that is not any known launch flag and carries
- * no inline `=value`: an UNKNOWN long option (typically an extension string
- * flag) that may consume the next argv token as its value. The bootstrap
- * pre-parser treats such a token's successor as value-like so it never steals
- * that token as a global `--profile`/`--alias` value.
+ * Whether a bare long option (`--xxx`, no `=`) is unclassified — not a known
+ * string-, optional-, or value-less flag. The bootstrap and subcommand
+ * resolver treat these as possible extension string flags that may consume a
+ * value-like successor (the extension flag table is not yet loaded). Shared so
+ * both call sites classify identically.
  */
 export function isUnknownLongValueCandidate(arg: string): boolean {
-	if (!arg.startsWith("--") || arg === "--" || arg.includes("=")) return false;
 	return (
+		arg.startsWith("--") &&
+		!arg.includes("=") &&
 		!STRING_VALUE_FLAGS.has(arg) &&
 		!OPTIONAL_VALUE_FLAGS.has(arg) &&
-		!VALUELESS_FLAGS.has(arg) &&
-		arg !== PROFILE_BOOTSTRAP_BOUNDARY_ARG
+		!VALUELESS_FLAGS.has(arg)
 	);
+}
+
+/**
+ * Whether a leading option `flag` consumes the following argv token `next` as
+ * its value, applying the same contract as `extractProfileFlags` / `parseArgs`.
+ * Single source of truth so subcommand detection ({@link resolveCliArgv}) skips
+ * a flag's value instead of mistaking it for the subcommand — `omp --model acp`
+ * means model `acp`, not the `acp` subcommand, exactly as the launch parser
+ * reads it.
+ */
+export function flagConsumesValue(flag: string, next: string | undefined): boolean {
+	// `--flag=value` carries its own value inline.
+	if (flag.startsWith("--") && flag.includes("=")) return false;
+	if (next === undefined) return false;
+	// Known string flags consume any successor, even a flag-looking one
+	// (`--system-prompt --foo` ⇒ the system prompt is literally `--foo`).
+	if (STRING_VALUE_FLAGS.has(flag)) return true;
+	const valueLike = !next.startsWith("-");
+	if (EXTENSION_SHADOWABLE_STRING_FLAGS.has(flag)) return valueLike;
+	if (OPTIONAL_VALUE_FLAGS.has(flag)) {
+		const config = OPTIONAL_FLAGS[flag];
+		return valueLike && !(config.rejectEmpty === true && next.length === 0);
+	}
+	if (isUnknownLongValueCandidate(flag)) return valueLike;
+	return false;
 }

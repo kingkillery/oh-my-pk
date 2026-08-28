@@ -14,6 +14,7 @@ const BASE_SETTINGS = {
 	"async.enabled": false,
 	"bash.autoBackground.enabled": false,
 	"bashInterceptor.enabled": false,
+	"bash.patterns": [{ match: "rm -rf *", approval: "deny" }],
 } as const;
 
 function emptyWorkspaceTree(cwd: string) {
@@ -156,6 +157,18 @@ describe("tools.approvalMode setting", () => {
 		expect(textOf(result)).toContain("(no output)");
 	});
 
+	it("attributes bash pattern denies to tool policy", async () => {
+		const settings = approvalSettings({
+			"tools.approvalMode": "yolo",
+			"tools.approval": { bash: "allow" },
+		});
+		await expect(
+			bashTool().execute("pattern-deny", { command: "rm -rf /tmp/never-run" }, undefined, undefined, {
+				settings,
+			} as AgentToolContext),
+		).rejects.toThrow('Tool "bash" is blocked by tool policy.\nReason: Blocked by bash pattern: rm -rf *');
+	});
+
 	it("CLI --auto-approve forces yolo mode for non-overriding tool calls", async () => {
 		const settings = approvalSettings({ "tools.approvalMode": "always-ask" });
 		const result = await bashTool().execute("cli-override", { command: "echo override" }, undefined, undefined, {
@@ -178,6 +191,41 @@ describe("tools.approvalMode setting", () => {
 			} as AgentToolContext,
 		);
 		expect(textOf(result)).toContain("(no output)");
+	});
+
+	it("xd:// dispatch approval (xdevApproved) suppresses the tier-only re-prompt", async () => {
+		// The write tool's outer gate already prompted at the device tool's tier;
+		// without the flag this exact call rejects (see the always-ask test above).
+		const settings = approvalSettings({ "tools.approvalMode": "always-ask" });
+		const result = await bashTool().execute("xdev-tier", { command: "echo dispatched" }, undefined, undefined, {
+			settings,
+			xdevApproved: true,
+		} as AgentToolContext);
+		expect(textOf(result)).toContain("dispatched");
+	});
+
+	it("xdevApproved does not bypass explicit per-tool prompt or deny policies", async () => {
+		const promptSettings = approvalSettings({
+			"tools.approvalMode": "always-ask",
+			"tools.approval": { bash: "prompt" },
+		});
+		await expect(
+			bashTool().execute("xdev-explicit-prompt", { command: "echo blocked" }, undefined, undefined, {
+				settings: promptSettings,
+				xdevApproved: true,
+			} as AgentToolContext),
+		).rejects.toThrow(/requires approval but no interactive UI available/);
+
+		const denySettings = approvalSettings({
+			"tools.approvalMode": "always-ask",
+			"tools.approval": { bash: "deny" },
+		});
+		await expect(
+			bashTool().execute("xdev-denied", { command: "echo blocked" }, undefined, undefined, {
+				settings: denySettings,
+				xdevApproved: true,
+			} as AgentToolContext),
+		).rejects.toThrow(/blocked by user policy/);
 	});
 
 	it("constructs an extensionRunner unconditionally so the approval gate is always installed", async () => {

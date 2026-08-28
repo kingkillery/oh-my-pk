@@ -2,8 +2,13 @@
  * Agent discovery from filesystem.
  *
  * Discovers agent definitions from OMP-native task-agent roots:
- *   - ~/.ompk/agent/agents/*.md (user-level)
- *   - .ompk/agents/*.md (project-level)
+ *   - ~/.omp/agent/agents/*.md (user-level)
+ *   - .omp/agents/*.md (project-level)
+ *   - <ext>/agents/*.md for every OMP extension package wired through
+ *     `listOmpExtensionRoots` (CLI `--extension` roots, `extensions:` in
+ *     settings, and enabled npm/link plugins under `<plugins>/node_modules/`).
+ *     Mirrors the same sub-discovery convention applied to `skills/`,
+ *     `hooks/`, `tools/`, etc. by `discovery/omp-plugins.ts`.
  *
  * Claude Code marketplace plugin agents are discovered separately via the
  * claude-plugins provider. Direct cross-harness roots such as .claude/agents
@@ -17,8 +22,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import { isProviderEnabled } from "../capability";
+import type { EffectiveExtensionRoots } from "../capability/types";
 import { findAllNearestProjectConfigDirs, getConfigDirs } from "../config";
 import { listClaudePluginRoots } from "../discovery/helpers";
+import { listOmpExtensionRoots } from "../discovery/omp-extension-roots";
 import { loadBundledAgents, parseAgent } from "./agents";
 import type { AgentDefinition, AgentSource } from "./types";
 
@@ -54,11 +61,19 @@ async function loadAgentsFromDir(dir: string, source: AgentSource): Promise<Agen
 
 /**
  * Discover agents from filesystem and merge with bundled agents.
- *
- * Precedence (highest wins): project .ompk, user .ompk, Claude plugin agents, then bundled
+ * Precedence (highest wins): project `.omp/agents`, user `.omp/agents`,
+ * OMP extension-package agents from the effective `extensions` setting,
+ * installed npm/link plugins, Claude marketplace plugin agents (project scope
+ * before user), then bundled.
  * @param cwd - Current working directory for project agent discovery
+ * @param home - Home directory for user and marketplace discovery
+ * @param extensionRoots - Session-local extension roots (explicit + mode + configured)
  */
-export async function discoverAgents(cwd: string, home: string = os.homedir()): Promise<DiscoveryResult> {
+export async function discoverAgents(
+	cwd: string,
+	home: string = os.homedir(),
+	extensionRoots?: EffectiveExtensionRoots,
+): Promise<DiscoveryResult> {
 	const resolvedCwd = path.resolve(cwd);
 
 	const userDirs = getConfigDirs("agents", { project: false })
@@ -80,6 +95,15 @@ export async function discoverAgents(cwd: string, home: string = os.homedir()): 
 	if (project) orderedDirs.push({ dir: project.path, source: "project" });
 	const user = userDirs[0];
 	if (user) orderedDirs.push({ dir: user.path, source: "user" });
+
+	// Extension-package agents use the same effective root set as sibling
+	// skills/hooks/tools, threaded whole so explicit roots and mode survive.
+	const packageRoots = isProviderEnabled("omp-plugins")
+		? await listOmpExtensionRoots({ cwd: resolvedCwd, home, repoRoot: null, extensionRoots })
+		: [];
+	for (const root of packageRoots) {
+		orderedDirs.push({ dir: path.join(root.path, "agents"), source: root.level });
+	}
 
 	// Load agents from Claude Code marketplace plugins (respects disabledProviders)
 	const { roots: pluginRoots } = isProviderEnabled("claude-plugins")

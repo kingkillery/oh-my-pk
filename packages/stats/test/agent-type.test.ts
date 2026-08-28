@@ -1,51 +1,15 @@
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 import { getOverviewStats } from "@pk-nerdsaver-ai/omp-stats/aggregator";
-import { closeDb, getStatsByAgentType, initDb, insertMessageStats } from "@pk-nerdsaver-ai/omp-stats/db";
+import { getStatsByAgentType, initDb, insertMessageStats } from "@pk-nerdsaver-ai/omp-stats/db";
 import { classifyAgentType } from "@pk-nerdsaver-ai/omp-stats/parser";
 import type { AgentType, MessageStats } from "@pk-nerdsaver-ai/omp-stats/types";
-import {
-	getAgentDir,
-	getConfigRootDir,
-	getSessionsDir,
-	getStatsDbPath,
-	setAgentDir,
-	TempDir,
-} from "@pk-nerdsaver-ai/pi-utils";
+import { getConfigRootDir, getSessionsDir, getStatsDbPath } from "@pk-nerdsaver-ai/pi-utils";
+import { installStatsTestIsolation } from "./helpers/temp-agent";
 
-const originalConfigDir = process.env.PI_CONFIG_DIR;
-const originalAgentDir = getAgentDir();
-let tempDir: TempDir | null = null;
-
-beforeEach(() => {
-	tempDir = TempDir.createSync("@pi-stats-agent-type-");
-	const configDir = path.relative(os.homedir(), tempDir.join("config"));
-	process.env.PI_CONFIG_DIR = configDir;
-	setAgentDir(path.join(os.homedir(), configDir, "agent"));
-});
-
-afterEach(() => {
-	closeDb();
-	if (originalConfigDir === undefined) {
-		delete process.env.PI_CONFIG_DIR;
-	} else {
-		process.env.PI_CONFIG_DIR = originalConfigDir;
-	}
-	setAgentDir(originalAgentDir);
-	// Best-effort: the stats SQLite handles can still be open when teardown
-	// runs, and Windows then refuses the delete with EBUSY — failing a test whose
-	// assertions all passed and masking any genuine failure behind it.
-	// Reclaiming an OS temp dir is not what these tests assert.
-	try {
-		tempDir?.removeSync();
-	} catch {
-		// leave it to the OS temp reaper
-	}
-	tempDir = null;
-});
+installStatsTestIsolation("@pi-stats-agent-type-");
 
 interface Tokens {
 	input: number;
@@ -91,6 +55,11 @@ describe("classifyAgentType", () => {
 		expect(classifyAgentType(path.join(session, "AuthLoader", "__advisor.jsonl"))).toBe("advisor");
 		// A subagent that spawned its own subagent is still a subagent.
 		expect(classifyAgentType(path.join(session, "AuthLoader", "Nested.jsonl"))).toBe("subagent");
+		// Named (multi-advisor) transcripts `__advisor.<slug>.jsonl` also count as advisor.
+		expect(classifyAgentType(path.join(session, "__advisor.arch.jsonl"))).toBe("advisor");
+		expect(classifyAgentType(path.join(session, "AuthLoader", "__advisor.security.jsonl"))).toBe("advisor");
+		// `__advisor-2.jsonl` (output-manager bump namespace) is NOT an advisor transcript.
+		expect(classifyAgentType(path.join(session, "__advisor-2.jsonl"))).toBe("subagent");
 	});
 });
 

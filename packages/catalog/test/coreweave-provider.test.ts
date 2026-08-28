@@ -1,9 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import { getBundledModels } from "@pk-nerdsaver-ai/pi-catalog/models";
-import {
-	DEFAULT_MODEL_PER_PROVIDER,
-	PROVIDER_DESCRIPTORS,
-} from "@pk-nerdsaver-ai/pi-catalog/provider-models/descriptors";
+import { DEFAULT_MODEL_PER_PROVIDER, PROVIDER_DESCRIPTORS } from "@pk-nerdsaver-ai/pi-catalog/provider-models/descriptors";
 import {
 	coreWeaveModelManagerOptions,
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
@@ -92,7 +89,7 @@ describe("CoreWeave Serverless Inference provider support", () => {
 		});
 	});
 
-	test("maps models.dev wandb metadata into OpenAI chat completions models", () => {
+	test("maps stencil.so wandb metadata into OpenAI chat completions models", () => {
 		const mapped = mapModelsDevToModels(
 			{
 				wandb: {

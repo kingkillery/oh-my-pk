@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { $which, getRemoteDir, postmortem } from "@pk-nerdsaver-ai/pi-utils";
 import { $ } from "bun";
 import {
-	getControlDir,
+	ensureSshControlDir,
 	getControlPathTemplate,
 	type SSHConnectionTarget,
 	supportsSshControlMaster,
@@ -11,10 +11,19 @@ import {
 import { buildSshTarget, sanitizeHostName } from "./utils";
 
 const REMOTE_DIR = getRemoteDir();
-const CONTROL_DIR = getControlDir();
 const CONTROL_PATH = getControlPathTemplate();
 
 const mountedPaths = new Set<string>();
+
+type MountPointStatReader = (filePath: string) => Promise<{ dev: number }>;
+
+interface MountCheckOptions {
+	platform?: NodeJS.Platform;
+	stat?: MountPointStatReader;
+	which?: (command: string) => string | null;
+}
+
+const readMountPointStats: MountPointStatReader = async filePath => fs.promises.stat(filePath);
 
 async function ensureDir(path: string, mode = 0o700): Promise<void> {
 	try {
@@ -79,10 +88,23 @@ export function hasSshfs(): boolean {
 	return $which("sshfs") !== null;
 }
 
-export async function isMounted(path: string): Promise<boolean> {
-	const mountpoint = $which("mountpoint");
-	if (!mountpoint) return false;
-	const result = await $`${mountpoint} -q ${path}`.quiet().nothrow();
+async function isMountedByDeviceBoundary(mountPath: string, stat = readMountPointStats): Promise<boolean> {
+	try {
+		const [mountStats, parentStats] = await Promise.all([stat(mountPath), stat(path.dirname(mountPath))]);
+		return mountStats.dev !== parentStats.dev;
+	} catch {
+		return false;
+	}
+}
+
+export async function isMounted(mountPath: string, options: MountCheckOptions = {}): Promise<boolean> {
+	const which = options.which ?? $which;
+	const mountpoint = which("mountpoint");
+	if (!mountpoint) {
+		const platform = options.platform ?? process.platform;
+		return platform === "darwin" ? isMountedByDeviceBoundary(mountPath, options.stat) : false;
+	}
+	const result = await $`${mountpoint} -q ${mountPath}`.quiet().nothrow();
 	return result.exitCode === 0;
 }
 
@@ -92,7 +114,8 @@ export async function mountRemote(host: SSHConnectionTarget, remotePath = "/"): 
 	if (!hasSshfs()) return undefined;
 
 	const mountPath = getMountPath(host);
-	await Promise.all([ensureDir(REMOTE_DIR), ensureDir(CONTROL_DIR), ensureDir(mountPath)]);
+	ensureSshControlDir();
+	await Promise.all([ensureDir(REMOTE_DIR), ensureDir(mountPath)]);
 
 	if (await isMounted(mountPath)) {
 		if (!registered) {

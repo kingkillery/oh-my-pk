@@ -1,6 +1,6 @@
+import { type } from "@pk-nerdsaver-ai/omptype";
 import type { AgentTool, AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
 import { logger, untilAborted } from "@pk-nerdsaver-ai/pi-utils";
-import { type } from "arktype";
 import { ensureBankExists } from "../hindsight/bank";
 import reflectDescription from "../prompts/tools/reflect.md" with { type: "text" };
 import type { ToolSession } from ".";

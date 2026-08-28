@@ -55,14 +55,13 @@ export function ConnectScreen({ defaultName, error, onConnect }: ConnectScreenPr
 			</section>
 			<form className="sh-connect-card" onSubmit={submit}>
 				<div className="sh-connect-head">
-					<div>
-						<h2>Join a session</h2>
-						<p>
-							Use the link printed by <code>/collab</code>.
-						</p>
+					<div className="sh-lockup">
+						<span className="sh-lockup-mark" aria-hidden="true" />
+						<span className="sh-lockup-pi">π</span> omp collab
 					</div>
 					<ThemeToggle />
 				</div>
+				<div className="sh-connect-sub">live agent session, in your browser</div>
 				<label className="sh-field">
 					<span className="sh-field-label">Join link</span>
 					<input
@@ -75,7 +74,7 @@ export function ConnectScreen({ defaultName, error, onConnect }: ConnectScreenPr
 						autoComplete="off"
 						autoFocus
 					/>
-					<span className="sh-field-hint">The room key stays in your browser.</span>
+					<span className="sh-field-hint">paste a /collab link from any omp session</span>
 				</label>
 				<label className="sh-field">
 					<span className="sh-field-label">Display name</span>

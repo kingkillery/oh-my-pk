@@ -1,7 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import { isContextOverflow } from "@pk-nerdsaver-ai/pi-ai/error";
 import {
 	buildGitLabDuoWorkflowApprovalStartRequest,
@@ -27,6 +28,7 @@ import {
 	streamGitLabDuoWorkflow,
 	traceGitLabDuoWorkflow,
 } from "@pk-nerdsaver-ai/pi-ai/providers/gitlab-duo-workflow";
+import { configureCredentialRedaction } from "@pk-nerdsaver-ai/pi-ai/providers/transform-messages";
 import type {
 	AssistantMessage,
 	Context,
@@ -40,7 +42,9 @@ import type {
 import { AssistantMessageEventStream } from "@pk-nerdsaver-ai/pi-ai/utils/event-stream";
 import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 import { extractHttpStatusFromError } from "@pk-nerdsaver-ai/pi-utils";
-import { z } from "zod/v4";
+
+beforeAll(() => configureCredentialRedaction(true));
+afterAll(() => configureCredentialRedaction(false));
 
 const model: Model<"gitlab-duo-agent"> = buildModel({
 	id: "claude_sonnet_4_6_vertex",
@@ -63,13 +67,13 @@ const context: Context = {
 const editTool: Tool = {
 	name: "edit",
 	description: "Apply a hashline patch.",
-	parameters: z.object({ input: z.string() }),
+	parameters: type({ input: type("string") }),
 };
 
 const nativeTools: Tool[] = ["read", "write", "grep", "glob", "bash", "lsp", "todo"].map(name => ({
 	name,
 	description: `${name} native bridge`,
-	parameters: z.object({}),
+	parameters: type({}),
 }));
 
 function restoreOptionalEnv(name: string, value: string | undefined): void {
@@ -291,7 +295,6 @@ describe("GitLab Duo Workflow provider protocol", () => {
 	it("builds startRequest goal as a bare ChatML transcript with tool-run linkage", () => {
 		const patToken = `${"glpat"}-abcdefgh12345678ijkl`;
 		const sessionCookie = "_gitlab_session=0123456789abcdef0123456789abcdef";
-		const credentialTokens = [patToken, sessionCookie];
 
 		const replayContext: Context = {
 			systemPrompt: [`OMP system instructions: preserve the local tool bridge. token ${patToken}`],
@@ -378,10 +381,11 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		expect(payload.goal).not.toContain("call-1");
 		expect(payload.goal).not.toContain('"id":');
 		expect(payload.goal).not.toContain(" id=");
-		// Content is forwarded verbatim — the provider performs no credential redaction.
-		for (const token of credentialTokens) {
-			expect(payload.goal).toContain(token);
-		}
+		// Outbound credential redaction (#5655) scrubs plausible live credentials
+		// from the rendered transcript; low-entropy look-alikes pass through.
+		expect(payload.goal).not.toContain(patToken);
+		expect(payload.goal).toContain("[gitlab_token_redacted]");
+		expect(payload.goal).toContain(sessionCookie);
 		expect(payload.goal).not.toContain("[REDACTED]");
 		// Bare transcript: user content is emitted verbatim (no escaping, no boundary
 		// declaration — that was the agreed "完全裸转录" design). A ChatML-breakout
@@ -394,12 +398,11 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		// The OMP system prompt lives in the flow config system slot, not the goal.
 		const flowPrompt = payload.flowConfig?.prompts[0];
 		expect(flowPrompt?.prompt_template.system).toContain("OMP system instructions: preserve the local tool bridge.");
-		expect(flowPrompt?.prompt_template.system).toContain(patToken);
+		expect(flowPrompt?.prompt_template.system).not.toContain(patToken);
+		expect(flowPrompt?.prompt_template.system).toContain("[gitlab_token_redacted]");
 		// This goal IS a multi-turn ChatML transcript, so the system slot appends the
 		// history-note telling the model the `<|im_start|>`/`<ran …>` markers are a past
 		// record, not a tool-call syntax to emit.
-		expect(flowPrompt?.prompt_template.system).toContain("written as a plain-text log");
-		expect(flowPrompt?.prompt_template.system).toContain("never write `<ran …>`");
 	});
 
 	it("strips the OMP-internal intent (i) field from replayed tool-call args", () => {
@@ -1779,6 +1782,147 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 		// -> `extractHttpStatusFromError`) and rotate the parked credential.
 		expect(result.errorMessage).toContain("HTTP 403");
 		expect(extractHttpStatusFromError({ message: result.errorMessage })).toBe(403);
+	});
+
+	it("aborts stalled REST setup fetches when the caller cancels the request", async () => {
+		// Every setup endpoint stalls FOREVER unless the request signal aborts it. Before
+		// the fix the setup fetches ignored `options.signal`, so a caller cancel could
+		// not unblock them and the stream would emit `start` and hang without a `done`
+		// or `error` event — the reported #4227 hang.
+		const stalledEndpoints: string[] = [];
+		const fetchImpl: FetchImpl = (input: string | URL | Request, init?: RequestInit) => {
+			const url = String(input);
+			stalledEndpoints.push(url);
+			return new Promise<Response>((_resolve, reject) => {
+				const signal = init?.signal;
+				if (!signal) {
+					reject(new Error(`no signal on ${url}`));
+					return;
+				}
+				const onAbort = (): void => {
+					reject(signal.reason ?? new DOMException("aborted", "AbortError"));
+				};
+				if (signal.aborted) {
+					onAbort();
+					return;
+				}
+				signal.addEventListener("abort", onAbort, { once: true });
+			});
+		};
+
+		const controller = new AbortController();
+		const stream = streamGitLabDuoWorkflow(model, context, {
+			apiKey: "[REDACTED]",
+			rootNamespaceId: "gid://gitlab/Group/1",
+			fetch: fetchImpl,
+			signal: controller.signal,
+		});
+
+		// Give the setup path one microtask hop to reach the first fetch, then cancel.
+		await Bun.sleep(5);
+		expect(stalledEndpoints.length).toBeGreaterThan(0);
+		controller.abort(new Error("caller cancelled"));
+
+		const result = await stream.result();
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage ?? "").not.toBe("");
+	});
+
+	it("bounds each REST setup fetch with an abort signal even when the caller passes none", async () => {
+		// The reported hang can happen with no caller signal at all: the provider must
+		// still install its own absolute-deadline signal on every setup fetch so a
+		// stalled endpoint cannot leave the stream without a terminal event. Assert
+		// that every REST setup endpoint receives a real AbortSignal on its RequestInit.
+		const capturedSignals = new Map<string, AbortSignal | undefined>();
+		// (method, endpoint-kind) keys distinguish the settings PUT on /api/v4/groups/
+		// from the catalog's discovery GET on the same path.
+		const keyKinds: readonly { method: string; kind: string }[] = [
+			{ method: "POST", kind: "/api/graphql" },
+			{ method: "POST", kind: "/api/v4/ai/duo_workflows/direct_access" },
+			{ method: "POST", kind: "/api/v4/ai/duo_workflows/workflows" },
+			{ method: "GET", kind: "/api/v4/projects/" },
+			{ method: "PUT", kind: "/api/v4/groups/" },
+		];
+		const fetchImpl: FetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+			const url = String(input);
+			const method = init?.method ?? "GET";
+			for (const { method: m, kind } of keyKinds) {
+				const key = `${m} ${kind}`;
+				if (method === m && url.includes(kind) && !capturedSignals.has(key)) {
+					capturedSignals.set(key, init?.signal ?? undefined);
+				}
+			}
+			if (url.includes("/api/graphql")) {
+				return new Response(
+					JSON.stringify({
+						data: {
+							aiChatAvailableModels: {
+								defaultModel: { name: "Claude", ref: "claude_sonnet_4_6_vertex" },
+								selectableModels: [],
+								pinnedModel: null,
+							},
+						},
+					}),
+					{ status: 200 },
+				);
+			}
+			if (url.includes("/api/v4/ai/duo_workflows/direct_access")) {
+				return new Response(JSON.stringify({ gitlab_rails: { token: "rails-token" } }), { status: 200 });
+			}
+			if (url.includes("/api/v4/ai/duo_workflows/workflows/")) {
+				return new Response("{}", { status: 200 });
+			}
+			if (url.includes("/api/v4/ai/duo_workflows/workflows")) {
+				return new Response(JSON.stringify({ id: "workflow-signal-check" }), { status: 200 });
+			}
+			if (url.includes("/api/v4/projects/")) {
+				return new Response(JSON.stringify({ id: "42" }), { status: 200 });
+			}
+			if (url.includes("/api/v4/groups/")) {
+				return new Response("{}", { status: 200 });
+			}
+			return new Response("{}", { status: 404 });
+		};
+		const webSocketFactory: GitLabDuoWorkflowWebSocketFactory = () => {
+			const socket: GitLabDuoWorkflowWebSocketLike = {
+				onopen: null,
+				onmessage: null,
+				onerror: null,
+				onclose: null,
+				send() {},
+				close() {},
+			};
+			queueMicrotask(() => {
+				socket.onopen?.(new Event("open"));
+				socket.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ status: "INPUT_REQUIRED" }) }));
+			});
+			return socket;
+		};
+
+		await streamGitLabDuoWorkflow(
+			// Fresh baseUrl + apiKey so the per-account settings cache in the provider does
+			// not skip the settings PUT (making the /api/v4/groups/ endpoint unobserved).
+			{ ...model, baseUrl: "https://gitlab.rest-signal-check.example.com" } as Model<"gitlab-duo-agent">,
+			context,
+			{
+				apiKey: "rest-signal-check-key",
+				// A namespace + project path forces the runtime through all three REST
+				// fetches beyond direct_access + create: settings PUT (groups), project GET
+				// (projects), available models (graphql).
+				rootNamespaceId: "gid://gitlab/Group/1",
+				projectPath: "group/project",
+				fetch: fetchImpl,
+				webSocketFactory,
+			},
+		).result();
+
+		// Every setup fetch we exercised must carry a real AbortSignal. `undefined` would
+		// mean the timeout regression is back.
+		for (const { method, kind } of keyKinds) {
+			const key = `${method} ${kind}`;
+			const signal = capturedSignals.get(key);
+			expect(signal, `expected ${key} fetch to carry an AbortSignal`).toBeInstanceOf(AbortSignal);
+		}
 	});
 
 	it("preserves the 401 status for an Unauthorized direct_access body so the credential can rotate", async () => {

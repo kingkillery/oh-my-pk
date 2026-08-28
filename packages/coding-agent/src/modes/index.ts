@@ -1,6 +1,3 @@
-import { emergencyTerminalRestore } from "@pk-nerdsaver-ai/pi-tui";
-import { postmortem } from "@pk-nerdsaver-ai/pi-utils";
-
 /**
  * Interactive mode and embeddable RPC client exports for the coding agent.
  *
@@ -8,10 +5,7 @@ import { postmortem } from "@pk-nerdsaver-ai/pi-utils";
  * barrel does not pull print, RPC server, or ACP server mode into the normal
  * TUI graph.
  */
+export * from "./composer";
 export * from "./interactive-mode";
 export * from "./rpc/rpc-client";
 export * from "./rpc/rpc-types";
-
-postmortem.register("terminal-restore", () => {
-	emergencyTerminalRestore();
-});

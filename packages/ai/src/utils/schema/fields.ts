@@ -37,6 +37,23 @@ export const UNSUPPORTED_SCHEMA_FIELDS: Record<string, true> = {
 	multipleOf: true,
 	pattern: true,
 	format: true,
+	dependencies: true,
+	dependentSchemas: true,
+	dependentRequired: true,
+	// MCP 2026-07-28 transport annotation (mirrors a param into an `Mcp-Param-*`
+	// HTTP header on the Streamable HTTP transport); not a JSON Schema keyword.
+	// Google Cloud Code Assist 400s on the unknown field name, so strip it from
+	// the wire schema. MCP transport/execution reads it from the raw tool schema.
+	"x-mcp-header": true,
+	// JSON Schema annotation keywords: pure metadata the Google/CCA wire
+	// schemas have no field for. protojson rejects unknown fields outright
+	// ("Cannot find field"), so MCP servers annotating parameters with
+	// `deprecated` / `readOnly` / `writeOnly` (e.g. Stitch's screen tools)
+	// used to 400 the entire request.
+	deprecated: true,
+	readOnly: true,
+	writeOnly: true,
+	$comment: true,
 };
 
 /**
@@ -179,10 +196,6 @@ export const CLOUD_CODE_ASSIST_SHARED_SCHEMA_KEYS: Record<string, true> = {
 	description: true,
 	default: true,
 	examples: true,
-	deprecated: true,
-	readOnly: true,
-	writeOnly: true,
-	$comment: true,
 };
 
 /**
@@ -204,4 +217,10 @@ export const CCA_UNSUPPORTED_SCHEMA_FIELDS: Record<string, true> = {
 	$dynamicRef: true,
 	$dynamicAnchor: true,
 	propertyNames: true,
+	// Annotation keywords have no CCA Schema proto field; protojson rejects
+	// them with INVALID_ARGUMENT ("Cannot find field").
+	deprecated: true,
+	readOnly: true,
+	writeOnly: true,
+	$comment: true,
 };

@@ -18,9 +18,11 @@ import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
+import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
 	type CustomMessage,
+	isUserTurnInitiator,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	SKILL_PROMPT_MESSAGE_TYPE,
 	type SkillPromptDetails,
@@ -29,11 +31,14 @@ import type { SessionMessageEntry } from "../../session/session-entries";
 import { theme } from "../theme/theme";
 import {
 	assistantHasVisibleContent,
+	assistantUsageIsBilled,
 	buildAsyncResultBlock,
 	buildFileMentionBlock,
 	buildIrcMessageCard,
+	buildLaunchCompletionBlock,
 	normalizeToolArgs,
-	resolveAssistantErrorMessage,
+	resolveAssistantErrorPresentation,
+	splitAssistantMessageToolTimeline,
 } from "../utils/transcript-render-helpers";
 import { createAdvisorMessageCard } from "./advisor-message";
 import { AssistantMessageComponent } from "./assistant-message";
@@ -49,16 +54,18 @@ import {
 import { CustomMessageComponent } from "./custom-message";
 import { EvalExecutionComponent } from "./eval-execution";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
-import { ReadToolGroupComponent, readArgsHaveTarget, readArgsTargetInternalUrl } from "./read-tool-group";
+import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
 import { ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
-import { createUsageRowBlock } from "./usage-row";
-import { UserMessageComponent } from "./user-message";
+import { createUsageRowBlock, turnElapsedMs } from "./usage-row";
+import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "./user-message";
 
 export interface ChatTranscriptBuilderDeps {
 	ui: TUI;
 	getTool?: (name: string) => AgentTool | undefined;
+	/** Whether the active registry entry came from a built-in factory. */
+	isBuiltInTool?: (name: string) => boolean;
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	cwd: string;
 	hideThinkingBlock?: () => boolean;
@@ -81,13 +88,21 @@ export class ChatTranscriptBuilder {
 	#readArgs = new Map<string, Record<string, unknown>>();
 	#readGroup: ReadToolGroupComponent | null = null;
 	#pendingUsage: Usage | undefined;
+	#pendingUsageDuration: number | undefined;
+	#pendingUsageTtft: number | undefined;
+	#pendingUsageTimestamp: number | undefined;
+	#pendingReadUsageCallIds: string[] | undefined;
+	#pendingUsageElapsedMs: number | undefined;
+	#turnStartedAt: number | undefined;
 	#lastAssistantUsage: Usage | undefined;
 	#waitingPoll: ToolExecutionComponent | null = null;
 	#todoSnapshot: ToolExecutionComponent | null = null;
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
 	#expanded = false;
 
-	constructor(private readonly deps: ChatTranscriptBuilderDeps) {}
+	constructor(private readonly deps: ChatTranscriptBuilderDeps) {
+		this.container.setToolActivityVisible(!settings.get("display.hideToolActivity"));
+	}
 
 	/** Whether the transcript currently holds any rendered rows. */
 	get isEmpty(): boolean {
@@ -127,6 +142,12 @@ export class ChatTranscriptBuilder {
 		this.#readArgs.clear();
 		this.#readGroup = null;
 		this.#pendingUsage = undefined;
+		this.#pendingUsageDuration = undefined;
+		this.#pendingUsageTtft = undefined;
+		this.#pendingUsageTimestamp = undefined;
+		this.#pendingReadUsageCallIds = undefined;
+		this.#pendingUsageElapsedMs = undefined;
+		this.#turnStartedAt = undefined;
 		this.#lastAssistantUsage = undefined;
 		this.#waitingPoll = null;
 		this.#todoSnapshot = null;
@@ -144,12 +165,12 @@ export class ChatTranscriptBuilder {
 		this.#expandables.push(component);
 	}
 
-	/** A `job` poll showing all-running is displaced by the next `job` call. */
+	/** A `hub` wait showing all-running is displaced by the next `hub` call. */
 	#resolveWaitingPoll(nextToolName?: string): void {
 		const previous = this.#waitingPoll;
 		if (!previous) return;
 		this.#waitingPoll = null;
-		if (nextToolName === "job" && previous.isDisplaceableBlock()) {
+		if (nextToolName === "hub" && previous.isDisplaceableBlock() && this.container.canRemoveBlock(previous)) {
 			this.container.removeChild(previous);
 		}
 		previous.seal();
@@ -164,7 +185,9 @@ export class ChatTranscriptBuilder {
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#todoSnapshot = null;
-			this.container.removeChild(previous);
+			if (this.container.canRemoveBlock(previous)) {
+				this.container.removeChild(previous);
+			}
 			previous.seal();
 			return;
 		}
@@ -184,20 +207,49 @@ export class ChatTranscriptBuilder {
 		return this.#readGroup;
 	}
 
-	// The per-turn token-usage row must land below the turn's tool blocks, but
-	// normal `read` calls only materialize their group in #appendToolResult. Defer
-	// the row: stash it on the assistant message and flush once the turn's tools
-	// are placed, sealing the read run so the row sits under it.
+	// Defer per-turn metrics until the turn's tool results have materialized.
+	// Read-only invisible turns attach the metrics to their shared compact
+	// group; every other turn keeps the standalone row below its tool blocks.
 	#flushPendingUsage(): void {
 		if (!this.#pendingUsage) return;
-		this.#readGroup?.seal();
-		this.#readGroup = null;
-		this.container.addChild(createUsageRowBlock(this.#pendingUsage));
+		const usageAttached =
+			this.#pendingReadUsageCallIds !== undefined &&
+			(this.#readGroup?.attachUsage(
+				this.#pendingReadUsageCallIds,
+				this.#pendingUsage,
+				this.#pendingUsageDuration,
+				this.#pendingUsageTtft,
+				this.#pendingUsageTimestamp,
+				this.#pendingUsageElapsedMs,
+			) ??
+				false);
+		if (!usageAttached) {
+			this.#readGroup?.seal();
+			this.#readGroup = null;
+			this.container.addChild(
+				createUsageRowBlock(
+					this.#pendingUsage,
+					this.#pendingUsageDuration,
+					this.#pendingUsageTtft,
+					this.#pendingUsageTimestamp,
+					this.#pendingUsageElapsedMs,
+				),
+			);
+		}
 		this.#pendingUsage = undefined;
+		this.#pendingUsageDuration = undefined;
+		this.#pendingUsageTtft = undefined;
+		this.#pendingUsageTimestamp = undefined;
+		this.#pendingReadUsageCallIds = undefined;
+		this.#pendingUsageElapsedMs = undefined;
 	}
 
 	#appendChatMessage(message: AgentMessage): void {
 		if (message.role !== "toolResult") this.#flushPendingUsage();
+		if (message.role !== "assistant" && message.role !== "toolResult") {
+			this.#readGroup?.seal();
+			this.#readGroup = null;
+		}
 		switch (message.role) {
 			case "assistant":
 				this.#appendAssistantMessage(message);
@@ -207,13 +259,40 @@ export class ChatTranscriptBuilder {
 				break;
 			case "user":
 			case "developer": {
+				// Only genuinely user-attributed prompts anchor the delta; a mid-run
+				// agent-attributed `user` message (advisor tool-loop redirect) must not.
+				if (message.role === "user" && message.attribution !== "agent") {
+					this.#turnStartedAt = message.timestamp;
+				} else if (message.role === "developer" && message.synthetic) {
+					// A synthetic developer message initiates a fresh run (auto-
+					// continue, /goal, approved plan): replay must not inherit the
+					// preceding user prompt's timestamp, mirroring the live
+					// agent_start clear. Same-turn continuation reminders (todo, plan)
+					// are persisted developer messages WITHOUT the synthetic marker,
+					// so their anchor survives the rebuild.
+					// A deliberate operator action (`.`, `c` continue shortcut) is the turn's
+					// own prompt: anchor the delta to it instead of clearing.
+					if (message.userInitiated) this.#turnStartedAt = message.timestamp;
+					else this.#turnStartedAt = undefined;
+				}
 				// A user prompt closes the poll-displacement window, same as the live path.
 				if (message.role === "user") this.#resolveWaitingPoll();
 				if (message.role === "user") this.#resolveTodoSnapshot();
 				const textContent = message.role === "user" ? userMessageText(message) : "";
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
-					this.container.addChild(new UserMessageComponent(textContent, isSynthetic));
+					// Synthetic (agent-attributed) inputs — chiefly the advisor's `Session
+					// update` replay dumps — can be hundreds of KiB of Markdown each.
+					// Rendering their full body on cold open blocked the TUI (issue #6308);
+					// collapse them behind a compact summary that builds Markdown only on
+					// ctrl+o expand. Real user prompts stay fully rendered.
+					if (isSynthetic) {
+						const collapsed = new CollapsedSyntheticMessageComponent(textContent);
+						this.#trackExpandable(collapsed);
+						this.container.addChild(collapsed);
+					} else {
+						this.container.addChild(new UserMessageComponent(textContent, false));
+					}
 				}
 				break;
 			}
@@ -233,6 +312,12 @@ export class ChatTranscriptBuilder {
 			}
 			case "hookMessage":
 			case "custom":
+				// A directly-invoked `/skill:` custom prompt is the run's initiator
+				// (user attribution), so it seeds the prompt→yield delta like a user
+				// message does.
+				if (message.role === "custom" && isUserTurnInitiator(message as CustomMessage)) {
+					this.#turnStartedAt = message.timestamp;
+				}
 				this.#appendCustomMessage(message);
 				break;
 			case "compactionSummary": {
@@ -259,15 +344,26 @@ export class ChatTranscriptBuilder {
 		}
 	}
 
+	/** Prompt→yield wall time for the current turn, or undefined when unknown. */
+	#turnElapsedMs(message: Extract<AgentMessage, { role: "assistant" }>): number | undefined {
+		return turnElapsedMs(this.#turnStartedAt, message);
+	}
+
 	#appendAssistantMessage(message: Extract<AgentMessage, { role: "assistant" }>): void {
+		const hideThinkingBlock = this.deps.hideThinkingBlock?.() ?? false;
+		const proseOnlyThinking = this.deps.proseOnlyThinking ? this.deps.proseOnlyThinking() : true;
+		const timeline = splitAssistantMessageToolTimeline(message);
 		const assistantComponent = new AssistantMessageComponent(
-			message,
-			this.deps.hideThinkingBlock?.() ?? false,
+			timeline.beforeTools,
+			hideThinkingBlock,
 			() => this.deps.requestRender(),
 			this.deps.getMessageRenderer ? undefined : [], // placeholder for thinkingRenderers
-			undefined, // placeholder for imageBudget
-			this.deps.proseOnlyThinking ? this.deps.proseOnlyThinking() : true,
+			this.deps.ui.imageBudget,
+			proseOnlyThinking,
 		);
+		assistantComponent.setImagesVisible(settings.get("terminal.showImages"));
+		assistantComponent.setToolResultImagesVisible(!settings.get("display.hideToolActivity"));
+		this.#trackExpandable(assistantComponent);
 		this.container.addChild(assistantComponent);
 
 		if (settings.get("display.cacheMissMarker")) {
@@ -285,17 +381,31 @@ export class ChatTranscriptBuilder {
 			this.#readGroup = null;
 		}
 
-		const { hasErrorStop, errorMessage } = resolveAssistantErrorMessage(message);
+		const errorPresentation = resolveAssistantErrorPresentation(message);
+		const hasErrorStop = errorPresentation.kind === "full";
+		const errorMessage = hasErrorStop ? errorPresentation.text : null;
+		const appendAssistantSegment = (segment: Extract<AgentMessage, { role: "assistant" }> | undefined) => {
+			if (!segment || !assistantHasVisibleContent(segment)) return;
+			const component = new AssistantMessageComponent(
+				segment,
+				hideThinkingBlock,
+				() => this.deps.requestRender(),
+				this.deps.getMessageRenderer ? undefined : [],
+				undefined,
+				proseOnlyThinking,
+			);
+			component.setImagesVisible(settings.get("terminal.showImages"));
+			component.setToolResultImagesVisible(!settings.get("display.hideToolActivity"));
+			this.#trackExpandable(component);
+			this.container.addChild(component);
+		};
 
 		for (const content of message.content) {
 			if (content.type !== "toolCall") continue;
 			this.#resolveWaitingPoll(content.name);
 
-			if (
-				content.name === "read" &&
-				readArgsHaveTarget(content.arguments) &&
-				!readArgsTargetInternalUrl(content.arguments)
-			) {
+			const afterToolSegment = timeline.afterToolCalls.get(content.id);
+			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();
 					group.updateArgs(content.arguments, content.id);
@@ -304,10 +414,15 @@ export class ChatTranscriptBuilder {
 						false,
 						content.id,
 					);
+				} else if (afterToolSegment) {
+					const group = this.#ensureReadGroup();
+					group.updateArgs(content.arguments, content.id);
+					this.#pendingTools.set(content.id, group);
 				} else {
 					const normalizedArgs = normalizeToolArgs(content.arguments);
 					this.#readArgs.set(content.id, normalizedArgs);
 				}
+				appendAssistantSegment(afterToolSegment);
 				continue;
 			}
 
@@ -317,11 +432,12 @@ export class ChatTranscriptBuilder {
 				content.name,
 				content.arguments,
 				{
-					// Images can't be sliced through the scroll viewport; keep them off.
-					showImages: false,
+					useBuiltInRenderer: this.deps.isBuiltInTool?.(content.name) ?? true,
+					// Stable ids and Kitty placeholder cells keep images anchored
+					// while the transcript viewport scrolls and reflows.
+					showImages: settings.get("terminal.showImages"),
 					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
-					liveRegion: this.container,
 				},
 				this.deps.getTool?.(content.name),
 				this.deps.ui,
@@ -340,9 +456,17 @@ export class ChatTranscriptBuilder {
 			} else {
 				this.#pendingTools.set(content.id, component);
 			}
+			appendAssistantSegment(afterToolSegment);
 		}
 
-		this.#pendingUsage = settings.get("display.showTokenUsage") ? message.usage : undefined;
+		this.#pendingUsage =
+			settings.get("display.showTokenUsage") && assistantUsageIsBilled(message.usage) ? message.usage : undefined;
+		this.#pendingUsageDuration = message.duration;
+		this.#pendingUsageTtft = message.ttft;
+		this.#pendingUsageTimestamp = message.timestamp;
+		this.#pendingReadUsageCallIds = this.#pendingUsage ? groupedReadUsageCallIds(message) : undefined;
+		this.#pendingUsageElapsedMs =
+			this.#pendingUsage && settings.get("display.showTurnTime") ? this.#turnElapsedMs(message) : undefined;
 	}
 
 	#appendToolResult(message: Extract<AgentMessage, { role: "toolResult" }>): void {
@@ -364,7 +488,7 @@ export class ChatTranscriptBuilder {
 		if (!pending) return;
 		pending.updateResult(message, false, message.toolCallId);
 		this.#pendingTools.delete(message.toolCallId);
-		if (message.toolName === "job" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {
+		if (message.toolName === "hub" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {
 			this.#waitingPoll = pending;
 		} else if (
 			message.toolName === "todo" &&
@@ -378,11 +502,11 @@ export class ChatTranscriptBuilder {
 			this.#todoSnapshot = pending;
 		}
 	}
-
 	#appendCustomMessage(message: Extract<AgentMessage, { role: "custom" | "hookMessage" }>): void {
 		if (!message.display) return;
 		if (message.customType === "async-result") {
-			this.container.addChild(buildAsyncResultBlock(message));
+			const component = buildAsyncResultBlock(message);
+			this.container.addChild(component);
 			return;
 		}
 		if (message.customType === LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE) {
@@ -413,6 +537,10 @@ export class ChatTranscriptBuilder {
 		if (message.customType === "advisor") {
 			const details = (message as CustomMessage<AdvisorMessageDetails>).details;
 			this.container.addChild(createAdvisorMessageCard(details, () => this.#expanded, theme));
+			return;
+		}
+		if (message.customType === LAUNCH_COMPLETION_MESSAGE_TYPE) {
+			this.container.addChild(buildLaunchCompletionBlock(message));
 			return;
 		}
 		if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {

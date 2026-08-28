@@ -113,9 +113,7 @@ def test_bot_login_normalizes_mention_case_and_app_suffix(
     assert cfg.bot_login == "roboomp"
 
 
-def test_maintainer_logins_normalize_csv_entries(
-    monkeypatch: pytest.MonkeyPatch, env: dict[str, str]
-) -> None:
+def test_maintainer_logins_normalize_csv_entries(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
     monkeypatch.setenv("ROBOMP_MAINTAINER_LOGINS", " can1357, @ROBOOMP , @Alice[bot] ,, ")
     reset_settings_cache()
     cfg = Settings()  # type: ignore[call-arg]
@@ -169,6 +167,22 @@ def test_pick_model_covers_full_pool(monkeypatch: pytest.MonkeyPatch, env: dict[
     cfg = Settings()  # type: ignore[call-arg]
     seen = {cfg.pick_model() for _ in range(500)}
     assert seen == {"a", "b", "c"}
+
+
+def test_release_model_falls_back_to_general_pool(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
+    monkeypatch.setenv("ROBOMP_MODEL", "a")
+    reset_settings_cache()
+    cfg = Settings()  # type: ignore[call-arg]
+    assert cfg.release_model_pool == ("a",)
+    assert cfg.pick_release_model() == "a"
+
+
+def test_release_model_pool_csv_parses(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
+    monkeypatch.setenv("ROBOMP_MODEL", "fallback")
+    monkeypatch.setenv("ROBOMP_RELEASE_MODEL", " release-a, release-b ,, ")
+    reset_settings_cache()
+    cfg = Settings()  # type: ignore[call-arg]
+    assert cfg.release_model_pool == ("release-a", "release-b")
 
 
 def test_max_concurrency_default_is_8(env: dict[str, str]) -> None:

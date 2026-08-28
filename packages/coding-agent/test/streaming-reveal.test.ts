@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@pk-nerdsaver-ai/pi-ai";
 import { AssistantMessageComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/assistant-message";
 import {
+	BlockUnitCounter,
 	buildDisplayMessage,
 	CATCHUP_FRAMES,
 	MIN_STEP,
@@ -11,6 +12,7 @@ import {
 	visibleUnits,
 } from "@pk-nerdsaver-ai/pi-coding-agent/modes/controllers/streaming-reveal";
 import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import { getSegmenter } from "@pk-nerdsaver-ai/pi-tui";
 
 beforeAll(async () => {
 	await initTheme(false);
@@ -63,6 +65,13 @@ class RecordingComponent {
 	updateContent(message: AssistantMessage, opts?: { transient?: boolean }): void {
 		this.messages.push(message);
 		this.transientFlags.push(opts?.transient);
+	}
+
+	// Component protocol stub — the reveal controller now hands the component
+	// to `requestComponentRender`, which only exercises identity, so returning
+	// an empty rendered frame is sufficient for these tests.
+	render(): readonly string[] {
+		return [];
 	}
 }
 
@@ -295,5 +304,266 @@ describe("streaming reveal", () => {
 		expect(textAt(latestMessage(component), 0)).toBe("abcdefghi");
 		expect(component.messages).toHaveLength(updates);
 		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("passes the bound component to requestRender on each smooth tick", () => {
+		// The controller must hand its component to `requestRender` so the caller
+		// scopes the render to that subtree via `TUI.requestComponentRender`
+		// instead of forcing a full-tree walk at 30fps (issue #4377).
+		vi.useFakeTimers();
+		const requestRender = vi.fn();
+		const { component, controller } = makeController({ requestRender });
+
+		controller.begin(component, makeMessage([{ type: "text", text: "" }]));
+		controller.setTarget(makeMessage([{ type: "text", text: "abcdef" }]));
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS);
+
+		expect(requestRender).toHaveBeenCalled();
+		for (const call of requestRender.mock.calls) {
+			expect(call[0]).toBe(component);
+		}
+	});
+});
+
+/** Pure Intl.Segmenter grapheme count, independent of BlockUnitCounter's memoization. */
+function refCount(text: string): number {
+	let n = 0;
+	for (const _segment of getSegmenter().segment(text)) n += 1;
+	return n;
+}
+
+/** Pure Intl.Segmenter grapheme slice, independent of BlockUnitCounter's memoization. */
+function refSlice(text: string, units: number): string {
+	if (units <= 0) return "";
+	let n = 0;
+	for (const { index, segment } of getSegmenter().segment(text)) {
+		n += 1;
+		if (n >= units) return text.slice(0, index + segment.length);
+	}
+	return text;
+}
+
+describe("BlockUnitCounter.slice", () => {
+	it("matches a pure segmenter reference for fixed-text growing units", () => {
+		const counter = new BlockUnitCounter();
+		const text = "café 👨‍👩‍👧‍👦 naïve 日本語 ❤️";
+		const total = refCount(text);
+		for (let units = 0; units <= total; units++) {
+			expect(counter.slice(0, text, units)).toBe(refSlice(text, units));
+		}
+	});
+
+	it("re-segments the boundary cluster when an append extends it (no stale slice)", () => {
+		const counter = new BlockUnitCounter();
+		// "a" cached at 1 grapheme; appending a combining mark keeps it 1 cluster
+		// but changes the cluster's code units — the slice must not return stale "a".
+		expect(counter.slice(0, "a", 1)).toBe("a");
+		expect(counter.slice(0, "a\u0301", 1)).toBe("a\u0301");
+		// A ZWJ append merges the previous final cluster into a family emoji.
+		const merged = new BlockUnitCounter();
+		expect(merged.slice(0, "ab👨", 3)).toBe("ab👨");
+		expect(merged.slice(0, "ab👨\u200D👩x", 3)).toBe("ab👨\u200D👩");
+	});
+
+	it("keeps separate block indices independent", () => {
+		const counter = new BlockUnitCounter();
+		const a = "hello world";
+		const b = "café résumé";
+		const ta = refCount(a);
+		const tb = refCount(b);
+		for (let units = 0; units <= ta; units++) expect(counter.slice(0, a, units)).toBe(refSlice(a, units));
+		for (let units = 0; units <= tb; units++) expect(counter.slice(1, b, units)).toBe(refSlice(b, units));
+		// Re-slicing block 0 after touching block 1 still matches the reference.
+		expect(counter.slice(0, a, ta)).toBe(a);
+	});
+
+	it("matches the reference after a shrink and regrow", () => {
+		const counter = new BlockUnitCounter();
+		const text = "the quick brown fox jumps over";
+		const total = refCount(text);
+		expect(counter.slice(0, text, total)).toBe(text);
+		expect(counter.slice(0, text, 2)).toBe(refSlice(text, 2));
+		expect(counter.slice(0, text, total - 1)).toBe(refSlice(text, total - 1));
+	});
+
+	it("matches the reference when the text is fully replaced", () => {
+		const counter = new BlockUnitCounter();
+		expect(counter.slice(0, "first block of text", 3)).toBe(refSlice("first block of text", 3));
+		expect(counter.slice(0, "completely different café content", 5)).toBe(
+			refSlice("completely different café content", 5),
+		);
+	});
+
+	it("matches the reference under seeded append + monotonic reveal (fuzz)", () => {
+		// Deterministic PRNG so the fuzz is reproducible across runs.
+		let state = 0x1234abcd;
+		const rand = (): number => {
+			state ^= state << 13;
+			state ^= state >>> 17;
+			state ^= state << 5;
+			return ((state >>> 0) % 100000) / 100000;
+		};
+		// Appendable chunks include lone combining marks / ZWJ so appends randomly
+		// merge into the previous boundary cluster, stressing that invariant.
+		const chunks = ["a", "bc ", "e", "\u0301", "👨", "\u200D👩", "日", "本", "❤️", "xy", " ", "z"];
+		const counter = new BlockUnitCounter();
+		let text = "";
+		let revealed = 0;
+		for (let step = 0; step < 400; step++) {
+			if (rand() < 0.6 || text.length === 0) {
+				text += chunks[Math.floor(rand() * chunks.length)]!;
+			}
+			const total = refCount(text);
+			// Monotonic reveal advance, with an occasional reset to a small value
+			// to exercise the full re-segment path.
+			revealed = rand() < 0.05 ? Math.floor(rand() * 3) : Math.min(total, revealed + 1 + Math.floor(rand() * 6));
+			if (revealed < 0) revealed = 0;
+			expect(counter.slice(0, text, revealed)).toBe(refSlice(text, revealed));
+		}
+	});
+});
+
+describe("frame-skip coalescing", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("coalesces caught-up target deltas to at most one render per reveal frame", () => {
+		vi.useFakeTimers();
+		const { component, controller } = makeController();
+		const base = "abcdefghij";
+		const tail = "x".repeat(30);
+		const fullText = base + tail;
+
+		controller.begin(component, makeMessage([{ type: "text", text: "" }]));
+		controller.setTarget(makeMessage([{ type: "text", text: base }]));
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS * 10);
+		expect(textAt(latestMessage(component), 0)).toBe(base);
+
+		// 30 deltas at 5x the reveal cadence (each 1 unit of growth).
+		const before = component.messages.length;
+		let text = base;
+		for (let i = 0; i < 30; i++) {
+			text += tail[i];
+			controller.setTarget(makeMessage([{ type: "text", text }]));
+			vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS / 5);
+		}
+		const burstRenders = component.messages.length - before;
+		expect(burstRenders).toBeLessThanOrEqual(
+			Math.ceil((30 * STREAMING_REVEAL_FRAME_MS) / 5 / STREAMING_REVEAL_FRAME_MS) + 1,
+		);
+		expect(burstRenders).toBeLessThan(30);
+
+		// The final drain renders the full text.
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS * 20);
+		expect(textAt(latestMessage(component), 0)).toBe(fullText);
+	});
+
+	it("renders toolCall targets synchronously even when a drain is pending", () => {
+		vi.useFakeTimers();
+		const { component, controller } = makeController();
+
+		controller.begin(component, makeMessage([{ type: "text", text: "" }]));
+		controller.setTarget(makeMessage([{ type: "text", text: "hi" }]));
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS);
+		expect(textAt(latestMessage(component), 0)).toBe("hi");
+
+		// Same reveal budget as "hi" -> caught up: drain is deferred to a tick.
+		controller.setTarget(makeMessage([{ type: "text", text: "yo" }]));
+		const pending = component.messages.length;
+		expect(textAt(latestMessage(component), 0)).toBe("hi");
+		controller.setTarget(
+			makeMessage([
+				{ type: "text", text: "yo" },
+				{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "README.md" } },
+			]),
+		);
+		// The toolCall boundary still renders synchronously, before any tick.
+		expect(component.messages.length).toBe(pending + 1);
+		expect(textAt(latestMessage(component), 0)).toBe("yo");
+		expect(latestMessage(component).content.at(-1)?.type).toBe("toolCall");
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS * 4);
+		expect(component.messages.length).toBe(pending + 1);
+	});
+
+	it("keeps synchronous per-setTarget renders when smooth streaming is off", () => {
+		vi.useFakeTimers();
+		const { component, controller } = makeController({ smooth: false });
+
+		controller.begin(component, makeMessage([{ type: "text", text: "" }]));
+		controller.setTarget(makeMessage([{ type: "text", text: "one" }]));
+		const before = component.messages.length;
+		controller.setTarget(makeMessage([{ type: "text", text: "one two" }]));
+
+		expect(component.messages.length).toBe(before + 1);
+		expect(textAt(latestMessage(component), 0)).toBe("one two");
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS * 5);
+		expect(component.messages.length).toBe(before + 1);
+	});
+	it("cancels a pending drain when smooth streaming is turned off", () => {
+		vi.useFakeTimers();
+		let smooth = true;
+		const component = new RecordingComponent();
+		const controller = new StreamingRevealController({
+			getSmoothStreaming: () => smooth,
+			getHideThinkingBlock: () => false,
+			getProseOnlyThinking: () => true,
+			requestRender: () => {},
+		});
+
+		controller.begin(component, makeMessage([{ type: "text", text: "" }]));
+		controller.setTarget(makeMessage([{ type: "text", text: "hi" }]));
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS);
+		controller.setTarget(makeMessage([{ type: "text", text: "yo" }]));
+
+		smooth = false;
+		controller.setTarget(makeMessage([{ type: "text", text: "abcdefghij" }]));
+		expect(textAt(latestMessage(component), 0)).toBe("abcdefghij");
+
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS);
+		expect(textAt(latestMessage(component), 0)).toBe("abcdefghij");
+		controller.stop();
+	});
+
+	it("flushes the trailing delta at the next tick and stops the timer", () => {
+		vi.useFakeTimers();
+		const { component, controller } = makeController();
+
+		controller.begin(component, makeMessage([{ type: "text", text: "" }]));
+		controller.setTarget(makeMessage([{ type: "text", text: "hi" }]));
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS);
+		expect(textAt(latestMessage(component), 0)).toBe("hi");
+
+		controller.setTarget(makeMessage([{ type: "text", text: "hi!" }]));
+		const before = component.messages.length;
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS);
+		expect(component.messages.length).toBe(before + 1);
+		expect(textAt(latestMessage(component), 0)).toBe("hi!");
+
+		const flushed = component.messages.length;
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS * 4);
+		expect(component.messages.length).toBe(flushed);
+	});
+
+	it("re-arms the timer for caught-up deltas and renders nothing while idle", () => {
+		vi.useFakeTimers();
+		const { component, controller } = makeController();
+
+		controller.begin(component, makeMessage([{ type: "text", text: "" }]));
+		controller.setTarget(makeMessage([{ type: "text", text: "hi" }]));
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS);
+		expect(textAt(latestMessage(component), 0)).toBe("hi");
+
+		// Caught up: "yo" has the same reveal budget, so the render is deferred.
+		controller.setTarget(makeMessage([{ type: "text", text: "yo" }]));
+		const before = component.messages.length;
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS);
+		expect(component.messages.length).toBe(before + 1);
+		expect(textAt(latestMessage(component), 0)).toBe("yo");
+
+		// No further deltas: subsequent ticks render nothing.
+		const drained = component.messages.length;
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS * 4);
+		expect(component.messages.length).toBe(drained);
 	});
 });

@@ -1,18 +1,19 @@
 import * as fs from "node:fs/promises";
-
+import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
+import { formatModelRoleAlias } from "../config/model-roles";
 import type { Settings } from "../config/settings";
 import { MCPManager } from "../mcp/manager";
-import { hydrateCollaborationPolicy } from "../orchestration/collaboration-policy";
+import { initializeExtensions } from "../modes/runtime-init";
 import type { PersistedSubagentReviverFactory } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import type { AuthStorage } from "../session/auth-storage";
 import { SessionManager } from "../session/session-manager";
-import { inferToolSource, isAllowedByToolProfile } from "../tools/index";
-import { isToolCapabilityAllowed, resolveToolProfile } from "../tools/tool-profiles";
-import { createMCPProxyTools, createSubagentSettings } from "./executor";
+import type { EventBus } from "../utils/event-bus";
+import { attachIrcWakeTurnMonitor, createMCPProxyTools, createSubagentSettings } from "./executor";
+import type { AgentDefinition } from "./types";
 
 /**
  * Ambient context the reviver needs at revive time. The top-level session is
@@ -27,6 +28,14 @@ export interface PersistedSubagentReviveContext {
 	settings: Settings;
 	/** LSP policy of the top-level session; revived subagents inherit it rather than defaulting on. */
 	enableLsp: boolean;
+	/**
+	 * Shared event bus feeding RPC/collab subagent subscriptions. Passed through
+	 * to the wake-turn monitor so an IRC send to a cold-revived subagent emits
+	 * the same lifecycle/progress frames a live run does.
+	 */
+	eventBus?: EventBus;
+	/** Root-scoped observability bus the revived run's frames also publish to. */
+	subagentEventBus?: EventBus;
 }
 
 /**
@@ -114,7 +123,33 @@ export function createPersistedSubagentReviverFactory(
 			taskDepth++;
 			parentId = registry.get(parentId)?.parentId;
 		}
-		return async () => {
+		// Rebuild the same advisor opt-in the original spawn resolved: `"on"` =
+		// advisor-role model, anything else = the explicit pattern stamped onto
+		// this session's `modelRoles.advisor`. Absent = unadvised (the
+		// createSubagentSettings default).
+		const subagentSettings = createSubagentSettings(ctx.settings, {
+			...(init.readSummarize === false ? { "read.summarize.enabled": false } : undefined),
+			...(init.advisor
+				? {
+						"advisor.enabled": true,
+						...(init.advisor !== "on"
+							? { modelRoles: { ...ctx.settings.getModelRoles(), advisor: init.advisor } }
+							: undefined),
+					}
+				: undefined),
+		});
+		const persistedModelPattern =
+			init.modelRole && init.modelRole !== "default"
+				? [formatModelRoleAlias(init.modelRole), ...(init.resolvedModel ? [init.resolvedModel] : [])]
+				: init.resolvedModel;
+		// Older session files persisted the synthetic xd:// write transport in the
+		// enabled set. A read-only agent definition could never grant full write,
+		// so remove that transport name before replaying tools as explicit grants.
+		const revivedToolNames =
+			init.readOnly === true && init.tools.includes("write")
+				? init.tools.filter(name => name !== "write")
+				: init.tools;
+		return async expectedRef => {
 			// Re-open fresh on every revive: park closes the writer, so this takes
 			// the single-writer lock cleanly and restores the full message history.
 			const reopened = await SessionManager.open(sessionFile, undefined, undefined, {
@@ -122,71 +157,90 @@ export function createPersistedSubagentReviverFactory(
 			});
 			const artifactManager = ctx.session.sessionManager.getArtifactManager();
 			if (artifactManager) reopened.adoptArtifactManager(artifactManager);
-			// Reuse the parent's live MCP connections via proxy tools (no
-			// re-discovery), exactly as the executor does for live subagents.
-			const mcpManager = MCPManager.instance();
+			// A restricted persisted contract must not consult process-global MCP
+			// state: same-name MCP tools are untrusted capability sources.
+			const restrictToolNames = init.restrictToolNames === true;
+			const mcpManager = restrictToolNames ? undefined : MCPManager.instance();
 			const mcpProxyTools = mcpManager ? createMCPProxyTools(mcpManager) : [];
-			// `reopened` holds the session's single-writer guard. If session
-			// creation throws or returns a session built on a different manager,
-			// close it here or the guard is held until process exit.
-			let created: Awaited<ReturnType<typeof createAgentSession>>;
-			try {
-				created = await createAgentSession({
-					cwd: ctx.session.sessionManager.getCwd(),
-					authStorage: ctx.authStorage,
-					modelRegistry: ctx.modelRegistry,
-					settings: createSubagentSettings(
-						ctx.settings,
-						init.readSummarize === false ? { "read.summarize.enabled": false } : undefined,
-					),
-					sessionManager: reopened,
-					agentId: ref.id,
-					agentDisplayName: ref.displayName,
-					parentTaskPrefix: ref.id,
-					parentAgentId: ref.parentId,
-					taskDepth,
-					executionProfile: init.executionProfile,
-					toolProfile,
-					collaborationPolicy,
-					toolNames: activeToolNames,
-					outputSchema: init.outputSchema,
-					requireYieldTool: true,
-					maxModelRequestsPerRun: init.fusionSidekick ? init.maxModelRequestsPerRun : undefined,
-					systemPrompt: () => [init.systemPrompt],
-					// Old files predate persisted spawns: deny re-spawning rather than let
-					// createAgentSession default to wildcard ("*").
-					spawns: init.spawns ?? "",
-					hasUI: false,
-					enableLsp: ctx.enableLsp,
-					enableMCP: !mcpManager,
-					mcpManager,
-					customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
-					customToolSources:
-						mcpProxyTools.length > 0
-							? new Map(mcpProxyTools.map(tool => [tool.name, "mcp" as const]))
-							: undefined,
-					clientBridge: ctx.session.clientBridge,
-				});
-			} catch (error) {
-				await reopened.close();
-				throw error;
-			}
-			const { session } = created;
-			if (session.sessionManager !== reopened) {
-				await reopened.close();
-			}
-			// Clamp the active set to the persisted names intersected with the
-			// reconstructed source-aware ceiling. Unknown names are ignored.
-			session.setCollaborationPolicy(collaborationPolicy);
-			registry.setCollaborationPolicy(ref.id, collaborationPolicy);
-			await session.setActiveToolsByName(activeToolNames);
+			const { session } = await createAgentSession({
+				cwd: ctx.session.sessionManager.getCwd(),
+				authStorage: ctx.authStorage,
+				// Revived agents join the root session tree, so their observability
+				// frames ride the same bus the RPC/collab surfaces subscribed to.
+				subagentEventBus: ctx.subagentEventBus,
+				modelRegistry: ctx.modelRegistry,
+				...(persistedModelPattern ? { modelPattern: persistedModelPattern } : {}),
+				modelPatternAuthFallback: init.resolvedModel,
+				settings: subagentSettings,
+				sessionManager: reopened,
+				agentId: ref.id,
+				agentDisplayName: ref.displayName,
+				parentTaskPrefix: ref.id,
+				parentAgentId: ref.parentId,
+				expectedAgentRef: expectedRef,
+				taskDepth,
+				toolNames: revivedToolNames,
+				outputSchema: init.outputSchema,
+				outputSchemaMode: init.outputSchemaMode,
+				restrictToolNames: restrictToolNames || undefined,
+				requireYieldTool: true,
+				systemPrompt: () => [init.systemPrompt],
+				// Old files predate persisted spawns: deny re-spawning rather than let
+				// createAgentSession default to wildcard ("*").
+				spawns: init.spawns ?? "",
+				hasUI: false,
+				enableLsp: restrictToolNames ? false : ctx.enableLsp,
+				...(restrictToolNames
+					? {
+							enableIrc: false,
+							enableMCP: false,
+							preloadedExtensionPaths: [],
+							preloadedPreparedExtensions: [],
+							preloadedCustomToolPaths: [],
+						}
+					: {
+							enableMCP: !mcpManager,
+							mcpManager,
+							customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
+						}),
+			});
+			// Clamp the active set to the persisted list: createAgentSession's
+			// `alwaysInclude` can re-add non-defaultInactive extension/custom tools
+			// the original run didn't carry. Unknown/missing names are ignored.
+			await session.setActiveToolsByName([...revivedToolNames, ...session.getMountedXdevToolNames()]);
+			// Wire the extension runtime exactly as the live executor does. Without
+			// this the runner stays pre-init, every action method throws
+			// `ExtensionRuntimeNotInitializedError`, and a `tool_call` handler that
+			// touches a runtime action trips the fail-closed gate in `emitToolCall`,
+			// blocking every tool — including the hidden `yield` — in the revived
+			// agent. `session_start` also re-runs so extensions restore per-session
+			// state (issue #8824).
+			await initializeExtensions(session, {
+				reportSendError: (action, err) => logger.error("Extension send failed", { action, error: err.message }),
+				reportRuntimeError: err => logger.error("Extension error", { path: err.extensionPath, error: err.error }),
+			});
 			// Cold revives must drive registry status themselves — createAgentSession
 			// doesn't wire this generically (the live path does it in the executor).
-			// Without it the idle-TTL timer never clears on a turn and the lifecycle
-			// could park the agent mid-run.
-			session.subscribe(event => {
-				if (event.type === "agent_start") registry.setStatus(ref.id, "running");
-				else if (event.type === "agent_end") registry.setStatus(ref.id, "idle");
+			// The internal run-state signal precedes deferrable public `agent_end`,
+			// keeping idle-TTL ownership synchronized even while prompts unwind.
+			registry.syncSessionStatus(ref.id, session);
+			// Persisted files predate an agent-source field, so cold-revived frames
+			// report the runtime-neutral `user` source; name comes from the ref.
+			const wakeAgent: AgentDefinition = {
+				name: ref.displayName,
+				description: "",
+				systemPrompt: init.systemPrompt,
+				source: "user",
+			};
+			attachIrcWakeTurnMonitor(session, {
+				id: ref.id,
+				agent: wakeAgent,
+				eventBus: ctx.eventBus,
+				subagentEventBus: ctx.subagentEventBus,
+				sessionFile,
+				outputSchema: init.outputSchema,
+				outputSchemaMode: init.outputSchemaMode,
+				artifactsDir: ctx.session.sessionFile?.slice(0, -6),
 			});
 			return session;
 		};

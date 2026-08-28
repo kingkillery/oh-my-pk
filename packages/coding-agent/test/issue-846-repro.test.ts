@@ -18,6 +18,7 @@ import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import { startMemoryStartupTask } from "@pk-nerdsaver-ai/pi-coding-agent/memories";
 import * as memoryStorage from "@pk-nerdsaver-ai/pi-coding-agent/memories/storage";
 import { getAgentDbPath, logger, Snowflake, TempDir } from "@pk-nerdsaver-ai/pi-utils";
+import { restoreEnvValue } from "./helpers/settings-test-state";
 
 interface SessionLike {
 	sessionManager: {
@@ -97,9 +98,9 @@ describe("issue #846: phase1 stage1 failures must be logged", () => {
 	});
 
 	afterEach(async () => {
-		restoreTrackedSpies();
-		process.env.XDG_DATA_HOME = savedXdgData;
-		process.env.XDG_STATE_HOME = savedXdgState;
+		vi.restoreAllMocks();
+		restoreEnvValue("XDG_DATA_HOME", savedXdgData);
+		restoreEnvValue("XDG_STATE_HOME", savedXdgState);
 		await Bun.sleep(0);
 		for (const dir of tempDirs.splice(0)) {
 			await dir.remove();

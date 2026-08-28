@@ -9,26 +9,18 @@ import type { LoadExtensionsResult } from "@pk-nerdsaver-ai/pi-coding-agent/exte
 import type { PlanModeState } from "@pk-nerdsaver-ai/pi-coding-agent/plan-mode/state";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
 import * as sdkModule from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
-import type {
-	AgentSession,
-	AgentSessionEvent,
-	PromptOptions,
-} from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
+import type { AgentSession, AgentSessionEvent, PromptOptions } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
 import { TaskTool } from "@pk-nerdsaver-ai/pi-coding-agent/task";
 import * as discoveryModule from "@pk-nerdsaver-ai/pi-coding-agent/task/discovery";
 import type { AgentDefinition, TaskParams } from "@pk-nerdsaver-ai/pi-coding-agent/task/types";
 import type { IsolationHandle, WorktreeBaseline } from "@pk-nerdsaver-ai/pi-coding-agent/task/worktree";
 import * as worktreeModule from "@pk-nerdsaver-ai/pi-coding-agent/task/worktree";
 import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 import "@pk-nerdsaver-ai/pi-coding-agent/tools/yield";
 import { EventBus } from "@pk-nerdsaver-ai/pi-coding-agent/utils/event-bus";
 
-const TEST_TASK: TaskParams = {
-	agent: "task",
-	id: "CheckLsp",
-	description: "Check LSP availability",
-	assignment: "Inspect LSP tools.",
-};
+const TEST_TASK: TaskParams = { agent: "task", name: "CheckLsp", task: "Inspect LSP tools." };
 
 function createAssistantStopMessage(text: string): AssistantMessage {
 	return {
@@ -67,6 +59,7 @@ function createYieldingSession(): AgentSession {
 			appendSessionInit: () => {},
 		},
 		getActiveToolNames: () => ["yield"],
+		getEnabledToolNames: () => ["yield"],
 		setActiveToolsByName: async () => {},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
@@ -92,6 +85,8 @@ function createYieldingSession(): AgentSession {
 		getLastAssistantMessage: () => state.messages[state.messages.length - 1],
 		abort: async () => {},
 		dispose: async () => {},
+		setIrcWakeTurnObserver: () => {},
+		subscribeRunState: () => () => {},
 	} as unknown as AgentSession;
 }
 
@@ -266,17 +261,17 @@ describe("subagent LSP availability", () => {
 			expect(getOptions()?.cwd).toBe("/tmp/isolated-subagent");
 			expect(sessionManager?.getCwd?.()).toBe("/tmp/isolated-subagent");
 		} finally {
-			await fs.rm(tempDir, { recursive: true, force: true });
+			await removeWithRetries(tempDir);
 		}
 	});
 
-	it("applies plan-mode subagent tools, preserves read-only agent tools, and honors task.enableLsp", async () => {
+	it("clamps plan-mode mixed-capability tools despite ordinary settings", async () => {
 		mockAgents({
 			name: "task",
 			description: "Reviewer-like task agent",
 			systemPrompt: "Review with read-only specialty tools.",
 			source: "bundled",
-			tools: ["bash", "ast_grep", "report_finding", "memory_edit", "retain", "todo"],
+			tools: ["bash", "ast_grep", "memory_edit", "retain", "todo"],
 		});
 		const { getOptions } = mockCreateAgentSession();
 		const planMode = { enabled: true, planFilePath: "local://PLAN.md" };
@@ -284,12 +279,16 @@ describe("subagent LSP availability", () => {
 		const tool = await TaskTool.create(createSession({ planMode, taskEnableLsp: true }));
 		await tool.execute("tool-call", TEST_TASK);
 
-		const toolNames = getOptions()?.toolNames;
-		expect(getOptions()?.enableLsp).toBe(true);
-		expect(toolNames).toEqual(["read", "search", "find", "lsp", "web_search", "ast_grep", "report_finding", "irc"]);
-		expect(toolNames).not.toContain("bash");
-		expect(toolNames).not.toContain("memory_edit");
-		expect(toolNames).not.toContain("retain");
-		expect(toolNames).not.toContain("todo");
+		const options = getOptions();
+		expect(options?.enableLsp).toBe(false);
+		expect(options?.enableIrc).toBe(false);
+		expect(options?.restrictToolNames).toBe(true);
+		expect(options?.toolNames).toEqual(["read", "grep", "glob", "web_search", "ast_grep"]);
+		expect(options?.toolNames).not.toContain("lsp");
+		expect(options?.toolNames).not.toContain("hub");
+		expect(options?.toolNames).not.toContain("bash");
+		expect(options?.toolNames).not.toContain("memory_edit");
+		expect(options?.toolNames).not.toContain("retain");
+		expect(options?.toolNames).not.toContain("todo");
 	});
 });

@@ -9,12 +9,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { expandPromptTemplate, type PromptTemplate } from "@pk-nerdsaver-ai/pi-coding-agent/config/prompt-templates";
-import {
-	expandSlashCommand,
-	type FileSlashCommand,
-} from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/slash-commands";
+import { expandSlashCommand, type FileSlashCommand } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/slash-commands";
+import { AgentRegistry, MAIN_AGENT_ID } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-registry";
+import { collectIrcPeerRoster } from "@pk-nerdsaver-ai/pi-coding-agent/task/executor";
 import { parseCommandArgs, substituteArgs } from "@pk-nerdsaver-ai/pi-coding-agent/utils/command-args";
+import { prompt } from "@pk-nerdsaver-ai/pi-utils";
 
 // ============================================================================
 // substituteArgs
@@ -230,6 +232,19 @@ describe("parseCommandArgs + substituteArgs integration", () => {
 		const template2 = "Implement: $ARGUMENTS";
 		expect(substituteArgs(template1, args)).toBe(substituteArgs(template2, args));
 	});
+	test("should not recursively expand $@ or $ARGUMENTS present inside user positional arguments", () => {
+		const args = ["check $@ and $ARGUMENTS", "extra"];
+		const template = "Instruction: $1";
+		const result = substituteArgs(template, args);
+		expect(result).toBe("Instruction: check $@ and $ARGUMENTS");
+	});
+
+	test("should not recursively expand positional placeholders $1, $2 inside positional argument values", () => {
+		const args = ["value with $2", "nested"];
+		const template = "Result: $1";
+		const result = substituteArgs(template, args);
+		expect(result).toBe("Result: value with $2");
+	});
 });
 
 // ============================================================================
@@ -328,5 +343,113 @@ describe("template expansion fallback", () => {
 	test("should append two fallback newlines for prompt template output even when template source ends with newline", () => {
 		const result = expandPrompt("/test-template sample", "Do something.\n");
 		expect(result).toBe("Do something.\n\nsample");
+	});
+});
+
+// ============================================================================
+// renderYieldSchema helper + subagent-system-prompt.md
+// ============================================================================
+
+describe("renderYieldSchema", () => {
+	// prompt-templates is imported for its Handlebars helper registration side-effect
+	// (jtdToTypeScript + renderYieldSchema); the render calls below rely on it.
+	const templatePath = path.resolve(import.meta.dir, "../src/prompts/system/subagent-system-prompt.md");
+
+	async function renderSubagentPrompt(outputSchema: unknown): Promise<string> {
+		const templateSource = await fs.readFile(templatePath, "utf-8");
+		return prompt.render(templateSource, { agent: "test-agent", outputSchema });
+	}
+
+	test("wraps a JTD properties schema inside result.data so the model matches the yield envelope", async () => {
+		const rendered = await renderSubagentPrompt({
+			properties: {
+				status: { enum: ["goal_complete", "plan_created"] },
+				plan_path: { type: "string" },
+				summary: { type: "string" },
+			},
+		});
+		expect(rendered).toContain('```ts\nresult: {\n  data: {\n    status: "goal_complete" | "plan_created";');
+		expect(rendered).toContain("    summary: string;\n  };\n}\n```");
+		// The old rendering advertised a bare interface with no `result.data` context.
+		// Guard against regressing to it — that phrasing is what caused the reported bug.
+		expect(rendered).not.toContain("Your result MUST match this TypeScript interface");
+	});
+
+	test("wraps a scalar schema on the same line as data so the model matches the yield envelope", async () => {
+		const rendered = await renderSubagentPrompt({ type: "string" });
+		expect(rendered).toContain("```ts\nresult: {\n  data: string;\n}\n```");
+	});
+
+	test("wraps an array-of-object schema without breaking the result.data envelope", async () => {
+		const rendered = await renderSubagentPrompt({
+			elements: { properties: { title: { type: "string" }, count: { type: "int32" } } },
+		});
+		expect(rendered).toContain("```ts\nresult: {\n  data: { title: string; count: number; }[];\n}\n```");
+	});
+
+	test("omits the schema section entirely when outputSchema is absent", async () => {
+		const rendered = await renderSubagentPrompt(undefined);
+		expect(rendered).not.toContain("result: {");
+		expect(rendered).not.toContain("Your terminal `yield` MUST use exactly this shape");
+	});
+});
+
+describe("subagent peer roster prompt", () => {
+	const templatePath = path.resolve(import.meta.dir, "../src/prompts/system/subagent-system-prompt.md");
+
+	test("production prompt includes live peers and omits parked identity and activity", async () => {
+		const registry = new AgentRegistry();
+		registry.register({
+			id: MAIN_AGENT_ID,
+			displayName: MAIN_AGENT_ID,
+			kind: "main",
+			session: null,
+			status: "running",
+		});
+		registry.register({
+			id: "LiveWorker",
+			displayName: "implementer",
+			kind: "sub",
+			session: null,
+			status: "running",
+			activity: "editing auth.ts",
+		});
+		registry.register({
+			id: "IdleReviewer",
+			displayName: "reviewer",
+			kind: "sub",
+			session: null,
+			status: "idle",
+		});
+		registry.register({
+			id: "ParkedSecretId",
+			displayName: "secret parked label",
+			kind: "sub",
+			session: null,
+			status: "parked",
+			activity: "reviewing classified.diff",
+		});
+
+		const templateSource = await fs.readFile(templatePath, "utf-8");
+		const roster = collectIrcPeerRoster(registry, "Child");
+		expect(roster.parkedCount).toBe(1);
+		const rendered = prompt.render(templateSource, {
+			agent: "test-agent",
+			ircSelfId: "Child",
+			ircPeers: roster.peers,
+			ircParkedCount: roster.parkedCount,
+			ircOmittedCount: roster.omittedCount,
+		});
+		expect(rendered).toContain("LiveWorker");
+		expect(rendered).toContain("editing auth.ts");
+		expect(rendered).toContain("IdleReviewer");
+		expect(rendered).toContain("1 parked peer(s) omitted");
+		expect(rendered).toContain("Idle peers are not gone: messaging them wakes them.");
+		expect(rendered).toContain('status:"parked"');
+		expect(rendered).toContain("history://");
+		expect(rendered).toContain("agent://");
+		expect(rendered).not.toContain("ParkedSecretId");
+		expect(rendered).not.toContain("secret parked label");
+		expect(rendered).not.toContain("reviewing classified.diff");
 	});
 });

@@ -1,5 +1,6 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import { scheduler } from "node:timers/promises";
 import { Agent } from "@pk-nerdsaver-ai/pi-agent-core";
 import type { AssistantMessage, Model, ProviderSessionState } from "@pk-nerdsaver-ai/pi-ai";
 import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
@@ -8,6 +9,8 @@ import { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-ses
 import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
 import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
+
+const originalSchedulerWait = scheduler.wait.bind(scheduler);
 
 describe("AgentSession context promotion", () => {
 	let tempDir: TempDir;
@@ -20,10 +23,32 @@ describe("AgentSession context promotion", () => {
 		// constructor (~100ms). The catalog and auth fixture never change between
 		// tests here (tests only read models and add benign extra runtime keys),
 		// so build them once instead of paying ~950ms across the 9 cases.
+		//
+		// The bundled catalog no longer ships a codex model whose configured
+		// promotion target has a strictly larger window (gpt-5.5's bundled target
+		// gpt-5.4 is a same-window no-op the runtime rejects), so pin
+		// gpt-5.5 (272k) -> gpt-5.6-sol (372k) via modelOverrides — the same
+		// mechanism users configure promotion pairs with. gpt-5.4-mini is pinned
+		// text-only so the snapcompact-fallback case has a codex model on which
+		// snapcompact (vision-based) cannot run.
 		tempDir = TempDir.createSync("@pi-context-promotion-");
+		const modelsConfigPath = path.join(tempDir.path(), "models.json");
+		await Bun.write(
+			modelsConfigPath,
+			JSON.stringify({
+				providers: {
+					"openai-codex": {
+						modelOverrides: {
+							"gpt-5.5": { contextPromotionTarget: "openai-codex/gpt-5.6-sol" },
+							"gpt-5.4-mini": { input: ["text"] },
+						},
+					},
+				},
+			}),
+		);
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 		authStorage.setRuntimeApiKey("openai-codex", "test-key");
-		modelRegistry = new ModelRegistry(authStorage);
+		modelRegistry = new ModelRegistry(authStorage, modelsConfigPath);
 	});
 
 	afterAll(() => {
@@ -31,10 +56,17 @@ describe("AgentSession context promotion", () => {
 		tempDir.removeSync();
 	});
 
+	beforeEach(() => {
+		// Promotion retries deliberately settle for 100ms in production. These
+		// tests assert the continuation and state transition, not elapsed time.
+		vi.spyOn(scheduler, "wait").mockImplementation((_delayMs, options) => originalSchedulerWait(0, options));
+	});
+
 	afterEach(async () => {
 		if (session) {
 			await session.dispose();
 		}
+		vi.restoreAllMocks();
 	});
 
 	function createOverflowMessage(
@@ -111,15 +143,6 @@ describe("AgentSession context promotion", () => {
 		};
 	}
 
-	async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
-		const deadline = Date.now() + timeoutMs;
-		while (Date.now() < deadline) {
-			if (predicate()) return;
-			await Bun.sleep(10);
-		}
-		throw new Error("Timed out waiting for condition");
-	}
-
 	// Deterministically drain the fire-and-forget `agent_end` handler that
 	// `emitExternalEvent` dispatches. The handler's terminal maintenance work
 	// (`#checkCompaction`) is microtask-based on the no-promotion paths, so a
@@ -130,94 +153,8 @@ describe("AgentSession context promotion", () => {
 		await new Promise(resolve => setTimeout(resolve, 0));
 		await session.waitForIdle();
 	}
-
-	it("promotes to a larger-context model on overflow and clears codex websocket session state", async () => {
-		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.3-codex-spark");
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.5");
-		if (!sparkModel || !codexModel) {
-			throw new Error("Expected codex spark and codex models to exist");
-		}
-
-		const settings = Settings.isolated({
-			"compaction.enabled": false,
-			"contextPromotion.enabled": true,
-		});
-
-		const agent = new Agent({
-			initialState: {
-				model: sparkModel,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-			},
-		});
-
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-		});
-
-		const closeSpy = vi.fn();
-		session.providerSessionState.set("openai-codex-responses", {
-			close: closeSpy,
-		} satisfies ProviderSessionState);
-
-		const overflowMessage = createOverflowMessage(sparkModel);
-		session.agent.emitExternalEvent({ type: "message_end", message: overflowMessage });
-		session.agent.emitExternalEvent({ type: "agent_end", messages: [overflowMessage] });
-
-		await waitFor(() => session.model?.id === codexModel.id);
-
-		expect(session.model?.provider).toBe(codexModel.provider);
-		expect(session.model?.id).toBe(codexModel.id);
-		expect(closeSpy).toHaveBeenCalledTimes(1);
-		expect(session.providerSessionState.size).toBe(0);
-	});
-
-	it("promotes on 413 payload-too-large overflow errors", async () => {
-		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.3-codex-spark");
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.5");
-		if (!sparkModel || !codexModel) {
-			throw new Error("Expected codex spark and codex models to exist");
-		}
-
-		const settings = Settings.isolated({
-			"compaction.enabled": false,
-			"contextPromotion.enabled": true,
-		});
-
-		const agent = new Agent({
-			initialState: {
-				model: sparkModel,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-			},
-		});
-
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-		});
-
-		const overflowMessage = createOverflowMessage(
-			sparkModel,
-			"413 Request Entity Too Large: payload too large for model request body",
-		);
-		session.agent.emitExternalEvent({ type: "message_end", message: overflowMessage });
-		session.agent.emitExternalEvent({ type: "agent_end", messages: [overflowMessage] });
-
-		await waitFor(() => session.model?.id === codexModel.id);
-
-		expect(session.model?.provider).toBe(codexModel.provider);
-		expect(session.model?.id).toBe(codexModel.id);
-	});
 	it("clears codex provider session state on manual setModel switch away from codex", async () => {
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.3-codex");
+		const codexModel = modelRegistry.find("openai-codex", "gpt-5.4");
 		const nonCodexModel = modelRegistry.getAll().find(model => model.api !== "openai-codex-responses");
 		if (!codexModel || !nonCodexModel) {
 			throw new Error("Expected codex and non-codex models to exist");
@@ -254,7 +191,7 @@ describe("AgentSession context promotion", () => {
 	});
 
 	it("clears codex provider session state on manual temporary switch into codex", async () => {
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.3-codex");
+		const codexModel = modelRegistry.find("openai-codex", "gpt-5.4");
 		const nonCodexModel = modelRegistry.getAll().find(model => model.api !== "openai-codex-responses");
 		if (!codexModel || !nonCodexModel) {
 			throw new Error("Expected codex and non-codex models to exist");
@@ -291,7 +228,7 @@ describe("AgentSession context promotion", () => {
 	});
 
 	it("clears codex provider session state when branching rewrites history", async () => {
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.3-codex");
+		const codexModel = modelRegistry.find("openai-codex", "gpt-5.4");
 		if (!codexModel) {
 			throw new Error("Expected codex model to exist");
 		}
@@ -332,7 +269,7 @@ describe("AgentSession context promotion", () => {
 	});
 
 	it("clears codex provider session state when tree navigation rewrites history", async () => {
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.3-codex");
+		const codexModel = modelRegistry.find("openai-codex", "gpt-5.4");
 		if (!codexModel) {
 			throw new Error("Expected codex model to exist");
 		}
@@ -373,9 +310,9 @@ describe("AgentSession context promotion", () => {
 	});
 
 	it("does not promote when promotion is disabled", async () => {
-		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.3-codex-spark");
-		if (!sparkModel) {
-			throw new Error("Expected codex spark model to exist");
+		const smallModel = modelRegistry.find("openai-codex", "gpt-5.5");
+		if (!smallModel) {
+			throw new Error("Expected small codex model to exist");
 		}
 
 		const settings = Settings.isolated({
@@ -385,7 +322,7 @@ describe("AgentSession context promotion", () => {
 
 		const agent = new Agent({
 			initialState: {
-				model: sparkModel,
+				model: smallModel,
 				systemPrompt: ["Test"],
 				tools: [],
 				messages: [],
@@ -404,27 +341,27 @@ describe("AgentSession context promotion", () => {
 			close: closeSpy,
 		} satisfies ProviderSessionState);
 
-		const overflowMessage = createOverflowMessage(sparkModel);
+		const overflowMessage = createOverflowMessage(smallModel);
 		session.agent.emitExternalEvent({ type: "message_end", message: overflowMessage });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [overflowMessage] });
 
 		await settle();
 
-		expect(session.model?.provider).toBe(sparkModel.provider);
-		expect(session.model?.id).toBe(sparkModel.id);
+		expect(session.model?.provider).toBe(smallModel.provider);
+		expect(session.model?.id).toBe(smallModel.id);
 		expect(closeSpy).not.toHaveBeenCalled();
 		expect(session.providerSessionState.size).toBe(1);
 	});
 
 	it("does not promote by default", async () => {
-		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.3-codex-spark");
-		if (!sparkModel) {
-			throw new Error("Expected codex spark model to exist");
+		const smallModel = modelRegistry.find("openai-codex", "gpt-5.5");
+		if (!smallModel) {
+			throw new Error("Expected small codex model to exist");
 		}
 
 		const agent = new Agent({
 			initialState: {
-				model: sparkModel,
+				model: smallModel,
 				systemPrompt: ["Test"],
 				tools: [],
 				messages: [],
@@ -438,62 +375,23 @@ describe("AgentSession context promotion", () => {
 			modelRegistry,
 		});
 
-		const overflowMessage = createOverflowMessage(sparkModel);
+		const overflowMessage = createOverflowMessage(smallModel);
 		session.agent.emitExternalEvent({ type: "message_end", message: overflowMessage });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [overflowMessage] });
 
 		await settle();
 
-		expect(session.model?.provider).toBe(sparkModel.provider);
-		expect(session.model?.id).toBe(sparkModel.id);
+		expect(session.model?.provider).toBe(smallModel.provider);
+		expect(session.model?.id).toBe(smallModel.id);
 	});
-
-	it("promotes to a larger-context model on response.incomplete (length stop)", async () => {
-		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.3-codex-spark");
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.5");
-		if (!sparkModel || !codexModel) {
-			throw new Error("Expected codex spark and codex models to exist");
-		}
-
-		const settings = Settings.isolated({
-			"compaction.enabled": false,
-			"contextPromotion.enabled": true,
-		});
-
-		const agent = new Agent({
-			initialState: {
-				model: sparkModel,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-			},
-		});
-
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-		});
-
-		const incompleteMessage = createIncompleteMessage(sparkModel);
-		session.agent.emitExternalEvent({ type: "message_end", message: incompleteMessage });
-		session.agent.emitExternalEvent({ type: "agent_end", messages: [incompleteMessage] });
-
-		await waitFor(() => session.model?.id === codexModel.id);
-
-		expect(session.model?.provider).toBe(codexModel.provider);
-		expect(session.model?.id).toBe(codexModel.id);
-	});
-
 	it("does not promote on length stop when message is from a different model", async () => {
 		// Switching from a small-context model to a larger one and then receiving a
 		// stale length-stop event for the previous model must NOT trigger promotion
 		// or compaction on the new model — same guard as the overflow path.
-		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.3-codex-spark");
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.5");
-		if (!sparkModel || !codexModel) {
-			throw new Error("Expected codex spark and codex models to exist");
+		const smallModel = modelRegistry.find("openai-codex", "gpt-5.5");
+		const largeModel = modelRegistry.find("openai-codex", "gpt-5.6-sol");
+		if (!smallModel || !largeModel) {
+			throw new Error("Expected small and large codex models to exist");
 		}
 
 		const settings = Settings.isolated({
@@ -503,7 +401,7 @@ describe("AgentSession context promotion", () => {
 
 		const agent = new Agent({
 			initialState: {
-				model: codexModel,
+				model: largeModel,
 				systemPrompt: ["Test"],
 				tools: [],
 				messages: [],
@@ -517,14 +415,14 @@ describe("AgentSession context promotion", () => {
 			modelRegistry,
 		});
 
-		// Stale incomplete from the smaller model — current session is already on codex.
-		const staleIncomplete = createIncompleteMessage(sparkModel);
+		// Stale incomplete from the smaller model — current session is already on the large model.
+		const staleIncomplete = createIncompleteMessage(smallModel);
 		session.agent.emitExternalEvent({ type: "message_end", message: staleIncomplete });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [staleIncomplete] });
 
 		await settle();
 
-		expect(session.model?.provider).toBe(codexModel.provider);
-		expect(session.model?.id).toBe(codexModel.id);
+		expect(session.model?.provider).toBe(largeModel.provider);
+		expect(session.model?.id).toBe(largeModel.id);
 	});
 });

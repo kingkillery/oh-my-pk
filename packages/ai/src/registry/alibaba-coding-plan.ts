@@ -4,7 +4,7 @@ import type { OAuthController, OAuthCredentials, OAuthLoginCallbacks } from "./o
 import type { ProviderDefinition } from "./types";
 
 const DEFAULT_AUTH_URL = "https://modelstudio.console.alibabacloud.com/";
-const CHINA_AUTH_URL = "https://dashscope.console.aliyun.com/";
+const CHINA_AUTH_URL = "https://bailian.console.aliyun.com/?tab=model#/api-key";
 const DEFAULT_API_BASE_URL = "https://coding-intl.dashscope.aliyuncs.com/v1";
 const CHINA_API_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1";
 const VALIDATION_MODEL = "qwen3.5-plus";
@@ -34,8 +34,7 @@ export async function loginAlibabaCodingPlan(options: OAuthController): Promise<
 	if (choice === "2") {
 		baseUrl = CHINA_API_BASE_URL;
 		authUrl = CHINA_AUTH_URL;
-		instructions =
-			"Copy your Coding Plan exclusive API key (sk-sp-...) from the China mainland Coding Plan page — not a general Model Studio sk- key";
+		instructions = "Copy your API key from the Alibaba Cloud Bailian console (China mainland)";
 	} else if (choice === "3") {
 		const customUrl = await options.onPrompt({
 			message: "Enter custom base URL",
@@ -75,7 +74,14 @@ export async function loginAlibabaCodingPlan(options: OAuthController): Promise<
 	}
 
 	options.onProgress?.("Validating API key...");
-	try {
+	if (choice === "3") {
+		await apiKeyValidation.validateApiKeyAgainstModelsEndpoint({
+			provider: "Alibaba Coding Plan",
+			apiKey: trimmed,
+			modelsUrl: `${baseUrl}/models`,
+			signal: options.signal,
+		});
+	} else {
 		await apiKeyValidation.validateOpenAICompatibleApiKey({
 			provider: "Alibaba Coding Plan",
 			apiKey: trimmed,
@@ -83,11 +89,6 @@ export async function loginAlibabaCodingPlan(options: OAuthController): Promise<
 			model: VALIDATION_MODEL,
 			signal: options.signal,
 		});
-	} catch (error) {
-		if (error instanceof AIError.ApiKeyRequiredError && /\(401\)/.test(error.message)) {
-			throw new AIError.ApiKeyRequiredError(`${error.message}\n${CODING_PLAN_KEY_HINT}`);
-		}
-		throw error;
 	}
 
 	return {

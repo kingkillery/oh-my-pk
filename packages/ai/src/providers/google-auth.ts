@@ -281,6 +281,11 @@ const SHARED_TOKEN_RESOLVE_TIMEOUT_MS = 30_000;
  * The token is cached in module scope and refreshed `GOOGLE_VERTEX_REFRESH_SKEW_MS` ms before it expires.
  */
 export async function getVertexAccessToken(options?: { signal?: AbortSignal; fetch?: FetchImpl }): Promise<string> {
+	// An explicit access token (e.g. `gcloud auth print-access-token`) bypasses the cache so a
+	// refreshed env token takes effect immediately. `CLOUDSDK_AUTH_ACCESS_TOKEN` is gcloud's own
+	// override var; `GOOGLE_CLOUD_ACCESS_TOKEN` is the omp-facing alias.
+	const explicitToken = Bun.env.GOOGLE_CLOUD_ACCESS_TOKEN || Bun.env.CLOUDSDK_AUTH_ACCESS_TOKEN;
+	if (explicitToken) return explicitToken;
 	const fetchImpl = options?.fetch ?? globalThis.fetch.bind(globalThis);
 	const skew = getRefreshSkewMs();
 	const now = Date.now();

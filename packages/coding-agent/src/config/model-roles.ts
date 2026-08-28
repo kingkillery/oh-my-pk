@@ -5,6 +5,20 @@
 import { isValidThemeColor, type ThemeColor } from "../modes/theme/theme";
 import type { Settings } from "./settings";
 
+/** Canonical prefix for a configured model role selector. */
+export const MODEL_ROLE_ALIAS_PREFIX = "@";
+
+/** Legacy prefix accepted for backwards-compatible role selectors. */
+export const LEGACY_MODEL_ROLE_ALIAS_PREFIX = "pi/";
+
+/** Shorthand selector for the default model role. */
+export const DEFAULT_MODEL_ROLE_ALIAS = "*";
+
+/** Format a model role as its canonical selector. */
+export function formatModelRoleAlias(role: string): string {
+	return `${MODEL_ROLE_ALIAS_PREFIX}${role}`;
+}
+
 export type ModelRole =
 	| "default"
 	| "smol"
@@ -13,7 +27,6 @@ export type ModelRole =
 	| "plan"
 	| "designer"
 	| "commit"
-	| "title"
 	| "tiny"
 	| "task"
 	| "advisor"
@@ -42,8 +55,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 	plan: { tag: "PLAN", name: "Architect", color: "muted" },
 	designer: { tag: "DESIGNER", name: "Designer", color: "muted" },
 	commit: { tag: "COMMIT", name: "Commit", color: "dim" },
-	title: { tag: "TITLE", name: "Title", color: "dim", hidden: true },
-	tiny: { tag: "TINY", name: "Tiny", color: "dim", hidden: true },
+	tiny: { tag: "TINY", name: "Tiny", color: "dim" },
 	task: { tag: "TASK", name: "Subtask", color: "muted" },
 	advisor: { tag: "ADVISOR", name: "Advisor", color: "accent" },
 	"browser-operation": { tag: "BROWSER", name: "Browser Operation", color: "warning" },
@@ -64,7 +76,6 @@ export const MODEL_ROLE_IDS: ModelRole[] = [
 	"plan",
 	"designer",
 	"commit",
-	"title",
 	"tiny",
 	"task",
 	"advisor",

@@ -12,7 +12,6 @@ import {
 	RECALL_SYNONYMS,
 	recallTokens,
 } from "../../util/regex";
-import { quoteSqlIdentifier } from "../../util/sql";
 import { currentEmbeddingModel, embed } from "../embeddings";
 import { getMnemopiRuntimeOptions, mnemopiDebugEnabled, withMnemopiRuntimeOptions } from "../runtime-options";
 import { buildExactVectorIndex, searchExactVectorIndex } from "../vector-index";
@@ -272,7 +271,7 @@ export function cjkLikeSearch(
 	const conditions = cjkChars.map(() => "content LIKE ? ESCAPE '\\'").join(" OR ");
 	try {
 		const rows = db
-			.query(`SELECT ${idColumnSql}, content FROM ${tableSql} WHERE ${conditions} LIMIT ?`)
+			.query(`SELECT ${idColumn}, content FROM ${table} WHERE superseded_by IS NULL AND (${conditions}) LIMIT ?`)
 			.all(...cjkChars.map(ch => `%${ch}%`), k * 5) as Record<string, unknown>[];
 		const scored: Array<{ id: string | number; score: number }> = [];
 		for (const row of rows) {
@@ -298,7 +297,10 @@ export function ftsSearch(db: Database, query: string, k = 20): FtsRankResult[] 
 	if (!ftsQuery) return hasCjk(query) ? (cjkLikeSearch(db, query, k, false) as FtsRankResult[]) : [];
 	try {
 		const rows = db
-			.query("SELECT rowid, rank FROM fts_episodes WHERE fts_episodes MATCH ? ORDER BY rank, rowid LIMIT ?")
+			.query(`SELECT f.rowid, f.rank FROM fts_episodes f
+				 WHERE f.fts_episodes MATCH ?
+				   AND EXISTS (SELECT 1 FROM episodic_memory e WHERE e.rowid = f.rowid AND e.superseded_by IS NULL)
+				 ORDER BY f.rank, f.rowid LIMIT ?`)
 			.all(ftsQuery, k) as Record<string, unknown>[];
 		if (rows.length === 0 && hasCjk(query)) return cjkLikeSearch(db, query, k, false) as FtsRankResult[];
 		return rows.map(row => ({ rowid: Number(row.rowid), rank: Number(row.rank) }));
@@ -312,7 +314,10 @@ export function ftsSearchWorking(db: Database, query: string, k = 20): WorkingFt
 	if (!ftsQuery) return hasCjk(query) ? (cjkLikeSearch(db, query, k, true) as WorkingFtsRankResult[]) : [];
 	try {
 		const rows = db
-			.query("SELECT id, rank FROM fts_working WHERE fts_working MATCH ? ORDER BY rank, id LIMIT ?")
+			.query(`SELECT f.id, f.rank FROM fts_working f
+				 WHERE f.fts_working MATCH ?
+				   AND EXISTS (SELECT 1 FROM working_memory w WHERE w.id = f.id AND w.superseded_by IS NULL)
+				 ORDER BY f.rank, f.id LIMIT ?`)
 			.all(ftsQuery, k) as Record<string, unknown>[];
 		if (rows.length === 0 && hasCjk(query)) return cjkLikeSearch(db, query, k, true) as WorkingFtsRankResult[];
 		return rows.map(row => ({ id: String(row.id), rank: Number(row.rank) }));
@@ -784,7 +789,7 @@ async function runEmbedding(beam: BeamMemoryState, items: readonly EmbedItem[]):
 		const matrix = await embed(items.map(item => item.content));
 		if (matrix === null) return;
 		const model = currentEmbeddingModel();
-		const insertEmbedding = beam.db.prepare(
+		using insertEmbedding = beam.db.prepare(
 			"INSERT OR REPLACE INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, ?, ?)",
 		);
 		const insertMany = beam.db.transaction((rows: readonly EmbedItem[]) => {

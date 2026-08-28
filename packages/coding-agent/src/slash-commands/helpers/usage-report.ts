@@ -13,6 +13,14 @@ function formatProviderName(provider: string): string {
 		.join(" ");
 }
 
+function formatWindowSuffix(label: string, windowLabel: string | undefined): string {
+	if (!windowLabel) return "";
+	const normalizedLabel = label.toLowerCase();
+	const normalizedWindow = windowLabel.toLowerCase();
+	if (normalizedWindow === "quota window" || normalizedLabel.includes(normalizedWindow)) return "";
+	return ` — ${windowLabel}`;
+}
+
 function formatUsageAmount(limit: UsageLimit): string {
 	const amount = limit.amount;
 	const used = amount.used ?? (amount.usedFraction !== undefined ? amount.usedFraction * 100 : undefined);
@@ -26,14 +34,26 @@ function formatUsageAmount(limit: UsageLimit): string {
 }
 
 function formatUsageReportAccount(report: UsageReport, limit: UsageLimit, index: number): string {
+	const metaOrgName = report.metadata?.orgName;
+	const metaOrgId = report.metadata?.orgId;
+	const org =
+		typeof metaOrgName === "string" && metaOrgName
+			? metaOrgName
+			: typeof metaOrgId === "string" && metaOrgId
+				? metaOrgId
+				: undefined;
+	// Two subscriptions (orgs) can share one email — suffix the org so the rows
+	// are tellable apart.
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return email;
+	if (typeof email === "string" && email) return org ? `${email} (${org})` : email;
 	// Guard metadata values for truthiness before using, then fall back to scope.
 	// ?? won't help here: empty string is not null/undefined, so it would suppress
 	// a valid scoped fallback (e.g. metadata.accountId="" hides limit.scope.accountId).
 	const metaAccountId = report.metadata?.accountId;
 	const accountId = typeof metaAccountId === "string" && metaAccountId ? metaAccountId : limit.scope.accountId;
-	if (typeof accountId === "string" && accountId) return accountId;
+	if (typeof accountId === "string" && accountId) {
+		return org && org !== accountId ? `${accountId} (${org})` : accountId;
+	}
 	const metaProjectId = report.metadata?.projectId;
 	const projectId = typeof metaProjectId === "string" && metaProjectId ? metaProjectId : limit.scope.projectId;
 	if (typeof projectId === "string" && projectId) return projectId;
@@ -44,6 +64,7 @@ function renderUsageReports(
 	reports: UsageReport[],
 	nowMs: number,
 	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
+	usageModelSelectors: readonly string[] = [],
 ): string {
 	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
 	const lines = [`Usage${latestFetchedAt ? ` (${formatDuration(nowMs - latestFetchedAt)} ago)` : ""}`];
@@ -58,6 +79,11 @@ function renderUsageReports(
 		left.localeCompare(right),
 	)) {
 		lines.push("", formatProviderName(provider));
+		const reportingModels = usageModelSelectors.filter(selector => selector.startsWith(`${provider}/`));
+		if (reportingModels.length > 0) {
+			lines.push("  Models with usage data");
+			for (const selector of reportingModels) lines.push(`    ${sanitizeText(selector)}`);
+		}
 		const activeAccount = resolveActiveAccount?.(provider);
 		// Provider-wide disclaimers render once per provider, not per limit.
 		const providerNotes = [...new Set(providerReports.flatMap(report => report.notes ?? []))];
@@ -101,14 +127,21 @@ function renderUsageReports(
 			for (let index = 0; index < report.limits.length; index++) {
 				const limit = report.limits[index]!;
 				const window = limit.window?.label ?? limit.scope.windowId;
-				const tier = limit.scope.tier ? ` (${limit.scope.tier})` : "";
-				lines.push(`- ${limit.label}${tier}${window ? ` — ${window}` : ""}`);
+				// Skip the tier suffix when the label already names it (e.g. Anthropic's
+				// "Claude 7 Day (Fable)" with scope.tier "fable") — mirrors limitTitle in usage-cli.
+				const tier =
+					limit.scope.tier && !limit.label.toLowerCase().includes(limit.scope.tier.toLowerCase())
+						? ` (${limit.scope.tier})`
+						: "";
+				lines.push(`- ${limit.label}${tier}${formatWindowSuffix(limit.label, window)}`);
 				lines.push(
 					`  ${formatUsageReportAccount(report, limit, index)}: ${formatUsageAmount(limit)}${inUse ? "  ← in use by this session" : ""}`,
 				);
 				lines.push(`  ${renderAsciiBar(limit.amount.usedFraction)}`);
 				if (limit.window?.resetsAt && limit.window.resetsAt > nowMs) {
-					lines.push(`  resets in ${formatDuration(limit.window.resetsAt - nowMs)}`);
+					lines.push(
+						`  ${limit.window.resetLabel ?? "resets"} in ${formatDuration(limit.window.resetsAt - nowMs)}`,
+					);
 				}
 				if (limit.notes && limit.notes.length > 0)
 					lines.push(
@@ -128,6 +161,7 @@ function renderUsageReports(
 export async function buildUsageReportText(runtime: SlashCommandRuntime): Promise<string> {
 	const provider = runtime.session as SlashCommandRuntime["session"] & {
 		fetchUsageReports?: () => Promise<UsageReport[] | null>;
+		getUsageReportingModelSelectors?: (reports: readonly UsageReport[]) => string[];
 	};
 	if (provider.fetchUsageReports) {
 		const reports = await provider.fetchUsageReports();
@@ -139,36 +173,27 @@ export async function buildUsageReportText(runtime: SlashCommandRuntime): Promis
 						runtime.session.sessionId,
 					)
 				: undefined;
-			return renderUsageReports(reports, Date.now(), providerId =>
-				providerId === currentProvider ? activeAccount : undefined,
+			const usageModelSelectors = provider.getUsageReportingModelSelectors?.(reports) ?? [];
+			return renderUsageReports(
+				reports,
+				Date.now(),
+				providerId => (providerId === currentProvider ? activeAccount : undefined),
+				usageModelSelectors,
 			);
 		}
 	}
 
-	const settings = runtime.session.settings;
-	const fusionActive =
-		settings.get("fusion.enabled") === true &&
-		settings.get("fusion.mode") !== "off" &&
-		settings.get("fusion.showSavings") === true;
-	const split = runtime.session.getFusionUsageSplit();
-	const lines = [
+	const stats = runtime.session.sessionManager.getUsageStatistics();
+	const orchestrationTokens = stats.orchestrationInput + stats.orchestrationOutput + stats.orchestrationCacheRead;
+	return [
 		"Usage",
-		`Input tokens: ${split.total.input}`,
-		`Output tokens: ${split.total.output}`,
-		`Cache read tokens: ${split.total.cacheRead}`,
-		`Cache write tokens: ${split.total.cacheWrite}`,
-		`Premium requests: ${split.total.premiumRequests}`,
-		`Cost: $${split.total.cost.toFixed(6)}`,
-	];
-	const { share, sidekickTokens, frontierTokens, totalTokens } = computeFusionTokenSplit(split);
-	if (fusionActive && sidekickTokens > 0) {
-		lines.push(
-			"",
-			"Fusion (token split)",
-			`Main/frontier tokens: ${frontierTokens.toLocaleString()}`,
-			`Sidekick tokens: ${sidekickTokens.toLocaleString()} (${share.toFixed(1)}% delegated; cache reads excluded)`,
-			`Total billable tokens: ${totalTokens.toLocaleString()}`,
-		);
-	}
-	return lines.join("\n");
+		`Input tokens: ${stats.input}`,
+		`Output tokens: ${stats.output}`,
+		`Cache read tokens: ${stats.cacheRead}`,
+		`Cache write tokens: ${stats.cacheWrite}`,
+		`Total tokens: ${stats.totalTokens}`,
+		...(orchestrationTokens > 0 ? [`Orchestration tokens: ${orchestrationTokens}`] : []),
+		`Premium requests: ${stats.premiumRequests}`,
+		`Cost: $${stats.cost.toFixed(6)}`,
+	].join("\n");
 }

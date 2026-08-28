@@ -178,132 +178,101 @@ describe("issue #985: subagent dispatch auth fallback", () => {
 	});
 });
 
-/**
- * Priority-list auth walk: `modelRoles.task` (and any subagent model role)
- * already supports a comma-separated ordered list of up to 3 candidates —
- * `normalizeModelPatternList` splits it, `resolveModelOverride` walks it for
- * catalog existence. This block covers the credential-aware counterpart:
- * when priority 1 resolves to a real model with no working credentials,
- * the walk must continue to priority 2, then priority 3, before ever
- * touching the parent's active model — "1 being most intelligent" only
- * behaves as a graceful priority fallback if auth failures are handled the
- * same way catalog-existence failures already are.
- */
-const priorityTwoModel: Model<Api> = buildModel({
-	id: "priority-two",
-	name: "Priority Two",
-	api: "openai-completions",
-	provider: "nine-router",
-	baseUrl: "https://example.invalid/v1",
-	reasoning: false,
-	input: ["text"],
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 128000,
-	maxTokens: 8192,
-});
-
-const priorityThreeModel: Model<Api> = buildModel({
-	id: "priority-three",
-	name: "Priority Three",
-	api: "openai-completions",
-	provider: "minimax-code",
-	baseUrl: "https://example.invalid/v1",
-	reasoning: false,
-	input: ["text"],
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 128000,
-	maxTokens: 8192,
-});
-
-describe("task role priority list (up to 3 models, priority 1 = most intelligent)", () => {
-	test("falls through to priority 2 when priority 1 has no working credentials", async () => {
-		const registry = createMockRegistry({
-			models: [parentModel, unauthedTaskModel, priorityTwoModel, priorityThreeModel],
-			authedProviders: new Set(["deepseek", "nine-router"]), // priority 1 (opencode-zen) unauthed
-		});
+describe("issue #5325: sessionId forwarded to getApiKey for session-sticky OAuth", () => {
+	// The pre-flight auth check in resolveModelOverrideWithAuthFallback calls
+	// getApiKey without a session id. For providers with session-sticky OAuth
+	// credentials, this can return undefined even though the credential is
+	// usable once the subagent session starts. The fix forwards a sessionId
+	// so session-sticky credentials resolve during the pre-flight check.
+	test("forwards sessionId to getApiKey for the primary model", async () => {
+		let receivedSessionId: string | undefined;
+		const registry: ModelLookupRegistry & { getApiKey(model: Model<Api>): Promise<string | undefined> } = {
+			getAvailable: () => [parentModel, unauthedTaskModel],
+			getApiKey: async (model: Model<Api>, sessionId?: string) => {
+				if (model.provider === "opencode-zen") {
+					receivedSessionId = sessionId;
+					// Without sessionId, OAuth can't resolve; with it, it can.
+					return sessionId ? "sk-resolved-token" : undefined;
+				}
+				if (model.provider === "deepseek") return "sk-test";
+				return undefined;
+			},
+		} as never;
 
 		const result = await resolveModelOverrideWithAuthFallback(
-			["qwen3.6-plus-free", "nine-router/priority-two", "minimax-code/priority-three"],
+			["qwen3.6-plus-free"],
+			"deepseek/deepseek-v4-pro",
+			registry,
+			undefined,
+			"subagent-session-123",
+		);
+
+		expect(receivedSessionId).toBe("subagent-session-123");
+		expect(result.authFallbackUsed).toBe(false);
+		expect(result.model?.provider).toBe("opencode-zen");
+		expect(result.model?.id).toBe("qwen3.6-plus-free");
+	});
+	test("forwards sessionId to getApiKey for the fallback model", async () => {
+		const receivedSessionIds: string[] = [];
+		const registry: ModelLookupRegistry & { getApiKey(model: Model<Api>): Promise<string | undefined> } = {
+			getAvailable: () => [parentModel, unauthedTaskModel],
+			getApiKey: async (model: Model<Api>, sessionId?: string) => {
+				if (sessionId) receivedSessionIds.push(`${model.provider}:${sessionId}`);
+				if (model.provider === "opencode-zen") return undefined;
+				return sessionId ? "sk-resolved-token" : undefined;
+			},
+		} as never;
+
+		const result = await resolveModelOverrideWithAuthFallback(
+			["qwen3.6-plus-free"],
+			"deepseek/deepseek-v4-pro",
+			registry,
+			undefined,
+			"subagent-session-456",
+		);
+
+		expect(receivedSessionIds).toEqual(["opencode-zen:subagent-session-456", "deepseek:subagent-session-456"]);
+		expect(result.authFallbackUsed).toBe(true);
+		expect(result.model?.provider).toBe("deepseek");
+	});
+	test("preserves the requested model warning when auth falls back", async () => {
+		const registry: ModelLookupRegistry & { getApiKey(model: Model<Api>): Promise<string | undefined> } = {
+			getAvailable: () => [parentModel, unauthedTaskModel],
+			getApiKey: async (model: Model<Api>) => (model.provider === "deepseek" ? "sk-test" : undefined),
+		} as never;
+
+		const result = await resolveModelOverrideWithAuthFallback(
+			["qwen3.6-plus-free:invalid"],
 			"deepseek/deepseek-v4-pro",
 			registry,
 		);
 
 		expect(result.authFallbackUsed).toBe(true);
-		expect(result.fallbackKind).toBe("priority-list");
-		expect(result.model?.provider).toBe("nine-router");
-		expect(result.model?.id).toBe("priority-two");
+		expect(result.warning).toBe(
+			'Invalid thinking level "invalid" in pattern "qwen3.6-plus-free:invalid". Using default instead.',
+		);
 	});
 
-	test("falls through to priority 3 when priority 1 and priority 2 both lack credentials", async () => {
-		const registry = createMockRegistry({
-			models: [parentModel, unauthedTaskModel, priorityTwoModel, priorityThreeModel],
-			authedProviders: new Set(["deepseek", "minimax-code"]), // only priority 3 + parent authed
-		});
+	test("still falls back when getApiKey returns undefined even with sessionId", async () => {
+		const registry: ModelLookupRegistry & { getApiKey(model: Model<Api>): Promise<string | undefined> } = {
+			getAvailable: () => [parentModel, unauthedTaskModel],
+			getApiKey: async (model: Model<Api>, _sessionId?: string) => {
+				if (model.provider === "deepseek") return "sk-test";
+				// Genuinely broken: undefined even with sessionId (stale OAuth, revoked token)
+				return undefined;
+			},
+		} as never;
 
 		const result = await resolveModelOverrideWithAuthFallback(
-			["qwen3.6-plus-free", "nine-router/priority-two", "minimax-code/priority-three"],
+			["qwen3.6-plus-free"],
 			"deepseek/deepseek-v4-pro",
 			registry,
+			undefined,
+			"subagent-session-456",
 		);
 
 		expect(result.authFallbackUsed).toBe(true);
-		expect(result.fallbackKind).toBe("priority-list");
-		expect(result.model?.provider).toBe("minimax-code");
-		expect(result.model?.id).toBe("priority-three");
-	});
-
-	test("falls back to the parent model only after every priority-list entry lacks credentials", async () => {
-		const registry = createMockRegistry({
-			models: [parentModel, unauthedTaskModel, priorityTwoModel, priorityThreeModel],
-			authedProviders: new Set(["deepseek"]), // only the parent's provider is authed
-		});
-
-		const result = await resolveModelOverrideWithAuthFallback(
-			["qwen3.6-plus-free", "nine-router/priority-two", "minimax-code/priority-three"],
-			"deepseek/deepseek-v4-pro",
-			registry,
-		);
-
-		expect(result.authFallbackUsed).toBe(true);
-		expect(result.fallbackKind).toBe("parent");
 		expect(result.model?.provider).toBe("deepseek");
 		expect(result.model?.id).toBe("deepseek-v4-pro");
-	});
-
-	test("does not walk the list when priority 1 already has working credentials", async () => {
-		const registry = createMockRegistry({
-			models: [parentModel, unauthedTaskModel, priorityTwoModel, priorityThreeModel],
-			authedProviders: new Set(["deepseek", "opencode-zen", "nine-router", "minimax-code"]),
-		});
-
-		const result = await resolveModelOverrideWithAuthFallback(
-			["qwen3.6-plus-free", "nine-router/priority-two", "minimax-code/priority-three"],
-			"deepseek/deepseek-v4-pro",
-			registry,
-		);
-
-		expect(result.authFallbackUsed).toBe(false);
-		expect(result.fallbackKind).toBeUndefined();
-		expect(result.model?.provider).toBe("opencode-zen");
-	});
-
-	test("skips a duplicate priority-list entry pointing at the same model as priority 1", async () => {
-		const registry = createMockRegistry({
-			models: [parentModel, unauthedTaskModel, priorityTwoModel],
-			authedProviders: new Set(["deepseek", "nine-router"]),
-		});
-
-		// Priority 2 is a literal duplicate of priority 1 (same provider/id);
-		// the walk must skip it and land on priority 3.
-		const result = await resolveModelOverrideWithAuthFallback(
-			["qwen3.6-plus-free", "opencode-zen/qwen3.6-plus-free", "nine-router/priority-two"],
-			"deepseek/deepseek-v4-pro",
-			registry,
-		);
-
-		expect(result.authFallbackUsed).toBe(true);
-		expect(result.fallbackKind).toBe("priority-list");
-		expect(result.model?.provider).toBe("nine-router");
-		expect(result.model?.id).toBe("priority-two");
 	});
 });

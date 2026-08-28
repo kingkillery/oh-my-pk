@@ -43,7 +43,7 @@ describe("ssh:// is rejected before any connection in read/write-tier tools", ()
 		for (const internalUrlAction of ["search", "rewrite"]) {
 			await expect(
 				resolveToolSearchScope({ rawPaths: ["ssh://h/x"], cwd: os.tmpdir(), internalUrlAction }),
-			).rejects.toThrow(/ssh:\/\//);
+			).rejects.toThrow(/use `grep` on a specific remote file/);
 		}
 		expect(spy).not.toHaveBeenCalled();
 	});
@@ -53,7 +53,7 @@ describe("ssh:// is rejected before any connection in read/write-tier tools", ()
 			.spyOn(InternalUrlRouter.instance(), "resolve")
 			.mockRejectedValue(new Error("resolve must not run for ssh://"));
 		const tool = new GlobTool(createTestToolSession(os.tmpdir()));
-		await expect(tool.execute("f", { paths: ["ssh://h/x"] })).rejects.toThrow(/ssh:\/\//);
+		await expect(tool.execute("f", { path: "ssh://h/x" })).rejects.toThrow(/ssh:\/\//);
 		expect(spy).not.toHaveBeenCalled();
 	});
 });

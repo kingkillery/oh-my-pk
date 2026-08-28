@@ -1,5 +1,13 @@
-import type { ExtractSegmentsResult, Ellipsis as NativeEllipsis, SliceResult } from "@pk-nerdsaver-ai/pi-natives";
-import * as nativeBindings from "@pk-nerdsaver-ai/pi-natives";
+import {
+	Ellipsis,
+	type ExtractSegmentsResult,
+	extractSegments as nativeExtractSegments,
+	setHangulCompatJamoWidthOverride as nativeSetHangulCompatJamoWidthOverride,
+	sliceWithWidth as nativeSliceWithWidth,
+	truncateToWidth as nativeTruncateToWidth,
+	wrapTextWithAnsi as nativeWrapTextWithAnsi,
+	type SliceResult,
+} from "@pk-nerdsaver-ai/pi-natives";
 import { DEFAULT_TAB_WIDTH } from "@pk-nerdsaver-ai/pi-utils";
 
 export const Ellipsis = nativeBindings.Ellipsis;
@@ -44,6 +52,82 @@ export function setHangulCompatibilityJamoWidth(width: HangulCompatibilityJamoWi
 export function resetHangulCompatibilityJamoWidthForTests(): void {
 	hangulCompatibilityJamoWidth = "platform";
 	nativeSetHangulCompatJamoWidthOverride?.(0);
+}
+
+export type HangulCompatibilityJamoWidth = "platform" | "unicode" | 1 | 2;
+
+let hangulCompatibilityJamoWidth: HangulCompatibilityJamoWidth = "platform";
+
+// Wire encoding for the native override (see crates/pi-natives text.rs):
+// 0 = platform default, 1 = narrow, 2 = wide, 3 = unicode (no correction).
+function nativeHangulCompatibilityJamoOverride(width: HangulCompatibilityJamoWidth): number {
+	if (width === "unicode") return 3;
+	if (typeof width === "number") return width;
+	return 0;
+}
+
+export function getHangulCompatibilityJamoWidth(): HangulCompatibilityJamoWidth {
+	return hangulCompatibilityJamoWidth;
+}
+
+// Monotonic epoch for width-affecting runtime configuration. Any cache or
+// carried-width sidecar derived from `visibleWidth` results must be stamped
+// with the epoch at computation time and discarded on mismatch, so a Hangul
+// Compatibility Jamo width change invalidates every derived width.
+let widthConfigEpoch = 0;
+
+export function getWidthConfigEpoch(): number {
+	return widthConfigEpoch;
+}
+
+interface LineWidthsEntry {
+	epoch: number;
+	lines: readonly string[];
+	widths: readonly number[];
+}
+
+// Per-render-result visible widths, keyed by the exact lines array a component
+// returned. The copied strings and widths are the single publication snapshot:
+// they cannot be changed through either publisher array and do not retain the
+// WeakMap key. Entries therefore die with their lines-array owners.
+const lineWidthSidecar = new WeakMap<readonly string[], LineWidthsEntry>();
+
+/** Publish exact per-line visible widths for a rendered lines array. */
+export function publishLineWidths(lines: readonly string[], widths: readonly number[]): void {
+	if (lines.length !== widths.length) {
+		throw new RangeError(`Cannot publish ${widths.length} widths for ${lines.length} lines`);
+	}
+	lineWidthSidecar.set(lines, {
+		epoch: widthConfigEpoch,
+		lines: [...lines],
+		widths: Object.freeze([...widths]),
+	});
+}
+
+/** Exact per-line visible widths for an unchanged `lines` array under the current width config. */
+export function getPublishedLineWidths(lines: readonly string[]): readonly number[] | undefined {
+	const entry = lineWidthSidecar.get(lines);
+	if (entry === undefined || entry.epoch !== widthConfigEpoch || entry.lines.length !== lines.length) {
+		return undefined;
+	}
+	for (let i = 0; i < lines.length; i++) {
+		if (entry.lines[i] !== lines[i]) return undefined;
+	}
+	return entry.widths;
+}
+
+export function setHangulCompatibilityJamoWidth(width: HangulCompatibilityJamoWidth): boolean {
+	const changed = hangulCompatibilityJamoWidth !== width;
+	hangulCompatibilityJamoWidth = width;
+	if (changed) widthConfigEpoch++;
+	nativeSetHangulCompatJamoWidthOverride(nativeHangulCompatibilityJamoOverride(width));
+	return changed;
+}
+
+export function resetHangulCompatibilityJamoWidthForTests(): void {
+	if (hangulCompatibilityJamoWidth !== "platform") widthConfigEpoch++;
+	hangulCompatibilityJamoWidth = "platform";
+	nativeSetHangulCompatJamoWidthOverride(0);
 }
 
 export type TextSizingScale = 1 | 2 | 3;
@@ -147,12 +231,13 @@ export function extractSegments(
 
 // Pre-allocated space buffer for padding
 const SPACE_BUFFER = " ".repeat(512);
+const TAB_SPACES = " ".repeat(DEFAULT_TAB_WIDTH);
 
 /*
  * Replace tabs with the fixed display tab width for consistent rendering.
  */
 export function replaceTabs(text: string): string {
-	return text.replaceAll("\t", " ".repeat(DEFAULT_TAB_WIDTH));
+	return text.replaceAll("\t", TAB_SPACES);
 }
 
 /**
@@ -180,9 +265,14 @@ export function getSegmenter(): Intl.Segmenter {
 // added back so width matches the native truncate/slice/wrap helpers.
 const OSC66_SPAN_REGEX = /\x1b\]66;([^;]*);([\s\S]*?)(?:\x07|\x1b\\)/g;
 const OSC66_PREFIX = "\x1b]66;";
-const ESC = "\x1b";
-const TAB = "\t";
-const LONG_WIDTH_FAST_PATH_MIN = 128;
+// APC sequences (`ESC _ ... ST|BEL`) — Kitty graphics commands such as the
+// virtual-placement prefix on Unicode-placeholder image lines, or the TUI's
+// BEL-terminated cursor marker. `Bun.stringWidth` strips CSI/OSC but counts APC
+// payloads as printable text, so they are removed before measuring (they occupy
+// zero cells — matching the native width engine in pi-natives/text.rs).
+const APC_SPAN_REGEX = /\x1b_[\s\S]*?(?:\x07|\x1b\\)/g;
+const APC_PREFIX = "\x1b_";
+const PRINTABLE_ASCII_REGEX = /^[\u0020-\u007e]*$/;
 
 // Pin Bun.stringWidth semantics to the native width engine and guard against Bun
 // default drift: strip ANSI/OSC (don't count escape bytes) and treat
@@ -198,8 +288,6 @@ const STRING_WIDTH_OPTS = { countAnsiEscapeCodes: false, ambiguousIsNarrow: true
 // `setHangulCompatibilityJamoWidth`; mirror the same correction here so the TS
 // width stays in parity with the native truncate/slice/wrap model — and so the
 // hardware cursor column lands on the actual glyph during Korean IME input.
-const HANGUL_COMPAT_JAMO_REGEX = /[\u3131-\u318e]/;
-const HANGUL_COMPAT_JAMO_GLOBAL_REGEX = /[\u3131-\u318e]/g;
 const HANGUL_FILLER_CODE_POINT = 0x3164;
 // `Bun.stringWidth` counts every code point in the Compatibility Jamo block as
 // 2 cells (even the U+3164 filler that `unicode-width` treats as zero-width).
@@ -229,87 +317,84 @@ function hangulCompatibilityJamoTargetWidth(): 1 | 2 | null {
 // crates/pi-natives/src/text.rs, including the rule that the zero-width filler
 // (U+3164) is never widened past the narrow correction (a wide terminal still
 // renders it at its Unicode width of 0).
-function correctHangulCompatibilityJamoWidth(width: number, str: string): number {
-	if (!HANGUL_COMPAT_JAMO_REGEX.test(str)) return width;
+function correctHangulCompatibilityJamoWidth(
+	width: number,
+	compatibilityJamoCount: number,
+	fillerCount: number,
+): number {
+	if (compatibilityJamoCount === 0) return width;
 	const target = hangulCompatibilityJamoTargetWidth();
-	let corrected = width;
-	HANGUL_COMPAT_JAMO_GLOBAL_REGEX.lastIndex = 0;
-	for (let m = HANGUL_COMPAT_JAMO_GLOBAL_REGEX.exec(str); m !== null; m = HANGUL_COMPAT_JAMO_GLOBAL_REGEX.exec(str)) {
-		const unicodeWidth = m[0].codePointAt(0) === HANGUL_FILLER_CODE_POINT ? 0 : 2;
-		const finalWidth = target === null || (unicodeWidth === 0 && target > 1) ? unicodeWidth : target;
-		corrected += finalWidth - HANGUL_COMPAT_JAMO_BUN_WIDTH;
-	}
-	return corrected;
+	return target === 1 ? width - compatibilityJamoCount : width - fillerCount * HANGUL_COMPAT_JAMO_BUN_WIDTH;
 }
+
+// Terminal redraws re-measure the same visible lines every frame, usually as
+// the same string objects (JSC caches their hashes, so repeat lookups are
+// O(1) — cheaper than even the ASCII fast scan). Strings longer than the
+// length gate skip the cache entirely: hashing them costs as much as measuring
+// them, and retaining them would pin large render buffers. Worst-case
+// retention is MAX * MAX_LEN UTF-16 units (~2 MiB); cleared when the width
+// configuration epoch changes.
+const VISIBLE_WIDTH_CACHE_MAX = 2048;
+const VISIBLE_WIDTH_CACHE_MAX_LEN = 512;
+const visibleWidthCache = new Map<string, number>();
+let visibleWidthCacheEpoch = widthConfigEpoch;
 
 /**
  * Visible width of a string in terminal columns, excluding ANSI/OSC escapes.
  *
  * `Bun.stringWidth` does the heavy lifting (UAX#11 width tables + ANSI/OSC
- * stripping); this adds the two corrections it omits — tabs (expanded to
- * `tabWidth` cells) and OSC 66 text-sizing payloads (scaled by `s=`).
+ * stripping); this adds the corrections it omits — tabs (expanded to
+ * `tabWidth` cells), OSC 66 text-sizing payloads (scaled by `s=`), and APC
+ * sequences (counted as printable by Bun, actually zero cells).
  */
 export function visibleWidth(str: string): number {
 	if (!str) return 0;
-
-	// Long non-escape text is faster through Bun's native scanner than through
-	// a JS printable-ASCII prepass. Escape-bearing strings stay on the scanner
-	// below so CSI/OSC-heavy render output can still bail out at the first ESC.
-	if (str.length >= LONG_WIDTH_FAST_PATH_MIN && !str.includes(ESC)) {
-		let width = Bun.stringWidth(str, STRING_WIDTH_OPTS);
-		let tabCount = 0;
-		for (let tabIndex = str.indexOf(TAB); tabIndex !== -1; tabIndex = str.indexOf(TAB, tabIndex + 1)) {
-			tabCount++;
+	const cacheable = str.length <= VISIBLE_WIDTH_CACHE_MAX_LEN;
+	if (cacheable) {
+		if (visibleWidthCacheEpoch !== widthConfigEpoch) {
+			visibleWidthCache.clear();
+			visibleWidthCacheEpoch = widthConfigEpoch;
 		}
-		if (tabCount > 0) width += tabCount * DEFAULT_TAB_WIDTH;
-		return correctHangulCompatibilityJamoWidth(width, str);
+		const cached = visibleWidthCache.get(str);
+		if (cached !== undefined) return cached;
+	}
+
+	// This regex compiles to a native ASCII scan, cheaper than Bun's width
+	// scanner for the overwhelmingly common source-code path.
+	if (PRINTABLE_ASCII_REGEX.test(str)) {
+		if (cacheable) {
+			if (visibleWidthCache.size >= VISIBLE_WIDTH_CACHE_MAX) visibleWidthCache.clear();
+			visibleWidthCache.set(str, str.length);
+		}
+		return str.length;
 	}
 
 	let tabCount = 0;
-	let i = 0;
-	for (; i < str.length; i++) {
+	let compatibilityJamoCount = 0;
+	let fillerCount = 0;
+	let hasEsc = false;
+	for (let i = 0; i < str.length; i++) {
 		const code = str.charCodeAt(i);
-		if (code < 0x20 || code > 0x7e) {
-			if (code === 0x09) {
-				tabCount++;
-				continue;
-			}
-			break;
-		}
-	}
-	if (i === str.length) {
-		return tabCount === 0 ? str.length : str.length + tabCount * (DEFAULT_TAB_WIDTH - 1);
-	}
-
-	if (tabCount === 0) {
-		let tabIndex = str.indexOf(TAB, i + 1);
-		if (tabIndex !== -1) {
-			tabCount = 1;
-			for (tabIndex = str.indexOf(TAB, tabIndex + 1); tabIndex !== -1; tabIndex = str.indexOf(TAB, tabIndex + 1)) {
-				tabCount++;
-			}
-		}
-	} else {
-		for (let tabIndex = str.indexOf(TAB, i + 1); tabIndex !== -1; tabIndex = str.indexOf(TAB, tabIndex + 1)) {
+		if (code === 0x09) {
 			tabCount++;
+		} else if (code === 0x1b) {
+			hasEsc = true;
+		} else if (code >= 0x3131 && code <= 0x318e) {
+			compatibilityJamoCount++;
+			if (code === HANGUL_FILLER_CODE_POINT) fillerCount++;
 		}
 	}
 
-	// `Bun.stringWidth` is a JSC builtin (no per-call N-API number box, unlike
-	// the native scanner that traps under Bun 1.3.x GC/N-API load). It strips
-	// CSI/OSC to zero cells and shares the native engine's UAX#11 width tables.
-	let width = Bun.stringWidth(str, STRING_WIDTH_OPTS);
+	const measurable = hasEsc && str.includes(APC_PREFIX) ? str.replace(APC_SPAN_REGEX, "") : str;
+	let width = Bun.stringWidth(measurable, STRING_WIDTH_OPTS);
 	if (tabCount > 0) width += tabCount * DEFAULT_TAB_WIDTH;
 
-	// OSC 66: add back each stripped span as `scale * (explicit w ?? payload
-	// width)`. Matched rather than replaced to avoid reallocating the string.
-	if (str.includes(OSC66_PREFIX, i)) {
+	if (hasEsc && str.includes(OSC66_PREFIX)) {
 		OSC66_SPAN_REGEX.lastIndex = 0;
 		for (let m = OSC66_SPAN_REGEX.exec(str); m !== null; m = OSC66_SPAN_REGEX.exec(str)) {
 			let scale = 1;
 			let explicit: number | undefined;
 			for (const part of m[1].split(":")) {
-				// metadata keys are single chars, e.g. `s=2`, `w=5`
 				if (part.indexOf("=") !== 1) continue;
 				const value = Number.parseInt(part.slice(2), 10);
 				if (!Number.isFinite(value)) continue;
@@ -323,7 +408,39 @@ export function visibleWidth(str: string): number {
 		}
 	}
 
-	return correctHangulCompatibilityJamoWidth(width, str);
+	width = correctHangulCompatibilityJamoWidth(width, compatibilityJamoCount, fillerCount);
+	if (cacheable) {
+		if (visibleWidthCache.size >= VISIBLE_WIDTH_CACHE_MAX) visibleWidthCache.clear();
+		visibleWidthCache.set(str, width);
+	}
+	return width;
+}
+
+/**
+ * Scaled spans must bypass wrapping/padding and, when scaled up, reserve the
+ * terminal rows their multicell glyphs flow into.
+ */
+export function isOsc66Line(line: string): boolean {
+	return line.includes(OSC66_PREFIX);
+}
+
+/**
+ * Largest `s=` scale among the OSC 66 spans in a line (1 when none is scaled).
+ * A scale-`s` heading occupies `s` terminal rows, so the `s - 1` blank rows
+ * beneath it are the glyph's lower half and must never be erased or overdrawn.
+ */
+export function osc66MaxScale(line: string): number {
+	if (!line.includes(OSC66_PREFIX)) return 1;
+	let max = 1;
+	OSC66_SPAN_REGEX.lastIndex = 0;
+	for (let m = OSC66_SPAN_REGEX.exec(line); m !== null; m = OSC66_SPAN_REGEX.exec(line)) {
+		for (const part of m[1].split(":")) {
+			if (part.indexOf("=") !== 1 || part[0] !== "s") continue;
+			const value = Number.parseInt(part.slice(2), 10);
+			if (Number.isFinite(value) && value > max && value <= 7) max = value;
+		}
+	}
+	return max;
 }
 
 const THAI_LAO_AM_GLOBAL_REGEX = /[\u0e33\u0eb3]/g;
@@ -397,6 +514,7 @@ export function getWordNavKind(grapheme: string): WordNavKind {
 	const ch = firstCodePointChar(grapheme);
 	if (!ch) return "other";
 	if (WORD_NAV_RE_WHITESPACE.test(ch)) return "whitespace";
+	if (ch === "_") return "word";
 	if (WORD_NAV_RE_PUNCT.test(ch) || WORD_NAV_RE_SYMBOL.test(ch)) return "delimiter";
 	if (
 		WORD_NAV_RE_HAN.test(ch) ||
@@ -406,7 +524,7 @@ export function getWordNavKind(grapheme: string): WordNavKind {
 	) {
 		return "cjk";
 	}
-	if (ch === "_" || WORD_NAV_RE_LETTER.test(ch) || WORD_NAV_RE_NUMBER.test(ch)) return "word";
+	if (WORD_NAV_RE_LETTER.test(ch) || WORD_NAV_RE_NUMBER.test(ch)) return "word";
 	return "other";
 }
 
@@ -545,7 +663,16 @@ export function applyBackgroundToLine(line: string, width: number, bgFn: (text: 
 	const paddingNeeded = Math.max(0, width - visibleLen);
 
 	// Apply background to content + padding
-	const withPadding = line + padding(paddingNeeded);
+	let withPadding = line + padding(paddingNeeded);
+	// Nested background resets (e.g. inline color chips closing with \x1b[49m)
+	// would terminate a plain open…close background wrapper early; re-open the
+	// line background after each one (same trick as Theme.bgFill).
+	if (line.includes("\x1b[49m")) {
+		const probe = bgFn("\x01");
+		const probeIdx = probe.indexOf("\x01");
+		const open = probeIdx > 0 ? probe.slice(0, probeIdx) : "";
+		if (open) withPadding = withPadding.replaceAll("\x1b[49m", `\x1b[49m${open}`);
+	}
 	return bgFn(withPadding);
 }
 

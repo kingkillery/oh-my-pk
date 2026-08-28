@@ -1,44 +1,16 @@
 import { afterEach, beforeEach } from "bun:test";
 
-import * as Beam from "@pk-nerdsaver-ai/pi-mnemopi/core/beam";
-import * as Embeddings from "@pk-nerdsaver-ai/pi-mnemopi/core/embeddings";
 import type { CompleteOptions, LlmBackend } from "@pk-nerdsaver-ai/pi-mnemopi/core/llm-backends";
-import * as LlmBackends from "@pk-nerdsaver-ai/pi-mnemopi/core/llm-backends";
-import * as Memory from "@pk-nerdsaver-ai/pi-mnemopi/core/memory";
-import * as Reranker from "@pk-nerdsaver-ai/pi-mnemopi/core/reranker";
-
-type ResettableModule = Record<string, unknown>;
-
-const RESET_FUNCTION_NAMES = [
-	"resetForTests",
-	"resetModuleStateForTests",
-	"resetMemoryForTests",
-	"resetBeamForTests",
-	"resetEmbeddingStateForTests",
-	"resetHostLlmBackendForTests",
-	"resetLlmBackendStateForTests",
-	"resetRerankerStateForTests",
-] as const;
-
-const RESETTABLE_MODULES: readonly ResettableModule[] = [Memory, Beam, LlmBackends, Embeddings, Reranker];
-
-function callResetFunctions(moduleExports: ResettableModule): void {
-	for (const name of RESET_FUNCTION_NAMES) {
-		const reset = moduleExports[name];
-		if (typeof reset === "function") {
-			reset();
-		}
-	}
-}
+import { resetHostLlmBackendForTests, setHostLlmBackend } from "@pk-nerdsaver-ai/pi-mnemopi/core/llm-backends";
+import { resetDefaultInstanceForTests } from "@pk-nerdsaver-ai/pi-mnemopi/core/memory";
 
 export function resetModuleStateForTests(): void {
-	for (const moduleExports of RESETTABLE_MODULES) {
-		callResetFunctions(moduleExports);
-	}
+	resetDefaultInstanceForTests();
+	resetHostLlmBackendForTests();
 }
 
 export function disableLocalLlmForTests(): void {
-	LlmBackends.setHostLlmBackend(null);
+	resetHostLlmBackendForTests();
 }
 
 export function withLocalLlm(fakeResponseOrBackend: string | LlmBackend = "fake summary"): LlmBackend {
@@ -47,7 +19,7 @@ export function withLocalLlm(fakeResponseOrBackend: string | LlmBackend = "fake 
 			? new FakeLocalLlmBackend(fakeResponseOrBackend)
 			: fakeResponseOrBackend;
 
-	LlmBackends.setHostLlmBackend(backend);
+	setHostLlmBackend(backend);
 	return backend;
 }
 
@@ -67,10 +39,8 @@ class FakeLocalLlmBackend implements LlmBackend {
 
 beforeEach(() => {
 	resetModuleStateForTests();
-	disableLocalLlmForTests();
 });
 
 afterEach(() => {
 	resetModuleStateForTests();
-	disableLocalLlmForTests();
 });

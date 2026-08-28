@@ -28,6 +28,11 @@ export class EvalExecutionComponent extends Container {
 	#loader: Loader;
 	#truncation?: TruncationMeta;
 	#expanded = false;
+	// Post-finalize mutation counter (FinalizableBlock.getTranscriptBlockVersion):
+	// a completed cell's block still mutates on expansion toggles, and the
+	// transcript's width-epoch resolution and committed-render bypass must
+	// observe that.
+	#blockVersion = 0;
 	#contentContainer: Container;
 
 	#highlightLang(): "python" | "javascript" {
@@ -61,7 +66,21 @@ export class EvalExecutionComponent extends Container {
 		this.#contentContainer.addChild(this.#loader);
 	}
 
+	/**
+	 * Transcript finalization contract (see `FinalizableBlock`): the collapsed
+	 * streaming preview rewrites its tail window every chunk, so the block must
+	 * stay out of native scrollback until the cell completes.
+	 */
+	isTranscriptBlockFinalized(): boolean {
+		return this.#status !== "running";
+	}
+
+	getTranscriptBlockVersion(): number {
+		return this.#blockVersion;
+	}
+
 	setExpanded(expanded: boolean): void {
+		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;
 		this.#updateDisplay();
 	}
@@ -105,7 +124,9 @@ export class EvalExecutionComponent extends Container {
 	#updateDisplay(): void {
 		const availableLines = this.#outputLines;
 		const previewLogicalLines = availableLines.slice(-PREVIEW_LINES);
-		const hiddenLineCount = availableLines.length - previewLogicalLines.length;
+		// Only the collapsed preview hides lines; when expanded the footer must
+		// not keep advertising hidden lines / ctrl+o.
+		const hiddenLineCount = this.#expanded ? 0 : availableLines.length - previewLogicalLines.length;
 
 		this.#contentContainer.clear();
 

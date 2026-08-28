@@ -99,7 +99,7 @@ describe("resolveActiveProjectRegistryPath", () => {
 
 	it("does not treat ~/.git as a project root (pass-2 home-dir guard)", async () => {
 		// Simulate a dotfiles repo managed with a bare-git technique: ~/.git exists.
-		// resolveActiveProjectRegistryPath must NOT return ~/.ompk/.../installed_plugins.json.
+		// resolveActiveProjectRegistryPath must NOT return ~/.omp/.../installed_plugins.json.
 		const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-proj-scope-home-"));
 		vi.spyOn(os, "homedir").mockReturnValue(homeDir);
 		const fakeHomeGit = path.join(homeDir, ".git");
@@ -108,7 +108,7 @@ describe("resolveActiveProjectRegistryPath", () => {
 		await fs.promises.mkdir(cwd, { recursive: true });
 		try {
 			const result = await resolveActiveProjectRegistryPath(cwd);
-			const homeOmpPath = path.join(homeDir, ".ompk", "plugins", "installed_plugins.json");
+			const homeOmpPath = path.join(homeDir, ".omp", "plugins", "installed_plugins.json");
 			expect(result).not.toBe(homeOmpPath);
 			expect(result).toBeNull();
 		} finally {

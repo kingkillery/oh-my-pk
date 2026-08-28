@@ -2,11 +2,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:te
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@pk-nerdsaver-ai/omptype";
 import { AsyncJobManager } from "@pk-nerdsaver-ai/pi-coding-agent/async/job-manager";
 import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
 import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { AgentRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-registry";
-import { createAgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
+import { createAgentSession, type ExtensionFactory } from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
+import type { AsyncJobSnapshot } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
 import { removeSyncWithRetries, Snowflake } from "@pk-nerdsaver-ai/pi-utils";
 
@@ -39,7 +40,7 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 		AsyncJobManager.resetForTests();
 	});
 
-	async function spawnTopLevelSession(agentId: string, extraSettings?: Record<string, unknown>) {
+	async function spawnTopLevelSession(extraSettings?: Record<string, unknown>, extensions: ExtensionFactory[] = []) {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-async-singleton-${Snowflake.next()}-`));
 		tempDirs.push(tempDir);
 		const cwd = path.join(tempDir, `project-${Snowflake.next()}`);
@@ -50,6 +51,7 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			agentDir,
 			settings: Settings.isolated({ "bash.autoBackground.enabled": true, ...(extraSettings ?? {}) }),
 			disableExtensionDiscovery: true,
+			extensions,
 			skills: [],
 			contextFiles: [],
 			promptTemplates: [],
@@ -142,8 +144,44 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 		}
 	}, 60000);
 
-	it("shares async execution while filtering and routing two unique roots", async () => {
-		const primary = await spawnTopLevelSession("root-a", { "async.enabled": true });
+	it("exposes the owning session's jobs through a production extension context", async () => {
+		let observedSnapshot: AsyncJobSnapshot | null | undefined;
+		const snapshotExtension: ExtensionFactory = pi => {
+			pi.registerTool({
+				name: "capture_async_job_snapshot",
+				label: "Capture async job snapshot",
+				description: "Capture the session-owned async job snapshot for this test.",
+				parameters: type({}),
+				approval: "read",
+				async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+					observedSnapshot = ctx.getAsyncJobSnapshot();
+					return { content: [{ type: "text", text: "captured" }] };
+				},
+			});
+		};
+		const session = await spawnTopLevelSession(undefined, [snapshotExtension]);
+		const manager = AsyncJobManager.instance();
+		expect(manager).toBeDefined();
+		const release = Promise.withResolvers<string>();
+		const jobId = manager!.register("bash", "extension snapshot test", async () => release.promise, {
+			ownerId: "Main",
+		});
+
+		try {
+			const snapshotTool = session.getToolByName("capture_async_job_snapshot");
+			expect(snapshotTool).toBeDefined();
+			await snapshotTool!.execute("call-snapshot", {});
+
+			expect(observedSnapshot?.running.some(job => job.id === jobId)).toBe(true);
+		} finally {
+			release.resolve("done");
+			await manager!.waitForAll();
+			await session.dispose();
+		}
+	}, 60000);
+
+	it("refuses async bash from a secondary session instead of routing it to the primary's manager", async () => {
+		const primary = await spawnTopLevelSession({ "async.enabled": true });
 		try {
 			const manager = AsyncJobManager.instance();
 			expect(manager).toBeDefined();

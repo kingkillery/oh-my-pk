@@ -7,6 +7,7 @@ import { InteractiveMode } from "@pk-nerdsaver-ai/pi-coding-agent/modes/interact
 import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
 import { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
+import { HistoryStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/history-storage";
 import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
 import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 
@@ -56,6 +57,7 @@ describe("issue #2510 — /plan toggles plan → plan_paused → none", () => {
 	afterEach(async () => {
 		vi.restoreAllMocks();
 		mode?.stop();
+		HistoryStorage.resetInstance();
 		await session?.dispose();
 		authStorage?.close();
 		tempDir?.removeSync();

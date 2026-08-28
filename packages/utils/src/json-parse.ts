@@ -50,6 +50,18 @@ const KEYWORDS: readonly (readonly [string, unknown])[] = [
 ];
 
 /**
+ * JS-only atoms never recovered as bareword strings — a tool must not execute
+ * with a non-finite or undefined argument masquerading as a string.
+ */
+const NON_RECOVERABLE_BAREWORDS: Record<string, true> = {
+	NaN: true,
+	Infinity: true,
+	"-Infinity": true,
+	"+Infinity": true,
+	undefined: true,
+};
+
+/**
  * Sentinel returned by partial-mode value parsing when an atomic value
  * (number / keyword) is incomplete at the streaming edge, so the enclosing
  * object/array rolls back to the last valid prefix instead of committing junk.
@@ -157,7 +169,10 @@ export function repairJson(json: string): string {
  * - Python literals `True` / `False` / `None` and JS `NaN` / `Infinity`;
  * - raw control characters and invalid `\x` escapes inside strings (kept literally);
  * - unescaped quotes inside strings — a quote only closes a string when followed
- *   by a value terminator, recovering apostrophes such as `'it's'`.
+ *   by a value terminator, recovering apostrophes such as `'it's'`;
+ * - unquoted string values in object/array value position (strict mode only) —
+ *   an unrecognized bareword such as `{"paths": packages/foo/*}` is recovered as
+ *   a string up to the next `,` / `}` / `]` / newline.
  *
  * In `partial` mode an unterminated string/object/array (or a value cut off at
  * end-of-input) is auto-closed with whatever was parsed so far — for streaming.
@@ -182,7 +197,7 @@ class RelaxedJson {
 			if (this.#partial) return undefined;
 			throw new SyntaxError("Unexpected end of JSON input");
 		}
-		const value = this.#value();
+		const value = this.#value(false);
 		if (value === INCOMPLETE) return undefined;
 		this.#ws();
 		if (!this.#partial && this.#i < this.#n) {
@@ -218,7 +233,7 @@ class RelaxedJson {
 		}
 	}
 
-	#value(): unknown {
+	#value(allowBareword: boolean): unknown {
 		const s = this.#s;
 		const c = s[this.#i];
 		if (c === "{") return this.#object();
@@ -231,7 +246,7 @@ class RelaxedJson {
 			// NaN guard (strict throw / partial rollback) like other bad tokens.
 			return this.#number();
 		}
-		return this.#keyword();
+		return this.#keyword(allowBareword);
 	}
 
 	#object(): Record<string, unknown> {
@@ -267,7 +282,7 @@ class RelaxedJson {
 				if (this.#partial) return out;
 				throw new SyntaxError("Expected value after ':'");
 			}
-			const value = this.#value();
+			const value = this.#value(true);
 			if (value === INCOMPLETE) return out;
 			out[key] = value;
 			this.#ws();
@@ -303,7 +318,7 @@ class RelaxedJson {
 				this.#i++;
 				continue;
 			}
-			const value = this.#value();
+			const value = this.#value(true);
 			if (value === INCOMPLETE) return out;
 			out.push(value);
 			this.#ws();
@@ -468,7 +483,7 @@ class RelaxedJson {
 		return num;
 	}
 
-	#keyword(): unknown {
+	#keyword(allowBareword: boolean): unknown {
 		const s = this.#s;
 		const i = this.#i;
 		for (const [word, value] of KEYWORDS) {
@@ -485,7 +500,46 @@ class RelaxedJson {
 			this.#i = this.#n;
 			return INCOMPLETE;
 		}
+		if (allowBareword) return this.#bareword();
 		throw new SyntaxError(`Unexpected token at position ${this.#i}`);
+	}
+
+	/**
+	 * Strict-mode recovery of an unquoted string value, e.g.
+	 * `{"paths": packages/foo/*}`: consume until `,` / `}` / `]` / newline and
+	 * trim trailing whitespace. Recovery still throws — so a final parse never
+	 * accepts a half-formed or non-finite argument — when the token:
+	 * - hits end-of-input before a delimiter (truncated value);
+	 * - contains a `"`, `{`, `[`, or a key-like `:` — this parser accepts
+	 *   unquoted keys, so a missed comma (`{"a": foo "b": 1}`, `{a: foo b: 1}`)
+	 *   would otherwise silently swallow the following field. A colon followed
+	 *   by `/` or `\` stays literal so URL and Windows-path values recover;
+	 * - is a non-finite atom ({@link NON_RECOVERABLE_BAREWORDS}).
+	 */
+	#bareword(): string {
+		const s = this.#s;
+		const start = this.#i;
+		let i = start;
+		while (i < this.#n) {
+			const cc = s.charCodeAt(i);
+			if (cc === 0x2c /* , */ || cc === 0x7d /* } */ || cc === 0x5d /* ] */ || cc === 0x0a || cc === 0x0d) break;
+			if (
+				cc === QUOTE ||
+				cc === 0x7b /* { */ ||
+				cc === 0x5b /* [ */ ||
+				(cc === 0x3a /* : */ && s.charCodeAt(i + 1) !== 0x2f /* / */ && s.charCodeAt(i + 1) !== 0x5c) /* \ */
+			) {
+				throw new SyntaxError(`Unexpected token at position ${start}`);
+			}
+			i++;
+		}
+		if (i >= this.#n) throw new SyntaxError(`Unexpected token at position ${start}`);
+		let end = i;
+		while (end > start && isWhitespace(s.charCodeAt(end - 1))) end--;
+		const word = s.slice(start, end);
+		if (NON_RECOVERABLE_BAREWORDS[word]) throw new SyntaxError(`Unexpected token at position ${start}`);
+		this.#i = i;
+		return word;
 	}
 }
 
@@ -525,8 +579,8 @@ export function parseStreamingJson<T = Record<string, unknown>>(partialJson: str
 
 /**
  * Default minimum byte growth before `parseStreamingJsonThrottled` will
- * re-parse a streaming tool-call argument buffer. Bounds the mid-stream
- * partial-parse cost from quadratic to linear in N.
+ * re-parse a streaming tool-call argument buffer. Acts as the floor of the
+ * geometric gate — see {@link parseStreamingJsonThrottled}.
  */
 export const STREAMING_JSON_PARSE_MIN_GROWTH = 256;
 
@@ -535,14 +589,23 @@ export const STREAMING_JSON_PARSE_MIN_GROWTH = 256;
  *
  * Tool calls arrive as a long sequence of small deltas — calling
  * `parseStreamingJson(buffer)` on every delta re-parses the entire buffer
- * each time, giving O(N²) work in the total buffer length. Throttling skips
- * the re-parse until at least `minGrowthBytes` of new content has arrived
- * since the last successful parse, bounding mid-stream cost to O(N).
+ * each time, giving O(N²) work in the total buffer length. A fixed re-parse
+ * floor alone does NOT fix this: with `minGrowthBytes` constant, a buffer of
+ * length N is parsed N/minGrowthBytes times at an average cost of N/2, which
+ * is still O(N²) (the constant just shrinks). Long `write` payloads — where
+ * the buffer is the whole file — made this the dominant main-thread stall
+ * during streaming.
+ *
+ * Instead the gate scales geometrically: once the buffer is large, a re-parse
+ * requires growth proportional to the current length (`len / 32`, floored at
+ * `minGrowthBytes`). Parse points then form a geometric progression, so a
+ * buffer of length N is parsed O(log N) times for O(N log N) total work,
+ * while small buffers keep the snappy fixed-cadence updates.
  *
  * Each provider tracks the last parsed length on its tool-call block, so the
  * final `toolcall_end` parse (which providers already perform unconditionally)
  * is the authoritative full parse — the throttle only delays mid-stream UI
- * updates by at most `minGrowthBytes` of accumulated partial content.
+ * updates, by at most ~3% of the accumulated content for large buffers.
  *
  * @returns the parsed object plus the new `parsedLen` to persist; or `null`
  *          when the buffer has not grown enough to warrant a re-parse.
@@ -553,6 +616,217 @@ export function parseStreamingJsonThrottled<T = Record<string, unknown>>(
 	minGrowthBytes: number = STREAMING_JSON_PARSE_MIN_GROWTH,
 ): { value: T; parsedLen: number } | null {
 	const len = partialJson?.length ?? 0;
-	if (len === 0 || (lastParsedLen > 0 && len - lastParsedLen < minGrowthBytes)) return null;
+	if (len === 0) return null;
+	const growth = Math.max(minGrowthBytes, len >> 5);
+	if (lastParsedLen > 0 && len - lastParsedLen < growth) return null;
 	return { value: parseStreamingJson<T>(partialJson), parsedLen: len };
+}
+
+/**
+ * Classification of a streaming buffer against strict JSON (RFC 8259):
+ * - `"complete"`: exactly one whole JSON value (plus surrounding whitespace).
+ * - `"prefix"`: a proper prefix of some valid JSON value — more bytes can
+ *   still complete it.
+ * - `"invalid"`: no suffix can ever make it valid strict JSON (e.g. a raw
+ *   control character inside a string, or a second top-level value).
+ */
+export type JsonPrefixState = "complete" | "prefix" | "invalid";
+
+/** What the strict-prefix scanner expects at the current position. */
+const enum JsonExpect {
+	Value,
+	ObjKeyOrEnd,
+	ObjKey,
+	ObjColon,
+	ObjCommaOrEnd,
+	ArrValueOrEnd,
+	ArrCommaOrEnd,
+	End,
+}
+
+/**
+ * Classify `text` as a strict-JSON value, prefix, or dead end.
+ *
+ * Providers use this to disambiguate identifierless streaming tool-call
+ * deltas: a chunk starting with `{` is a *new* sibling call only if the
+ * current call's argument buffer cannot absorb it — the buffer is already a
+ * complete value, already unsalvageable (lossy hosts abandon buffers
+ * mid-string, leaving raw control characters strict JSON forbids), or the
+ * concatenation would break it. Unlike {@link parseStreamingJson} this is
+ * deliberately strict: forgiving repair would mask exactly the corruption
+ * signals the caller needs.
+ *
+ * A top-level number at end-of-input classifies as `"complete"` even though
+ * more digits could extend it; tool-argument buffers are always objects, so
+ * the ambiguity is immaterial here.
+ */
+export function classifyJsonPrefix(text: string): JsonPrefixState {
+	const n = text.length;
+	let i = 0;
+	// Container stack: true = object, false = array.
+	const stack: boolean[] = [];
+	let expect = JsonExpect.Value;
+
+	/** Consume a string starting at the opening quote. 1 = ok, 0 = prefix, -1 = invalid. */
+	const scanString = (): 1 | 0 | -1 => {
+		i++; // opening quote
+		while (i < n) {
+			const c = text.charCodeAt(i);
+			if (c === QUOTE) {
+				i++;
+				return 1;
+			}
+			if (c === BACKSLASH) {
+				i++;
+				if (i >= n) return 0;
+				const e = text.charCodeAt(i);
+				if (e >= 128 || !VALID_ESCAPE_CHAR[e]) return -1;
+				i++;
+				if (e === U) {
+					for (let k = 0; k < 4; k++, i++) {
+						if (i >= n) return 0;
+						if (!isHexDigit(text.charCodeAt(i))) return -1;
+					}
+				}
+				continue;
+			}
+			if (c < 0x20) return -1; // raw control char: strict JSON forbids it
+			i++;
+		}
+		return 0;
+	};
+
+	/** Consume a number starting at `-` or a digit. 1 = token done, 0 = prefix, -1 = invalid. */
+	const scanNumber = (): 1 | 0 | -1 => {
+		if (text.charCodeAt(i) === 0x2d) i++; // -
+		if (i >= n) return 0;
+		let c = text.charCodeAt(i);
+		if (c === 0x30) {
+			i++; // 0: no further integer digits allowed
+		} else if (c >= 0x31 && c <= 0x39) {
+			while (i < n && text.charCodeAt(i) >= 0x30 && text.charCodeAt(i) <= 0x39) i++;
+		} else {
+			return -1;
+		}
+		if (i < n && text.charCodeAt(i) === 0x2e) {
+			i++; // .
+			if (i >= n) return 0;
+			if (text.charCodeAt(i) < 0x30 || text.charCodeAt(i) > 0x39) return -1;
+			while (i < n && text.charCodeAt(i) >= 0x30 && text.charCodeAt(i) <= 0x39) i++;
+		}
+		c = i < n ? text.charCodeAt(i) : 0;
+		if (c === 0x65 || c === 0x45) {
+			i++; // e | E
+			if (i < n && (text.charCodeAt(i) === 0x2b || text.charCodeAt(i) === 0x2d)) i++;
+			if (i >= n) return 0;
+			if (text.charCodeAt(i) < 0x30 || text.charCodeAt(i) > 0x39) return -1;
+			while (i < n && text.charCodeAt(i) >= 0x30 && text.charCodeAt(i) <= 0x39) i++;
+		}
+		return 1;
+	};
+
+	/** Consume `true`/`false`/`null`. 1 = done, 0 = prefix, -1 = invalid. */
+	const scanKeyword = (): 1 | 0 | -1 => {
+		for (const word of ["true", "false", "null"] as const) {
+			if (word.charCodeAt(0) !== text.charCodeAt(i)) continue;
+			const available = Math.min(word.length, n - i);
+			if (!word.startsWith(text.slice(i, i + available))) return -1;
+			i += available;
+			return available === word.length ? 1 : 0;
+		}
+		return -1;
+	};
+
+	/** A value just finished; the next expectation follows from the stack. */
+	const valueDone = (): JsonExpect =>
+		stack.length === 0
+			? JsonExpect.End
+			: stack[stack.length - 1]
+				? JsonExpect.ObjCommaOrEnd
+				: JsonExpect.ArrCommaOrEnd;
+
+	while (i < n) {
+		const c = text.charCodeAt(i);
+		if (isWhitespace(c)) {
+			i++;
+			continue;
+		}
+		switch (expect) {
+			case JsonExpect.Value:
+			case JsonExpect.ArrValueOrEnd: {
+				if (c === 0x5d && expect === JsonExpect.ArrValueOrEnd) {
+					stack.pop();
+					i++;
+					expect = valueDone();
+					break;
+				}
+				if (c === 0x7b) {
+					stack.push(true);
+					i++;
+					expect = JsonExpect.ObjKeyOrEnd;
+					break;
+				}
+				if (c === 0x5b) {
+					stack.push(false);
+					i++;
+					expect = JsonExpect.ArrValueOrEnd;
+					break;
+				}
+				let r: 1 | 0 | -1;
+				if (c === QUOTE) r = scanString();
+				else if (c === 0x2d || (c >= 0x30 && c <= 0x39)) r = scanNumber();
+				else if (c === 0x74 || c === 0x66 || c === 0x6e) r = scanKeyword();
+				else return "invalid";
+				if (r === -1) return "invalid";
+				if (r === 0) return "prefix";
+				expect = valueDone();
+				break;
+			}
+			case JsonExpect.ObjKeyOrEnd:
+			case JsonExpect.ObjKey: {
+				if (c === 0x7d && expect === JsonExpect.ObjKeyOrEnd) {
+					stack.pop();
+					i++;
+					expect = valueDone();
+					break;
+				}
+				if (c !== QUOTE) return "invalid";
+				const r = scanString();
+				if (r === -1) return "invalid";
+				if (r === 0) return "prefix";
+				expect = JsonExpect.ObjColon;
+				break;
+			}
+			case JsonExpect.ObjColon:
+				if (c !== 0x3a) return "invalid";
+				i++;
+				expect = JsonExpect.Value;
+				break;
+			case JsonExpect.ObjCommaOrEnd:
+				if (c === 0x7d) {
+					stack.pop();
+					i++;
+					expect = valueDone();
+					break;
+				}
+				if (c !== 0x2c) return "invalid";
+				i++;
+				expect = JsonExpect.ObjKey;
+				break;
+			case JsonExpect.ArrCommaOrEnd:
+				if (c === 0x5d) {
+					stack.pop();
+					i++;
+					expect = valueDone();
+					break;
+				}
+				if (c !== 0x2c) return "invalid";
+				i++;
+				expect = JsonExpect.Value;
+				break;
+			case JsonExpect.End:
+				return "invalid"; // trailing non-whitespace after a complete value
+		}
+	}
+	return expect === JsonExpect.End ? "complete" : "prefix";
 }
