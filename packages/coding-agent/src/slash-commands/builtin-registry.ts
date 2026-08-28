@@ -1,5 +1,12 @@
-import type { AutocompleteItem } from "@pk-nerdsaver-ai/pi-tui";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { Markdown, Spacer, type AutocompleteItem } from "@pk-nerdsaver-ai/pi-tui";
+import { getProjectDir } from "@pk-nerdsaver-ai/pi-utils";
 import { COLLAB_GUEST_ALLOWED_COMMANDS } from "../collab/guest";
+import type { Settings } from "../config/settings";
+import { type NineRouterRoutingResult, applyNineRouterRouting } from "../config/nine-router-controller";
+import { getMarkdownTheme } from "../modes/theme/tui-adapters";
 import { BUILTIN_COLLABORATION_SLASH_COMMANDS } from "./builtin-collaboration";
 import {
 	buildArgumentCompletions,
@@ -13,7 +20,7 @@ import { BUILTIN_LIFECYCLE_SLASH_COMMANDS } from "./builtin-lifecycle";
 import { BUILTIN_MARKETPLACE_SLASH_COMMANDS, reloadTuiPluginState } from "./builtin-marketplace";
 import { BUILTIN_MODE_SLASH_COMMANDS } from "./builtin-modes";
 import { BUILTIN_SESSION_SLASH_COMMANDS } from "./builtin-session";
-import { parseSlashCommand } from "./helpers/parse";
+import { errorMessage, parseSlashCommand } from "./helpers/parse";
 import type {
 	BuiltinSlashCommand,
 	ParsedSlashCommand,

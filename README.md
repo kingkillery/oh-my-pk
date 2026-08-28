@@ -124,7 +124,7 @@ GitHub, Hugging Face, and npm release gates.
 
 There is no Homebrew tap or mise registry entry for this fork — don't use
 `brew install kingkillery/tap/omp` or
-`mise use -g github:kingkillery/oh-my-pi`; neither is published.
+`mise use -g github:kingkillery/oh-my-pk`; neither is published.
 
 ### Shell completions
 
@@ -734,7 +734,7 @@ For architecture and contribution guidelines, see [packages/coding-agent/DEVELOP
 | **[@pk-nerdsaver-ai/pi-utils](packages/utils)**                                      | Shared utilities (logging, streams, dirs/env/process helpers)               |
 | **[@pk-nerdsaver-ai/pi-wire](packages/wire)**                                        | Shared collab live-session protocol types and relay constants               |
 | **[@pk-nerdsaver-ai/hashline](packages/hashline)**                                   | Line-anchored patch language and applier behind the `edit` tool             |
-| **[@pk-nerdsaver-ai/pi-mnemopi](packages/mnemopi)**                                  | Local SQLite memory engine for Oh My Pi agents                              |
+| **[@pk-nerdsaver-ai/pi-mnemopi](packages/mnemopi)**                                  | Local SQLite memory engine for oh-my-pk agents                              |
 | **[@pk-nerdsaver-ai/snapcompact](packages/snapcompact)**                             | Bitmap-frame context compression package and SQuAD eval suite               |
 | **[@pk-nerdsaver-ai/browser-relay](packages/browser-relay)**                         | Chrome extension that lets the browser tool drive your existing tabs        |
 | **[@pk-nerdsaver-ai/pi-metaharness](packages/metaharness)**                          | Unified benchmark runners, Harbor run storage, REST/SSE API, live dashboard |

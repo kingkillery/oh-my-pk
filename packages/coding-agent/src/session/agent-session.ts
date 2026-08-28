@@ -246,6 +246,7 @@ import type {
 	SessionStats,
 	UsageFallbackConfirmer,
 } from "./agent-session-types";
+import { type UsageSplit, emptyFusionUsage, sumFusionUsage } from "./fusion-usage";
 import { writeArtifact } from "./artifacts";
 import {
 	ASYNC_INLINE_RESULT_MAX_CHARS,
@@ -706,6 +707,9 @@ export class AgentSession {
 
 	readonly #streamingEditGuard: StreamingEditGuard;
 	readonly #loopGuards: LoopGuards;
+
+	#fusionSidekickId: string | undefined;
+	#fusionToolFailureStreak = 0;
 	#promptInFlightCount = 0;
 	#abortInProgress = false;
 	// Wire-level agent_end emission deferred until #promptInFlightCount drops to 0.
