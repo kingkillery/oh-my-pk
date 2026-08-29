@@ -96,7 +96,7 @@ npm install @pk-nerdsaver-ai/pi-ai
 ## Quick Start
 
 ```typescript
-import { getModel, stream, complete, Context, Tool, type } from "@oh-my-pi/pi-ai";
+import { getModel, stream, complete, Context, Tool, type } from "@pk-nerdsaver-ai/pi-ai";
 
 // Fully typed with auto-complete support for both providers and models
 const model = getModel("openai", "gpt-4o-mini");
@@ -225,7 +225,7 @@ Tools enable LLMs to interact with external systems. Omptype schemas provide typ
 ### Defining Tools
 
 ```typescript
-import { type Tool, type } from "@oh-my-pi/pi-ai";
+import { type Tool, type } from "@pk-nerdsaver-ai/pi-ai";
 
 const weatherTool: Tool = {
 	name: "get_weather",

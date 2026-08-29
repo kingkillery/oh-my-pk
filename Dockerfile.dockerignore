@@ -1,4 +1,4 @@
-# Build context for the pi-root `Dockerfile` (oh-my-pi/pi:dev). Shadows
+# Build context for the pi-root `Dockerfile` (oh-my-pk/pi:dev). Shadows
 # .dockerignore for this file only. Robomp uses Dockerfile.robomp +
 # Dockerfile.robomp.dockerignore alongside.
 

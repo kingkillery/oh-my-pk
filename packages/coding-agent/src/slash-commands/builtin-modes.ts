@@ -12,9 +12,9 @@ import type { AgentSession } from "../session/agent-session";
 import type { ComputerTool } from "../tools/computer";
 import { computerExposureMode } from "../tools/computer/exposure";
 import type { InspectImageMode } from "../utils/inspect-image-mode";
-import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleFusionCommand, handleFusionPoolArgs } from "./helpers/fusion";
 import { handleFusionCommandTui, showFusionMenu } from "./helpers/fusion-tui";
+import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSecurityCommand } from "./helpers/security";
 import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
 
@@ -606,37 +606,37 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			if (!runtime.session.modelRegistry.hasConfiguredAuth(resolved.model)) {
 				return usage(`No API key for ${resolved.model.provider}/${resolved.model.id}`, runtime);
 			}
-		const armed = runtime.session.armPrewalk(resolved.model, resolved.thinkingLevel);
-		if (armed) {
-			await runtime.output(
-				`Prewalk on: switching to ${resolved.model.provider}/${resolved.model.id} at the next edit/write (todo-gated).`,
-			);
-		}
-		return commandConsumed();
+			const armed = runtime.session.armPrewalk(resolved.model, resolved.thinkingLevel);
+			if (armed) {
+				await runtime.output(
+					`Prewalk on: switching to ${resolved.model.provider}/${resolved.model.id} at the next edit/write (todo-gated).`,
+				);
+			}
+			return commandConsumed();
+		},
 	},
-},
-{
-	name: "fusion",
-	icon: "zap",
-	description: "Fusion cost mode: menu, toggle, model assignments, and routing pool",
-	inlineHint: "[on|off|status|mode <m>|routing <on|off>|sidekick <model>|strong <model>|compact <model>|pool …]",
-	allowArgs: true,
-	handle: handleFusionCommand,
-	handleTui: async (command, runtime) => {
-		if (!command.args.trim()) {
-			await showFusionMenu(runtime.ctx);
-			runtime.ctx.editor.setText("");
-			return;
-		}
-		return handleFusionCommandTui(command, runtime.ctx);
+	{
+		name: "fusion",
+		icon: "fast",
+		description: "Fusion cost mode: menu, toggle, model assignments, and routing pool",
+		inlineHint: "[on|off|status|mode <m>|routing <on|off>|sidekick <model>|strong <model>|compact <model>|pool …]",
+		allowArgs: true,
+		handle: handleFusionCommand,
+		handleTui: async (command, runtime) => {
+			if (!command.args.trim()) {
+				await showFusionMenu(runtime.ctx);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			return handleFusionCommandTui(command, runtime.ctx);
+		},
 	},
-},
-{
-	name: "fusion-pool",
-	icon: "layers",
-	description: "Manage the Fusion routing pool (alias of /fusion pool)",
-	inlineHint: "[list|set <1-5> <model>|remove <1-5>|clear]",
-	allowArgs: true,
-	handle: (command, runtime) => handleFusionPoolArgs(command.args, runtime, "/fusion-pool"),
-},
+	{
+		name: "fusion-pool",
+		icon: "agents",
+		description: "Manage the Fusion routing pool (alias of /fusion pool)",
+		inlineHint: "[list|set <1-5> <model>|remove <1-5>|clear]",
+		allowArgs: true,
+		handle: (command, runtime) => handleFusionPoolArgs(command.args, runtime, "/fusion-pool"),
+	},
 ];

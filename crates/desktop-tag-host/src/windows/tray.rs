@@ -112,7 +112,7 @@ fn notify_data(hwnd: HWND, status: &str) -> NOTIFYICONDATAW {
 		uCallbackMessage: WM_TRAY,
 		..Default::default()
 	};
-	let tip = wide(&format!("Oh My Pi Desktop Tag — {status}"));
+	let tip = wide(&format!("oh-my-pk Desktop Tag — {status}"));
 	let length = tip.len().saturating_sub(1).min(data.szTip.len() - 1);
 	data.szTip[..length].copy_from_slice(&tip[..length]);
 	data

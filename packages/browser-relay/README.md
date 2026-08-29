@@ -1,4 +1,4 @@
-# @oh-my-pi/browser-relay
+# @pk-nerdsaver-ai/browser-relay
 
 Chrome extension that lets the omp `browser` tool drive **your existing Chrome tabs** — logged-in sessions included — without relaunching Chrome with `--remote-debugging-port` (which Chrome 136+ refuses on the default profile anyway).
 

@@ -34,7 +34,7 @@ Do not delete failing tests, weaken assertions, suppress type errors, or hide ve
 ### A.2 DEVELOPER PROMPT (optional)
 
 Repository context:
-- Working tree: `C:\dev\desktop-projects\oh-my-pi-fork`
+- Working tree: `C:\dev\Infra\oh-my-pk`
 - Primary package is usually `packages/coding-agent`, but this task is about root release, deployment, CI, and tooling scripts.
 - Use Bun-oriented project conventions. Do not run `tsc` or `npx tsc`; use the repo's `bun check` or package-local scripts.
 - Follow the repo's Windows guidance. TOML paths containing backslashes must use single quotes.
@@ -161,7 +161,7 @@ Do not make code changes unless the user explicitly asks you to fix issues. Do n
 ### B.2 DEVELOPER PROMPT (optional)
 
 Repository context:
-- Working tree: `C:\dev\desktop-projects\oh-my-pi-fork`
+- Working tree: `C:\dev\Infra\oh-my-pk`
 - The implementation prompt to verify is section A above (the fixes prompt).
 - This verification concerns root release, deployment, CI, and tooling scripts, not normal feature work in `packages/coding-agent`.
 - Use Bun-oriented repo conventions. Do not run `tsc` or `npx tsc`; use `bun check` or repo scripts.

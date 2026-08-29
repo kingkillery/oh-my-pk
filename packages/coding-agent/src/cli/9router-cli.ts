@@ -1,5 +1,5 @@
 /**
- * `omp 9router` — route oh-my-pi model roles through the local 9router gateway.
+ * `omp 9router` — route oh-my-pk model roles through the local 9router gateway.
  *
  * Probes 9router, selects the first working combo per model role, and writes the
  * chosen selectors into settings.modelRoles so the resolver uses them.

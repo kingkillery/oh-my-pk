@@ -28,7 +28,7 @@ This dual-source strategy ensures pushed binary builds are visible immediately o
 ## Installers (`scripts/install.sh`, `scripts/install.ps1`)
 
 The installer scripts fetch release info from the fork's distribution endpoint:
-- **Repository**: `kingkillery/oh-my-pi`
+- **Repository**: `kingkillery/oh-my-pk`
 - **NPM Package**: `@pk-nerdsaver-ai/pi-coding-agent`
 - **Natives**: `@pk-nerdsaver-ai/pi-natives`
 - **Aliases (Windows)**: Installs `oh-my-pk.exe`, `omp.exe`, and `ompk.exe`.
@@ -41,5 +41,5 @@ Self-update detects the active binary path and updates accordingly:
 |---|---|
 | Binary install | Atomic download and replacement from the fork's Hugging Face distribution endpoint. |
 | Bun global install | Runs `bun install -g` pinning `@pk-nerdsaver-ai/pi-coding-agent`, `@pk-nerdsaver-ai/pi-natives`, and the platform leaf package from the NPM registry. |
-| Homebrew | Runs `brew upgrade` or `brew reinstall` on `kingkillery/tap/omp`. |
-| mise | Runs `mise upgrade` or `mise install --force` on `github:kingkillery/oh-my-pi`. |
+| Homebrew | Reserved for kingkillery/tap/omp; automatic routing is disabled until the fork tap is published. |
+| mise | Reserved for github:kingkillery/oh-my-pk; automatic routing is disabled until the fork tool channel is published. |

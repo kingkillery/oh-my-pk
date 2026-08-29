@@ -47,6 +47,7 @@ const describeIfKey = ANTHROPIC_API_KEY ? describe : describe.skip;
 interface FusionHarness {
 	session: AgentSession;
 	sessionManager: SessionManager;
+	settings: Settings;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
 	frontierModel: Model<Api>;
@@ -95,7 +96,7 @@ async function buildFusionHarness(fusionSettings: Record<string, unknown> = {}):
 	const settings = Settings.isolated({
 		"compaction.keepRecentTokens": 1,
 		"fusion.enabled": true,
-		"fusion.mode": "delegate",
+		"fusion.mode": "escalate",
 		...fusionSettings,
 	});
 
@@ -104,6 +105,7 @@ async function buildFusionHarness(fusionSettings: Record<string, unknown> = {}):
 	return {
 		session,
 		sessionManager,
+		settings,
 		authStorage,
 		modelRegistry,
 		frontierModel,
@@ -159,6 +161,13 @@ describeIfKey("Fusion compaction-boundary downgrade", () => {
 		expect(h.session.model?.id).toBe(FRONTIER_ID);
 		await h.session.compact();
 		expect(h.session.model?.id).toBe(COMPACT_ID);
+	});
+
+	it("keeps the main model unchanged in delegate mode", async () => {
+		h.settings.set("fusion.mode", "delegate");
+		await primeSession(h.session);
+		await h.session.compact();
+		expect(h.session.model?.id).toBe(FRONTIER_ID);
 	});
 
 	it("does not switch again on a second compaction (static one-shot guard)", async () => {

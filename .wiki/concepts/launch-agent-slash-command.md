@@ -1,7 +1,7 @@
 ---
 type: Concept
 title: Launch agent slash command
-description: How the new /agent slash command is designed, configured, and used within the oh-my-pi coding agent.
+description: How the new /agent slash command is designed, configured, and used within the oh-my-pk coding agent.
 tags: [slash-commands, commands, subagents, prompt-expansion]
 timestamp: 2026-07-01T00:00:00Z
 ---

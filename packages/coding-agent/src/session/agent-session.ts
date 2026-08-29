@@ -84,6 +84,7 @@ import { modelsAreEqual } from "@pk-nerdsaver-ai/pi-catalog/models";
 import { MacOSPowerAssertion } from "@pk-nerdsaver-ai/pi-natives";
 import {
 	$env,
+	APP_NAME,
 	escapeXmlText,
 	formatDuration,
 	getAgentDbPath,
@@ -104,7 +105,7 @@ import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
-import type { ResolvedModelRoleValue } from "../config/model-resolver";
+import { getModelMatchPreferences, type ResolvedModelRoleValue, resolveModelRoleValue } from "../config/model-resolver";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily } from "../config/service-tier";
 import type { Settings, SkillsSettings } from "../config/settings";
@@ -178,6 +179,8 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 import rewindReportTemplate from "../prompts/system/rewind-report.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
+import { AgentLifecycleManager } from "../registry/agent-lifecycle";
+import { AgentRegistry } from "../registry/agent-registry";
 import {
 	deobfuscateAssistantContent,
 	deobfuscateSessionContext,
@@ -246,7 +249,6 @@ import type {
 	SessionStats,
 	UsageFallbackConfirmer,
 } from "./agent-session-types";
-import { type UsageSplit, emptyFusionUsage, sumFusionUsage } from "./fusion-usage";
 import { writeArtifact } from "./artifacts";
 import {
 	ASYNC_INLINE_RESULT_MAX_CHARS,
@@ -288,6 +290,17 @@ import {
 	TOOL_EXECUTION_START_CUSTOM_TYPE,
 	type ToolExecutionStartData,
 } from "./exit-diagnostics";
+import {
+	classifyFusionRoute,
+	type FusionPoolTier,
+	type FusionRoute,
+	isFusionAutoDowngradedRoute,
+	parseFusionPoolEntries,
+	resolveEffectiveFusionRoute,
+	resolveSidekickRoute,
+	shouldRunFusionCompactionSwitch,
+} from "./fusion-router";
+import { emptyFusionUsage, sumFusionUsage, type UsageSplit } from "./fusion-usage";
 import { IrcBridge, type IrcBridgeHost } from "./irc-bridge";
 import {
 	buildLaunchCompletionBatchMessage,
@@ -412,6 +425,14 @@ type MessageEndPersistenceSlot = {
 	persist: (persistMessage: () => void) => Promise<void>;
 	release: () => void;
 };
+
+type SessionSwitchReconciler =
+	| (() => Promise<void>)
+	| {
+			before?: () => Promise<void>;
+			after?: () => Promise<void>;
+			afterCommit?: () => Promise<void>;
+	  };
 
 type PostPromptSkipReason = "aborted" | "stale-generation";
 
@@ -709,6 +730,13 @@ export class AgentSession {
 	readonly #loopGuards: LoopGuards;
 
 	#fusionSidekickId: string | undefined;
+	#fusionCompactionSwitched = false;
+	/** Original frontier model captured before the first automated Fusion switch. */
+	#fusionBaseModel: Model | undefined;
+	/** Model last set by automated Fusion routing; a mismatch means the user switched manually. */
+	#fusionLastAutoModel: Model | undefined;
+	/** Latched off once the user manually overrides an automated Fusion switch. */
+	#fusionRoutingDisabled = false;
 	#fusionToolFailureStreak = 0;
 	#promptInFlightCount = 0;
 	#abortInProgress = false;
@@ -759,7 +787,7 @@ export class AgentSession {
 		if (mode === "off") return;
 		try {
 			this.#powerAssertion = MacOSPowerAssertion.start({
-				reason: "Oh My Pi agent session",
+				reason: `${APP_NAME} agent session`,
 				idle: true,
 				display: mode === "display" || mode === "system",
 				system: mode === "system",
@@ -1678,6 +1706,7 @@ export class AgentSession {
 			resetAdvisorRuntimes: (reason?: string) => this.#advisors.resetAllRuntimes(reason),
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
 			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
+			applyFusionCompactionSwitch: summary => this.#applyFusionCompactionSwitch(summary),
 			getContextBreakdown: options => this.getContextBreakdown(options),
 			getContextUsage: options => this.getContextUsage(options),
 			shake: (mode, options) => this.shake(mode, options),
@@ -1874,7 +1903,9 @@ export class AgentSession {
 		this.#sessionBeforeSwitchReconciler = reconciler ?? undefined;
 	}
 
-	#sessionSwitchReconciler: { before?: () => Promise<void>; after?: () => Promise<void> } | undefined;
+	#sessionSwitchReconciler:
+		| { before?: () => Promise<void>; after?: () => Promise<void>; afterCommit?: () => Promise<void> }
+		| undefined;
 
 	setSessionSwitchReconciler(reconciler: SessionSwitchReconciler | null): void {
 		if (!reconciler) {
@@ -2969,6 +3000,22 @@ export class AgentSession {
 				const details = isRecord(event.message.details) ? event.message.details : undefined;
 				const semanticResult = semanticToolResult(toolName, event.message);
 				const semanticDetails = isRecord(semanticResult?.details) ? semanticResult.details : undefined;
+				if (
+					isError &&
+					isFusionAutoDowngradedRoute({
+						enabled: this.settings.get("fusion.enabled") === true,
+						mode: this.settings.get("fusion.mode"),
+						routingDisabled: this.#fusionRoutingDisabled,
+						baseModel: this.#fusionBaseModel,
+						lastAutoModel: this.#fusionLastAutoModel,
+						currentModel: this.model,
+					})
+				) {
+					this.#fusionToolFailureStreak++;
+					await this.#maybeEscalateFusionOnFailureStreak();
+				} else {
+					this.#fusionToolFailureStreak = 0;
+				}
 				// Invalidate streaming edit cache when edit tool completes to prevent stale data
 				const editedPath = details ? stringProperty(details, "path") : undefined;
 				if (toolName === "edit" && editedPath) {
@@ -7553,6 +7600,8 @@ export class AgentSession {
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
 			}
 
+			await this.#resetFusionState();
+
 			this.#clearSessionScopedToolState();
 			this.#clearCheckpointRuntimeState();
 			this.setTodoPhases([]);
@@ -7592,6 +7641,11 @@ export class AgentSession {
 					reason: "new",
 					previousSessionFile,
 				});
+			}
+			try {
+				await this.#sessionSwitchReconciler?.afterCommit?.();
+			} catch (error) {
+				logger.warn("Failed to reconcile committed new session", { error: String(error) });
 			}
 
 			return true;
@@ -8242,9 +8296,189 @@ export class AgentSession {
 		}
 	}
 
+	/**
+	 * Apply Fusion's cheap-first route only after a compaction has committed.
+	 * Delegate mode keeps the main model unchanged and only advertises the warm
+	 * sidekick; automated main-model routing is exclusive to escalate mode.
+	 */
+	async #applyFusionCompactionSwitch(summary?: string): Promise<void> {
+		this.#fusionToolFailureStreak = 0;
+		try {
+			if (this.settings.get("fusion.enabled") !== true) return;
+			if (this.settings.get("fusion.mode") !== "escalate") return;
+			const currentModel = this.model;
+			if (!currentModel) return;
+			const availableModels = this.#modelRegistry.getAvailable();
+			if (availableModels.length === 0) return;
+			const resolveSelector = (selector: string): Model | undefined =>
+				resolveModelRoleValue(selector, availableModels, {
+					settings: this.settings,
+					matchPreferences: getModelMatchPreferences(this.settings),
+				}).model;
+
+			const dynamicRouting = this.settings.get("fusion.dynamicRouting") === true;
+			const pool = dynamicRouting ? parseFusionPoolEntries(this.settings.get("fusion.modelPool") ?? []) : [];
+			const poolMode = pool.length >= 2;
+			const compactSelector = this.settings.get("fusion.compactModel")?.trim();
+			const sidekickStrongSelector = this.settings.get("fusion.sidekickStrongModel")?.trim() ?? "";
+			if (
+				!shouldRunFusionCompactionSwitch({
+					hasCompactSelector: !!compactSelector,
+					poolMode,
+					dynamicRouting,
+					hasSidekickStrongSelector: !!sidekickStrongSelector,
+					pool,
+				})
+			) {
+				return;
+			}
+			const cheapModel = compactSelector ? resolveSelector(compactSelector) : undefined;
+
+			if (!dynamicRouting) {
+				if (!cheapModel || this.#fusionCompactionSwitched) return;
+				if (modelsAreEqual(cheapModel, currentModel)) return;
+				if (!this.#modelRegistry.hasConfiguredAuth(cheapModel)) return;
+				this.#fusionBaseModel ??= currentModel;
+				await this.setModelTemporary(cheapModel, undefined, { ephemeral: true });
+				this.#fusionLastAutoModel = this.model ?? cheapModel;
+				this.#fusionCompactionSwitched = true;
+				logger.debug("Fusion compaction switch", {
+					from: `${currentModel.provider}/${currentModel.id}`,
+					to: `${cheapModel.provider}/${cheapModel.id}`,
+				});
+				return;
+			}
+
+			if (this.#fusionRoutingDisabled) return;
+			if (this.#fusionLastAutoModel && !modelsAreEqual(this.#fusionLastAutoModel, currentModel)) {
+				this.#fusionRoutingDisabled = true;
+				logger.debug("Fusion dynamic routing disabled after manual model switch");
+				return;
+			}
+			const baseModel = this.#fusionBaseModel ?? currentModel;
+			const route = await classifyFusionRoute(
+				summary ?? "",
+				this.#modelRegistry,
+				this.settings,
+				this.sessionId,
+				poolMode ? pool : undefined,
+			);
+			const effectiveRoute = resolveEffectiveFusionRoute(route, {
+				alreadySwitched: this.#fusionCompactionSwitched,
+				pool,
+			});
+			if (effectiveRoute === undefined) return;
+
+			await this.#applyFusionSidekickRoute(effectiveRoute, pool, resolveSelector);
+			let target: Model | undefined;
+			if (typeof effectiveRoute === "number") {
+				const tierSelector = pool.find(tier => tier.tier === effectiveRoute)?.selector;
+				target = tierSelector ? resolveSelector(tierSelector) : undefined;
+			} else {
+				target = effectiveRoute === "cheap" ? cheapModel : baseModel;
+			}
+			if (!target || modelsAreEqual(target, currentModel)) return;
+			if (!this.#modelRegistry.hasConfiguredAuth(target)) return;
+			this.#fusionBaseModel = baseModel;
+			await this.setModelTemporary(target, undefined, { ephemeral: true });
+			this.#fusionLastAutoModel = this.model ?? target;
+			this.#fusionCompactionSwitched = true;
+			logger.debug("Fusion dynamic route", {
+				route: route ?? `${effectiveRoute} (static fallback)`,
+				from: `${currentModel.provider}/${currentModel.id}`,
+				to: `${target.provider}/${target.id}`,
+			});
+		} catch (error) {
+			logger.warn("Fusion compaction switch failed", { error: String(error) });
+		}
+	}
+
+	async #applyFusionSidekickRoute(
+		route: FusionRoute,
+		pool: readonly FusionPoolTier[],
+		resolveSelector: (selector: string) => Model | undefined,
+	): Promise<void> {
+		try {
+			const strongSelector = this.settings.get("fusion.sidekickStrongModel")?.trim();
+			if (!strongSelector) return;
+			const sidekick = this.#fusionSidekickId
+				? AgentRegistry.global().get(this.#fusionSidekickId)?.session
+				: undefined;
+			if (!sidekick) return;
+			const tier = resolveSidekickRoute(route, pool);
+			const selector = tier === "strong" ? strongSelector : this.settings.get("fusion.sidekickModel") || "pi/smol";
+			const target = resolveSelector(selector);
+			if (!target) return;
+			const current = sidekick.model;
+			if (current && modelsAreEqual(target, current)) return;
+			if (!this.#modelRegistry.hasConfiguredAuth(target)) return;
+			await sidekick.setModelTemporary(target, undefined, { ephemeral: true });
+			logger.debug("Fusion sidekick route", { tier, to: `${target.provider}/${target.id}` });
+		} catch (error) {
+			logger.warn("Fusion sidekick route failed", { error: String(error) });
+		}
+	}
+
+	async #maybeEscalateFusionOnFailureStreak(): Promise<void> {
+		try {
+			const threshold = this.settings.get("fusion.escalateFailureStreak");
+			if (typeof threshold !== "number" || threshold <= 0) return;
+			if (this.#fusionToolFailureStreak < threshold) return;
+			if (this.settings.get("fusion.enabled") !== true) return;
+			if (this.settings.get("fusion.mode") !== "escalate") return;
+			if (this.#fusionRoutingDisabled) return;
+			const baseModel = this.#fusionBaseModel;
+			if (!baseModel) return;
+			const currentModel = this.model;
+			if (!currentModel || modelsAreEqual(baseModel, currentModel)) return;
+			if (this.#fusionLastAutoModel && !modelsAreEqual(this.#fusionLastAutoModel, currentModel)) {
+				this.#fusionRoutingDisabled = true;
+				logger.debug("Fusion dynamic routing disabled after manual model switch");
+				return;
+			}
+			if (!this.#modelRegistry.hasConfiguredAuth(baseModel)) return;
+			this.#fusionToolFailureStreak = 0;
+			await this.setModelTemporary(baseModel, undefined, { ephemeral: true });
+			this.#fusionLastAutoModel = this.model ?? baseModel;
+			logger.debug("Fusion failure-streak escalation", {
+				threshold,
+				from: `${currentModel.provider}/${currentModel.id}`,
+				to: `${baseModel.provider}/${baseModel.id}`,
+			});
+		} catch (error) {
+			logger.warn("Fusion failure-streak escalation failed", { error: String(error) });
+		}
+	}
+
+	/** Release the warm sidekick and clear all session-scoped Fusion routing state. */
+	async #resetFusionState(): Promise<void> {
+		const staleId = this.#fusionSidekickId;
+		const staleRef = staleId ? AgentRegistry.global().get(staleId) : undefined;
+		let preserveSidekickId = false;
+		if (staleId && staleRef) {
+			try {
+				await AgentLifecycleManager.global().release(staleId, staleRef);
+				preserveSidekickId = AgentRegistry.global().get(staleId) !== undefined;
+			} catch (error) {
+				logger.warn("Fusion sidekick release failed during session switch", {
+					id: staleId,
+					error: String(error),
+				});
+				preserveSidekickId = AgentRegistry.global().get(staleId) !== undefined;
+			}
+		}
+		if (!preserveSidekickId) this.#fusionSidekickId = undefined;
+		this.#fusionBaseModel = undefined;
+		this.#fusionCompactionSwitched = false;
+		this.#fusionRoutingDisabled = false;
+		this.#fusionLastAutoModel = undefined;
+		this.#fusionToolFailureStreak = 0;
+	}
+
 	async #setModelWithProviderSessionReset(model: Model): Promise<void> {
 		const currentModel = this.model;
 		const isChanging = !currentModel || !modelsAreEqual(currentModel, model);
+		if (isChanging) this.#fusionToolFailureStreak = 0;
 		const codeModeChanged = this.#tools.codeModeChangesBetween(currentModel, model);
 		if (currentModel) {
 			this.#closeProviderSessionsForModelSwitch(currentModel, model);
@@ -9026,6 +9260,15 @@ export class AgentSession {
 			// of restarting at zero.
 			if (switchingToDifferentSession) {
 				this.#advisors.restoreCost(await loadAdvisorTranscriptCosts(this.sessionFile));
+				await this.#resetFusionState();
+				try {
+					await this.#sessionSwitchReconciler?.afterCommit?.();
+				} catch (error) {
+					logger.warn("Failed to reconcile committed session switch", {
+						targetSessionFile: sessionPath,
+						error: String(error),
+					});
+				}
 			}
 			this.#bash.finishSessionTransition(bashTransition, true);
 			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
@@ -9081,7 +9324,7 @@ export class AgentSession {
 			this.#advisors.reattachRecorderFeeds();
 			this.#reconnectToAgent();
 			try {
-				await this.#sessionSwitchReconciler?.();
+				await this.#sessionSwitchReconciler?.after?.();
 			} catch (reconcileError) {
 				logger.warn("Failed to reconcile session mode after switch rollback", {
 					targetSessionFile: sessionPath,

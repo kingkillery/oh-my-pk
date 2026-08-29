@@ -36,7 +36,7 @@ Coding-agent auto-includes `{root}/.agents/skills` when present. See `docs/envir
 
 - Bun 1.3.14 or later
 - Docker CLI with a reachable Docker daemon (for phase-1 local jobs only)
-- The local `oh-my-pi/pi:dev` worker image
+- The local `oh-my-pk/pi:dev` worker image
 
 Check the backend before use:
 
@@ -107,7 +107,7 @@ Remote cloning is disabled by default. To enable it, configure `networkEgress: "
 
 - Only the local `msi-docker` backend is implemented. Cloud mesh orchestration, auth, and multi-node launch stay in environments-cloud (pkscloudenvs); this package only resolves and documents handoff to those entrypoints.
 - Remote cloning is disabled by default. The CLI does not expose restricted-egress network or repository-host configuration, so its `run` command fails safely before launching a clone job.
-- The worker only clones a repository, prints the supplied prompt, and runs the supplied validation commands. It does not invoke an Oh My Pi agent, publish branches or pull requests, or provision credentials.
+- The worker only clones a repository, prints the supplied prompt, and runs the supplied validation commands. It does not invoke an oh-my-pk agent, publish branches or pull requests, or provision credentials.
 - The CLI always uses `echo ok` as its validation command and has no flags for resource limits, image choice, or result mode.
 - Custom environment variables and secret injection are unsupported until a secure injection path exists.
 - The package does not create or enforce the restricted-egress Docker network; its operator must configure that network to allow only the intended repository traffic.

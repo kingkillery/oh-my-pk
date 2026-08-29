@@ -48,6 +48,14 @@ export interface ReconcileResult {
 	sidekickLive: boolean;
 }
 
+interface EnsureOperation {
+	promise: Promise<void>;
+	force: boolean;
+}
+
+/** One lifecycle operation per main session; concurrent startup/mode hooks join it. */
+const ensureInFlight = new WeakMap<AgentSession, EnsureOperation>();
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -56,20 +64,60 @@ export interface ReconcileResult {
  * Spawn (or verify) a warm Fusion sidekick for `host`.
  *
  * Idempotent when a spawn already succeeded (guards against double-spawn on the
- * same host).  `force: true` releases any recorded sidekick id first, then
- * re-spawns — used after a session switch where the old tracked id is stale.
+ * same host). `force: true` is available to callers that explicitly need to
+ * replace the currently recorded generation.
  *
  * Best-effort: failures only warn; the main agent keeps running without a
- * sidekick and the delegation prompt falls back to a fresh `task` subagent.
+ * sidekick and the system prompt omits warm-sidekick delegation guidance.
  */
 export async function ensureFusionSidekick(host: FusionSidekickHost, options: { force?: boolean } = {}): Promise<void> {
+	const current = ensureInFlight.get(host.session);
+	if (current && (!options.force || current.force)) {
+		await current.promise;
+		return;
+	}
+	// A forced transition queues behind an ordinary startup ensure. Once queued,
+	// concurrent forced hooks join that same replacement operation.
+	const promise = current
+		? current.promise.then(() => ensureFusionSidekickOnce(host, options))
+		: ensureFusionSidekickOnce(host, options);
+	const operation: EnsureOperation = { promise, force: options.force === true };
+	ensureInFlight.set(host.session, operation);
+	try {
+		await promise;
+	} finally {
+		if (ensureInFlight.get(host.session) === operation) ensureInFlight.delete(host.session);
+	}
+}
+
+async function waitForPendingEnsure(session: AgentSession): Promise<void> {
+	while (true) {
+		const operation = ensureInFlight.get(session);
+		if (!operation) return;
+		await operation.promise;
+		if (ensureInFlight.get(session) === operation) return;
+	}
+}
+
+async function ensureFusionSidekickOnce(host: FusionSidekickHost, options: { force?: boolean }): Promise<void> {
 	const { session, settings } = host;
 	try {
 		const fusionEnabled = settings.get("fusion.enabled") === true && settings.get("fusion.mode") !== "off";
-		if (!fusionEnabled) {
-			if (options.force) session.setFusionSidekickId(undefined);
-			return;
+		if (options.force) {
+			const staleId = session.getFusionSidekickId();
+			const staleRef = staleId ? AgentRegistry.global().get(staleId) : undefined;
+			if (staleId && staleRef) {
+				try {
+					await AgentLifecycleManager.global().release(staleId, staleRef);
+					if (AgentRegistry.global().get(staleId)) return;
+				} catch (err) {
+					logger.warn("Fusion sidekick release failed", { id: staleId, error: String(err) });
+					return;
+				}
+			}
+			session.setFusionSidekickId(undefined);
 		}
+		if (!fusionEnabled) return;
 		if (!options.force) {
 			// Idempotent only while the recorded id still resolves in the registry.
 			// A stale id (spawn failed after allocate, or the sidekick aborted) must
@@ -77,34 +125,43 @@ export async function ensureFusionSidekick(host: FusionSidekickHost, options: { 
 			const existingId = session.getFusionSidekickId();
 			if (existingId) {
 				const ref = AgentRegistry.global().get(existingId);
-				if (ref && ref.status !== "aborted") return;
+				if (ref && ref.status !== "aborted") {
+					await session.refreshBaseSystemPrompt();
+					return;
+				}
+				if (ref) {
+					try {
+						await AgentLifecycleManager.global().release(existingId, ref);
+						if (AgentRegistry.global().get(existingId)) return;
+					} catch (err) {
+						logger.warn("Fusion sidekick release failed", { id: existingId, error: String(err) });
+						return;
+					}
+				}
 				session.setFusionSidekickId(undefined);
 			}
-		} else {
-			// Session switch: release the stale ref so Agent Hub doesn't accumulate
-			// Sidekick-2, -3, … on every switch.
-			const staleId = session.getFusionSidekickId();
-			if (staleId && AgentRegistry.global().get(staleId)) {
-				try {
-					await AgentLifecycleManager.global().release(staleId);
-				} catch (err) {
-					logger.warn("Fusion sidekick release failed", { id: staleId, error: String(err) });
-				}
-			}
-			session.setFusionSidekickId(undefined);
 		}
 
 		const sidekickModel = settings.get("fusion.sidekickModel") || "pi/smol";
 		const sidekickId = await spawnFusionSidekick(host, sidekickModel);
 		if (sidekickId) {
 			session.setFusionSidekickId(sidekickId);
+			await session.refreshBaseSystemPrompt();
 		} else {
 			// Spawn returned "" (agent type unavailable) — leave id unset so a later
 			// call (e.g. user runs `/fusion on` mid-session) can retry.
 			logger.warn("Fusion sidekick spawn returned empty id", { sidekickModel });
+			await session.refreshBaseSystemPrompt();
 		}
 	} catch (err) {
 		logger.warn("Fusion sidekick spawn failed", { error: String(err) });
+		try {
+			await session.refreshBaseSystemPrompt();
+		} catch (refreshError) {
+			logger.warn("Fusion system prompt refresh failed after sidekick spawn error", {
+				error: String(refreshError),
+			});
+		}
 	}
 }
 
@@ -122,6 +179,7 @@ export async function reconcileFusionSidekickModel(host: FusionSidekickHost): Pr
 	if (settings.get("fusion.enabled") !== true || settings.get("fusion.mode") === "off") {
 		return { note: "", sidekickLive: false };
 	}
+	await waitForPendingEnsure(session);
 
 	const id = session.getFusionSidekickId();
 	const live = id ? AgentRegistry.global().get(id)?.session : undefined;
@@ -130,7 +188,6 @@ export async function reconcileFusionSidekickModel(host: FusionSidekickHost): Pr
 		const target = resolveModelRoleValue(selector, session.modelRegistry.getAvailable() as Model<Api>[], {
 			settings,
 			matchPreferences: getModelMatchPreferences(settings),
-			modelRegistry: session.modelRegistry,
 		}).model;
 		if (!target) {
 			return {
@@ -139,6 +196,7 @@ export async function reconcileFusionSidekickModel(host: FusionSidekickHost): Pr
 			};
 		}
 		if (live.model && modelsAreEqual(target, live.model)) {
+			await session.refreshBaseSystemPrompt();
 			return { note: "Live sidekick is already on this model.", sidekickLive: true };
 		}
 		if (!session.modelRegistry.hasConfiguredAuth(target)) {
@@ -157,15 +215,29 @@ export async function reconcileFusionSidekickModel(host: FusionSidekickHost): Pr
 		// new identity and must survive park/revive. The compaction-route re-tiering
 		// in #applyFusionSidekickRoute stays ephemeral by design.
 		await live.setModelTemporary(target);
+		await session.refreshBaseSystemPrompt();
 		return { note: "Live sidekick retargeted in place (warm context preserved).", sidekickLive: true };
 	}
 
 	// Parked or dead: release the stale ref (no accumulation) and respawn.
-	if (id && AgentRegistry.global().get(id)) {
+	const staleRef = id ? AgentRegistry.global().get(id) : undefined;
+	if (id && staleRef) {
 		try {
-			await AgentLifecycleManager.global().release(id);
+			await AgentLifecycleManager.global().release(id, staleRef);
+			const currentRef = AgentRegistry.global().get(id);
+			if (currentRef) {
+				return {
+					note: "Sidekick changed concurrently; keeping the current registered generation.",
+					sidekickLive: currentRef.session !== null,
+				};
+			}
 		} catch (error) {
 			logger.warn("Fusion sidekick release failed", { id, error: String(error) });
+			const currentSession = AgentRegistry.global().get(id)?.session;
+			return {
+				note: "Sidekick replacement deferred because teardown failed.",
+				sidekickLive: currentSession !== undefined && currentSession !== null,
+			};
 		}
 	}
 	session.setFusionSidekickId(undefined);
@@ -274,7 +346,6 @@ async function spawnFusionSidekick(host: FusionSidekickHost, sidekickModel: stri
 			task: prompt.render(subagentUserPromptTemplate, { assignment }),
 			assignment,
 			description: assignment,
-			role: "Sidekick",
 			index,
 			id,
 			detached: true,
@@ -307,7 +378,6 @@ async function spawnFusionSidekick(host: FusionSidekickHost, sidekickModel: stri
 			localProtocolOptions,
 			parentArtifactManager: (sessionManager.getArtifactManager() ?? undefined) as ArtifactManager | undefined,
 			parentAgentId,
-			color: undefined,
 			planReference,
 		});
 		return { id, runPromise };

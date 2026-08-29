@@ -1,3 +1,4 @@
+import { APP_NAME } from "@pk-nerdsaver-ai/pi-utils";
 import type { BlobDestinationId } from "./destinations";
 import type { BlobUploader, BlobUploadRequest } from "./publication";
 import {
@@ -437,7 +438,7 @@ function createPushbulletUploader(config: DestinationRuntimeConfig): BlobUploade
 			if (deviceId) pushForm.set("device_iden", deviceId);
 			pushForm.set("type", "file");
 			pushForm.set("file_url", fileUrl);
-			pushForm.set("body", "Sent via Oh My Pi");
+			pushForm.set("body", `Sent via ${APP_NAME}`);
 			pushForm.set("file_type", fileType);
 			const pushResponse = await expectOk(
 				await fetchImpl(`${PUSHBULLET_API}/pushes`, {

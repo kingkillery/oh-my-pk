@@ -31,10 +31,9 @@ the tag and, since HEAD carries it, builds and publishes:
    - `omp-darwin-x64`
    - `omp-darwin-arm64`
    - `omp-windows-x64.exe`
-3. The GitHub Release itself (with generated notes), its macOS verification, and,
-   optionally, the Homebrew tap formula.
+3. The GitHub Release itself (with generated notes) and its macOS verification.
 4. Only when a manual dispatch enables **`publish_npm`**, five native npm leaves
-   and then the 13 workspace/core packages.
+   and then the 14 workspace/core packages.
 
 The binary jobs have no npm setup or OIDC permission. They always upload their
 artifacts before npm starts, so an npm authentication or registry failure cannot
@@ -47,14 +46,14 @@ undo or block the GitHub Release. The default release path needs only the defaul
   is set (`APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_ID`,
   `APPLE_API_ISSUER_ID`, `APPLE_API_KEY`). Without them, macOS binaries ship with
   an ad-hoc signature.
-- **npm publishing** — uses GitHub OIDC only. `NPM_TOKEN` is neither required nor
-  read by `ci.yml`, and there is deliberately no empty or long-lived token
-  fallback.
+- **npm publishing** — prefers GitHub OIDC trusted publishing. The existing
+  `NPM_TOKEN` fallback is retained only for bootstrap/migration and should be
+  removed after every package has a trusted publisher.
 
 ## External npm trusted-publisher prerequisites
 
 Before enabling `publish_npm`, every one of the five native leaf packages and
-all 13 workspace/core packages must already exist on npm and have its own
+all 14 workspace/core packages must already exist on npm and have their own
 **Trusted Publisher** configured with these exact values:
 
 - Provider: **GitHub Actions**
@@ -63,7 +62,7 @@ all 13 workspace/core packages must already exist on npm and have its own
 - Workflow filename: **`ci.yml`**
 - Environment: **none** (leave it blank)
 
-This is 18 separate per-package configurations, not one configuration for the
+This is 19 separate per-package configurations, not one configuration for the
 scope or repository:
 
 - Native leaves: `@pk-nerdsaver-ai/pi-natives-linux-x64`,
@@ -72,7 +71,7 @@ scope or repository:
   `@pk-nerdsaver-ai/pi-natives-darwin-arm64`, and
   `@pk-nerdsaver-ai/pi-natives-win32-x64`.
 - Workspace/core: `@pk-nerdsaver-ai/pi-utils`, `@pk-nerdsaver-ai/pi-wire`,
-  `@pk-nerdsaver-ai/pi-catalog`, `@pk-nerdsaver-ai/pi-ai`,
+  `@pk-nerdsaver-ai/omptype`, `@pk-nerdsaver-ai/pi-catalog`, `@pk-nerdsaver-ai/pi-ai`,
   `@pk-nerdsaver-ai/pi-natives`, `@pk-nerdsaver-ai/pi-tui`,
   `@pk-nerdsaver-ai/hashline`, `@pk-nerdsaver-ai/pi-mnemopi`,
   `@pk-nerdsaver-ai/snapcompact`, `@pk-nerdsaver-ai/omp-stats`,
@@ -82,13 +81,13 @@ scope or repository:
 npm does not permit adding a trusted publisher until a package exists. Seed any
 never-published package once outside this workflow with conventional
 authentication, then configure the publisher before opting in. An `ENEEDAUTH`
-failure in Actions means the per-package publisher is absent or mismatched; do
-not add a workflow token fallback. Published manifests use the repository URL
+failure in Actions means the per-package publisher is absent or mismatched. Use
+the fallback only for bootstrap/migration; prefer trusted publishers and remove
+it once every package is configured. Published manifests use the repository URL
 `git+https://github.com/kingkillery/oh-my-pk.git`.
 
-The two npm jobs pin Bun **1.3.14**, Node.js **24.19.0**, and npm **11.19.0**
-(rather than `npm@latest`). npm 11.19.0 supports trusted publishing and its Node
-engine range includes Node 24.
+The npm jobs pin Bun **1.4.0**, Node.js **24**, and npm **11.17.0** rather than
+floating to the latest toolchain during a release.
 
 ## Manual dispatch, ordering, and retries
 
@@ -96,15 +95,14 @@ Trigger `ci.yml` by hand from a `v*` tag (or from a `main` HEAD that carries one
 and enable **`publish_npm`** (default `false`). A plain tag/main push has no input,
 so npm remains disabled on automatic releases.
 
-Publication is strictly ordered:
+Publication has two parallel branches after validation and binary builds:
 
-1. `release_binary` uploads all five binary artifacts.
-2. `release_github` publishes the release and `release_github_verify` verifies it.
-3. `release_npm_native` runs five Ubuntu matrix children. Each downloads the
-   matching same-run native artifact and publishes one of `linux-x64`,
-   `linux-arm64`, `darwin-x64`, `darwin-arm64`, or `win32-x64`.
-4. `release_npm` can publish the 13 workspace/core packages only after the whole
-   native matrix succeeds, so all five leaves exist first.
+1. `release_github` publishes the release and `release_github_verify` verifies it.
+2. In parallel, `release_native_leaves` downloads the same-run native artifacts
+   and publishes `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, and
+   `win32-x64` in one controlled loop.
+3. `release_npm` publishes the 14 workspace/core packages only after both GitHub
+   verification and all five native leaves succeed.
 
 If npm fails, the GitHub Release and binary artifacts remain successful. Choose
 **Re-run failed jobs** on that same workflow run: successful binary/release jobs

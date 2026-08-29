@@ -1,4 +1,4 @@
-# Oh My Pi / OMP Compatibility
+# Oh My PK / OMP Compatibility
 
 This package is compatible with the current OMP extension shape:
 

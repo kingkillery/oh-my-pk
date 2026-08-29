@@ -1,11 +1,11 @@
 ---
 name: pk-subagent-orchestrator
-description: Use when designing, configuring, or running Oh My Pi subagent orchestration: one visible endpoint over task/quick_task/oracle/reviewer/explore agents, deterministic route planning, parallel waves, recursive delegation caps, independent verification, and final synthesis without exposing internal routing. Also use when invoking the verifier-extension `subagent_orchestrator_plan` tool to compute an OMP-native route plan.
+description: Use when designing, configuring, or running oh-my-pk subagent orchestration: one visible endpoint over task/quick_task/oracle/reviewer/explore agents, deterministic route planning, parallel waves, recursive delegation caps, independent verification, and final synthesis without exposing internal routing. Also use when invoking the verifier-extension `subagent_orchestrator_plan` tool to compute an OMP-native route plan.
 ---
 
-# PK Subagent Orchestrator for Oh My Pi
+# PK Subagent Orchestrator for oh-my-pk
 
-Build one public controller over Oh My Pi subagents. The caller sees one answer. Internally you MAY answer directly, call one specialist, spawn a parallel `task` wave, recurse through a narrower child orchestrator, verify, then synthesize.
+Build one public controller over oh-my-pk subagents. The caller sees one answer. Internally you MAY answer directly, call one specialist, spawn a parallel `task` wave, recurse through a narrower child orchestrator, verify, then synthesize.
 
 <critical>
 - NEVER delegate simple low-risk requests.

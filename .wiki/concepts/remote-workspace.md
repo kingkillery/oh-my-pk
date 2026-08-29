@@ -42,7 +42,7 @@ bun src/cli.ts cancel <job-id>
 bun src/cli.ts list
 ```
 
-`doctor` probes Docker reachability and the local worker image (`oh-my-pi/pi:dev`).
+`doctor` probes Docker reachability and the local worker image (`oh-my-pk/pi:dev`).
 
 ## Library surface
 
@@ -73,7 +73,7 @@ Public exports: backend contracts, job types/store, orchestrator. Per-job contai
 ## Limits (current)
 
 - No remote-host backend selection or cloud ExecutionBackend.
-- Worker clones repo, prints prompt, runs validation commands only — does not run a full Oh My Pi agent or publish PRs.
+- Worker clones repo, prints prompt, runs validation commands only — does not run a full oh-my-pk agent or publish PRs.
 - No secret injection path yet.
 - Host process crash can leave labeled Docker resources; no startup reaper yet.
 

@@ -47,7 +47,7 @@ import {
 	BUILTIN_TOOLS,
 	HIDDEN_TOOLS,
 	createTools,
-} from "@oh-my-pi/pi-coding-agent";
+} from "@pk-nerdsaver-ai/pi-coding-agent";
 
 // Auth and models setup
 const authStorage = discoverAuthStorage();

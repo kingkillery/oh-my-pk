@@ -3130,6 +3130,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// compaction routing, but no phantom IRC target in the prompt.
 			const sidekickId =
 				agentKind === "main" ? (session as AgentSession | undefined)?.getFusionSidekickId() : undefined;
+			const fusionSidekick =
+				agentKind === "main" &&
+				settings.get("fusion.enabled") === true &&
+				settings.get("fusion.mode") !== "off" &&
+				sidekickId !== undefined;
 			const defaultPrompt = await buildSystemPromptInternal({
 				cwd: promptCwd,
 				additionalWorkspaceRoots: sessionManager.getAdditionalDirectories(),
@@ -3159,6 +3164,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					options.spawns ?? "*",
 				),
 				taskIrcEnabled: !restrictToolNames && isIrcEnabled(settings, options.taskDepth ?? 0),
+				fusionSidekick,
+				fusionEscalate: fusionSidekick && settings.get("fusion.mode") === "escalate",
+				sidekickModel: settings.get("fusion.sidekickModel") || "pi/smol",
+				sidekickId,
 				autoQaEnabled: !restrictToolNames && isAutoQaEnabled(settings),
 				writeTransportOnly:
 					toolSession.deviceOnlyWrite === true && toolSession.pendingFullWriteDescription !== true,

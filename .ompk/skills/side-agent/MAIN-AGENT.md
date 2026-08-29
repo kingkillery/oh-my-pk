@@ -97,7 +97,7 @@ Tell the user exactly what to do. Be specific. Example:
 > Each sub-agent will pick up a task from the queue, execute it, and write the result into its claim directory. I'll poll for results, publish them, and aggregate them here.
 
 Adapt the instruction to the IDE:
-- **oh-my-pi / Claude Code / Cursor / Windsurf** — open a new session/window and run `/side-agent join`.
+- **oh-my-pk / Claude Code / Cursor / Windsurf** — open a new session/window and run `/side-agent join`.
 - **Any other CLI agent** — open a new terminal, navigate to the workspace, and tell the agent: "Read `.ompk/skills/side-agent/SUB-AGENT.md` and follow the sub-agent protocol."
 - **If the IDE supports splitting** — use split panes or side-by-side views.
 

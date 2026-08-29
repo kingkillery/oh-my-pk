@@ -1,12 +1,11 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
-import { APP_NAME } from "@pk-nerdsaver-ai/pi-utils";
+import { USER_AGENT } from "@pk-nerdsaver-ai/pi-utils";
 import "./setup";
 import { currentRerankerModel, DEFAULT_RERANKER_MODEL, rerank, rerankerAvailable } from "@pk-nerdsaver-ai/pi-mnemopi";
 import { initBeam } from "@pk-nerdsaver-ai/pi-mnemopi/core/beam";
 import { Mnemopi } from "@pk-nerdsaver-ai/pi-mnemopi/core/memory";
 import { withMnemopiRuntimeOptions } from "@pk-nerdsaver-ai/pi-mnemopi/core/runtime-options";
-import packageJson from "../package.json" with { type: "json" };
 
 function openMemory(options: ConstructorParameters<typeof Mnemopi>[0] = {}): Mnemopi {
 	const db = new Database(":memory:");
@@ -31,7 +30,7 @@ describe("mnemopi dedicated reranker", () => {
 				expect(new URL(request.url).pathname).toBe("/rerank");
 				expect(request.headers.get("content-type")).toBe("application/json");
 				expect(request.headers.get("authorization")).toBe("Bearer test-rerank-key");
-				expect(request.headers.get("user-agent")).toBe(`${APP_NAME}/${packageJson.version}`);
+				expect(request.headers.get("user-agent")).toBe(USER_AGENT);
 				expect(request.headers.get("http-referer")).toBe("https://oh-my-pk.pkking.computer/");
 				const payload: unknown = await request.json();
 				expect(payload).toEqual({

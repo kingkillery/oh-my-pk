@@ -1,5 +1,5 @@
 /**
- * Route oh-my-pi model roles through the local 9router gateway.
+ * Route oh-my-pk model roles through the local 9router gateway.
  */
 import { APP_NAME } from "@pk-nerdsaver-ai/pi-utils";
 import { Args, Command, Flags } from "@pk-nerdsaver-ai/pi-utils/cli";

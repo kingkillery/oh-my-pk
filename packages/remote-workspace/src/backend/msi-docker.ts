@@ -209,7 +209,7 @@ export class MsiDockerBackend implements ExecutionBackend {
 
 	constructor(opts: MsiDockerBackendOptions = {}) {
 		this.#opts = {
-			defaultImage: opts.defaultImage ?? "oh-my-pi/pi:dev",
+			defaultImage: opts.defaultImage ?? "oh-my-pk/pi:dev",
 			cpuLimit: opts.cpuLimit ?? "2",
 			memoryLimit: opts.memoryLimit ?? "4g",
 			pidsLimit: opts.pidsLimit ?? 256,

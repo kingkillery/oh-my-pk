@@ -11,15 +11,7 @@
  * family validated under Bun; the 1.x OTLP line deadlocks when its
  * `req.on("close")` handler fires after a successful export.
  */
-import type {
-	AgentRunCoverage,
-	AgentRunSummary,
-	AgentTelemetryConfig,
-	AgentTelemetryWarning,
-	ChatUsageEvent,
-	ToolStatus,
-} from "@pk-nerdsaver-ai/pi-agent-core";
-import { logger, postmortem } from "@pk-nerdsaver-ai/pi-utils";
+
 import {
 	type Attributes,
 	type AttributeValue,
@@ -39,6 +31,15 @@ import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs
 import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
+import type {
+	AgentRunCoverage,
+	AgentRunSummary,
+	AgentTelemetryConfig,
+	AgentTelemetryWarning,
+	ChatUsageEvent,
+	ToolStatus,
+} from "@pk-nerdsaver-ai/pi-agent-core";
+import { APP_NAME, logger, postmortem } from "@pk-nerdsaver-ai/pi-utils";
 import type { TelemetrySignalConfig } from "./telemetry-export";
 
 /**
@@ -48,7 +49,7 @@ import type { TelemetrySignalConfig } from "./telemetry-export";
  */
 const FLUSH_INTERVAL_MS = 30_000;
 
-const SERVICE_NAME = "oh-my-pi";
+const SERVICE_NAME = APP_NAME;
 
 type OtelLogLevel = "none" | logger.LogLevel;
 

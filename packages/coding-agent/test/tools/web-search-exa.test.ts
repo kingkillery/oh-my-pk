@@ -656,7 +656,7 @@ describe("searchExa", () => {
 			fetch: fetchMock,
 		});
 
-		expect(headers?.["x-exa-source"]).toBe("oh-my-pi");
+		expect(headers?.["x-exa-source"]).toBe("oh-my-pk");
 		expect(capturedRequestBody?.params).toEqual({
 			name: "web_search_exa",
 			arguments: {

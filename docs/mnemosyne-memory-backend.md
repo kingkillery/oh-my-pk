@@ -1,6 +1,6 @@
 # Mnemopi memory backend
 
-Oh My Pi can use `@pk-nerdsaver-ai/pi-mnemopi` as a local long-term memory backend.
+oh-my-pk can use `@pk-nerdsaver-ai/pi-mnemopi` as a local long-term memory backend.
 
 Set:
 

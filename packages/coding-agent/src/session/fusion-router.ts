@@ -14,6 +14,7 @@
  *   number from the pool, where tier 1 = most powerful … 5 = least intelligent.
  */
 import { type Api, completeSimple, type Model } from "@pk-nerdsaver-ai/pi-ai";
+import { modelsAreEqual } from "@pk-nerdsaver-ai/pi-catalog/models";
 import { logger, prompt } from "@pk-nerdsaver-ai/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { resolveRoleSelection } from "../config/model-resolver";
@@ -27,6 +28,23 @@ export type FusionRoute = "cheap" | "frontier" | number;
 export interface FusionPoolTier {
 	tier: number;
 	selector: string;
+}
+
+export interface FusionAutoRouteState {
+	enabled: boolean;
+	mode: string;
+	routingDisabled: boolean;
+	baseModel: Model | undefined;
+	lastAutoModel: Model | undefined;
+	currentModel: Model | undefined;
+}
+
+/** Whether a failed tool result belongs to an active auto-downgraded main-model stretch. */
+export function isFusionAutoDowngradedRoute(state: FusionAutoRouteState): boolean {
+	const { enabled, mode, routingDisabled, baseModel, lastAutoModel, currentModel } = state;
+	if (!enabled || mode !== "escalate" || routingDisabled) return false;
+	if (!baseModel || !lastAutoModel || !currentModel) return false;
+	return !modelsAreEqual(baseModel, currentModel) && modelsAreEqual(lastAutoModel, currentModel);
 }
 
 export const FUSION_POOL_MIN_TIER = 1;
@@ -123,7 +141,7 @@ export function resolveEffectiveFusionRoute(
 function getRouteModel(registry: ModelRegistry, settings: Settings): Model<Api> | undefined {
 	const availableModels = registry.getAvailable();
 	if (availableModels.length === 0) return undefined;
-	return resolveRoleSelection(["smol", "title", "commit"], settings, availableModels, registry)?.model;
+	return resolveRoleSelection(["smol", "title", "commit"], settings, availableModels)?.model;
 }
 
 /** Render the pool-mode classifier system prompt. Exported for tests. */

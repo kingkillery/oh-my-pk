@@ -74,6 +74,8 @@ export interface SlashCommandRuntime {
 	 * consistent view after plugin or project-scope changes.
 	 */
 	reloadPlugins: () => Promise<void>;
+	/** Ensure the warm Fusion sidekick exists after a text-mode enable operation. */
+	ensureFusionSidekick?: () => Promise<void>;
 	/**
 	 * Keep the host's prompt turn open until the session goes idle.
 	 *

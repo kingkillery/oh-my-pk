@@ -1,7 +1,7 @@
 {
-  "name": "@pk/llm-router-agent",
+  "name": "@pk-nerdsaver-ai/llm-router-agent",
   "version": "0.2.0",
-  "description": "Configurable LLM and tool-use routing extension with context-saving capture and training export, compatible with Oh My Pi extension loading.",
+  "description": "Configurable LLM and tool-use routing extension with context-saving capture and training export, compatible with Oh My PK extension loading.",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -48,7 +48,7 @@
   },
   "keywords": [
     "llm-router",
-    "oh-my-pi",
+    "oh-my-pk",
     "omp",
     "ai-agent",
     "model-routing",

@@ -20,7 +20,7 @@ that terminal protocol.
 ## Usage
 
 ```typescript
-import { encodeSixel, grep, pdfToMarkdown } from "@oh-my-pi/pi-natives";
+import { encodeSixel, grep, pdfToMarkdown } from "@pk-nerdsaver-ai/pi-natives";
 
 // Grep for a pattern
 const results = await grep({

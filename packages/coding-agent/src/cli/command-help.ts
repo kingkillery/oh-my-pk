@@ -1,7 +1,8 @@
 import type { CommandMetadata } from "@pk-nerdsaver-ai/pi-utils/cli";
+import { APP_NAME } from "@pk-nerdsaver-ai/pi-utils/dirs";
 
 export const acpHelp = {
-	description: "Run Oh My Pi as an ACP (Agent Client Protocol) server over stdio",
+	description: `Run ${APP_NAME} as an ACP (Agent Client Protocol) server over stdio`,
 } satisfies CommandMetadata;
 
 export const agentsHelp = { description: "Manage bundled task agents" } satisfies CommandMetadata;

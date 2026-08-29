@@ -207,7 +207,7 @@ impl MacOSPowerAssertion {
 			.as_ref()
 			.and_then(|value| value.reason.as_deref())
 			.filter(|value| !value.trim().is_empty())
-			.unwrap_or("Oh My Pi agent session");
+			.unwrap_or("oh-my-pk agent session");
 		let idle = options.as_ref().and_then(|v| v.idle).unwrap_or(false);
 		let system = options.as_ref().and_then(|v| v.system).unwrap_or(false);
 		let user = options.as_ref().and_then(|v| v.user).unwrap_or(false);

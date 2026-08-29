@@ -2,7 +2,7 @@
  * 9router Controller — dynamic model-role routing through the local 9router gateway.
  *
  * 9router exposes a large pool of model combos (subscription, cheap, free). This
- * controller picks a concrete working combo for each oh-my-pi model role and
+ * controller picks a concrete working combo for each oh-my-pk model role and
  * writes it into `Settings.modelRoles`, so the existing resolver uses it as a
  * runtime override.
  *
@@ -21,6 +21,7 @@ import type { Settings } from "./settings";
 
 const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
 const DEFAULT_PROBE_MAX_TOKENS = 8;
+const LEGACY_UPSTREAM_FORK_COMBO_ID = "oh-my-pi-fork";
 
 /** One slot: a model role and the ordered 9router combo candidates to try. */
 export interface NineRouterSlot {
@@ -98,7 +99,7 @@ export function defaultNineRouterSlots(): NineRouterSlot[] {
 			role: "default",
 			candidates: [
 				"ompk",
-				"oh-my-pi-fork",
+				LEGACY_UPSTREAM_FORK_COMBO_ID,
 				"omp-default",
 				"cx/gpt-5.5",
 				"cc/claude-opus-4-8",
@@ -115,7 +116,7 @@ export function defaultNineRouterSlots(): NineRouterSlot[] {
 			role: "max-intelligence",
 			candidates: [
 				"ompk",
-				"oh-my-pi-fork",
+				LEGACY_UPSTREAM_FORK_COMBO_ID,
 				"omp-default",
 				"cx/gpt-5.5",
 				"cc/claude-opus-4-8",
@@ -128,7 +129,7 @@ export function defaultNineRouterSlots(): NineRouterSlot[] {
 			role: "slow",
 			candidates: [
 				"ompk",
-				"oh-my-pi-fork",
+				LEGACY_UPSTREAM_FORK_COMBO_ID,
 				"deepseek-v4-pro-rr",
 				"deepseek-v4-pro-fallback",
 				"cc/claude-opus-4-8",
@@ -194,7 +195,7 @@ export function defaultNineRouterSlots(): NineRouterSlot[] {
 		},
 		{
 			role: "plan",
-			candidates: ["ompk", "oh-my-pi-fork", "omp-default", "cx/gpt-5.5", "cc/claude-opus-4-8"],
+			candidates: ["ompk", LEGACY_UPSTREAM_FORK_COMBO_ID, "omp-default", "cx/gpt-5.5", "cc/claude-opus-4-8"],
 		},
 		{
 			role: "designer",
@@ -246,7 +247,7 @@ export function defaultNineRouterSlots(): NineRouterSlot[] {
 		},
 		{
 			role: "advisor",
-			candidates: ["ompk", "oh-my-pi-fork", "omp-default", "cx/gpt-5.5", "cc/claude-opus-4-8"],
+			candidates: ["ompk", LEGACY_UPSTREAM_FORK_COMBO_ID, "omp-default", "cx/gpt-5.5", "cc/claude-opus-4-8"],
 		},
 		{
 			role: "fast-context",
@@ -266,7 +267,7 @@ export function defaultNineRouterSlots(): NineRouterSlot[] {
 	];
 }
 
-/** Controller that picks working 9router combos for oh-my-pi model roles. */
+/** Controller that picks working 9router combos for oh-my-pk model roles. */
 export class NineRouterController {
 	readonly #settings: Settings;
 	readonly #baseUrl: string;

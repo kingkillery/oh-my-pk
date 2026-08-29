@@ -23,10 +23,12 @@ import {
 	withTimeoutSignal,
 } from "../utils/fetch-timeout";
 
-const REPO = "can1357/oh-my-pi";
+const REPO = "kingkillery/oh-my-pk";
+const DIST_BASE = Bun.env.OMP_DIST_BASE ?? "https://oh-my-pk.pkking.computer";
 const PACKAGE = "@pk-nerdsaver-ai/pi-coding-agent";
-const HOMEBREW_FORMULA = "can1357/tap/omp";
-const MISE_TOOL = "github:can1357/oh-my-pi";
+const HOMEBREW_FORMULA = "kingkillery/tap/omp";
+const MISE_TOOL = "github:kingkillery/oh-my-pk";
+const ENABLE_UNPUBLISHED_PACKAGE_MANAGER_UPDATES = false;
 const NIX_STORE_DIR = "/nix/store";
 /**
  * Official npm registry origin.
@@ -720,12 +722,12 @@ export function resolveUpdateTargetFromPath(
  * valid. The `bun pm bin -g` / `npm prefix -g` probes are then skipped unless
  * the launcher is a symlink, whose bin dirs distinguish a manager launcher
  * (taken over in place) from a foreign symlink (resolved to its real binary).
- * Homebrew/mise detection always runs: both managers install GitHub release
- * binaries and stay valid regardless of how the release is distributed.
+ * Homebrew/mise detection remains disabled until fork-owned package-manager
+ * channels are published; binary and npm recovery stay explicit in the meantime.
  */
 async function resolveUpdateTarget(options: { allowPackageManagers: boolean }): Promise<UpdateTarget> {
-	const homebrewPrefix = await getHomebrewFormulaPrefix();
-	const miseAvailable = $which("mise") !== undefined;
+	const homebrewPrefix = ENABLE_UNPUBLISHED_PACKAGE_MANAGER_UPDATES ? await getHomebrewFormulaPrefix() : undefined;
+	const miseAvailable = ENABLE_UNPUBLISHED_PACKAGE_MANAGER_UPDATES && $which("mise") !== undefined;
 	const miseBinDirs = miseAvailable ? await getMiseBinDirs() : [];
 	const miseDataDir = miseAvailable ? getMiseDataDir() : undefined;
 	const ompPath = resolveOmpPath();
@@ -1926,8 +1928,8 @@ export async function updateViaShimTakeover(
  */
 function installerHint(): string {
 	return process.platform === "win32"
-		? "& ([scriptblock]::Create((irm https://omp.sh/install.ps1))) -Binary"
-		: "curl -fsSL https://omp.sh/install | sh -s -- --binary";
+		? "& ([scriptblock]::Create((irm https://oh-my-pk.pkking.computer/install.ps1))) -Binary"
+		: "curl -fsSL https://oh-my-pk.pkking.computer/install | sh -s -- --binary";
 }
 
 /** Persisted channel, or undefined when settings are unavailable (SDK/test embedding without `Settings.init()`). */

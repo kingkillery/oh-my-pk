@@ -2,7 +2,7 @@
   "type": "module",
   "name": "@pk-nerdsaver-ai/pi-mnemopi",
   "version": "18.0.9",
-  "description": "Local SQLite memory engine for Oh My Pi agents",
+  "description": "Local SQLite memory engine for Oh My PK agents",
   "homepage": "https://oh-my-pk.pkking.computer",
   "author": "Stencil Labs, Inc.",
   "contributors": [

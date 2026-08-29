@@ -3,9 +3,9 @@
  * Publish workspace packages.
  *
  * The default mode publishes public JS packages and the `@pk-nerdsaver-ai/pi-natives`
- * core package after all generated native leaf packages succeed in the dedicated
- * `release_npm_native` matrix. Each leaf is published with `--native-leaf <tag>`
- * from already-built same-run `.node` artifacts.
+ * core package after `release_native_leaves` publishes every generated native leaf
+ * from already-built same-run `.node` artifacts. The core publication stays gated
+ * on that dedicated job so optional native dependencies are already available.
  *
  * For each public TypeScript package we:
  *   1. Emit `.d.ts` declarations into `dist/types/` so consumers get
@@ -89,6 +89,7 @@ const repoRoot = path.join(import.meta.dir, "..");
 const isDryRun = process.argv.includes("--dry-run");
 const MIT_LICENSE = "LICENSE";
 const THIRD_PARTY_NOTICES = "THIRD-PARTY-NOTICES.txt";
+const defaultPrepareConcurrency = 4;
 
 /** Selects the legal payload contract for a publishable first-party package. */
 export function legalPayloadFiles(license: string | undefined): string[] {
@@ -371,10 +372,10 @@ export async function prepareNativeCorePackage(pkgDir: string, write: boolean): 
  *
  * The tarball is handed to `npm publish` — not `bun publish` — because only the
  * npm CLI performs the OIDC trusted-publishing token exchange; `bun publish`
- * has no OIDC support (oven-sh/bun#22423). CI grants `id-token: write` and
- * intentionally supplies no long-lived token fallback. Every published package
- * must therefore have an exact npm trusted-publisher entry before the release.
- * npm auto-enables provenance on the OIDC path, so we never pass `--provenance`.
+ * has no OIDC support (oven-sh/bun#22423). CI grants `id-token: write`; the
+ * workflow's existing `NPM_TOKEN` fallback is retained only for bootstrap or
+ * migration while trusted publishers are configured. npm auto-enables
+ * provenance on the OIDC path, so we never pass `--provenance`.
  */
 export interface PackedTarball {
 	name: string;
@@ -471,22 +472,7 @@ async function publishNativeLeafPackage(tag: string): Promise<void> {
 	await publishGeneratedLeafPackage(leaf);
 }
 
-async function publishNativePackage(pkg: PublishPackage): Promise<void> {
-	const pkgDir = path.join(repoRoot, pkg.dir);
-	const manifest = await prepareNativeCorePackage(pkgDir, !isDryRun);
-	const name = manifest.name ?? path.basename(pkg.dir);
-	const version = manifest.version;
-	if (typeof version !== "string") throw new Error(`Missing version in ${pkg.dir}/package.json`);
-	if (isDryRun) {
-		console.log(`DRY RUN native core manifest rewrite (${pkg.dir})`);
-		console.log(
-			JSON.stringify({ optionalDependencies: manifest.optionalDependencies, files: manifest.files }, null, "\t"),
-		);
-	}
-	await packAndPublish(pkgDir, name, version);
-}
-
-async function publishPackage(pkg: PublishPackage): Promise<void> {
+async function preparePublishPackage(pkg: PublishPackage): Promise<PreparedPublishPackage> {
 	if (pkg.kind === "native") {
 		const pkgDir = path.join(repoRoot, pkg.dir);
 		const manifest = await prepareNativeCorePackage(pkgDir, !isDryRun);
@@ -501,13 +487,28 @@ async function publishPackage(pkg: PublishPackage): Promise<void> {
 	}
 	const manifest = await preparePackage(pkg);
 	const name = manifest.name ?? path.basename(pkg.dir);
-	const version = manifest.version;
-	if (typeof version !== "string") throw new Error(`Missing version in ${pkg.dir}/package.json`);
-	if (manifest.private) {
-		console.log(`Skipping ${name} (private)`);
+	return { pkg, manifest, name };
+}
+
+async function publishPreparedPackage(prepared: PreparedPublishPackage): Promise<void> {
+	if (prepared.manifest.private) {
+		console.log(`Skipping ${prepared.name} (private)`);
 		return;
 	}
-	await packAndPublish(pkgDir, name, version);
+	const version = prepared.manifest.version;
+	if (typeof version !== "string") {
+		throw new Error(`Missing version in ${prepared.pkg.dir}/package.json`);
+	}
+	await packAndPublish(path.join(repoRoot, prepared.pkg.dir), prepared.name, version);
+}
+
+async function publishAllPackages(): Promise<void> {
+	const concurrency = parsePrepareConcurrency();
+	console.log(`Preparing ${packages.length} package manifests/types (concurrency=${concurrency})...`);
+	const prepared = await mapConcurrent(packages, concurrency, pkg => preparePublishPackage(pkg));
+	for (const entry of prepared) {
+		await publishPreparedPackage(entry);
+	}
 }
 
 if (import.meta.main) {

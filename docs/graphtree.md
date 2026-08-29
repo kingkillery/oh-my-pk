@@ -1,6 +1,6 @@
 # GraphTree
 
-`/graphtree` is a slash command for orchestrating multi-agent worktree execution and managing recursive agent lifecycles within an oh-my-pi session. It leverages oh-my-pi's core primitives (`AgentRegistry`, `AgentLifecycleManager`, settings bounds, and isolated task worktrees) alongside a static task-planning prompt.
+`/graphtree` is a slash command for orchestrating multi-agent worktree execution and managing recursive agent lifecycles within an oh-my-pk session. It leverages oh-my-pk's core primitives (`AgentRegistry`, `AgentLifecycleManager`, settings bounds, and isolated task worktrees) alongside a static task-planning prompt.
 
 `/graphtree run` is prompt-driven: it shapes how the model decomposes objectives, respects configured bounds, and dispatches subagent work. It does not replace the underlying task execution engine with an autonomous background daemon.
 
@@ -29,9 +29,9 @@
 
 ## External Fractal Parity Matrix
 
-The table below maps capability concepts from external recursive agent architectures (`plasma-ai/fractal`, `TinyAGI/fractals`) to local oh-my-pi implementation primitives:
+The table below maps capability concepts from external recursive agent architectures (`plasma-ai/fractal`, `TinyAGI/fractals`) to local oh-my-pk implementation primitives:
 
-| Feature / Capability | External Systems (`plasma-ai/fractal`, `TinyAGI/fractals`) | Local oh-my-pi Primitive | Parity Implementation Details |
+| Feature / Capability | External Systems (`plasma-ai/fractal`, `TinyAGI/fractals`) | Local oh-my-pk Primitive | Parity Implementation Details |
 | --- | --- | --- | --- |
 | **Recursive Dynamic Decomposition** | Dynamic runtime sub-tree spawning | `AgentRegistry` & nested task execution | Subagents spawn child subagents tracked in `AgentRegistry` with parent/child links. |
 | **Isolated Worktrees & Workspaces** | Worktree clones & isolated folders | `task.isolation.mode` & `git worktree` | `/graphtree init` creates isolated worktrees; task isolation mode (`auto`, `apfs`, `overlayfs`, `reflink`) handles CoW / worktree execution. |

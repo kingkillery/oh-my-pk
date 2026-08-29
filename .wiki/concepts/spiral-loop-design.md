@@ -2,7 +2,7 @@
 type: Design
 title: Spiral /loop design
 description: A loop.mode "spiral" that runs a verifier/synthesis step between iterations so synthesized context compounds until a plan completes.
-tags: [loop, agent, verifier, synthesis, reflexion, self-refine, oh-my-pi]
+tags: [loop, agent, verifier, synthesis, reflexion, self-refine, oh-my-pk]
 timestamp: 2026-06-20T00:00:00Z
 status: implemented
 ---

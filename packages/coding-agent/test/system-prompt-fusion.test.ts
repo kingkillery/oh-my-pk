@@ -27,32 +27,48 @@ describe("system prompt fusion sidekick policy", () => {
 
 	afterEach(cleanupTempHome(() => ({ tempDir, tempHomeDir, originalHome })));
 
-	async function render(opts: {
+	type FusionPromptOptions = {
 		fusionSidekick?: boolean;
 		fusionEscalate?: boolean;
 		sidekickModel?: string;
+		sidekickId?: string;
 		toolNames?: string[];
-	}): Promise<string> {
+	};
+
+	async function renderBlocks(opts: FusionPromptOptions): Promise<string[]> {
 		const { systemPrompt } = await buildSystemPrompt({
 			cwd: tempDir,
 			contextFiles: [],
 			skills: [],
 			rules: [],
-			toolNames: opts.toolNames ?? ["task"],
+			toolNames: opts.toolNames ?? ["hub"],
 			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
 			fusionSidekick: opts.fusionSidekick,
 			fusionEscalate: opts.fusionEscalate,
 			sidekickModel: opts.sidekickModel,
+			sidekickId: opts.sidekickId,
 		});
-		return systemPrompt.join("\n\n");
+		return systemPrompt;
+	}
+
+	async function render(opts: FusionPromptOptions): Promise<string> {
+		return (await renderBlocks(opts)).join("\n\n");
 	}
 
 	it("injects the sidekick policy with the configured model when enabled", async () => {
-		const rendered = await render({ fusionSidekick: true, sidekickModel: "vendor/cheapo-1" });
+		const rendered = await render({
+			fusionSidekick: true,
+			sidekickModel: "vendor/cheapo-1",
+			sidekickId: "Sidekick-7",
+		});
 		expect(rendered).toContain("Sidekick (cost mode)");
 		expect(rendered).toContain("Minimize your own actions");
 		// The configured sidekick model is interpolated into the policy.
 		expect(rendered).toContain("vendor/cheapo-1");
+		expect(rendered).toContain("`Sidekick-7`");
+		expect(rendered).toContain('op: "send"');
+		expect(rendered).toContain('to: "Sidekick-7"');
+		expect(rendered).toContain("Do not spawn another task agent");
 	});
 
 	it("adds the escalate guidance only in escalate mode", async () => {
@@ -64,12 +80,35 @@ describe("system prompt fusion sidekick policy", () => {
 		expect(delegateOnly).not.toContain("escalate the hard parts");
 	});
 
+	it("keeps every stable prompt block byte-identical before the terminal Fusion suffix", async () => {
+		const withoutFusion = await renderBlocks({ fusionSidekick: false });
+		const delegate = await renderBlocks({
+			fusionSidekick: true,
+			fusionEscalate: false,
+			sidekickModel: "vendor/cheap",
+			sidekickId: "Sidekick-1",
+		});
+		const escalate = await renderBlocks({
+			fusionSidekick: true,
+			fusionEscalate: true,
+			sidekickModel: "vendor/strong",
+			sidekickId: "Sidekick-9",
+		});
+
+		expect(delegate.slice(0, -1)).toEqual(withoutFusion);
+		expect(escalate.slice(0, -1)).toEqual(withoutFusion);
+		expect(delegate.at(-1)).toContain('to: "Sidekick-1"');
+		expect(delegate.at(-1)).not.toContain("escalate the hard parts");
+		expect(escalate.at(-1)).toContain('to: "Sidekick-9"');
+		expect(escalate.at(-1)).toContain("escalate the hard parts");
+	});
+
 	it("omits the sidekick policy when fusion is off", async () => {
 		const rendered = await render({ fusionSidekick: false });
 		expect(rendered).not.toContain("Sidekick (cost mode)");
 	});
 
-	it("omits the sidekick policy when the task tool is unavailable", async () => {
+	it("omits the sidekick policy when the hub tool is unavailable", async () => {
 		const rendered = await render({ fusionSidekick: true, toolNames: [] });
 		expect(rendered).not.toContain("Sidekick (cost mode)");
 	});

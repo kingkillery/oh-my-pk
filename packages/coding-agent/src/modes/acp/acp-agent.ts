@@ -69,6 +69,7 @@ import { theme } from "../../modes/theme/theme";
 import { normalizePlanTitle, type PlanApprovalDetails, resolveApprovedPlan } from "../../plan-mode/approved-plan";
 import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
 import { BlobStore, resolveImageDataSync } from "../../session/blob-store";
+import * as fusionSidekick from "../../session/fusion-sidekick";
 import { isSilentAbort, SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import type { UsageStatistics } from "../../session/session-entries";
 import type { SessionInfo as StoredSessionInfo } from "../../session/session-listing";
@@ -1120,6 +1121,17 @@ export class AcpAgent implements Agent {
 			output: output => this.#emitCommandOutput(record, output),
 			refreshCommands: () => this.#emitAvailableCommandsUpdate(record),
 			reloadPlugins: () => this.#reloadPluginState(record),
+			ensureFusionSidekick: () =>
+				fusionSidekick.ensureFusionSidekick(
+					{
+						session: record.session,
+						settings: record.session.settings,
+						sessionManager: record.session.sessionManager,
+						mcpManager: record.mcpManager,
+						eventBus: undefined,
+					},
+					{},
+				),
 			keepTurnOpenUntilIdle: async () => {
 				await record.session.waitForIdle();
 				// `AgentSession.#emit()` does not await listeners, so the retried
@@ -1398,18 +1410,7 @@ export class AcpAgent implements Agent {
 		if (!storedSession) {
 			throw new Error(`ACP session not found: ${sessionId}`);
 		}
-		const record = await this.#openStoredSession(storedSession.path, cwd, mcpServers, sessionId);
-		await fusionSidekick.ensureFusionSidekick(
-			{
-				session: record.session,
-				settings: record.session.settings,
-				sessionManager: record.session.sessionManager,
-				mcpManager: record.mcpManager,
-				eventBus: undefined,
-			},
-			{},
-		);
-		return record;
+		return await this.#openStoredSession(storedSession.path, cwd, mcpServers, sessionId);
 	}
 
 	async #resumeManagedSession(sessionId: string, cwd: string, mcpServers: McpServer[]): Promise<ManagedSessionRecord> {
@@ -1424,18 +1425,7 @@ export class AcpAgent implements Agent {
 		if (!storedSession) {
 			throw new Error(`ACP session not found: ${sessionId}`);
 		}
-		const record = await this.#openStoredSession(storedSession.path, cwd, mcpServers, sessionId);
-		await fusionSidekick.ensureFusionSidekick(
-			{
-				session: record.session,
-				settings: record.session.settings,
-				sessionManager: record.session.sessionManager,
-				mcpManager: record.mcpManager,
-				eventBus: undefined,
-			},
-			{},
-		);
-		return record;
+		return await this.#openStoredSession(storedSession.path, cwd, mcpServers, sessionId);
 	}
 	async #forkManagedSession(params: ForkSessionRequest): Promise<ManagedSessionRecord> {
 		const sourcePath = await this.#resolveForkSourceSessionPath(params.sessionId);
@@ -1496,6 +1486,17 @@ export class AcpAgent implements Agent {
 			await this.#configureExtensions(record);
 			await this.#configureMcpServers(record, mcpServers);
 			this.#sessions.set(session.sessionId, record);
+			const fusionHost = () => ({
+				session: record.session,
+				settings: record.session.settings,
+				sessionManager: record.session.sessionManager,
+				mcpManager: record.mcpManager,
+				eventBus: undefined,
+			});
+			session.setSessionSwitchReconciler?.({
+				afterCommit: () => fusionSidekick.ensureFusionSidekick(fusionHost(), {}),
+			});
+			await fusionSidekick.ensureFusionSidekick(fusionHost(), {});
 			return record;
 		} catch (error) {
 			await this.#disposeSessionRecord(record);

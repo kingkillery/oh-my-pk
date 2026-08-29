@@ -7,7 +7,7 @@ gate does not finish either of the others:
 | --- | --- | --- |
 | **GitHub** | the `vX.Y.Z` tag and GitHub Release assets | release history and direct GitHub asset consumers |
 | **Hugging Face** | five standalone binaries in the private model repository, plus its `VERSION` pointer | explicit `--binary` / `-Binary` installs |
-| **npm** | the selected 13-package core/workspace graph and all five native leaf packages | the default installer mode and direct `bun install -g` |
+| **npm** | the selected 14-package core/workspace graph and all five native leaf packages | the default installer mode and direct `bun install -g` |
 
 `bun scripts/release.ts X.Y.Z` creates the tag and drives the GitHub gate. It
 does not publish the private Hugging Face channel, and a GitHub Release is not
@@ -158,7 +158,7 @@ leaf packages were published; use the complete npm publication route below.
 
 The npm release must publish the same `X.Y.Z` across:
 
-- the selected 13-package core/workspace graph published by
+- the selected 14-package core/workspace graph published by
   [`ci-release-publish.ts`](../scripts/ci-release-publish.ts), including
   `@pk-nerdsaver-ai/pi-coding-agent` and `@pk-nerdsaver-ai/pi-natives`; and
 - `@pk-nerdsaver-ai/pi-natives-linux-x64`,
@@ -168,13 +168,13 @@ The npm release must publish the same `X.Y.Z` across:
   `@pk-nerdsaver-ai/pi-natives-win32-x64`.
 
 [`ci-release-publish.ts`](../scripts/ci-release-publish.ts) deliberately splits
-this work. Its default mode publishes the selected 13-package core/workspace
-graph, including the native core package. After the GitHub release is verified,
-the dedicated `release_npm_native` matrix downloads each target's matching
-`.node` artifacts and invokes the native-leaf mode before `release_npm` can
-publish the core/workspace graph.
+this work. Its default mode publishes the selected 14-package core/workspace
+graph, including the native core package. After validation and binary builds,
+the dedicated `release_native_leaves` job publishes the five leaves in parallel
+with GitHub release publication and verification. `release_npm` waits for both
+branches before publishing the core/workspace graph.
 
-Trusted publishing must be configured for all 18 npm packages with repository
+Trusted publishing must be configured for all 19 npm packages with repository
 `kingkillery/oh-my-pk`, workflow `ci.yml`, and no npm environment restriction.
 A package that has never been published cannot yet have that trusted publisher
 configured; seed it once with a short-lived granular token, configure the
@@ -213,7 +213,7 @@ the GitHub Release or Hugging Face `VERSION` value.
 - [ ] Hugging Face `VERSION` contains exactly `vX.Y.Z`.
 - [ ] `/bin/vX.Y.Z/<filename>` maps to each expected platform asset through the
       Worker.
-- [ ] npm has the selected 13-package core/workspace graph and all five native
+- [ ] npm has the selected 14-package core/workspace graph and all five native
       leaf packages at `X.Y.Z`.
 - [ ] The default installer resolves the npm release; explicit binary mode
       resolves the Hugging Face release.

@@ -2,7 +2,7 @@
  * Open Knowledge Format (OKF) Discovery Provider
  *
  * Loads OKF v0.1 concept documents from the project's `.wiki/` knowledge bundle
- * (the `oh-my-pi` OKF root). The user-level equivalent lives under
+ * (the `oh-my-pk` OKF root). The user-level equivalent lives under
  * `~/.ompk/okf/`.
  *
  * Spec: https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md

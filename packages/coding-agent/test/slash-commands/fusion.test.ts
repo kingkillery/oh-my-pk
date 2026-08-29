@@ -15,6 +15,7 @@ import type { SlashCommandRuntime } from "../../src/slash-commands/types";
 function makeRuntime(initial: Record<string, unknown> = {}) {
 	const store = new Map<string, unknown>(Object.entries(initial));
 	const outputs: string[] = [];
+	const prompt = { refreshes: 0 };
 	const settings = {
 		get: (key: string) => store.get(key),
 		set: (key: string, value: unknown) => {
@@ -30,6 +31,10 @@ function makeRuntime(initial: Record<string, unknown> = {}) {
 			frontier: emptyFusionUsage(),
 			sidekick: emptyFusionUsage(),
 		}),
+		refreshBaseSystemPrompt: () => {
+			prompt.refreshes++;
+			return Promise.resolve();
+		},
 	} as unknown as AgentSession;
 	const runtime = {
 		session,
@@ -42,7 +47,7 @@ function makeRuntime(initial: Record<string, unknown> = {}) {
 		refreshCommands: () => {},
 		reloadPlugins: () => Promise.resolve(),
 	} as unknown as SlashCommandRuntime;
-	return { runtime, store, outputs };
+	return { runtime, store, outputs, prompt };
 }
 
 function runFusion(args: string, initial?: Record<string, unknown>) {
@@ -102,16 +107,18 @@ describe("/fusion verbs", () => {
 	});
 
 	test("off disables fusion without touching mode", async () => {
-		const { store, result } = runFusion("off", { "fusion.enabled": true, "fusion.mode": "escalate" });
+		const { store, prompt, result } = runFusion("off", { "fusion.enabled": true, "fusion.mode": "escalate" });
 		await result;
 		expect(store.get("fusion.enabled")).toBe(false);
 		expect(store.get("fusion.mode")).toBe("escalate");
+		expect(prompt.refreshes).toBe(1);
 	});
 
 	test("toggle flips fusion.enabled", async () => {
-		const { store, result } = runFusion("toggle", { "fusion.enabled": true, "fusion.mode": "escalate" });
+		const { store, prompt, result } = runFusion("toggle", { "fusion.enabled": true, "fusion.mode": "escalate" });
 		await result;
 		expect(store.get("fusion.enabled")).toBe(false);
+		expect(prompt.refreshes).toBe(1);
 	});
 
 	test("mode sets a valid value and rejects an invalid one", async () => {
@@ -123,6 +130,12 @@ describe("/fusion verbs", () => {
 		await invalid.result;
 		expect(invalid.store.get("fusion.mode")).toBe("escalate");
 		expect(invalid.outputs.join(" ")).toContain("Usage: /fusion mode");
+	});
+
+	test("mode off refreshes the cached prompt after disabling Fusion", async () => {
+		const { prompt, result } = runFusion("mode off", { "fusion.enabled": true, "fusion.mode": "escalate" });
+		await result;
+		expect(prompt.refreshes).toBe(1);
 	});
 
 	test("TUI mode changes repaint the live status-line footer", async () => {

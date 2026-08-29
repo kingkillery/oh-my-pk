@@ -52,6 +52,7 @@ class FakeAgentSession {
 	planModeState: PlanModeState | undefined;
 	waitForIdleCalls = 0;
 	asyncJobDrain: ((options?: { timeoutMs?: number }) => Promise<boolean>) | undefined;
+	#sessionSwitchReconciler: { afterCommit?: () => Promise<void> } | undefined;
 	#listeners = new Set<(event: AgentSessionEvent) => void>();
 
 	get settings(): Settings {
@@ -131,9 +132,11 @@ class FakeAgentSession {
 	}
 
 	async switchSession(sessionPath: string): Promise<boolean> {
+		const previousSessionPath = this.sessionManager.getSessionFile();
 		await this.sessionManager.setSessionFile(sessionPath);
 		this.sessionId = this.sessionManager.getSessionId();
 		this.agent.sessionId = this.sessionId;
+		if (previousSessionPath !== sessionPath) await this.#sessionSwitchReconciler?.afterCommit?.();
 		return true;
 	}
 
@@ -148,6 +151,7 @@ class FakeAgentSession {
 		await this.sessionManager.newSession();
 		this.sessionId = this.sessionManager.getSessionId();
 		this.agent.sessionId = this.sessionId;
+		await this.#sessionSwitchReconciler?.afterCommit?.();
 		return true;
 	}
 
@@ -179,6 +183,10 @@ class FakeAgentSession {
 	setActiveToolsByName(_toolNames: string[]): void {}
 
 	setClientBridge(_bridge: unknown): void {}
+
+	setSessionSwitchReconciler(reconciler: { afterCommit?: () => Promise<void> } | null): void {
+		this.#sessionSwitchReconciler = reconciler ?? undefined;
+	}
 
 	getPlanModeState(): PlanModeState | undefined {
 		return this.planModeState;
@@ -348,6 +356,26 @@ async function createHarness(): Promise<AgentHarness> {
 // ---------------------------------------------------------------------------
 
 describe("ACP agent fusion sidekick spawn", () => {
+	it("spawns the sidekick when /fusion on enables Fusion mid-session", async () => {
+		const spy = track(spyOn(fusionSidekickModule, "ensureFusionSidekick").mockImplementation(async () => {}));
+		const harness = await createHarness();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		spy.mockClear();
+
+		await harness.agent.prompt({
+			sessionId: created.sessionId,
+			prompt: [{ type: "text", text: "/fusion on" }],
+		});
+
+		expect(session.settings.get("fusion.enabled")).toBe(true);
+		expect(spy).toHaveBeenCalledTimes(1);
+		const [host, options] = spy.mock.calls[0]!;
+		expect(host.session).toBe(session as unknown as AgentSession);
+		expect(host.sessionManager).toBe(session.sessionManager);
+		expect(options).toEqual({});
+	});
+
 	it("calls ensureFusionSidekick when newSession creates a fresh session", async () => {
 		const spy = track(spyOn(fusionSidekickModule, "ensureFusionSidekick"));
 		const harness = await createHarness();
@@ -363,6 +391,28 @@ describe("ACP agent fusion sidekick spawn", () => {
 		expect(host.mcpManager).toBeUndefined();
 		expect(host.eventBus).toBeUndefined();
 		expect(options).toEqual({});
+	});
+
+	it("reconciles the sidekick after committed ACP session transitions", async () => {
+		const spy = track(spyOn(fusionSidekickModule, "ensureFusionSidekick").mockImplementation(async () => {}));
+		const harness = await createHarness();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		spy.mockClear();
+
+		await session.newSession();
+		expect(spy).toHaveBeenCalledTimes(1);
+		expect(spy.mock.calls[0]?.[1]).toEqual({});
+
+		spy.mockClear();
+		const targetManager = SessionManager.create(harness.cwdB);
+		await targetManager.ensureOnDisk();
+		const targetPath = targetManager.getSessionFile();
+		expect(targetPath).toBeTruthy();
+		await targetManager.close();
+		await session.switchSession(targetPath!);
+		expect(spy).toHaveBeenCalledTimes(1);
+		expect(spy.mock.calls[0]?.[1]).toEqual({});
 	});
 
 	it("does NOT call ensureFusionSidekick when resumeManagedSession finds an in-memory session", async () => {

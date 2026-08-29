@@ -1,8 +1,8 @@
 {
   "name": "hello-extension",
   "version": "1.0.0",
-  "description": "Minimal oh-my-pi extension example",
-  "homepage": "https://github.com/kingkillery/oh-my-pi",
+  "description": "Minimal oh-my-pk extension example",
+  "homepage": "https://github.com/kingkillery/oh-my-pk",
   "omp": {
     "extensions": ["./index.ts"]
   }

@@ -1,8 +1,8 @@
 # Swarm Extension
 
-Multi-agent orchestration for oh-my-pi. Define agent workflows in YAML — pipelines, parallel fan-outs, sequential chains, or any DAG — and run them unattended until completion.
+Multi-agent orchestration for oh-my-pk. Define agent workflows in YAML — pipelines, parallel fan-outs, sequential chains, or any DAG — and run them unattended until completion.
 
-Each agent is a full oh-my-pi subagent with access to every tool: bash, python, read, write, edit, grep, find, fetch, web_search, browser. The orchestrator manages lifecycle and ordering; agents communicate through the shared workspace filesystem.
+Each agent is a full oh-my-pk subagent with access to every tool: bash, python, read, write, edit, grep, find, fetch, web_search, browser. The orchestrator manages lifecycle and ordering; agents communicate through the shared workspace filesystem.
 
 Use it for anything: research pipelines, code generation, data processing, content creation, analysis workflows, CI-like automation — any multi-step task that benefits from specialized agents working in coordination.
 
@@ -28,7 +28,7 @@ nohup omp-swarm path/to/swarm.yaml \
 
 The standalone runner has no timeout. It runs iteration after iteration until the pipeline finishes or you kill it.
 
-### Inside oh-my-pi (TUI)
+### Inside oh-my-pk (TUI)
 
 Register the extension in your config (`~/.ompk/config.json` or `.ompk/config.json`):
 
@@ -384,7 +384,7 @@ Execution per iteration: scraper_a + scraper_b (wave 1) -> transformer (wave 2) 
 
 ### What Agents Can Do
 
-Each agent is a full oh-my-pi session. It can:
+Each agent is a full oh-my-pk session. It can:
 
 - **bash/python**: Run commands, scripts, install packages, process data
 - **read/write/edit**: Create and modify files in the workspace
@@ -465,7 +465,7 @@ src/cli.ts   Standalone runner (no TUI, no timeout)
 src/swarm/
   schema.ts           YAML parsing + validation
   dag.ts              Dependency graph, cycle detection, topological sort
-  executor.ts         Spawns agents via oh-my-pi's runSubprocess
+  executor.ts         Spawns agents via oh-my-pk's runSubprocess
   pipeline.ts         Iteration loop + wave controller
   state.ts            Filesystem state persistence
   render.ts           Progress display formatting

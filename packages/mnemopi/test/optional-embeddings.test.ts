@@ -133,8 +133,8 @@ describe("optional embeddings", () => {
 				requests += 1;
 				expect(request.headers.get("content-type")).toBe("application/json");
 				expect(request.headers.get("user-agent")).toBe(`omp/${packageJson.version}`);
-				expect(request.headers.get("http-referer")).toBe("https://omp.sh/");
-				expect(request.headers.get("x-openrouter-title")).toBe("omp");
+				expect(request.headers.get("http-referer")).toBe("https://oh-my-pk.pkking.computer/");
+				expect(request.headers.get("x-openrouter-title")).toBe("Oh-My-PK");
 				expect(request.headers.get("x-openrouter-categories")).toBe("cli-agent");
 				expect(request.headers.get("x-title")).toBeNull();
 				expect(request.headers.get("authorization")).toBeNull();

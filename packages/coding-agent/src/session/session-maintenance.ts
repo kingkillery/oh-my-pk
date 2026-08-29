@@ -48,7 +48,13 @@ import {
 	readToolSupersedeKey,
 } from "@pk-nerdsaver-ai/pi-agent-core/compaction/pruning";
 import type { ProtectedToolMatcher } from "@pk-nerdsaver-ai/pi-agent-core/compaction/tool-protection";
-import type { AssistantMessage, CodexCompactionContext, Message, Model, ProviderSessionState } from "@pk-nerdsaver-ai/pi-ai";
+import type {
+	AssistantMessage,
+	CodexCompactionContext,
+	Message,
+	Model,
+	ProviderSessionState,
+} from "@pk-nerdsaver-ai/pi-ai";
 import * as AIError from "@pk-nerdsaver-ai/pi-ai/error";
 import { preferredDialect } from "@pk-nerdsaver-ai/pi-catalog/identity";
 import { modelsAreEqual } from "@pk-nerdsaver-ai/pi-catalog/models";
@@ -310,6 +316,7 @@ export interface SessionMaintenanceHost {
 	resetAdvisorRuntimes(reason?: string): void;
 	rebaseAfterCompaction(): void;
 	recordAnchoredHistoryRewrite(tokensRemoved: number): void;
+	applyFusionCompactionSwitch(summary?: string): Promise<void>;
 	getContextBreakdown(options?: {
 		contextWindow?: number;
 		pendingMessages?: AgentMessage[];
@@ -1056,6 +1063,7 @@ export class SessionMaintenance {
 				codexCompaction,
 				advisorResetReason: "compact",
 			});
+			await this.#host.applyFusionCompactionSwitch(summary);
 
 			const compactionResult: CompactionResult = {
 				summary,
@@ -3787,6 +3795,7 @@ export class SessionMaintenance {
 			details: args.details,
 			preserveData: snapcompact.stripPreservedArchive(args.preserveData),
 		};
+		await this.#host.applyFusionCompactionSwitch(args.summary);
 		// Post-maintenance progress guard — evaluated BEFORE emitting
 		// auto_compaction_end so the TUI rebuild triggered by that event
 		// already reflects any rescue rewrite (elide / image-drop) and the

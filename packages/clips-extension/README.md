@@ -1,6 +1,6 @@
 # @pk-nerdsaver-ai/clips-extension
 
-Oh My Pi client extension for **Clips** — agent-native screen recording (https://gopk.xyz/clip).
+oh-my-pk client extension for **Clips** — agent-native screen recording (https://gopk.xyz/clip).
 
 This package is just the in-CLI integration. The Clips **service** (the Cloudflare Worker, storage, accounts, transcription) lives in its own standalone repository and is not part of the monorepo.
 

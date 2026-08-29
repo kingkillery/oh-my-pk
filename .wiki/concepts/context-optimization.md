@@ -1,7 +1,7 @@
 ---
 type: Concept
 title: Context and token optimization
-description: Tunables that reduce the per-request LLM context baseline for oh-my-pi-fork sessions without losing tools or functionality.
+description: Tunables that reduce the per-request LLM context baseline for oh-my-pk sessions without losing tools or functionality.
 tags: [context, tokens, performance, caching, compaction, tools]
 timestamp: 2026-07-07T00:00:00Z
 ---

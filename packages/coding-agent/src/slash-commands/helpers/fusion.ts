@@ -203,13 +203,20 @@ export async function handleFusionCommand(
 			return commandConsumed();
 		case "on":
 			await runtime.output(enableFusion(runtime));
+			await runtime.ensureFusionSidekick?.();
 			return commandConsumed();
 		case "off":
 			await runtime.output(disableFusion(runtime));
+			await runtime.session.refreshBaseSystemPrompt();
 			return commandConsumed();
 		case "toggle": {
 			const enabled = runtime.settings.get("fusion.enabled") === true;
 			await runtime.output(enabled ? disableFusion(runtime) : enableFusion(runtime));
+			if (enabled) {
+				await runtime.session.refreshBaseSystemPrompt();
+			} else {
+				await runtime.ensureFusionSidekick?.();
+			}
 			return commandConsumed();
 		}
 		case "mode": {
@@ -225,6 +232,11 @@ export async function handleFusionCommand(
 			}
 			runtime.settings.set("fusion.mode", value);
 			await runtime.output(`fusion.mode set to "${value}".`);
+			if (value === "off") {
+				await runtime.session.refreshBaseSystemPrompt();
+			} else if (runtime.settings.get("fusion.enabled") === true) {
+				await runtime.ensureFusionSidekick?.();
+			}
 			return commandConsumed();
 		}
 		case "routing": {

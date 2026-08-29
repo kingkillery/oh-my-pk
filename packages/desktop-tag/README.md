@@ -1,6 +1,6 @@
 # pi-desktop-tag
 
-Oh My Pi extension that captures desktop context and delegates a request to an agent.
+oh-my-pk extension that captures desktop context and delegates a request to an agent.
 
 ## Use
 

@@ -1,12 +1,13 @@
 import * as os from "node:os";
 import * as path from "node:path";
+import { APP_NAME } from "@pk-nerdsaver-ai/pi-utils";
 import type { Args } from "../cli/args";
 import type { Settings } from "../config/settings";
 import { resolveToCwd } from "../tools/path-utils";
 import type { ResolvedWorkspaceOptions, WorkspaceMode } from "./types";
 
 export function defaultWorkspaceRoot(): string {
-	return path.join(os.tmpdir(), "oh-my-pi", "workspaces");
+	return path.join(os.tmpdir(), APP_NAME, "workspaces");
 }
 
 export function resolveWorkspaceOptions(parsed: Args, settings: Settings, sourceCwd: string): ResolvedWorkspaceOptions {

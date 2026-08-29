@@ -12,7 +12,7 @@ It includes:
 - tool-call/result/error capture
 - compact tool-result summaries to keep context small
 - JSONL training export for tool-routing cross-training
-- Oh My Pi / OMP-compatible extension entry point
+- Oh My PK / OMP-compatible extension entry point
 - standalone CLI for local policy and telemetry testing
 
 The package is model-provider agnostic. Defaults use symbolic selectors such as `pi/smol`, `default`, and `pi/slow`; replace these in `examples/router.config.json` for your fork or provider catalog.
@@ -41,7 +41,7 @@ examples/
 
 docs/
   architecture.md       Component and request lifecycle design
-  omp-compatibility.md  How this maps to Oh My Pi extension loading
+  omp-compatibility.md  How this maps to Oh My PK extension loading
   routing-policy.md     Policy details and tuning notes
   tool-use-capture.md   Capture schema, context-saving, training export
 
@@ -137,7 +137,7 @@ const wrappedSearch = layer.wrapTool("file_search.msearch", async (query: string
 await wrappedSearch("lease pet policy");
 ```
 
-## OMP / Oh My Pi extension behavior
+## OMP / Oh My PK extension behavior
 
 The extension registers:
 
@@ -151,7 +151,7 @@ The extension registers:
 
 The runtime hooks are intentionally permissive: if your `oh-my-pk` fork emits different field names, the layer still accepts manual capture through `router_capture_tool_use` or direct library calls.
 
-## Install into an Oh My Pi / OMP project
+## Install into an Oh My PK / OMP project
 
 Build the package:
 
@@ -295,4 +295,4 @@ For your fork, update config first:
 - `objectives`
 - `rules`
 
-If the fork exposes a different event name for tool calls, wire that event to `router.captureTool(...)` or `ToolUseCaptureLayer.record(...)`. The package does not import `@oh-my-pi/pi-coding-agent`, so it remains resilient when package names or type exports move.
+If the fork exposes a different event name for tool calls, wire that event to `router.captureTool(...)` or `ToolUseCaptureLayer.record(...)`. The package does not import `@pk-nerdsaver-ai/pi-coding-agent`, so it remains resilient when package names or type exports move.

@@ -1,7 +1,7 @@
 {
 	"name": "@pk-nerdsaver-ai/pi-remote-workspace",
 	"version": "16.4.12",
-	"description": "Docker-backed ephemeral workspace job runner for Oh My Pi",
+	"description": "Docker-backed ephemeral workspace job runner for Oh My PK",
 	"homepage": "https://github.com/kingkillery/oh-my-pk",
 	"author": "Can Boluk",
 	"license": "MIT",
@@ -14,7 +14,7 @@
 		"url": "https://github.com/kingkillery/oh-my-pk/issues"
 	},
 	"keywords": [
-		"oh-my-pi",
+		"oh-my-pk",
 		"remote-workspace",
 		"docker",
 		"job-runner"

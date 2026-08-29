@@ -152,7 +152,7 @@ fn create_hidden_window(instance: HINSTANCE) -> Result<HWND> {
 		CreateWindowExW(
 			0,
 			class_name.as_ptr(),
-			wide("Oh My Pi Desktop Tag").as_ptr(),
+			wide("oh-my-pk Desktop Tag").as_ptr(),
 			WS_OVERLAPPED,
 			CW_USEDEFAULT,
 			CW_USEDEFAULT,

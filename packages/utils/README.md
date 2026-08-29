@@ -1,6 +1,6 @@
 # @pk-nerdsaver-ai/pi-utils
 
-Shared utilities for [oh-my-pi](https://github.com/can1357/oh-my-pi) packages. Zero ceremony, Bun-first.
+Shared utilities for [oh-my-pk](https://github.com/kingkillery/oh-my-pk) packages. Zero ceremony, Bun-first.
 
 ## Notable modules
 
@@ -33,5 +33,5 @@ Ships TypeScript source directly (no build step); requires Bun ≥ 1.3.14.
 
 ## References
 
-- [Monorepo README](https://github.com/can1357/oh-my-pi#readme)
+- [Monorepo README](https://github.com/kingkillery/oh-my-pk#readme)
 - [CHANGELOG](./CHANGELOG.md)

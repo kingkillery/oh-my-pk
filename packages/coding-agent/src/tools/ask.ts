@@ -16,7 +16,12 @@
  */
 
 import { type as arkType } from "@pk-nerdsaver-ai/omptype";
-import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@pk-nerdsaver-ai/pi-agent-core";
+import type {
+	AgentTool,
+	AgentToolContext,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+} from "@pk-nerdsaver-ai/pi-agent-core";
 import type { ToolExample } from "@pk-nerdsaver-ai/pi-ai";
 import {
 	type Component,
@@ -30,7 +35,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@pk-nerdsaver-ai/pi-tui";
-import { prompt, untilAborted } from "@pk-nerdsaver-ai/pi-utils";
+import { APP_NAME, prompt, untilAborted } from "@pk-nerdsaver-ai/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { ExtensionUISelectItem } from "../extensibility/extensions";
 import { getMarkdownTheme, type Theme, theme } from "../modes/theme/theme";
@@ -839,7 +844,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		const method = this.session.settings.get("ask.notify");
 		if (method === "off") return;
 		TERMINAL.sendNotification({
-			title: "Oh My Pi",
+			title: APP_NAME,
 			body: "Waiting for input",
 			type: "ask",
 			urgency: "normal",

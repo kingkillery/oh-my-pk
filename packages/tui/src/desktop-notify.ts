@@ -22,11 +22,10 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { $which } from "@pk-nerdsaver-ai/pi-utils";
+import { $which, APP_NAME } from "@pk-nerdsaver-ai/pi-utils";
 import type { TerminalId, TerminalNotification } from "./terminal-capabilities";
 
 /** Application name surfaced as the notification source. */
-const APP_NAME = "Oh My Pi";
 
 /** Resolved notifier binary used to fan a notification out to D-Bus. */
 export type DesktopNotifierKind = "notify-send" | "gdbus";

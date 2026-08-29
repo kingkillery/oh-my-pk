@@ -28,6 +28,7 @@ import { hasObsidian } from "./internal-urls/vault-protocol";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
 import computerSafetyPrompt from "./prompts/system/computer-safety.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
+import fusionSidekickPrompt from "./prompts/system/fusion-sidekick.md" with { type: "text" };
 import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
 import friendlyPersonality from "./prompts/system/personalities/friendly.md" with { type: "text" };
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
@@ -637,6 +638,14 @@ export interface BuildSystemPromptOptions {
 	taskMaxConcurrency?: number;
 	/** Whether IRC-backed parallel coordination can be included in delegation policy. */
 	taskIrcEnabled?: boolean;
+	/** Whether the main agent has a live Fusion sidekick available for delegated work. */
+	fusionSidekick?: boolean;
+	/** Whether Fusion is in cheap-first escalation mode. */
+	fusionEscalate?: boolean;
+	/** Model selector used by the live Fusion sidekick. */
+	sidekickModel?: string;
+	/** Registry id allocated to the live Fusion sidekick. */
+	sidekickId?: string;
 	/** Whether the read-only `scout` subagent is spawnable (not disabled, allowed by spawn policy). Defaults to true. */
 	scoutAvailable?: boolean;
 
@@ -715,6 +724,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		taskBatch = true,
 		taskMaxConcurrency = 0,
 		taskIrcEnabled = false,
+		fusionSidekick = false,
+		fusionEscalate = false,
+		sidekickModel = "pi/smol",
+		sidekickId = "Sidekick",
 		secretsEnabled = false,
 		workspaceTree: providedWorkspaceTree,
 		scoutAvailable = true,
@@ -1055,6 +1068,21 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	}
 	if (activeRepoContextPrompt) {
 		systemPrompt.push(activeRepoContextPrompt);
+	}
+	// Keep Fusion's volatile registry id/model/mode out of the long stable
+	// provider prefix. Appending a dedicated final system block preserves every
+	// preceding prompt block byte-for-byte across sidekick lifecycle changes.
+	if (fusionSidekick && toolNames.includes("hub")) {
+		systemPrompt.push(
+			prompt
+				.render(fusionSidekickPrompt, {
+					fusionEscalate,
+					sidekickModel,
+					sidekickId,
+					hubToolRef: toolRefs.hub,
+				})
+				.trim(),
+		);
 	}
 
 	// The xd:// protocol section (with its device catalog) is only rendered by the

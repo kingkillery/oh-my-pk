@@ -768,7 +768,7 @@ For a custom status line, set `statusLine.preset: custom` and configure `statusL
 |---|---|---|---|
 | `workspace.enabled` | boolean | `false` | Enable Ethereal Workspaces by default. |
 | `workspace.mode` | enum | `copy` | `auto`, `copy`, `worktree`. `auto` uses reflink copy for Git repos when available, otherwise git worktree; non-Git repos use copy. |
-| `workspace.root` | string | unset | Parent directory for created workspaces; unset uses the OS temp directory under `oh-my-pi/workspaces`. |
+| `workspace.root` | string | unset | Parent directory for created workspaces; unset uses the OS temp directory under `oh-my-pk/workspaces`. |
 | `workspace.preserve` | boolean | `false` | Keep the workspace after the session exits. |
 | `workspace.copyEnv` | boolean | `false` | Copy common repo-root `.env` files. |
 | `workspace.envFiles` | array | `[]` | Explicit env files to copy. |

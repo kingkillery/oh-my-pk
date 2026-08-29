@@ -12,6 +12,7 @@ import {
 	type TSchema,
 } from "@pk-nerdsaver-ai/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@pk-nerdsaver-ai/pi-coding-agent";
+import { APP_NAME } from "@pk-nerdsaver-ai/pi-utils";
 
 const VERIFIER_TOOL_NAME = "llm_as_verifier";
 const ORCHESTRATOR_TOOL_NAME = "subagent_orchestrator_plan";
@@ -1808,8 +1809,7 @@ export default function verifierExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: ORCHESTRATOR_TOOL_NAME,
 		label: "Subagent Orchestrator Plan",
-		description:
-			"Compute a deterministic Oh My Pi subagent route plan from request complexity, risk, evidence needs, and a specialist pool.",
+		description: `Compute a deterministic ${APP_NAME} subagent route plan from request complexity, risk, evidence needs, and a specialist pool.`,
 		parameters: typebox.Type.Object({
 			request: typebox.Type.String({ description: "User request or subproblem to route." }),
 			complexity: typebox.Type.Optional(

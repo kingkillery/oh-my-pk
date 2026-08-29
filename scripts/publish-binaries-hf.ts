@@ -26,6 +26,7 @@ import * as path from "node:path";
  *   bun scripts/publish-binaries-hf.ts --dry-run
  */
 import { $ } from "bun";
+import { APP_NAME } from "../packages/utils/src/dirs.ts";
 
 const repoRoot = path.join(import.meta.dir, "..");
 const binariesDir = path.join(repoRoot, "packages", "coding-agent", "binaries");
@@ -169,7 +170,7 @@ async function main(): Promise<void> {
 		throw new Error("HF_TOKEN is required (write-scoped Hugging Face token). See script header.");
 	}
 
-	console.log(`Publishing oh-my-pi binaries`);
+	console.log(`Publishing ${APP_NAME} binaries`);
 	console.log(`  repo:    ${hfRepo} (${hfRepoType}, private)`);
 	console.log(`  tag:     ${tag}`);
 	console.log(`  targets: ${targets}`);

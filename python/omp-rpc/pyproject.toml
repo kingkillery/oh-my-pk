@@ -23,9 +23,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kingkillery/oh-my-pi"
-Repository = "https://github.com/kingkillery/oh-my-pi"
-Documentation = "https://github.com/kingkillery/oh-my-pi/blob/main/docs/rpc.md"
+Homepage = "https://github.com/kingkillery/oh-my-pk"
+Repository = "https://github.com/kingkillery/oh-my-pk"
+Documentation = "https://github.com/kingkillery/oh-my-pk/blob/main/docs/rpc.md"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

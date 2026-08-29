@@ -95,7 +95,7 @@ export class RemoteWorkspaceOrchestrator {
 	constructor(opts: OrchestratorOptions) {
 		this.#store = new JobStore({ path: opts.dbPath });
 		this.#backend = opts.backend;
-		this.#defaultImage = opts.defaultImage ?? "oh-my-pi/pi:dev";
+		this.#defaultImage = opts.defaultImage ?? "oh-my-pk/pi:dev";
 		this.#networkEgress = opts.networkEgress ?? "none";
 	}
 

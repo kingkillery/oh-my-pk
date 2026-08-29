@@ -1,5 +1,5 @@
 /**
- * Clips — agent-native screen recording, as an Oh My Pi extension.
+ * Clips — agent-native screen recording, as an oh-my-pk extension.
  *
  * Two surfaces:
  *  - `/record` opens the recorder web UI (gopk.xyz) so you can capture a clip.

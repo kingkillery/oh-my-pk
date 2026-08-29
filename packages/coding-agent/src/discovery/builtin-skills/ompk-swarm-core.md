@@ -73,7 +73,7 @@ task({
   i: "Delegating prompt audit",
   agent: "task",
   context: `# Goal
-Reduce context bloat in oh-my-pi-fork harness.
+Reduce context bloat in the oh-my-pk harness.
 
 # Constraints
 Do not edit AGENTS.md. Skip project-wide tests/lint/format. Report changed files and risks only.

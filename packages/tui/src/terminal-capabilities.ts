@@ -1,5 +1,5 @@
 import { encodeSixel } from "@pk-nerdsaver-ai/pi-natives";
-import { $env, isBunTestRuntime, isTerminalHeadless } from "@pk-nerdsaver-ai/pi-utils";
+import { $env, APP_NAME, isBunTestRuntime, isTerminalHeadless } from "@pk-nerdsaver-ai/pi-utils";
 import { sendDesktopNotification, shouldDeliverDesktopNotification } from "./desktop-notify";
 import {
 	detectKittyUnicodePlaceholdersSupport,
@@ -38,7 +38,6 @@ export type TerminalId =
 	| "base"
 	| "trueColor";
 
-const CMUX_NOTIFICATION_TITLE = "Oh My Pi";
 const CMUX_SURFACE_ID_PATTERN = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/iu;
 
 /**
@@ -52,8 +51,7 @@ function sendCmuxNotification(message: string | TerminalNotification, env: NodeJ
 	const surfaceId = env.CMUX_SURFACE_ID?.trim();
 	if (!surfaceId || !CMUX_SURFACE_ID_PATTERN.test(surfaceId)) return false;
 
-	const title =
-		typeof message === "string" ? CMUX_NOTIFICATION_TITLE : message.title?.trim() || CMUX_NOTIFICATION_TITLE;
+	const title = typeof message === "string" ? APP_NAME : message.title?.trim() || APP_NAME;
 	const body = typeof message === "string" ? message : (message.body ?? "");
 	try {
 		const child = Bun.spawn({
@@ -1248,7 +1246,6 @@ function notificationToLine(n: TerminalNotification): string {
 // C0/C1 control characters that are unsafe inside an OSC payload (must base64).
 const OSC99_UNSAFE = /[\x00-\x1f\x7f\x80-\x9f]/u;
 const OSC99_MAX_PAYLOAD_BYTES = 2048;
-const OSC99_APP_NAME = "Oh My Pi";
 let nextOsc99NotificationId = 1;
 
 function base64Utf8(value: string): string {
@@ -1347,7 +1344,7 @@ function osc99Actions(actions: TerminalNotification["actions"]): string | undefi
  */
 function formatOsc99Notification(n: TerminalNotification): string {
 	const id = osc99Id(n.id);
-	const meta: string[] = [`i=${id}`, `f=${base64Utf8(OSC99_APP_NAME)}`];
+	const meta: string[] = [`i=${id}`, `f=${base64Utf8(APP_NAME)}`];
 	const actions = osc99Actions(n.actions);
 	if (actions) meta.push(`a=${actions}`);
 	const urgency = osc99Urgency(n.urgency);
