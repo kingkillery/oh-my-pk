@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { CollabHost } from "@pk-nerdsaver-ai/pi-coding-agent/collab/host";
+import * as collabLinkFile from "@pk-nerdsaver-ai/pi-coding-agent/collab/link-file";
 import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
@@ -81,6 +82,7 @@ function mockStartedHostLinks() {
 describe("/collab slash command QR code rendering", () => {
 	it("starts hosting and prints a one-shot full-control QR", async () => {
 		const startSpy = mockStartedHostLinks();
+		const linkFileSpy = vi.spyOn(collabLinkFile, "writeCollabLinkFile").mockImplementation(() => {});
 		const harness = createRuntimeHarness();
 
 		const handled = await executeBuiltinSlashCommand("/collab", harness.runtime);
@@ -89,6 +91,13 @@ describe("/collab slash command QR code rendering", () => {
 		expect(harness.setText).toHaveBeenCalledWith("");
 		expect(startSpy).toHaveBeenCalledWith("wss://relay.example.com", "");
 		expect(harness.ctx.collabHost).toBeInstanceOf(CollabHost);
+		expect(linkFileSpy).toHaveBeenCalledWith({
+			webLink: "https://oh-my-pk.pkking.computer/collab/#started-full",
+			webViewLink: "https://oh-my-pk.pkking.computer/collab/#started-view",
+			link: "relay.example.com/r/full-control",
+			viewLink: "relay.example.com/r/read-only",
+			view: false,
+		});
 		const statusText = harness.showStatus.mock.calls[0]?.[0] as string;
 		expect(statusText).toContain("oh-my-pk.pkking.computer/collab/#started-full");
 		const presented = harness.present.mock.calls[0]?.[0] as readonly unknown[];

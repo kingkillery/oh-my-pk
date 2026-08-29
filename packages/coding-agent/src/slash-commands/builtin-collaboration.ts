@@ -2,6 +2,7 @@ import { Spacer } from "@pk-nerdsaver-ai/pi-tui";
 import { APP_NAME } from "@pk-nerdsaver-ai/pi-utils";
 import { CollabGuestLink } from "../collab/guest";
 import { CollabHost } from "../collab/host";
+import { writeCollabLinkFile } from "../collab/link-file";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
 import { parseExportArgs } from "../export/html/args";
@@ -333,6 +334,13 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				return;
 			}
 			ctx.collabHost = host;
+			writeCollabLinkFile({
+				webLink: host.webLink,
+				webViewLink: host.webViewLink,
+				link: host.link,
+				viewLink: host.viewLink,
+				view,
+			});
 			showCollabLink(ctx, host, "Collab session started!", view);
 		},
 	},
