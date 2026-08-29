@@ -26,6 +26,7 @@ import {
 	type RenameMigrationSteps,
 	replaceBinaryForUpdate,
 	resolveBunGlobalNodeModulesDirFromLocations,
+	resolveInvokedBinaryPathForTest,
 	resolveReleaseBinaryAsset,
 	resolveReleaseDist,
 	resolveReleaseRename,
@@ -131,6 +132,22 @@ describe("parseReportedVersion", () => {
 		expect(parseReportedVersion("omp/18.0.6-canary.1")).toBe("18.0.6-canary.1");
 		expect(parseReportedVersion("omp/18.0.5")).toBe("18.0.5");
 		expect(parseReportedVersion("not a version")).toBeUndefined();
+	});
+});
+
+describe("compiled update targets", () => {
+	it("targets the compiled alias that launched the update", () => {
+		expect(resolveInvokedBinaryPathForTest("C:\\Users\\test\\bin\\ompk.exe", "win32")).toBe(
+			"C:\\Users\\test\\bin\\ompk.exe",
+		);
+		expect(resolveInvokedBinaryPathForTest("/Users/test/.local/bin/omp", "darwin")).toBe(
+			"/Users/test/.local/bin/omp",
+		);
+	});
+
+	it("does not mistake the Bun runtime for a compiled CLI binary", () => {
+		expect(resolveInvokedBinaryPathForTest("C:\\Users\\test\\.bun\\bin\\bun.exe", "win32")).toBeUndefined();
+		expect(resolveInvokedBinaryPathForTest("/Users/test/.bun/bin/bun", "linux")).toBeUndefined();
 	});
 });
 

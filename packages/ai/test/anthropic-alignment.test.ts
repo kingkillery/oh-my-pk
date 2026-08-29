@@ -281,7 +281,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.system?.[0]?.cache_control).toBeUndefined();
 		expect(payload.system?.[1]?.text).toBe(claudeCodeSystemInstruction);
 		expect(payload.system?.[1]?.cache_control).toBeUndefined();
-		expect(payload.system?.[2]?.cache_control).toBeUndefined();
+		expect(payload.system?.[2]?.cache_control).toEqual({ type: "ephemeral" });
 		const content = payload.messages?.[0]?.content;
 		expect(Array.isArray(content)).toBe(true);
 		expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toEqual({
@@ -301,7 +301,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.system?.[0]?.text).toStartWith("x-anthropic-billing-header:");
 		expect(payload.system?.[0]?.cache_control).toBeUndefined();
 		expect(payload.system?.[1]?.text).toBe(claudeCodeSystemInstruction);
-		expect(payload.system?.[1]?.cache_control).toBeUndefined();
+		expect(payload.system?.[1]?.cache_control).toEqual({ type: "ephemeral" });
 		const content = payload.messages?.[0]?.content;
 		expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toEqual({
 			type: "ephemeral",
@@ -345,7 +345,8 @@ describe("Anthropic request fingerprint alignment", () => {
 			messages?: Array<{ content?: Array<{ type?: string; cache_control?: unknown }> | string }>;
 		};
 
-		expect(payload.system?.some(block => block.cache_control != null)).toBe(false);
+		expect(payload.system?.[0]?.cache_control).toBeUndefined();
+		expect(payload.system?.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
 		const messages = payload.messages ?? [];
 		expect(messages[0]?.content).toBe("Use the tool");
 		const assistantContent = messages.at(-2)?.content;
@@ -465,7 +466,9 @@ describe("Anthropic request fingerprint alignment", () => {
 			messages?: Array<{ role: string; content: string | Array<{ cache_control?: unknown }> }>;
 		};
 
-		expect(payload.system?.some(block => block.cache_control != null)).toBe(false);
+		expect(payload.system?.[0]?.cache_control).toEqual({ type: "ephemeral" });
+		expect(payload.system?.[1]?.cache_control).toBeUndefined();
+		expect(payload.system?.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
 		const userContent = payload.messages?.[0]?.content;
 		expect(Array.isArray(userContent) ? userContent[0]?.cache_control : undefined).toEqual({
 			type: "ephemeral",
@@ -773,7 +776,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(extractSuffix(billingWithDev)).toBe(extractSuffix(billingUserOnly));
 	});
 
-	it("leaves system blocks uncached on API-key requests", async () => {
+	it("caches the stable first and final system blocks on API-key requests", async () => {
 		const payload = (await captureAnthropicPayload(
 			ANTHROPIC_MODEL,
 			{
@@ -784,8 +787,8 @@ describe("Anthropic request fingerprint alignment", () => {
 		)) as { system?: Array<{ type: string; text?: string; cache_control?: unknown }> };
 
 		expect(payload.system).toEqual([
-			{ type: "text", text: "stable system" },
-			{ type: "text", text: "stable durable context" },
+			{ type: "text", text: "stable system", cache_control: { type: "ephemeral" } },
+			{ type: "text", text: "stable durable context", cache_control: { type: "ephemeral" } },
 		]);
 	});
 

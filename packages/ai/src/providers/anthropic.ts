@@ -2887,19 +2887,33 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (model, con
 export type AnthropicSystemBlock = {
 	type: "text";
 	text: string;
+	cache_control?: AnthropicCacheControl;
 };
 type SystemBlockOptions = {
 	includeClaudeCodeInstruction?: boolean;
 	extraInstructions?: string[];
 	/** Text of the first user message — used as fingerprint seed for the billing header. */
 	firstUserMessageText?: string;
+	cacheControl?: AnthropicCacheControl;
 };
+
+function applyCacheControlToSystemBlock(
+	blocks: AnthropicSystemBlock[],
+	index: number,
+	cacheControl: AnthropicCacheControl,
+): boolean {
+	const block = blocks[index];
+	if (!block || block.cache_control != null) return false;
+	if (block.text.startsWith(CLAUDE_BILLING_HEADER_PREFIX)) return false;
+	blocks[index] = { ...block, cache_control: cloneAnthropicCacheControl(cacheControl) };
+	return true;
+}
 
 export function buildAnthropicSystemBlocks(
 	systemPrompt: readonly string[] | undefined,
 	options: SystemBlockOptions = {},
 ): AnthropicSystemBlock[] | undefined {
-	const { includeClaudeCodeInstruction = false, extraInstructions = [], firstUserMessageText } = options;
+	const { includeClaudeCodeInstruction = false, extraInstructions = [], firstUserMessageText, cacheControl } = options;
 	const sanitizedPrompts = normalizeSystemPrompts(systemPrompt);
 	const trimmedInstructions = extraInstructions.map(instruction => instruction.trim()).filter(Boolean);
 	const hasBillingHeader = sanitizedPrompts.some(prompt => prompt.startsWith(CLAUDE_BILLING_HEADER_PREFIX));
@@ -2916,6 +2930,7 @@ export function buildAnthropicSystemBlocks(
 		for (const prompt of sanitizedPrompts) {
 			blocks.push({ type: "text", text: prompt });
 		}
+		if (cacheControl) applyCacheControlToSystemBlock(blocks, blocks.length - 1, cacheControl);
 
 		return blocks;
 	}
@@ -3194,8 +3209,38 @@ function applyCacheControlToLastBlock(blocks: ContentBlockParam[], cacheControl:
 	return false;
 }
 
+function countCacheBreakpoints(params: MessageCreateParamsStreaming): number {
+	let count = 0;
+	if (Array.isArray(params.system)) {
+		for (const block of params.system as AnthropicSystemBlock[]) {
+			if (block.cache_control != null) count++;
+		}
+	}
+	for (const message of params.messages) {
+		if (!Array.isArray(message.content)) continue;
+		for (const block of message.content) {
+			if ("cache_control" in block && block.cache_control != null) count++;
+		}
+	}
+	for (const tool of params.tools ?? []) {
+		if ("cache_control" in tool && tool.cache_control != null) count++;
+	}
+	return count;
+}
+
 function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?: AnthropicCacheControl): void {
 	if (!cacheControl) return;
+	const maxCacheBreakpoints = 4;
+	let cacheBreakpointsUsed = countCacheBreakpoints(params);
+
+	const systemBlocks = Array.isArray(params.system) ? (params.system as AnthropicSystemBlock[]) : undefined;
+	const hasClaudeCodeBillingHeader = systemBlocks?.[0]?.text.startsWith(CLAUDE_BILLING_HEADER_PREFIX) === true;
+	if (systemBlocks && !hasClaudeCodeBillingHeader && cacheBreakpointsUsed < maxCacheBreakpoints) {
+		if (applyCacheControlToSystemBlock(systemBlocks, systemBlocks.length - 1, cacheControl)) cacheBreakpointsUsed++;
+		if (systemBlocks.length >= 2 && cacheBreakpointsUsed < maxCacheBreakpoints) {
+			if (applyCacheControlToSystemBlock(systemBlocks, 0, cacheControl)) cacheBreakpointsUsed++;
+		}
+	}
 
 	// `convertAnthropicMessages` appends this neutral pad after a trailing
 	// assistant because Anthropic rejects assistant-prefill endings. It is absent
@@ -3210,14 +3255,16 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 	const messageEnd = hasTrailingAssistantPad ? trailingIndex - 1 : trailingIndex;
 	const start = Math.max(0, messageEnd - 1);
 	for (let index = messageEnd; index >= start; index--) {
+		if (cacheBreakpointsUsed >= maxCacheBreakpoints) break;
 		const message = params.messages[index];
 		if (!message) continue;
 		if (typeof message.content === "string") {
 			message.content = [
 				{ type: "text", text: message.content, cache_control: cloneAnthropicCacheControl(cacheControl) },
 			];
+			cacheBreakpointsUsed++;
 		} else if (Array.isArray(message.content)) {
-			applyCacheControlToLastBlock(message.content, cacheControl);
+			if (applyCacheControlToLastBlock(message.content, cacheControl)) cacheBreakpointsUsed++;
 		}
 	}
 }
@@ -3314,6 +3361,7 @@ function buildParams(
 	const systemBlocks = buildAnthropicSystemBlocks(context.systemPrompt, {
 		includeClaudeCodeInstruction: shouldInjectClaudeCodeInstruction,
 		firstUserMessageText,
+		cacheControl: shouldInjectClaudeCodeInstruction ? cacheControl : undefined,
 	});
 
 	// Pre-compute tools.
