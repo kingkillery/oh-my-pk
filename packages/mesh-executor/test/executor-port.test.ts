@@ -11,8 +11,14 @@ import {
 import type { MeshNodeExecutionContext } from "@pk-nerdsaver-ai/mesh-node";
 import {
 	canonicalExecutorToolPermission,
+	ExecutorHttpCodeGateway,
+	ExecutorHttpGatewayError,
 	ExecutorMeshExecutionError,
 	ExecutorMeshExecutionPort,
+	FetchExecutorHttpTransport,
+	type ExecutorHttpTransport,
+	type ExecutorHttpTransportRequest,
+	type ExecutorHttpTransportResponse,
 	type ExecutorMcpGateway,
 	type ExecutorMcpGatewayRequest,
 } from "../src";
@@ -101,6 +107,50 @@ function makePort(gateway: ExecutorMcpGateway, catalogFingerprint = CATALOG_FING
 	});
 }
 
+function httpResponse(value: unknown, options: { readonly ok?: boolean; readonly status?: number } = {}): ExecutorHttpTransportResponse {
+	return Object.freeze({
+		ok: options.ok ?? true,
+		status: options.status ?? 200,
+		json: async () => value,
+	});
+}
+
+class RecordingHttpTransport implements ExecutorHttpTransport {
+	readonly requests: ExecutorHttpTransportRequest[] = [];
+	readonly #responses: readonly ExecutorHttpTransportResponse[];
+	#nextResponse = 0;
+
+	constructor(responses: readonly ExecutorHttpTransportResponse[]) {
+		this.#responses = responses;
+	}
+
+	async send(request: ExecutorHttpTransportRequest): Promise<ExecutorHttpTransportResponse> {
+		this.requests.push(request);
+		const response = this.#responses[this.#nextResponse];
+		this.#nextResponse += 1;
+		if (response === undefined) throw new Error("missing_test_response");
+		return response;
+	}
+}
+
+class HangingHttpTransport implements ExecutorHttpTransport {
+	readonly requests: ExecutorHttpTransportRequest[] = [];
+
+	async send(request: ExecutorHttpTransportRequest): Promise<ExecutorHttpTransportResponse> {
+		this.requests.push(request);
+		const pending = Promise.withResolvers<ExecutorHttpTransportResponse>();
+		request.signal.addEventListener("abort", () => pending.reject(new Error("test_transport_aborted")), { once: true });
+		return pending.promise;
+	}
+}
+
+function makeHttpGateway(transport: ExecutorHttpTransport): ExecutorHttpCodeGateway {
+	return new ExecutorHttpCodeGateway({
+		endpoints: [{ endpointId: ENDPOINT_ID, origin: "http://127.0.0.1:4788", authorization: "Bearer host-only-token" }],
+		transport,
+	});
+}
+
 describe("ExecutorMeshExecutionPort", () => {
 	test("creates one injection-resistant canonical tool call and binds gateway provenance", async () => {
 		const calls: ExecutorMcpGatewayRequest[] = [];
@@ -120,6 +170,7 @@ describe("ExecutorMeshExecutionPort", () => {
 		expect(calls[0]).toEqual({
 			endpointId: ENDPOINT_ID,
 			code: 'return await tools.github.issues.create({"owner":"kingkillery","repo":"oh-my-pk","title":"Safe request"});',
+			timeoutSeconds: 30,
 			metadata: {
 				taskId: task.taskId,
 				taskDigest: task.digest,
@@ -165,16 +216,115 @@ describe("ExecutorMeshExecutionPort", () => {
 		expect(callCount).toBe(0);
 	});
 
-	test("never resumes approvals and reports cancellation as uncertain", async () => {
-		const gateway: ExecutorMcpGateway = {
-			async invoke() {
-				return { status: "approval_required" };
+	test("posts only canonical code to the configured Executor endpoint and never opts into auto-approval", async () => {
+		const transport = new RecordingHttpTransport([httpResponse({ status: "completed", text: "completed", structured: {}, isError: false })]);
+		const task = makeTask();
+		const port = makePort(makeHttpGateway(transport));
+
+		await expect(port.run(makeContext(task))).resolves.toEqual({ outcome: "succeeded" });
+		expect(transport.requests).toHaveLength(1);
+		expect(transport.requests[0]).toMatchObject({
+			method: "POST",
+			url: "http://127.0.0.1:4788/api/executions",
+			redirect: "error",
+			headers: {
+				accept: "application/json",
+				"content-type": "application/json",
+				authorization: "Bearer host-only-token",
 			},
-		};
+		});
+		const body = JSON.parse(transport.requests[0]?.body ?? "") as { readonly code?: unknown; readonly autoApprove?: unknown };
+		expect(body).toEqual({ code: 'return await tools.github.issues.create({"owner":"kingkillery","repo":"oh-my-pk","title":"Safe request"});' });
+		expect(body.autoApprove).toBeUndefined();
+		expect(transport.requests[0]?.body).not.toContain(task.goal);
+		expect(transport.requests[0]?.signal.aborted).toBeFalse();
+	});
+
+	test("rejects a redirect instead of forwarding canonical code beyond the registered Executor origin", async () => {
+		let redirectedRequestCount = 0;
+		const redirected = Bun.serve({
+			port: 0,
+			fetch() {
+				redirectedRequestCount += 1;
+				return Response.json({ status: "completed", text: "forged", structured: {}, isError: false });
+			},
+		});
+		const executor = Bun.serve({
+			port: 0,
+			fetch() {
+				return Response.redirect(redirected.url, 307);
+			},
+		});
+		try {
+			const port = makePort(
+				new ExecutorHttpCodeGateway({
+					endpoints: [{ endpointId: ENDPOINT_ID, origin: executor.url.origin }],
+					transport: new FetchExecutorHttpTransport(),
+				}),
+			);
+			await expect(port.run(makeContext(makeTask()))).resolves.toEqual({ outcome: "failed" });
+			expect(redirectedRequestCount).toBe(0);
+		} finally {
+			executor.stop(true);
+			redirected.stop(true);
+		}
+	});
+
+	test("aborts a stalled Executor request at the validated task timeout", async () => {
+		const transport = new HangingHttpTransport();
 		const context = makeContext(makeTask());
-		const port = makePort(gateway);
+		const timeoutBoundContext: MeshNodeExecutionContext = {
+			...context,
+			bounds: Object.freeze({ ...context.bounds, timeoutSeconds: 1 }),
+		};
+
+		await expect(makePort(makeHttpGateway(transport)).run(timeoutBoundContext)).resolves.toEqual({ outcome: "failed" });
+		expect(transport.requests).toHaveLength(1);
+		expect(transport.requests[0]?.signal.aborted).toBeTrue();
+	});
+
+	test("fails closed when a configured Executor endpoint is absent, rejects work, or returns an invalid response", async () => {
+		const task = makeTask();
+		const context = makeContext(task);
+		const missingEndpointTransport = new RecordingHttpTransport([]);
+		const missingEndpointGateway = new ExecutorHttpCodeGateway({
+			endpoints: [{ endpointId: "differentEndpoint", origin: "http://127.0.0.1:4788" }],
+			transport: missingEndpointTransport,
+		});
+		await expect(makePort(missingEndpointGateway).run(context)).resolves.toEqual({ outcome: "failed" });
+		expect(missingEndpointTransport.requests).toHaveLength(0);
+
+		const rejectedTransport = new RecordingHttpTransport([httpResponse({ status: "completed", text: "rejected", structured: {}, isError: true })]);
+		await expect(makePort(makeHttpGateway(rejectedTransport)).run(context)).resolves.toEqual({ outcome: "failed" });
+		expect(rejectedTransport.requests).toHaveLength(1);
+
+		for (const response of [
+			httpResponse({ status: "completed", text: "unavailable", structured: {}, isError: false }, { ok: false, status: 503 }),
+			httpResponse({ status: "completed" }),
+			httpResponse({ status: "paused" }),
+		]) {
+			const transport = new RecordingHttpTransport([response]);
+			await expect(makePort(makeHttpGateway(transport)).run(context)).resolves.toEqual({ outcome: "failed" });
+			expect(transport.requests).toHaveLength(1);
+		}
+
+		expect(
+			() =>
+				new ExecutorHttpCodeGateway({
+					endpoints: [{ endpointId: ENDPOINT_ID, origin: "https://executor.invalid/path" }],
+				}),
+		).toThrow(new ExecutorHttpGatewayError("endpoint_configuration_invalid"));
+	});
+
+	test("never resumes approvals and reports cancellation as uncertain", async () => {
+		const transport = new RecordingHttpTransport([httpResponse({ status: "paused", text: "approval required", structured: { executionId: "execution-paused" } })]);
+		const context = makeContext(makeTask());
+		const port = makePort(makeHttpGateway(transport));
 
 		await expect(port.run(context)).rejects.toEqual(new ExecutorMeshExecutionError("approval_required"));
 		await expect(port.cancel(context)).rejects.toEqual(new ExecutorMeshExecutionError("cancellation_uncertain"));
+		expect(transport.requests).toHaveLength(1);
+		expect(transport.requests[0]?.body).not.toContain("autoApprove");
+		expect(transport.requests[0]?.body).not.toContain("execution-paused");
 	});
 });

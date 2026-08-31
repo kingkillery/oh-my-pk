@@ -41,6 +41,8 @@ The node’s trusted scheduler verifier allow-list is fixed local configuration.
 
 The node-state repository is a distinct, node-local SQLite/WAL inbox and lifecycle-fact store. It is not the controller’s task database and must not be replaced with the package’s in-memory test default in a production node. `MeshNodeAgent.create` binds the store to its own `nodeId` and public key, then re-verifies every persisted signed assignment through the fixed local scheduler verifier allow-list before it will use persisted work.
 
+For a Useful Executor-backed node, compose `ExecutorMeshExecutionPort` with an `ExecutorHttpCodeGateway`. The host registers each fixed endpoint ID with its local Executor origin and optional authorization header; a task never supplies either value. The gateway sends the port’s canonical code to `POST {origin}/api/executions` as exactly `{ "code": "..." }`. It rejects redirects, applies the node-approved task timeout to the request, and does not forward LocalMesh provenance metadata, set `autoApprove`, start a process, or resume a paused execution. Map a completed response with `isError: false` to success, one with `isError: true` to failure, and a paused response to `approval_required`. The host owns Executor version pinning, authentication, networking, process lifecycle, and any mTLS or proxy transport; a custom transport must honor the deadline and reject redirects.
+
 ## Required data flow
 
 1. Accept task ingress only as a signed task envelope with a matching outer idempotency key through `MeshControlApi`.
