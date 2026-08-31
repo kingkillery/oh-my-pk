@@ -1,4 +1,5 @@
 import type { MeshRole, TaskContractV1, TaskMode } from "@pk-nerdsaver-ai/mesh-contracts";
+import type { MeshEnvelopeVerifier } from "@pk-nerdsaver-ai/mesh-auth";
 import type { MeshTaskState } from "@pk-nerdsaver-ai/mesh-orchestrator";
 
 export const MESH_CONTROL_API_SCHEMA = "ompk.mesh-control-api/v1" as const;
@@ -12,9 +13,8 @@ export interface MeshControlClock {
 }
 
 /**
- * Signature proof is origin evidence and authorization is a separate local
- * policy decision. Submit requires both an allow outcome and a verified
- * origin signature; read operations require an allow outcome.
+ * The API verifies the task origin envelope before this local policy decision.
+ * An authorizer never needs to rely on a caller-provided signature boolean.
  */
 export interface MeshControlAuthorizer {
 	authorize(request: MeshControlAuthorizationRequest): Promise<MeshControlAuthorizationDecision>;
@@ -31,8 +31,6 @@ export interface MeshControlAuthorizationRequest {
 
 export interface MeshControlAuthorizationDecision {
 	readonly outcome: MeshControlAuthorizationOutcome;
-	/** Required for task.submit; ignored for reads. */
-	readonly signatureVerified?: boolean;
 	/** Stable safe-to-expose reason code; arbitrary text is intentionally not accepted. */
 	readonly reasonCode?: string;
 }
@@ -104,6 +102,8 @@ export interface MeshControlUnsupportedResult {
 
 export interface MeshControlApiOptions {
 	readonly orchestrator: import("@pk-nerdsaver-ai/mesh-orchestrator").MeshOrchestrator;
+	/** A configured trusted origin verifier; task-envelope metadata never selects it. */
+	readonly taskEnvelopeVerifier: MeshEnvelopeVerifier;
 	readonly authorizer: MeshControlAuthorizer;
 	readonly clock: MeshControlClock;
 }

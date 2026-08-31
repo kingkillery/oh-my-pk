@@ -1,4 +1,5 @@
-import { assertMeshId, parseTaskContract, type TaskContractV1 } from "@pk-nerdsaver-ai/mesh-contracts";
+import { assertMeshId, type TaskContractV1 } from "@pk-nerdsaver-ai/mesh-contracts";
+import { verifySignedTaskContract } from "@pk-nerdsaver-ai/mesh-auth";
 import { MeshCliApiError } from "@pk-nerdsaver-ai/mesh-cli";
 import { IdempotencyConflictError, type MeshOrchestrator, type RuntimeTaskRecord } from "@pk-nerdsaver-ai/mesh-orchestrator";
 import type {
@@ -45,29 +46,28 @@ function safeReasonCode(value: unknown): string | undefined {
  */
 export class MeshControlApi implements MeshCliApi {
 	readonly #orchestrator: MeshOrchestrator;
+	readonly #taskEnvelopeVerifier: MeshControlApiOptions["taskEnvelopeVerifier"];
 	readonly #authorizer: MeshControlApiOptions["authorizer"];
 	readonly #clock: MeshControlApiOptions["clock"];
 
 	constructor(options: MeshControlApiOptions) {
 		this.#orchestrator = options.orchestrator;
+		this.#taskEnvelopeVerifier = options.taskEnvelopeVerifier;
 		this.#authorizer = options.authorizer;
 		this.#clock = options.clock;
 	}
 
 	async submit(request: MeshCliSubmitRequest): Promise<MeshTaskSubmissionProjection> {
-		const task = this.#parseSubmission(request);
+		const task = await this.#parseSubmission(request);
 		const now = this.#clockReading();
-		await this.#authorize(
-			{
-				action: "task.submit",
-				requestId: request.requestId,
-				taskId: task.taskId,
-				idempotencyKey: request.idempotencyKey,
-				evaluatedAt: now.iso,
-				task,
-			},
-			true,
-		);
+		await this.#authorize({
+			action: "task.submit",
+			requestId: request.requestId,
+			taskId: task.taskId,
+			idempotencyKey: request.idempotencyKey,
+			evaluatedAt: now.iso,
+			task,
+		});
 		try {
 			const record = await this.#orchestrator.submitTask(task, now.epochMs);
 			return Object.freeze({ schemaVersion: MESH_CONTROL_API_SCHEMA, kind: "task_submission", task: projectTask(record) });
@@ -86,7 +86,7 @@ export class MeshControlApi implements MeshCliApi {
 		this.#assertNoCursor(request.cursor);
 		const taskId = this.#requireTaskId(request.taskId);
 		const now = this.#clockReading();
-		await this.#authorize({ action: "task.status", requestId: request.requestId, taskId, evaluatedAt: now.iso }, false);
+		await this.#authorize({ action: "task.status", requestId: request.requestId, taskId, evaluatedAt: now.iso });
 		const task = await this.#task(taskId);
 		return Object.freeze({ schemaVersion: MESH_CONTROL_API_SCHEMA, kind: "task_status", task: projectTask(task) });
 	}
@@ -95,7 +95,7 @@ export class MeshControlApi implements MeshCliApi {
 		this.#assertNoCursor(request.cursor);
 		const taskId = this.#requireTaskId(request.taskId);
 		const now = this.#clockReading();
-		await this.#authorize({ action: "task.trace", requestId: request.requestId, taskId, evaluatedAt: now.iso }, false);
+		await this.#authorize({ action: "task.trace", requestId: request.requestId, taskId, evaluatedAt: now.iso });
 		const task = await this.#task(taskId);
 		const projection = projectTask(task);
 		return Object.freeze({
@@ -125,13 +125,12 @@ export class MeshControlApi implements MeshCliApi {
 		return unsupported("durable_follow_unsupported", "Durable task following is not implemented by this control runtime.");
 	}
 
-	#parseSubmission(request: MeshCliSubmitRequest): TaskContractV1 {
-		let task: TaskContractV1;
-		try {
-			task = parseTaskContract(request.payload);
-		} catch {
-			throw new MeshCliApiError("invalid_task_contract", "Submit requires one complete canonical task contract.", { retryable: false });
+	async #parseSubmission(request: MeshCliSubmitRequest): Promise<TaskContractV1> {
+		const verified = await verifySignedTaskContract(request.payload, this.#taskEnvelopeVerifier);
+		if (!verified.ok) {
+			throw new MeshCliApiError("signature_unverified", "Submit requires a verified signed task envelope.", { retryable: false });
 		}
+		const task = verified.payload;
 		if (task.idempotencyKey !== request.idempotencyKey) {
 			throw new MeshCliApiError("idempotency_key_mismatch", "The CLI idempotency key must match the task contract.", { retryable: false });
 		}
@@ -152,7 +151,7 @@ export class MeshControlApi implements MeshCliApi {
 		return Object.freeze({ epochMs, iso: date.toISOString() });
 	}
 
-	async #authorize(request: MeshControlAuthorizationRequest, requireVerifiedSignature: boolean): Promise<void> {
+	async #authorize(request: MeshControlAuthorizationRequest): Promise<void> {
 		let decision: MeshControlAuthorizationDecision;
 		try {
 			decision = await this.#authorizer.authorize(request);
@@ -162,9 +161,6 @@ export class MeshControlApi implements MeshCliApi {
 		if (decision === null || typeof decision !== "object" || decision.outcome !== "allow") {
 			const code = decision !== null && typeof decision === "object" ? safeReasonCode(decision.reasonCode) : undefined;
 			throw new MeshCliApiError(code ?? "authorization_denied", "Local authorization denied the mesh request.", { retryable: false });
-		}
-		if (requireVerifiedSignature && decision.signatureVerified !== true) {
-			throw new MeshCliApiError("signature_unverified", "The submitted task does not have a verified origin signature.", { retryable: false });
 		}
 	}
 
