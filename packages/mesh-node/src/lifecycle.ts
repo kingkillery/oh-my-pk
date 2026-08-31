@@ -1,4 +1,5 @@
 import {
+	MESH_SCHEMA,
 	parseAssignmentLease,
 	parseTaskContract,
 	sha256CanonicalJson,
@@ -6,6 +7,7 @@ import {
 	type TaskContractV1,
 	type TrustZone,
 } from "@pk-nerdsaver-ai/mesh-contracts";
+import { parseSignedMeshEnvelope, verifySignedAssignmentLease, type MeshEnvelopeVerifier } from "@pk-nerdsaver-ai/mesh-auth";
 
 import { isNodePresenceFresh, type MeshNodePresence } from "./node-presence";
 
@@ -42,6 +44,7 @@ export type MeshNodeLifecycleEventType =
 export type MeshNodeAgentErrorCode =
 	| "active_interactive_local"
 	| "assignment_already_known"
+	| "assignment_signature_unverified"
 	| "assignment_state_invalid"
 	| "capacity_exhausted"
 	| "execution_adapter_failed"
@@ -60,6 +63,7 @@ export type MeshNodeAgentErrorCode =
 	| "node_identity_mismatch"
 	| "node_presence_future"
 	| "node_presence_stale"
+	| "scheduler_verifier_unavailable"
 	| "task_disallows_active_machine"
 	| "trust_zone_incompatible";
 
@@ -127,6 +131,8 @@ export interface MeshNodeExecutionPort {
 export interface MeshNodeAgentOptions {
 	readonly identity: MeshNodeIdentity;
 	readonly execution: MeshNodeExecutionPort;
+	/** A node-owned scheduler allow-list. Assignment envelope metadata only selects within this fixed set. */
+	readonly trustedSchedulerVerifiers: readonly MeshEnvelopeVerifier[];
 	readonly getPresence: () => MeshNodePresence;
 	readonly now?: () => number;
 	readonly interactivePolicy?: MeshNodeInteractivePolicy;
@@ -152,12 +158,20 @@ export interface MeshNodeLifecycleRecord {
 interface AcceptedAssignment {
 	readonly task: TaskContractV1;
 	readonly assignment: AssignmentLeaseV1;
+	/** The verified signed-envelope digest, used only for idempotent redelivery. */
+	readonly assignmentPayloadDigest: string;
 	readonly bounds: MeshExecutionBounds;
 	state: MeshNodeLifecycleState;
+	admissionRecord?: MeshNodeLifecycleRecord;
 	cancelRecord?: MeshNodeLifecycleRecord;
 	cancelPromise?: Promise<MeshNodeLifecycleRecord>;
 	cleanupRecord?: MeshNodeLifecycleRecord;
 	cleanupPromise?: Promise<MeshNodeLifecycleRecord>;
+}
+
+interface VerifiedAssignmentDelivery {
+	readonly assignment: AssignmentLeaseV1;
+	readonly payloadDigest: string;
 }
 
 const TRUST_ZONE_EXPOSURE: Readonly<Record<TrustZone, number>> = Object.freeze({
@@ -190,6 +204,7 @@ function trustZoneSupports(nodeZone: TrustZone, requiredZone: TrustZone | undefi
 export class MeshNodeAgent {
 	readonly #identity: MeshNodeIdentity;
 	readonly #execution: MeshNodeExecutionPort;
+	readonly #trustedSchedulerVerifiers: readonly MeshEnvelopeVerifier[];
 	readonly #getPresence: () => MeshNodePresence;
 	readonly #now: () => number;
 	readonly #interactivePolicy: MeshNodeInteractivePolicy;
@@ -203,6 +218,7 @@ export class MeshNodeAgent {
 		if (!options.identity.nodeId || !options.identity.pubkey) throw new Error("A node identity is required.");
 		this.#identity = Object.freeze({ ...options.identity });
 		this.#execution = options.execution;
+		this.#trustedSchedulerVerifiers = Object.freeze(options.trustedSchedulerVerifiers.map(verifier => Object.freeze({ ...verifier })));
 		this.#getPresence = options.getPresence;
 		this.#now = options.now ?? Date.now;
 		this.#interactivePolicy = options.interactivePolicy ?? "deny_when_active";
@@ -217,24 +233,38 @@ export class MeshNodeAgent {
 	 * Validates an assignment at the execution boundary and reserves a local
 	 * capacity slot. Validation is repeated before start, run, and heartbeat.
 	 */
-	accept(input: { readonly task: unknown; readonly assignment: unknown }): MeshNodeLifecycleRecord {
+	async accept(input: { readonly task: unknown; readonly signedAssignment: unknown }): Promise<MeshNodeLifecycleRecord> {
 		let task: TaskContractV1;
-		let assignment: AssignmentLeaseV1;
 		try {
 			task = parseTaskContract(input.task);
-			assignment = parseAssignmentLease(input.assignment);
 		} catch {
 			return this.#reject("invalid_contract", "admitted");
 		}
+		let verifiedAssignment: VerifiedAssignmentDelivery;
+		try {
+			verifiedAssignment = await this.#verifySignedAssignment(input.signedAssignment);
+		} catch (error) {
+			return this.#reject(this.#toCode(error), "admitted", task);
+		}
+		const { assignment } = verifiedAssignment;
 
-		if (this.#assignments.has(assignment.assignmentId)) return this.#reject("assignment_already_known", "admitted", task, assignment);
+		const existing = this.#assignments.get(assignment.assignmentId);
+		if (existing !== undefined) {
+			if (existing.assignmentPayloadDigest === verifiedAssignment.payloadDigest && existing.admissionRecord !== undefined) {
+				if (task.taskId === existing.task.taskId && task.digest === existing.task.digest) return existing.admissionRecord;
+				return this.#reject("lease_invalid_binding", "admitted", task, assignment);
+			}
+			return this.#reject("assignment_already_known", "admitted", task, assignment);
+		}
 
 		try {
 			const presence = this.#getPresence();
 			const bounds = this.#validateAdmission(task, assignment, presence, true);
-			const tracked: AcceptedAssignment = { task, assignment, bounds, state: "admitted" };
+			const tracked: AcceptedAssignment = { task, assignment, assignmentPayloadDigest: verifiedAssignment.payloadDigest, bounds, state: "admitted" };
 			this.#assignments.set(assignment.assignmentId, tracked);
-			return this.#record("assignment.accepted", tracked);
+			const admission = this.#record("assignment.accepted", tracked);
+			tracked.admissionRecord = admission;
+			return admission;
 		} catch (error) {
 			return this.#reject(this.#toCode(error), "admitted", task, assignment);
 		}
@@ -361,6 +391,33 @@ export class MeshNodeAgent {
 		const tracked = this.#assignments.get(assignmentId);
 		if (tracked === undefined) throw new MeshNodeAgentError("assignment_state_invalid");
 		return tracked;
+	}
+
+	async #verifySignedAssignment(input: unknown): Promise<VerifiedAssignmentDelivery> {
+		let candidate: AssignmentLeaseV1;
+		let candidateSignature: { readonly algorithm: string; readonly keyId: string };
+		try {
+			const envelope = parseSignedMeshEnvelope(input);
+			if (envelope.payload.schemaVersion !== MESH_SCHEMA.assignment) throw new MeshNodeAgentError("assignment_signature_unverified");
+			candidate = envelope.payload;
+			candidateSignature = envelope.signature;
+		} catch {
+			throw new MeshNodeAgentError("assignment_signature_unverified");
+		}
+
+		const verifiers = this.#trustedSchedulerVerifiers.filter(
+			verifier =>
+				verifier.actorPubkey === candidate.scheduler.pubkey &&
+				verifier.role === "scheduler" &&
+				verifier.algorithm === candidateSignature.algorithm &&
+				verifier.keyId === candidateSignature.keyId,
+		);
+		if (verifiers.length !== 1) throw new MeshNodeAgentError("scheduler_verifier_unavailable");
+		const verifier = verifiers[0];
+
+		const verified = await verifySignedAssignmentLease(input, verifier);
+		if (!verified.ok) throw new MeshNodeAgentError("assignment_signature_unverified");
+		return Object.freeze({ assignment: verified.payload, payloadDigest: verified.envelope.payloadDigest });
 	}
 
 	#requireState(tracked: AcceptedAssignment, expected: MeshNodeLifecycleState): void {

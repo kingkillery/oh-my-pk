@@ -9,6 +9,7 @@ import {
 	type AssignmentLeaseV1,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
+import { signAssignmentLease, type MeshEnvelopeSigner, type MeshEnvelopeVerifier } from "@pk-nerdsaver-ai/mesh-auth";
 import {
 	MeshNodeAgent,
 	MeshNodeAgentError,
@@ -22,6 +23,11 @@ import {
 const NOW = Date.parse("2026-08-31T12:00:00.000Z");
 const NODE_ID = "node_local-001";
 const NODE_PUBKEY = "n".repeat(64);
+const SCHEDULER_PUBKEY = "s".repeat(64);
+const SIGNATURE_ALGORITHM = "node-test-signature-v1";
+const SIGNATURE_KEY_ID = "node-test-scheduler-key";
+const signatureEncoder = new TextEncoder();
+const signatureDecoder = new TextDecoder();
 
 interface ExecutionCalls {
 	start: number;
@@ -58,7 +64,7 @@ function makeAssignment(task: TaskContractV1, overrides: Record<string, unknown>
 		assignmentId: "asg_lifecycle-001",
 		taskId: task.taskId,
 		taskDigest: task.digest,
-		scheduler: { pubkey: "s".repeat(64), role: "scheduler" },
+		scheduler: { pubkey: SCHEDULER_PUBKEY, role: "scheduler" },
 		schedulerEpoch: 1,
 		fencingToken: 1,
 		workerNodeId: NODE_ID,
@@ -72,6 +78,35 @@ function makeAssignment(task: TaskContractV1, overrides: Record<string, unknown>
 		idempotencyKey: "assignment-lifecycle-key",
 		...overrides,
 	});
+}
+
+function signature(payload: Uint8Array): Uint8Array {
+	return signatureEncoder.encode(`${SIGNATURE_ALGORITHM}:${SIGNATURE_KEY_ID}:${signatureDecoder.decode(payload).split("").reverse().join("")}`);
+}
+
+function schedulerSigner(actorPubkey = SCHEDULER_PUBKEY): MeshEnvelopeSigner {
+	return Object.freeze({
+		algorithm: SIGNATURE_ALGORITHM,
+		keyId: SIGNATURE_KEY_ID,
+		actorPubkey,
+		role: "scheduler",
+		sign: signature,
+	});
+}
+
+const schedulerVerifier: MeshEnvelopeVerifier = Object.freeze({
+	algorithm: SIGNATURE_ALGORITHM,
+	keyId: SIGNATURE_KEY_ID,
+	actorPubkey: SCHEDULER_PUBKEY,
+	role: "scheduler",
+	verify(payload, signed) {
+		const expected = signature(payload);
+		return expected.byteLength === signed.byteLength && expected.every((value, index) => value === signed[index]);
+	},
+});
+
+async function signedAssignment(assignment: AssignmentLeaseV1, signer = schedulerSigner()) {
+	return signAssignmentLease(assignment, signer, { signedAt: "2026-08-31T11:59:30.000Z" });
 }
 
 function makePresence(overrides: { readonly activeInteractiveUser?: boolean; readonly expiresAt?: string } = {}): MeshNodePresence {
@@ -124,6 +159,7 @@ function createAgent(presence: MeshNodePresence, port: MeshNodeExecutionPort): M
 	return new MeshNodeAgent({
 		identity: { nodeId: NODE_ID, pubkey: NODE_PUBKEY },
 		execution: port,
+		trustedSchedulerVerifiers: [schedulerVerifier],
 		getPresence: () => presence,
 		now: () => NOW,
 	});
@@ -134,26 +170,26 @@ function calls(): ExecutionCalls {
 }
 
 describe("MeshNodeAgent", () => {
-	test("rejects stale and adversarial lease bindings before an adapter sees them", () => {
+	test("rejects stale and adversarial lease bindings before an adapter sees them", async () => {
 		const task = makeTask();
 		const stale = makeAssignment(task, { leaseExpiresAt: "2026-08-31T11:59:59.000Z" });
 		const executionCalls = calls();
 		const agent = createAgent(makePresence(), makePort(executionCalls));
 
-		expect(() => agent.accept({ task, assignment: stale })).toThrow(MeshNodeAgentError);
+		await expect(agent.accept({ task, signedAssignment: await signedAssignment(stale) })).rejects.toMatchObject({ code: "lease_expired" });
 		expect(agent.events().at(-1)).toMatchObject({ type: "assignment.rejected", code: "lease_expired" });
 
 		const adversarial = makeAssignment(task, { assignmentId: "asg_adversarial-001", executorPubkey: "x".repeat(64) });
-		expect(() => agent.accept({ task, assignment: adversarial })).toThrow(MeshNodeAgentError);
+		await expect(agent.accept({ task, signedAssignment: await signedAssignment(adversarial) })).rejects.toMatchObject({ code: "lease_invalid_binding" });
 		expect(agent.events().at(-1)).toMatchObject({ type: "assignment.rejected", code: "lease_invalid_binding" });
 		expect(executionCalls).toMatchObject({ start: 0, run: 0, heartbeat: 0, cancel: 0, cleanup: 0 });
 	});
 
-	test("local active-interactive policy remains final even when a task opts in", () => {
+	test("local active-interactive policy remains final even when a task opts in", async () => {
 		const task = makeTask({ routing: { requiredCapabilities: ["safe.tool"], trustZoneMin: "private", activeMachineAllowed: true } });
 		const agent = createAgent(makePresence({ activeInteractiveUser: true }), makePort(calls()));
 
-		expect(() => agent.accept({ task, assignment: makeAssignment(task) })).toThrow(MeshNodeAgentError);
+		await expect(agent.accept({ task, signedAssignment: await signedAssignment(makeAssignment(task)) })).rejects.toMatchObject({ code: "active_interactive_local" });
 		expect(agent.events().at(-1)).toMatchObject({ type: "assignment.rejected", code: "active_interactive_local" });
 	});
 
@@ -164,7 +200,7 @@ describe("MeshNodeAgent", () => {
 		const assignment = makeAssignment(task);
 		const agent = createAgent(makePresence(), makePort(executionCalls, async () => runGate.promise));
 
-		agent.accept({ task, assignment });
+		await agent.accept({ task, signedAssignment: await signedAssignment(assignment) });
 		await agent.start(assignment.assignmentId);
 		const execution = agent.run(assignment.assignmentId);
 		await Promise.resolve();
@@ -199,7 +235,7 @@ describe("MeshNodeAgent", () => {
 		};
 		const agent = createAgent(makePresence(), port);
 
-		agent.accept({ task, assignment });
+		await agent.accept({ task, signedAssignment: await signedAssignment(assignment) });
 		await agent.start(assignment.assignmentId);
 		const firstCancel = agent.cancel(assignment.assignmentId);
 		const duplicateCancel = agent.cancel(assignment.assignmentId);
@@ -218,5 +254,48 @@ describe("MeshNodeAgent", () => {
 		expect(executionCalls).toMatchObject({ start: 1, cancel: 1, cleanup: 1 });
 		expect(agent.state(assignment.assignmentId)).toBe("cleaned");
 		expect(agent.assignmentEvents(assignment.assignmentId).map(event => event.type)).toEqual(["assignment.accepted", "execution.started", "execution.cancelled", "execution.cleaned"]);
+	});
+
+	test("rejects unsigned, altered, and untrusted scheduler deliveries before admission", async () => {
+		const executionCalls = calls();
+		const task = makeTask();
+		const assignment = makeAssignment(task);
+		const agent = createAgent(makePresence(), makePort(executionCalls));
+
+		await expect(agent.accept({ task, signedAssignment: assignment })).rejects.toMatchObject({ code: "assignment_signature_unverified" });
+		const signed = await signedAssignment(assignment);
+		await expect(agent.accept({ task, signedAssignment: { ...signed, payloadDigest: "0".repeat(64) } })).rejects.toMatchObject({ code: "assignment_signature_unverified" });
+		const alteredSignatureBase64 = `${signed.signature.signatureBase64.startsWith("A") ? "B" : "A"}${signed.signature.signatureBase64.slice(1)}`;
+		await expect(agent.accept({ task, signedAssignment: { ...signed, signature: { ...signed.signature, signatureBase64: alteredSignatureBase64 } } })).rejects.toMatchObject({
+			code: "assignment_signature_unverified",
+		});
+
+		const untrustedPubkey = "u".repeat(64);
+		const untrustedAssignment = makeAssignment(task, {
+			assignmentId: "asg_untrusted-scheduler-001",
+			scheduler: { pubkey: untrustedPubkey, role: "scheduler" },
+		});
+		await expect(agent.accept({ task, signedAssignment: await signedAssignment(untrustedAssignment, schedulerSigner(untrustedPubkey)) })).rejects.toMatchObject({
+			code: "scheduler_verifier_unavailable",
+		});
+		expect(executionCalls).toMatchObject({ start: 0, run: 0, heartbeat: 0, cancel: 0, cleanup: 0 });
+	});
+
+	test("deduplicates a verified delivery but rejects the same assignment id with a different signed payload", async () => {
+		const executionCalls = calls();
+		const task = makeTask();
+		const firstAssignment = makeAssignment(task);
+		const agent = createAgent(makePresence(), makePort(executionCalls));
+		const signedFirstAssignment = await signedAssignment(firstAssignment);
+		const first = await agent.accept({ task, signedAssignment: signedFirstAssignment });
+		const duplicate = await agent.accept({ task, signedAssignment: signedFirstAssignment });
+
+		expect(duplicate).toBe(first);
+		expect(agent.assignmentEvents(firstAssignment.assignmentId)).toHaveLength(1);
+		const differentTask = makeTask({ taskId: "task_lifecycle-duplicate-mismatch", idempotencyKey: "task-lifecycle-duplicate-mismatch" });
+		await expect(agent.accept({ task: differentTask, signedAssignment: signedFirstAssignment })).rejects.toMatchObject({ code: "lease_invalid_binding" });
+		const conflictingAssignment = makeAssignment(task, { leaseExpiresAt: "2026-08-31T12:06:00.000Z" });
+		await expect(agent.accept({ task, signedAssignment: await signedAssignment(conflictingAssignment) })).rejects.toMatchObject({ code: "assignment_already_known" });
+		expect(executionCalls).toMatchObject({ start: 0, run: 0, heartbeat: 0, cancel: 0, cleanup: 0 });
 	});
 });
