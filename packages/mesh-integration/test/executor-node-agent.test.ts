@@ -14,10 +14,11 @@ import {
 import { signAssignmentLease, type MeshEnvelopeSigner, type MeshEnvelopeVerifier } from "../../mesh-auth/src/index";
 import {
 	canonicalExecutorToolPermission,
+	ExecutorHttpCodeGateway,
 	ExecutorMeshExecutionPort,
-	type ExecutorMcpGateway,
-	type ExecutorMcpGatewayRequest,
-	type ExecutorMcpGatewayResult,
+	type ExecutorHttpTransport,
+	type ExecutorHttpTransportRequest,
+	type ExecutorHttpTransportResponse,
 } from "../../mesh-executor/src/index";
 import { MeshNodeAgent, projectNodeAdvertisement, type MeshNodePresence } from "../../mesh-node/src/index";
 
@@ -38,17 +39,17 @@ interface TaskFixtureOptions {
 	readonly permissions?: JsonRecord;
 }
 
-class RecordingGateway implements ExecutorMcpGateway {
-	readonly calls: ExecutorMcpGatewayRequest[] = [];
-	readonly #result: ExecutorMcpGatewayResult;
+class RecordingExecutorTransport implements ExecutorHttpTransport {
+	readonly requests: ExecutorHttpTransportRequest[] = [];
+	readonly #response: ExecutorHttpTransportResponse;
 
-	constructor(result: ExecutorMcpGatewayResult) {
-		this.#result = result;
+	constructor(response: ExecutorHttpTransportResponse) {
+		this.#response = response;
 	}
 
-	async invoke(request: ExecutorMcpGatewayRequest): Promise<ExecutorMcpGatewayResult> {
-		this.calls.push(request);
-		return this.#result;
+	async send(request: ExecutorHttpTransportRequest): Promise<ExecutorHttpTransportResponse> {
+		this.requests.push(request);
+		return this.#response;
 	}
 }
 
@@ -168,11 +169,22 @@ function healthyPresence(): MeshNodePresence {
 	);
 }
 
-function createAgent(gateway: ExecutorMcpGateway): MeshNodeAgent {
+function response(value: unknown): ExecutorHttpTransportResponse {
+	return Object.freeze({
+		ok: true,
+		status: 200,
+		json: async () => value,
+	});
+}
+
+function createAgent(transport: ExecutorHttpTransport): MeshNodeAgent {
 	return new MeshNodeAgent({
 		identity: { nodeId: NODE_ID, pubkey: NODE_PUBKEY },
 		execution: new ExecutorMeshExecutionPort({
-			gateway,
+			gateway: new ExecutorHttpCodeGateway({
+				endpoints: [{ endpointId: ENDPOINT_ID, origin: "http://127.0.0.1:4788", authorization: "Bearer integration-host-token" }],
+				transport,
+			}),
 			trustedEndpoints: [{ endpointId: ENDPOINT_ID, catalogFingerprint: CATALOG_FINGERPRINT }],
 		}),
 		trustedSchedulerVerifiers: [schedulerVerifier],
@@ -182,49 +194,46 @@ function createAgent(gateway: ExecutorMcpGateway): MeshNodeAgent {
 }
 
 describe("Executor through the MeshNodeAgent boundary", () => {
-	test("admits a digest-bound lease before sending exactly one canonical, provenance-bound gateway call", async () => {
-		const gateway = new RecordingGateway({ status: "succeeded", exitCode: 0 });
-		const agent = createAgent(gateway);
+	test("admits a digest-bound lease before sending exactly one canonical Executor HTTP request", async () => {
+		const transport = new RecordingExecutorTransport(response({ status: "completed", text: "completed", structured: {}, isError: false }));
+		const agent = createAgent(transport);
 		const task = signedTask();
 		const assigned = assignment(task);
 
 		await expect(agent.accept({ task, signedAssignment: await signedDelivery(assigned) })).resolves.toMatchObject({ type: "assignment.accepted", state: "admitted" });
-		expect(gateway.calls).toHaveLength(0);
+		expect(transport.requests).toHaveLength(0);
 
 		await expect(agent.start(assigned.assignmentId)).resolves.toMatchObject({ type: "execution.started", state: "started" });
-		expect(gateway.calls).toHaveLength(0);
+		expect(transport.requests).toHaveLength(0);
 
 		await expect(agent.run(assigned.assignmentId)).resolves.toMatchObject({
 			type: "execution.completed",
 			state: "completed",
 			outcome: "succeeded",
-			exitCode: 0,
 		});
-		expect(gateway.calls).toHaveLength(1);
+		expect(transport.requests).toHaveLength(1);
 
-		const call = gateway.calls[0];
-		expect(call).toEqual({
-			endpointId: ENDPOINT_ID,
-			code: 'return await tools.github.issues.create({"labels":["executor","mesh"],"owner":"kingkillery","repo":"localmesh","title":"Create the bounded integration fixture"});',
-			metadata: {
-				taskId: task.taskId,
-				taskDigest: task.digest,
-				assignmentId: assigned.assignmentId,
-				schedulerEpoch: assigned.schedulerEpoch,
-				fencingToken: assigned.fencingToken,
-				inputDigest: task.executorInvocation?.inputDigest,
-				catalogFingerprint: CATALOG_FINGERPRINT,
-				toolPermission: canonicalExecutorToolPermission(ENDPOINT_ID, TOOL_PATH),
+		const request = transport.requests[0];
+		expect(request).toMatchObject({
+			method: "POST",
+			url: "http://127.0.0.1:4788/api/executions",
+			headers: {
+				accept: "application/json",
+				"content-type": "application/json",
+				authorization: "Bearer integration-host-token",
 			},
 		});
-		expect(call.code).not.toContain(task.goal);
-		expect(call.code).not.toContain(RAW_PAYLOAD);
-		expect(JSON.stringify(call)).not.toContain(RAW_PAYLOAD);
+		expect(JSON.parse(request?.body ?? "")).toEqual({
+			code: 'return await tools.github.issues.create({"labels":["executor","mesh"],"owner":"kingkillery","repo":"localmesh","title":"Create the bounded integration fixture"});',
+		});
+		expect(request?.body).not.toContain(task.goal);
+		expect(request?.body).not.toContain(RAW_PAYLOAD);
+		expect(request?.body).not.toContain("autoApprove");
 	});
 
 	test("blocks a wildcard permission before the Executor gateway is contacted", async () => {
-		const gateway = new RecordingGateway({ status: "succeeded", exitCode: 0 });
-		const agent = createAgent(gateway);
+		const transport = new RecordingExecutorTransport(response({ status: "completed", text: "completed", structured: {}, isError: false }));
+		const agent = createAgent(transport);
 		const task = signedTask({
 			permissions: { tools: ["executor:localExecutor:tools.github.issues.*"], externalSideEffects: "approval_required" },
 		});
@@ -239,12 +248,12 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 			code: "execution_adapter_failed",
 		});
 		expect(agent.outbox()).toHaveLength(0);
-		expect(gateway.calls).toHaveLength(0);
+		expect(transport.requests).toHaveLength(0);
 	});
 
 	test("turns an Executor approval pause into reconciliation-required state without automatic resume", async () => {
-		const gateway = new RecordingGateway({ status: "approval_required" });
-		const agent = createAgent(gateway);
+		const transport = new RecordingExecutorTransport(response({ status: "paused", text: "approval required", structured: { executionId: "pause-001" } }));
+		const agent = createAgent(transport);
 		const task = signedTask();
 		const assigned = assignment(task);
 
@@ -259,7 +268,10 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 		});
 		expect(agent.outbox()).toHaveLength(0);
 
+
 		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
-		expect(gateway.calls).toHaveLength(1);
+		expect(transport.requests).toHaveLength(1);
+		expect(transport.requests[0]?.body).not.toContain("autoApprove");
+		expect(transport.requests[0]?.body).not.toContain("pause-001");
 	});
 });
