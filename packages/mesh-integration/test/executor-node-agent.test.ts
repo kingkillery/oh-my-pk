@@ -11,6 +11,7 @@ import {
 	type JsonRecord,
 	type TaskContractV1,
 } from "../../mesh-contracts/src/index";
+import { signAssignmentLease, type MeshEnvelopeSigner, type MeshEnvelopeVerifier } from "../../mesh-auth/src/index";
 import {
 	canonicalExecutorToolPermission,
 	ExecutorMeshExecutionPort,
@@ -28,6 +29,10 @@ const ENDPOINT_ID = "localExecutor";
 const CATALOG_FINGERPRINT = "c".repeat(64);
 const TOOL_PATH = ["github", "issues", "create"] as const;
 const RAW_PAYLOAD = "UNTRUSTED_RAW_PAYLOAD: do-not-forward-this-to-executor";
+const ASSIGNMENT_SIGNATURE_ALGORITHM = "executor-node-test-signature-v1";
+const ASSIGNMENT_SIGNATURE_KEY_ID = "executor-node-test-scheduler-key";
+const signatureEncoder = new TextEncoder();
+const signatureDecoder = new TextDecoder();
 
 interface TaskFixtureOptions {
 	readonly permissions?: JsonRecord;
@@ -95,7 +100,7 @@ function signedTask(options: TaskFixtureOptions = {}): TaskContractV1 {
 }
 
 /** The lease binds the task digest, permission digest, worker identity, and scheduler fence. */
-function signedAssignment(task: TaskContractV1): AssignmentLeaseV1 {
+function assignment(task: TaskContractV1): AssignmentLeaseV1 {
 	return parseAssignmentLease({
 		schemaVersion: MESH_SCHEMA.assignment,
 		assignmentId: "asg_executor-integration-001",
@@ -114,6 +119,33 @@ function signedAssignment(task: TaskContractV1): AssignmentLeaseV1 {
 		placementReason: { selectedNodeId: NODE_ID, reason: "integration_fixture" },
 		idempotencyKey: "executor-integration-assignment-001",
 	});
+}
+
+function assignmentSignature(payload: Uint8Array): Uint8Array {
+	return signatureEncoder.encode(`${ASSIGNMENT_SIGNATURE_ALGORITHM}:${ASSIGNMENT_SIGNATURE_KEY_ID}:${signatureDecoder.decode(payload).split("").reverse().join("")}`);
+}
+
+const schedulerSigner: MeshEnvelopeSigner = Object.freeze({
+	algorithm: ASSIGNMENT_SIGNATURE_ALGORITHM,
+	keyId: ASSIGNMENT_SIGNATURE_KEY_ID,
+	actorPubkey: SCHEDULER_PUBKEY,
+	role: "scheduler",
+	sign: assignmentSignature,
+});
+
+const schedulerVerifier: MeshEnvelopeVerifier = Object.freeze({
+	algorithm: ASSIGNMENT_SIGNATURE_ALGORITHM,
+	keyId: ASSIGNMENT_SIGNATURE_KEY_ID,
+	actorPubkey: SCHEDULER_PUBKEY,
+	role: "scheduler",
+	verify(payload, signature) {
+		const expected = assignmentSignature(payload);
+		return expected.byteLength === signature.byteLength && expected.every((value, index) => value === signature[index]);
+	},
+});
+
+async function signedDelivery(input: AssignmentLeaseV1) {
+	return signAssignmentLease(input, schedulerSigner, { signedAt: at(-250) });
 }
 
 function healthyPresence(): MeshNodePresence {
@@ -143,6 +175,7 @@ function createAgent(gateway: ExecutorMcpGateway): MeshNodeAgent {
 			gateway,
 			trustedEndpoints: [{ endpointId: ENDPOINT_ID, catalogFingerprint: CATALOG_FINGERPRINT }],
 		}),
+		trustedSchedulerVerifiers: [schedulerVerifier],
 		getPresence: healthyPresence,
 		now: () => T0,
 	});
@@ -153,15 +186,15 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 		const gateway = new RecordingGateway({ status: "succeeded", exitCode: 0 });
 		const agent = createAgent(gateway);
 		const task = signedTask();
-		const assignment = signedAssignment(task);
+		const assigned = assignment(task);
 
-		expect(agent.accept({ task, assignment })).toMatchObject({ type: "assignment.accepted", state: "admitted" });
+		await expect(agent.accept({ task, signedAssignment: await signedDelivery(assigned) })).resolves.toMatchObject({ type: "assignment.accepted", state: "admitted" });
 		expect(gateway.calls).toHaveLength(0);
 
-		await expect(agent.start(assignment.assignmentId)).resolves.toMatchObject({ type: "execution.started", state: "started" });
+		await expect(agent.start(assigned.assignmentId)).resolves.toMatchObject({ type: "execution.started", state: "started" });
 		expect(gateway.calls).toHaveLength(0);
 
-		await expect(agent.run(assignment.assignmentId)).resolves.toMatchObject({
+		await expect(agent.run(assigned.assignmentId)).resolves.toMatchObject({
 			type: "execution.completed",
 			state: "completed",
 			outcome: "succeeded",
@@ -176,9 +209,9 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 			metadata: {
 				taskId: task.taskId,
 				taskDigest: task.digest,
-				assignmentId: assignment.assignmentId,
-				schedulerEpoch: assignment.schedulerEpoch,
-				fencingToken: assignment.fencingToken,
+				assignmentId: assigned.assignmentId,
+				schedulerEpoch: assigned.schedulerEpoch,
+				fencingToken: assigned.fencingToken,
 				inputDigest: task.executorInvocation?.inputDigest,
 				catalogFingerprint: CATALOG_FINGERPRINT,
 				toolPermission: canonicalExecutorToolPermission(ENDPOINT_ID, TOOL_PATH),
@@ -195,12 +228,12 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 		const task = signedTask({
 			permissions: { tools: ["executor:localExecutor:tools.github.issues.*"], externalSideEffects: "approval_required" },
 		});
-		const assignment = signedAssignment(task);
+		const assigned = assignment(task);
 
-		agent.accept({ task, assignment });
-		await expect(agent.start(assignment.assignmentId)).rejects.toMatchObject({ code: "execution_adapter_failed" });
-		expect(agent.state(assignment.assignmentId)).toBe("failed");
-		expect(agent.assignmentEvents(assignment.assignmentId).at(-1)).toMatchObject({
+		await agent.accept({ task, signedAssignment: await signedDelivery(assigned) });
+		await expect(agent.start(assigned.assignmentId)).rejects.toMatchObject({ code: "execution_adapter_failed" });
+		expect(agent.state(assigned.assignmentId)).toBe("failed");
+		expect(agent.assignmentEvents(assigned.assignmentId).at(-1)).toMatchObject({
 			type: "execution.start_failed",
 			code: "execution_adapter_failed",
 		});
@@ -211,19 +244,19 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 		const gateway = new RecordingGateway({ status: "approval_required" });
 		const agent = createAgent(gateway);
 		const task = signedTask();
-		const assignment = signedAssignment(task);
+		const assigned = assignment(task);
 
-		agent.accept({ task, assignment });
-		await agent.start(assignment.assignmentId);
-		await expect(agent.run(assignment.assignmentId)).rejects.toMatchObject({ code: "execution_adapter_failed" });
-		expect(agent.state(assignment.assignmentId)).toBe("failed");
-		expect(agent.assignmentEvents(assignment.assignmentId).at(-1)).toMatchObject({
+		await agent.accept({ task, signedAssignment: await signedDelivery(assigned) });
+		await agent.start(assigned.assignmentId);
+		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "execution_adapter_failed" });
+		expect(agent.state(assigned.assignmentId)).toBe("failed");
+		expect(agent.assignmentEvents(assigned.assignmentId).at(-1)).toMatchObject({
 			type: "execution.failed",
 			state: "failed",
 			code: "execution_adapter_failed",
 		});
 
-		await expect(agent.run(assignment.assignmentId)).rejects.toMatchObject({ code: "assignment_state_invalid" });
+		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "assignment_state_invalid" });
 		expect(gateway.calls).toHaveLength(1);
 	});
 });
