@@ -1,0 +1,12 @@
+[package]
+name = "mesh-iroh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Capability-gated Iroh transport boundary for LocalMesh"
+
+[lints]
+workspace = true
