@@ -7,9 +7,21 @@ import {
 	type TaskContractV1,
 	type TrustZone,
 } from "@pk-nerdsaver-ai/mesh-contracts";
-import { parseSignedMeshEnvelope, verifySignedAssignmentLease, type MeshEnvelopeVerifier } from "@pk-nerdsaver-ai/mesh-auth";
+import {
+	parseSignedMeshEnvelope,
+	verifySignedAssignmentLease,
+	type MeshEnvelopeVerifier,
+	type SignedMeshEnvelopeV1,
+} from "@pk-nerdsaver-ai/mesh-auth";
 
 import { isNodePresenceFresh, type MeshNodePresence } from "./node-presence";
+import {
+	InMemoryMeshNodeStateRepository,
+	type MeshNodeDurableAssignment,
+	type MeshNodeStateRepository,
+	type MeshNodeStateSnapshot,
+	type MeshNodeTerminalOutboxMessage,
+} from "./node-state";
 
 export type MeshNodeInteractivePolicy = "deny_when_active" | "deny_all" | "allow_explicit";
 
@@ -23,11 +35,14 @@ export type MeshNodeLifecycleState =
 	| "completed"
 	| "failed"
 	| "lost"
+	| "reconciliation_required"
+	| "cleaning"
 	| "cleaned";
 
 export type MeshNodeLifecycleEventType =
 	| "assignment.accepted"
 	| "assignment.rejected"
+	| "execution.starting"
 	| "execution.started"
 	| "execution.start_failed"
 	| "execution.running"
@@ -38,12 +53,17 @@ export type MeshNodeLifecycleEventType =
 	| "execution.heartbeat_failed"
 	| "execution.cancelled"
 	| "execution.cancel_failed"
+	| "execution.cancelling"
+	| "execution.cleaning"
 	| "execution.cleaned"
-	| "execution.cleanup_failed";
+	| "execution.cleanup_failed"
+	| "execution.reconciliation_required"
+	| "execution.reconciliation_resolved_as_lost";
 
 export type MeshNodeAgentErrorCode =
 	| "active_interactive_local"
 	| "assignment_already_known"
+	| "assignment_reconciliation_required"
 	| "assignment_signature_unverified"
 	| "assignment_state_invalid"
 	| "capacity_exhausted"
@@ -63,6 +83,10 @@ export type MeshNodeAgentErrorCode =
 	| "node_identity_mismatch"
 	| "node_presence_future"
 	| "node_presence_stale"
+	| "node_state_conflict"
+	| "node_state_corrupt"
+	| "node_state_identity_mismatch"
+	| "node_state_unavailable"
 	| "scheduler_verifier_unavailable"
 	| "task_disallows_active_machine"
 	| "trust_zone_incompatible";
@@ -138,6 +162,8 @@ export interface MeshNodeAgentOptions {
 	readonly interactivePolicy?: MeshNodeInteractivePolicy;
 	readonly defaultTimeoutSeconds?: number;
 	readonly maximumTimeoutSeconds?: number;
+	/** Defaults to memory for tests only; production nodes inject a durable local repository. */
+	readonly stateRepository?: MeshNodeStateRepository;
 }
 
 export interface MeshNodeLifecycleRecord {
@@ -158,6 +184,8 @@ export interface MeshNodeLifecycleRecord {
 interface AcceptedAssignment {
 	readonly task: TaskContractV1;
 	readonly assignment: AssignmentLeaseV1;
+	/** Retained so a durable restart can cryptographically re-establish admission. */
+	readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>;
 	/** The verified signed-envelope digest, used only for idempotent redelivery. */
 	readonly assignmentPayloadDigest: string;
 	readonly bounds: MeshExecutionBounds;
@@ -167,11 +195,16 @@ interface AcceptedAssignment {
 	cancelPromise?: Promise<MeshNodeLifecycleRecord>;
 	cleanupRecord?: MeshNodeLifecycleRecord;
 	cleanupPromise?: Promise<MeshNodeLifecycleRecord>;
+	terminalRecord?: MeshNodeLifecycleRecord;
+	cleanupOriginState?: MeshNodeLifecycleState;
 }
+
+type LifecycleRecordAssignment = Pick<AcceptedAssignment, "assignment" | "state" | "task">;
 
 interface VerifiedAssignmentDelivery {
 	readonly assignment: AssignmentLeaseV1;
 	readonly payloadDigest: string;
+	readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>;
 }
 
 const TRUST_ZONE_EXPOSURE: Readonly<Record<TrustZone, number>> = Object.freeze({
@@ -182,7 +215,9 @@ const TRUST_ZONE_EXPOSURE: Readonly<Record<TrustZone, number>> = Object.freeze({
 });
 
 const TERMINAL_STATES = new Set<MeshNodeLifecycleState>(["cancelled", "completed", "failed", "lost", "cleaned"]);
-const ACTIVE_STATES = new Set<MeshNodeLifecycleState>(["admitted", "starting", "started", "running", "cancelling"]);
+const CLEANUP_ELIGIBLE_STATES = new Set<MeshNodeLifecycleState>(["cancelled", "completed", "failed", "lost"]);
+const ACTIVE_STATES = new Set<MeshNodeLifecycleState>(["admitted", "starting", "started", "running", "cancelling", "cleaning", "reconciliation_required"]);
+const RECOVERY_STATES = new Set<MeshNodeLifecycleState>(["starting", "started", "running", "cancelling", "cleaning"]);
 
 function freezeRecord(record: MeshNodeLifecycleRecord): MeshNodeLifecycleRecord {
 	return Object.freeze(record);
@@ -192,14 +227,59 @@ function isPositiveInteger(value: number): boolean {
 	return Number.isInteger(value) && value > 0;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isKnownState(value: unknown): value is MeshNodeLifecycleState {
+	return (
+		value === "admitted" ||
+		value === "starting" ||
+		value === "started" ||
+		value === "running" ||
+		value === "cancelling" ||
+		value === "cancelled" ||
+		value === "completed" ||
+		value === "failed" ||
+		value === "lost" ||
+		value === "reconciliation_required" ||
+		value === "cleaning" ||
+		value === "cleaned"
+	);
+}
+
+function isKnownEventType(value: unknown): value is MeshNodeLifecycleEventType {
+	return (
+		value === "assignment.accepted" ||
+		value === "assignment.rejected" ||
+		value === "execution.starting" ||
+		value === "execution.started" ||
+		value === "execution.start_failed" ||
+		value === "execution.running" ||
+		value === "execution.completed" ||
+		value === "execution.failed" ||
+		value === "execution.heartbeat" ||
+		value === "execution.heartbeat_rejected" ||
+		value === "execution.heartbeat_failed" ||
+		value === "execution.cancelled" ||
+		value === "execution.cancel_failed" ||
+		value === "execution.cancelling" ||
+		value === "execution.cleaning" ||
+		value === "execution.cleaned" ||
+		value === "execution.cleanup_failed" ||
+		value === "execution.reconciliation_required" ||
+		value === "execution.reconciliation_resolved_as_lost"
+	);
+}
+
 function trustZoneSupports(nodeZone: TrustZone, requiredZone: TrustZone | undefined): boolean {
 	return requiredZone === undefined || TRUST_ZONE_EXPOSURE[nodeZone] <= TRUST_ZONE_EXPOSURE[requiredZone];
 }
 
 /**
- * A local, memory-backed node lifecycle guard. Durable orchestration remains
- * outside this class; the agent only executes currently valid leases and
- * records its own safe, replayable local transition facts.
+ * A local node lifecycle guard with an injected state boundary. Controller
+ * orchestration remains separate; this agent persists its own safe local
+ * transition facts before execution-port calls and never replays uncertainty.
  */
 export class MeshNodeAgent {
 	readonly #identity: MeshNodeIdentity;
@@ -212,9 +292,22 @@ export class MeshNodeAgent {
 	readonly #maximumTimeoutSeconds: number;
 	readonly #assignments = new Map<string, AcceptedAssignment>();
 	readonly #events: MeshNodeLifecycleRecord[] = [];
+	readonly #outbox = new Map<string, MeshNodeTerminalOutboxMessage>();
+	/**
+	 * A write failure after an execution-port boundary cannot be safely retried
+	 * in this process. The durable snapshot will recover conservatively on a
+	 * restart; this local guard closes the live-process gap if that recovery
+	 * fact could not itself be committed.
+	 */
+	readonly #volatileReconciliation = new Set<string>();
+	#stateRepository: MeshNodeStateRepository;
 	#sequence = 0;
+	#revision = 0;
 
 	constructor(options: MeshNodeAgentOptions) {
+		if (options.stateRepository !== undefined) {
+			throw new Error("Use await MeshNodeAgent.create(options) when a durable node state repository is configured.");
+		}
 		if (!options.identity.nodeId || !options.identity.pubkey) throw new Error("A node identity is required.");
 		this.#identity = Object.freeze({ ...options.identity });
 		this.#execution = options.execution;
@@ -227,6 +320,22 @@ export class MeshNodeAgent {
 		if (!isPositiveInteger(this.#defaultTimeoutSeconds) || !isPositiveInteger(this.#maximumTimeoutSeconds) || this.#defaultTimeoutSeconds > this.#maximumTimeoutSeconds) {
 			throw new Error("Node execution timeout configuration is invalid.");
 		}
+		this.#stateRepository = new InMemoryMeshNodeStateRepository();
+		const stored = this.#stateRepository.read(snapshot => snapshot);
+		this.#restoreTrusted(stored);
+		if (stored.identity === undefined) this.#mutate(() => undefined);
+	}
+
+	/**
+	 * Durable state may contain a signed assignment from an earlier process, so
+	 * its fixed local verifier allow-list is re-applied before it becomes live.
+	 */
+	static async create(options: MeshNodeAgentOptions): Promise<MeshNodeAgent> {
+		if (options.stateRepository === undefined) return new MeshNodeAgent(options);
+		const agent = new MeshNodeAgent({ ...options, stateRepository: undefined });
+		agent.#stateRepository = options.stateRepository;
+		await agent.#initializeDurableState();
+		return agent;
 	}
 
 	/**
@@ -260,11 +369,20 @@ export class MeshNodeAgent {
 		try {
 			const presence = this.#getPresence();
 			const bounds = this.#validateAdmission(task, assignment, presence, true);
-			const tracked: AcceptedAssignment = { task, assignment, assignmentPayloadDigest: verifiedAssignment.payloadDigest, bounds, state: "admitted" };
-			this.#assignments.set(assignment.assignmentId, tracked);
-			const admission = this.#record("assignment.accepted", tracked);
-			tracked.admissionRecord = admission;
-			return admission;
+			const tracked: AcceptedAssignment = {
+				task,
+				assignment,
+				signedAssignment: verifiedAssignment.signedAssignment,
+				assignmentPayloadDigest: verifiedAssignment.payloadDigest,
+				bounds,
+				state: "admitted",
+			};
+			return this.#mutate(() => {
+				this.#assignments.set(assignment.assignmentId, tracked);
+				const admission = this.#appendRecord("assignment.accepted", tracked);
+				tracked.admissionRecord = admission;
+				return admission;
+			});
 		} catch (error) {
 			return this.#reject(this.#toCode(error), "admitted", task, assignment);
 		}
@@ -274,15 +392,23 @@ export class MeshNodeAgent {
 		const tracked = this.#assignmentFor(assignmentId);
 		this.#requireState(tracked, "admitted");
 		this.#revalidateForOperation(tracked, "execution.start_failed");
-		tracked.state = "starting";
+		this.#transition(tracked, "starting", "execution.starting");
 		try {
 			await this.#execution.start(this.#contextFor(tracked));
-			tracked.state = "started";
-			return this.#record("execution.started", tracked);
 		} catch {
-			tracked.state = "failed";
-			this.#record("execution.start_failed", tracked, "execution_adapter_failed");
-			throw new MeshNodeAgentError("execution_adapter_failed");
+			return this.#reconcileAfterPort(assignmentId, "execution.start_failed", "execution_adapter_failed", "execution_adapter_failed");
+		}
+		const current = this.#assignmentFor(assignmentId);
+		if (current.state === "cancelled") {
+			if (current.cancelRecord === undefined) throw new MeshNodeAgentError("node_state_corrupt");
+			return current.cancelRecord;
+		}
+		if (current.state === "cancelling" && current.cancelPromise !== undefined) return current.cancelPromise;
+		this.#requireNotReconciliation(current);
+		try {
+			return this.#transition(current, "started", "execution.started");
+		} catch {
+			return this.#reconcileAfterPort(assignmentId, "execution.reconciliation_required", "node_state_unavailable");
 		}
 	}
 
@@ -290,43 +416,57 @@ export class MeshNodeAgent {
 		const tracked = this.#assignmentFor(assignmentId);
 		this.#requireState(tracked, "started");
 		this.#revalidateForOperation(tracked, "execution.failed");
-		tracked.state = "running";
-		this.#record("execution.running", tracked);
+		this.#transition(tracked, "running", "execution.running");
+		let result: MeshExecutionRunResult;
 		try {
-			const result = await this.#execution.run(this.#contextFor(tracked));
-			if (tracked.state === "cancelled") return tracked.cancelRecord ?? this.#record("execution.cancelled", tracked);
-			if (tracked.state === "cancelling" && tracked.cancelPromise !== undefined) return tracked.cancelPromise;
-			if (result.outcome === "succeeded") {
-				tracked.state = "completed";
-				return this.#record("execution.completed", tracked, undefined, result);
-			}
-			tracked.state = "failed";
-			return this.#record("execution.failed", tracked, undefined, result);
+			result = await this.#execution.run(this.#contextFor(tracked));
 		} catch {
-			if (tracked.state === "cancelled") return tracked.cancelRecord ?? this.#record("execution.cancelled", tracked);
-			if (tracked.state === "cancelling" && tracked.cancelPromise !== undefined) return tracked.cancelPromise;
-			tracked.state = "failed";
-			this.#record("execution.failed", tracked, "execution_adapter_failed");
-			throw new MeshNodeAgentError("execution_adapter_failed");
+			return this.#reconcileAfterPort(assignmentId, "execution.failed", "execution_adapter_failed", "execution_adapter_failed");
+		}
+		const current = this.#assignmentFor(assignmentId);
+		if (current.state === "cancelled") {
+			if (current.cancelRecord === undefined) throw new MeshNodeAgentError("node_state_corrupt");
+			return current.cancelRecord;
+		}
+		if (current.state === "cancelling" && current.cancelPromise !== undefined) return current.cancelPromise;
+		this.#requireNotReconciliation(current);
+		try {
+			if (result.outcome === "succeeded") {
+				return this.#terminal(current, "completed", "execution.completed", undefined, result);
+			}
+			return this.#terminal(current, "failed", "execution.failed", undefined, result);
+		} catch {
+			return this.#reconcileAfterPort(assignmentId, "execution.reconciliation_required", "node_state_unavailable");
 		}
 	}
 
 	async heartbeat(assignmentId: string): Promise<MeshNodeLifecycleRecord> {
 		const tracked = this.#assignmentFor(assignmentId);
+		this.#requireNotReconciliation(tracked);
 		if (tracked.state !== "started" && tracked.state !== "running") throw new MeshNodeAgentError("assignment_state_invalid");
 		this.#revalidateForOperation(tracked, "execution.heartbeat_rejected");
 		try {
 			await this.#execution.heartbeat(this.#contextFor(tracked));
-			return this.#record("execution.heartbeat", tracked);
 		} catch {
-			tracked.state = "lost";
-			this.#record("execution.heartbeat_failed", tracked, "execution_adapter_failed");
-			throw new MeshNodeAgentError("execution_adapter_failed");
+			return this.#reconcileAfterPort(assignmentId, "execution.heartbeat_failed", "execution_adapter_failed", "execution_adapter_failed");
 		}
-	}
+		const current = this.#assignmentFor(assignmentId);
+		if (current.state === "started" || current.state === "running") {
+			this.#requireNotReconciliation(current);
+			try {
+				return this.#record("execution.heartbeat", current);
+			} catch {
+				return this.#reconcileAfterPort(assignmentId, "execution.reconciliation_required", "node_state_unavailable");
+			}
+		}
+		if (current.terminalRecord !== undefined) return current.terminalRecord;
+		if (current.state === "cancelling" && current.cancelPromise !== undefined) return current.cancelPromise;
+		throw new MeshNodeAgentError("assignment_reconciliation_required");
+		}
 
 	cancel(assignmentId: string): Promise<MeshNodeLifecycleRecord> {
 		const tracked = this.#assignmentFor(assignmentId);
+		this.#requireNotReconciliation(tracked);
 		if (tracked.cancelRecord !== undefined) return Promise.resolve(tracked.cancelRecord);
 		if (tracked.cancelPromise !== undefined) return tracked.cancelPromise;
 		if (TERMINAL_STATES.has(tracked.state)) throw new MeshNodeAgentError("assignment_state_invalid");
@@ -337,40 +477,100 @@ export class MeshNodeAgent {
 
 	async #cancelAssignment(tracked: AcceptedAssignment): Promise<MeshNodeLifecycleRecord> {
 		const started = tracked.state !== "admitted";
-		tracked.state = "cancelling";
+		this.#transition(tracked, "cancelling", "execution.cancelling");
 		try {
 			if (started) await this.#execution.cancel(this.#contextFor(tracked));
-			tracked.state = "cancelled";
-			const record = this.#record("execution.cancelled", tracked);
-			tracked.cancelRecord = record;
+		} catch {
+			return this.#reconcileAfterPort(tracked.assignment.assignmentId, "execution.cancel_failed", "execution_adapter_failed", "execution_adapter_failed");
+		}
+		let current: AcceptedAssignment;
+		try {
+			current = this.#assignmentFor(tracked.assignment.assignmentId);
+			this.#requireNotReconciliation(current);
+		} catch {
+			return this.#reconcileAfterPort(tracked.assignment.assignmentId, "execution.reconciliation_required", "node_state_unavailable");
+		}
+		try {
+			const record = this.#terminal(current, "cancelled", "execution.cancelled");
+			current.cancelRecord = record;
 			return record;
 		} catch {
-			tracked.state = "lost";
-			this.#record("execution.cancel_failed", tracked, "execution_adapter_failed");
-			throw new MeshNodeAgentError("execution_adapter_failed");
+			return this.#reconcileAfterPort(tracked.assignment.assignmentId, "execution.reconciliation_required", "node_state_unavailable");
 		}
 	}
 
 	cleanup(assignmentId: string): Promise<MeshNodeLifecycleRecord> {
 		const tracked = this.#assignmentFor(assignmentId);
+		this.#requireNotReconciliation(tracked);
 		if (tracked.cleanupRecord !== undefined) return Promise.resolve(tracked.cleanupRecord);
 		if (tracked.cleanupPromise !== undefined) return tracked.cleanupPromise;
-		if (!TERMINAL_STATES.has(tracked.state) || tracked.state === "cleaned") throw new MeshNodeAgentError("assignment_state_invalid");
+		if (!CLEANUP_ELIGIBLE_STATES.has(tracked.state)) throw new MeshNodeAgentError("assignment_state_invalid");
 		const cleanup = this.#cleanupAssignment(tracked);
 		tracked.cleanupPromise = cleanup;
 		return cleanup;
 	}
 
 	async #cleanupAssignment(tracked: AcceptedAssignment): Promise<MeshNodeLifecycleRecord> {
+		this.#mutate(() => {
+			tracked.cleanupOriginState = tracked.state;
+			tracked.state = "cleaning";
+			this.#appendRecord("execution.cleaning", tracked);
+		});
 		try {
 			await this.#execution.cleanup(this.#contextFor(tracked));
-			tracked.state = "cleaned";
-			const record = this.#record("execution.cleaned", tracked);
-			tracked.cleanupRecord = record;
+		} catch {
+			return this.#reconcileAfterPort(tracked.assignment.assignmentId, "execution.cleanup_failed", "execution_adapter_failed", "execution_adapter_failed");
+		}
+		let current: AcceptedAssignment;
+		try {
+			current = this.#assignmentFor(tracked.assignment.assignmentId);
+			this.#requireNotReconciliation(current);
+		} catch {
+			return this.#reconcileAfterPort(tracked.assignment.assignmentId, "execution.reconciliation_required", "node_state_unavailable");
+		}
+		try {
+			const record = this.#mutate(() => {
+				current.cleanupOriginState = undefined;
+				current.state = "cleaned";
+				return this.#appendRecord("execution.cleaned", current);
+			});
+			current.cleanupRecord = record;
 			return record;
 		} catch {
-			this.#record("execution.cleanup_failed", tracked, "execution_adapter_failed");
-			throw new MeshNodeAgentError("execution_adapter_failed");
+			return this.#reconcileAfterPort(tracked.assignment.assignmentId, "execution.reconciliation_required", "node_state_unavailable");
+		}
+	}
+
+	/**
+	 * Local-operator-only escape hatch for work whose external outcome cannot
+	 * be proven after an interruption. It never calls the execution port and
+	 * does not create a worker receipt or controller completion decision.
+	 *
+	 * The composition root must expose this only behind local operator
+	 * authentication after the workload has been stopped/contained, or after
+	 * the operator consciously accepts that it is detached from this node.
+	 */
+	resolveReconciliationAsLost(assignmentId: string): MeshNodeLifecycleRecord {
+		const tracked = this.#assignmentFor(assignmentId);
+		if (tracked.state === "lost" && tracked.terminalRecord?.type === "execution.reconciliation_resolved_as_lost") {
+			return tracked.terminalRecord;
+		}
+		if (!this.#isReconciliationRequired(tracked)) throw new MeshNodeAgentError("assignment_state_invalid");
+		try {
+			const record = this.#terminal(
+				tracked,
+				"lost",
+				"execution.reconciliation_resolved_as_lost",
+				"assignment_reconciliation_required",
+				undefined,
+				true,
+			);
+			this.#volatileReconciliation.delete(assignmentId);
+			return record;
+		} catch (error) {
+			this.#volatileReconciliation.add(assignmentId);
+			if (error instanceof MeshNodeAgentError) throw error;
+			throw new MeshNodeAgentError("node_state_unavailable");
 		}
 	}
 
@@ -383,8 +583,15 @@ export class MeshNodeAgent {
 		return Object.freeze(this.#events.filter(event => event.assignmentId === assignmentId));
 	}
 
+	/** Pending node-local terminal facts; a transport drains these only in a later integration layer. */
+	outbox(): readonly MeshNodeTerminalOutboxMessage[] {
+		return Object.freeze([...this.#outbox.values()].map(message => Object.freeze(structuredClone(message))));
+	}
+
 	state(assignmentId: string): MeshNodeLifecycleState | undefined {
-		return this.#assignments.get(assignmentId)?.state;
+		const tracked = this.#assignments.get(assignmentId);
+		if (tracked === undefined) return undefined;
+		return this.#isReconciliationRequired(tracked) ? "reconciliation_required" : tracked.state;
 	}
 
 	#assignmentFor(assignmentId: string): AcceptedAssignment {
@@ -417,19 +624,39 @@ export class MeshNodeAgent {
 
 		const verified = await verifySignedAssignmentLease(input, verifier);
 		if (!verified.ok) throw new MeshNodeAgentError("assignment_signature_unverified");
-		return Object.freeze({ assignment: verified.payload, payloadDigest: verified.envelope.payloadDigest });
+		return Object.freeze({
+			assignment: verified.payload,
+			payloadDigest: verified.envelope.payloadDigest,
+			signedAssignment: verified.envelope,
+		});
 	}
 
 	#requireState(tracked: AcceptedAssignment, expected: MeshNodeLifecycleState): void {
+		this.#requireNotReconciliation(tracked);
 		if (tracked.state !== expected) throw new MeshNodeAgentError("assignment_state_invalid");
+	}
+
+	#requireNotReconciliation(tracked: AcceptedAssignment): void {
+		if (this.#isReconciliationRequired(tracked)) throw new MeshNodeAgentError("assignment_reconciliation_required");
+	}
+
+	#isReconciliationRequired(tracked: AcceptedAssignment): boolean {
+		return tracked.state === "reconciliation_required" || this.#volatileReconciliation.has(tracked.assignment.assignmentId);
+	}
+
+	/** Never mutate an assignment object that a failed transaction may have replaced. */
+	#requireCurrentAssignment(tracked: AcceptedAssignment, allowReconciliation = false): AcceptedAssignment {
+		const current = this.#assignmentFor(tracked.assignment.assignmentId);
+		if (current !== tracked) throw new MeshNodeAgentError("assignment_reconciliation_required");
+		if (!allowReconciliation) this.#requireNotReconciliation(current);
+		return current;
 	}
 
 	#revalidateForOperation(tracked: AcceptedAssignment, rejectedEvent: MeshNodeLifecycleEventType): void {
 		try {
 			this.#validateAdmission(tracked.task, tracked.assignment, this.#getPresence(), false);
 		} catch (error) {
-			tracked.state = "lost";
-			this.#record(rejectedEvent, tracked, this.#toCode(error));
+			this.#markReconciliation(tracked, rejectedEvent, this.#toCode(error));
 			throw new MeshNodeAgentError(this.#toCode(error));
 		}
 	}
@@ -518,7 +745,21 @@ export class MeshNodeAgent {
 		});
 	}
 
-	#record(type: MeshNodeLifecycleEventType, tracked?: AcceptedAssignment, code?: MeshNodeAgentErrorCode, result?: MeshExecutionRunResult): MeshNodeLifecycleRecord {
+	#record(
+		type: MeshNodeLifecycleEventType,
+		tracked?: LifecycleRecordAssignment,
+		code?: MeshNodeAgentErrorCode,
+		result?: MeshExecutionRunResult,
+	): MeshNodeLifecycleRecord {
+		return this.#mutate(() => this.#appendRecord(type, tracked, code, result));
+	}
+
+	#appendRecord(
+		type: MeshNodeLifecycleEventType,
+		tracked?: LifecycleRecordAssignment,
+		code?: MeshNodeAgentErrorCode,
+		result?: MeshExecutionRunResult,
+	): MeshNodeLifecycleRecord {
 		const event: MeshNodeLifecycleRecord = {
 			sequence: this.#sequence,
 			type,
@@ -543,6 +784,419 @@ export class MeshNodeAgent {
 		const frozen = freezeRecord(event);
 		this.#events.push(frozen);
 		return frozen;
+	}
+
+	#transition(tracked: AcceptedAssignment, state: MeshNodeLifecycleState, type: MeshNodeLifecycleEventType): MeshNodeLifecycleRecord {
+		const current = this.#requireCurrentAssignment(tracked);
+		return this.#mutate(() => {
+			current.state = state;
+			return this.#appendRecord(type, current);
+		});
+	}
+
+	#terminal(
+		tracked: AcceptedAssignment,
+		state: Extract<MeshNodeLifecycleState, "cancelled" | "completed" | "failed" | "lost">,
+		type: MeshNodeLifecycleEventType,
+		code?: MeshNodeAgentErrorCode,
+		result?: MeshExecutionRunResult,
+		allowReconciliation = false,
+	): MeshNodeLifecycleRecord {
+		const current = this.#requireCurrentAssignment(tracked, allowReconciliation);
+		if (current.terminalRecord !== undefined) return current.terminalRecord;
+		return this.#mutate(() => {
+			current.state = state;
+			const record = this.#appendRecord(type, current, code, result);
+			current.terminalRecord = record;
+			this.#queueTerminalOutbox(current, record);
+			return record;
+		});
+	}
+
+	#queueTerminalOutbox(tracked: AcceptedAssignment, record: MeshNodeLifecycleRecord): void {
+		const outboxId = `node-terminal:${tracked.assignment.assignmentId}:${tracked.assignment.schedulerEpoch}:${tracked.assignment.fencingToken}`;
+		if (this.#outbox.has(outboxId)) throw new MeshNodeAgentError("node_state_conflict");
+		this.#outbox.set(
+			outboxId,
+			Object.freeze({
+				outboxId,
+				assignmentId: tracked.assignment.assignmentId,
+				taskId: tracked.task.taskId,
+				type: "node.lifecycle.terminal",
+				idempotencyKey: `node.lifecycle.terminal:${tracked.assignment.assignmentId}:${tracked.assignment.schedulerEpoch}:${tracked.assignment.fencingToken}`,
+				record,
+				state: "pending",
+			}),
+		);
+	}
+
+	#markReconciliation(tracked: AcceptedAssignment, type: MeshNodeLifecycleEventType, code: MeshNodeAgentErrorCode): MeshNodeLifecycleRecord {
+		if (tracked.state === "reconciliation_required") {
+			for (let index = this.#events.length - 1; index >= 0; index -= 1) {
+				const record = this.#events[index];
+				if (record.assignmentId === tracked.assignment.assignmentId) {
+					this.#volatileReconciliation.delete(tracked.assignment.assignmentId);
+					return record;
+				}
+			}
+		}
+		const record = this.#mutate(() => {
+			tracked.cancelPromise = undefined;
+			tracked.cleanupPromise = undefined;
+			tracked.cleanupOriginState = undefined;
+			tracked.state = "reconciliation_required";
+			return this.#appendRecord(type, tracked, code);
+		});
+		this.#volatileReconciliation.delete(tracked.assignment.assignmentId);
+		return record;
+	}
+
+	/**
+	 * Once an execution port may have observed a command, a failed follow-up
+	 * write is an uncertainty boundary. First try to persist that uncertainty;
+	 * if storage is unavailable, quarantine the live assignment by stable ID so
+	 * later calls cannot reach the port before restart or local resolution.
+	 */
+	#reconcileAfterPort(
+		assignmentId: string,
+		type: MeshNodeLifecycleEventType,
+		code: MeshNodeAgentErrorCode,
+		callerCode: MeshNodeAgentErrorCode = "assignment_reconciliation_required",
+	): never {
+		try {
+			this.#markReconciliation(this.#assignmentFor(assignmentId), type, code);
+		} catch {
+			this.#volatileReconciliation.add(assignmentId);
+		}
+		throw new MeshNodeAgentError(callerCode);
+	}
+
+	#snapshotFromMemory(): MeshNodeStateSnapshot {
+		const assignments: Record<string, MeshNodeDurableAssignment> = {};
+		for (const [assignmentId, tracked] of this.#assignments) {
+			assignments[assignmentId] = {
+				task: tracked.task,
+				signedAssignment: tracked.signedAssignment,
+				state: tracked.state,
+				admissionRecord: tracked.admissionRecord,
+				cancelRecord: tracked.cancelRecord,
+				cleanupRecord: tracked.cleanupRecord,
+				terminalRecord: tracked.terminalRecord,
+				cleanupOriginState: tracked.cleanupOriginState,
+			};
+		}
+		const outbox: Record<string, MeshNodeTerminalOutboxMessage> = {};
+		for (const [outboxId, message] of this.#outbox) outbox[outboxId] = message;
+		return structuredClone({
+			revision: this.#revision,
+			identity: this.#identity,
+			assignments,
+			events: this.#events,
+			outbox,
+		});
+	}
+
+	#mutate<T>(operation: () => T): T {
+		const before = this.#snapshotFromMemory();
+		let result: T;
+		try {
+			result = operation();
+		} catch (error) {
+			this.#restoreTrusted(before);
+			throw error;
+		}
+		try {
+			const next = this.#snapshotFromMemory();
+			this.#stateRepository.transaction(({ snapshot }) => {
+				if (snapshot.revision !== before.revision) throw new MeshNodeAgentError("node_state_conflict");
+				snapshot.identity = next.identity;
+				snapshot.assignments = next.assignments;
+				snapshot.events = next.events;
+				snapshot.outbox = next.outbox;
+			});
+			this.#revision = before.revision + 1;
+			return result;
+		} catch (error) {
+			this.#restoreTrusted(before);
+			if (error instanceof MeshNodeAgentError) throw error;
+			throw new MeshNodeAgentError("node_state_unavailable");
+		}
+	}
+
+	async #initializeDurableState(): Promise<void> {
+		let stored: MeshNodeStateSnapshot;
+		try {
+			stored = this.#stateRepository.read(snapshot => snapshot);
+		} catch {
+			throw new MeshNodeAgentError("node_state_unavailable");
+		}
+		if (stored.identity !== undefined && (stored.identity.nodeId !== this.#identity.nodeId || stored.identity.pubkey !== this.#identity.pubkey)) {
+			throw new MeshNodeAgentError("node_state_identity_mismatch");
+		}
+		await this.#restoreVerified(stored);
+		if (stored.identity === undefined) this.#mutate(() => undefined);
+		this.#recoverAfterRestart();
+	}
+
+	#restoreTrusted(snapshot: MeshNodeStateSnapshot): void {
+		try {
+			const events = this.#parsePersistedEvents(snapshot);
+			const assignments = new Map<string, AcceptedAssignment>();
+			for (const [assignmentId, stored] of Object.entries(snapshot.assignments)) {
+				assignments.set(assignmentId, this.#parsePersistedAssignmentUnchecked(assignmentId, stored));
+			}
+			this.#applyRestoredState(snapshot, events, assignments);
+		} catch (error) {
+			if (error instanceof MeshNodeAgentError) throw error;
+			throw new MeshNodeAgentError("node_state_corrupt");
+		}
+	}
+
+	async #restoreVerified(snapshot: MeshNodeStateSnapshot): Promise<void> {
+		try {
+			const events = this.#parsePersistedEvents(snapshot);
+			const assignments = new Map<string, AcceptedAssignment>();
+			for (const [assignmentId, stored] of Object.entries(snapshot.assignments)) {
+				assignments.set(assignmentId, await this.#parsePersistedAssignmentVerified(assignmentId, stored));
+			}
+			this.#applyRestoredState(snapshot, events, assignments);
+		} catch (error) {
+			if (error instanceof MeshNodeAgentError) throw error;
+			throw new MeshNodeAgentError("node_state_corrupt");
+		}
+	}
+
+	#parsePersistedEvents(snapshot: MeshNodeStateSnapshot): readonly MeshNodeLifecycleRecord[] {
+		if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0) throw new MeshNodeAgentError("node_state_corrupt");
+		const events = snapshot.events.map(event => this.#parsePersistedRecord(event));
+		if (events.some((event, index) => event.sequence !== index)) throw new MeshNodeAgentError("node_state_corrupt");
+		return events;
+	}
+
+	#applyRestoredState(
+		snapshot: MeshNodeStateSnapshot,
+		events: readonly MeshNodeLifecycleRecord[],
+		assignments: ReadonlyMap<string, AcceptedAssignment>,
+	): void {
+		const outbox = new Map<string, MeshNodeTerminalOutboxMessage>();
+		for (const [outboxId, stored] of Object.entries(snapshot.outbox)) {
+			outbox.set(outboxId, this.#parsePersistedOutbox(outboxId, stored, assignments));
+		}
+		this.#assignments.clear();
+		for (const [assignmentId, tracked] of assignments) this.#assignments.set(assignmentId, tracked);
+		this.#events.splice(0, this.#events.length, ...events);
+		this.#outbox.clear();
+		for (const [outboxId, message] of outbox) this.#outbox.set(outboxId, message);
+		this.#sequence = events.length;
+		this.#revision = snapshot.revision;
+	}
+
+	#parsePersistedAssignmentUnchecked(assignmentId: string, value: unknown): AcceptedAssignment {
+		const parsed = this.#parsePersistedAssignmentShape(assignmentId, value);
+		return this.#buildPersistedAssignment(parsed.task, parsed.assignment, parsed.signedAssignment, parsed.state, parsed.value);
+	}
+
+	async #parsePersistedAssignmentVerified(assignmentId: string, value: unknown): Promise<AcceptedAssignment> {
+		const parsed = this.#parsePersistedAssignmentShape(assignmentId, value);
+		const verified = await this.#verifySignedAssignment(parsed.signedAssignment);
+		if (
+			verified.assignment.assignmentId !== parsed.assignment.assignmentId ||
+			verified.payloadDigest !== parsed.signedAssignment.payloadDigest
+		) {
+			throw new MeshNodeAgentError("node_state_corrupt");
+		}
+		return this.#buildPersistedAssignment(parsed.task, verified.assignment, verified.signedAssignment, parsed.state, parsed.value);
+	}
+
+	#parsePersistedAssignmentShape(
+		assignmentId: string,
+		value: unknown,
+	): {
+		readonly assignment: AssignmentLeaseV1;
+		readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+		readonly state: MeshNodeLifecycleState;
+		readonly task: TaskContractV1;
+		readonly value: Record<string, unknown>;
+	} {
+		if (!isRecord(value)) throw new MeshNodeAgentError("node_state_corrupt");
+		let task: TaskContractV1;
+		let signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+		let assignment: AssignmentLeaseV1;
+		try {
+			task = parseTaskContract(value.task);
+			const envelope = parseSignedMeshEnvelope(value.signedAssignment);
+			if (envelope.payload.schemaVersion !== MESH_SCHEMA.assignment) throw new MeshNodeAgentError("node_state_corrupt");
+			signedAssignment = envelope as SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+			assignment = parseAssignmentLease(signedAssignment.payload);
+		} catch {
+			throw new MeshNodeAgentError("node_state_corrupt");
+		}
+		if (
+			assignment.assignmentId !== assignmentId ||
+			assignment.taskId !== task.taskId ||
+			assignment.taskDigest !== task.digest ||
+			assignment.permissionsDigest !== sha256CanonicalJson(task.permissions) ||
+			assignment.workerNodeId !== this.#identity.nodeId ||
+			assignment.executorPubkey !== this.#identity.pubkey ||
+			!isKnownState(value.state)
+		) {
+			throw new MeshNodeAgentError("node_state_corrupt");
+		}
+		return Object.freeze({ assignment, signedAssignment, state: value.state, task, value });
+	}
+
+	#buildPersistedAssignment(
+		task: TaskContractV1,
+		assignment: AssignmentLeaseV1,
+		signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>,
+		state: MeshNodeLifecycleState,
+		value: Record<string, unknown>,
+	): AcceptedAssignment {
+		const tracked: AcceptedAssignment = {
+			task,
+			assignment,
+			signedAssignment,
+			assignmentPayloadDigest: signedAssignment.payloadDigest,
+			bounds: this.#executionBounds(task),
+			state,
+		};
+		tracked.admissionRecord = this.#parseOptionalPersistedRecord(value.admissionRecord, tracked);
+		tracked.cancelRecord = this.#parseOptionalPersistedRecord(value.cancelRecord, tracked);
+		tracked.cleanupRecord = this.#parseOptionalPersistedRecord(value.cleanupRecord, tracked);
+		tracked.terminalRecord = this.#parseOptionalPersistedRecord(value.terminalRecord, tracked);
+		if (value.cleanupOriginState !== undefined) {
+			if (!isKnownState(value.cleanupOriginState)) throw new MeshNodeAgentError("node_state_corrupt");
+			tracked.cleanupOriginState = value.cleanupOriginState;
+		}
+		if (tracked.admissionRecord === undefined) throw new MeshNodeAgentError("node_state_corrupt");
+		if ((tracked.state === "cancelled" || tracked.state === "completed" || tracked.state === "failed" || tracked.state === "lost" || tracked.state === "cleaned") && tracked.terminalRecord === undefined) {
+			throw new MeshNodeAgentError("node_state_corrupt");
+		}
+		return tracked;
+	}
+
+	#parseOptionalPersistedRecord(value: unknown, tracked: AcceptedAssignment): MeshNodeLifecycleRecord | undefined {
+		if (value === undefined) return undefined;
+		const record = this.#parsePersistedRecord(value);
+		if (
+			record.assignmentId !== tracked.assignment.assignmentId ||
+			record.taskId !== tracked.task.taskId ||
+			record.schedulerEpoch !== tracked.assignment.schedulerEpoch ||
+			record.fencingToken !== tracked.assignment.fencingToken
+		) {
+			throw new MeshNodeAgentError("node_state_corrupt");
+		}
+		return record;
+	}
+
+	#parsePersistedRecord(value: unknown): MeshNodeLifecycleRecord {
+		if (!isRecord(value)) throw new MeshNodeAgentError("node_state_corrupt");
+		if (
+			typeof value.sequence !== "number" ||
+			!Number.isSafeInteger(value.sequence) ||
+			value.sequence < 0 ||
+			!isKnownEventType(value.type) ||
+			typeof value.occurredAt !== "string" ||
+			!Number.isFinite(Date.parse(value.occurredAt)) ||
+			typeof value.nodeId !== "string" ||
+			value.nodeId !== this.#identity.nodeId ||
+			!isKnownState(value.state)
+		) {
+			throw new MeshNodeAgentError("node_state_corrupt");
+		}
+		const record: MeshNodeLifecycleRecord = {
+			sequence: value.sequence,
+			type: value.type,
+			occurredAt: value.occurredAt,
+			nodeId: value.nodeId,
+			state: value.state,
+		};
+		if (value.assignmentId !== undefined || value.taskId !== undefined || value.schedulerEpoch !== undefined || value.fencingToken !== undefined) {
+			if (
+				typeof value.assignmentId !== "string" ||
+				typeof value.taskId !== "string" ||
+				typeof value.schedulerEpoch !== "number" ||
+				!isPositiveInteger(value.schedulerEpoch) ||
+				typeof value.fencingToken !== "number" ||
+				!isPositiveInteger(value.fencingToken)
+			) {
+				throw new MeshNodeAgentError("node_state_corrupt");
+			}
+			Object.assign(record, {
+				assignmentId: value.assignmentId,
+				taskId: value.taskId,
+				schedulerEpoch: value.schedulerEpoch,
+				fencingToken: value.fencingToken,
+			});
+		}
+		if (value.code !== undefined) {
+			if (typeof value.code !== "string") throw new MeshNodeAgentError("node_state_corrupt");
+			Object.assign(record, { code: value.code as MeshNodeAgentErrorCode });
+		}
+		if (value.outcome !== undefined) {
+			if (value.outcome !== "succeeded" && value.outcome !== "failed") throw new MeshNodeAgentError("node_state_corrupt");
+			Object.assign(record, { outcome: value.outcome });
+		}
+		if (value.exitCode !== undefined) {
+			if (typeof value.exitCode !== "number" || !Number.isSafeInteger(value.exitCode) || value.exitCode < 0) {
+				throw new MeshNodeAgentError("node_state_corrupt");
+			}
+			Object.assign(record, { exitCode: value.exitCode });
+		}
+		return freezeRecord(record);
+	}
+
+	#parsePersistedOutbox(
+		outboxId: string,
+		value: unknown,
+		assignments: ReadonlyMap<string, AcceptedAssignment>,
+	): MeshNodeTerminalOutboxMessage {
+		if (!isRecord(value) || value.outboxId !== outboxId || typeof value.assignmentId !== "string" || typeof value.taskId !== "string") {
+			throw new MeshNodeAgentError("node_state_corrupt");
+		}
+		const tracked = assignments.get(value.assignmentId);
+		if (
+			tracked === undefined ||
+			value.taskId !== tracked.task.taskId ||
+			value.type !== "node.lifecycle.terminal" ||
+			value.state !== "pending" ||
+			typeof value.idempotencyKey !== "string"
+		) {
+			throw new MeshNodeAgentError("node_state_corrupt");
+		}
+		const expectedOutboxId = `node-terminal:${tracked.assignment.assignmentId}:${tracked.assignment.schedulerEpoch}:${tracked.assignment.fencingToken}`;
+		const expectedIdempotencyKey = `node.lifecycle.terminal:${tracked.assignment.assignmentId}:${tracked.assignment.schedulerEpoch}:${tracked.assignment.fencingToken}`;
+		const record = this.#parsePersistedRecord(value.record);
+		if (
+			outboxId !== expectedOutboxId ||
+			value.idempotencyKey !== expectedIdempotencyKey ||
+			tracked.terminalRecord?.sequence !== record.sequence
+		) {
+			throw new MeshNodeAgentError("node_state_corrupt");
+		}
+		return Object.freeze({
+			outboxId,
+			assignmentId: value.assignmentId,
+			taskId: value.taskId,
+			type: "node.lifecycle.terminal",
+			idempotencyKey: value.idempotencyKey,
+			record,
+			state: "pending",
+		});
+	}
+
+	#recoverAfterRestart(): void {
+		const recovering = [...this.#assignments.values()].filter(tracked => RECOVERY_STATES.has(tracked.state));
+		if (recovering.length === 0) return;
+		this.#mutate(() => {
+			for (const tracked of recovering) {
+				tracked.cancelPromise = undefined;
+				tracked.cleanupPromise = undefined;
+				tracked.cleanupOriginState = undefined;
+				tracked.state = "reconciliation_required";
+				this.#appendRecord("execution.reconciliation_required", tracked, "assignment_reconciliation_required");
+			}
+		});
 	}
 
 	#reject(code: MeshNodeAgentErrorCode, state: MeshNodeLifecycleState, task?: TaskContractV1, assignment?: AssignmentLeaseV1): never {

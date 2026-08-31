@@ -33,10 +33,13 @@ SqliteMeshRuntimeRepository
 Each node is composed separately:
 
 ```text
-MeshNodeAgent(identity, execution port, trusted scheduler verifier allow-list, presence, clock)
+SqliteMeshNodeStateRepository
+  -> await MeshNodeAgent.create(options)
 ```
 
 The node’s trusted scheduler verifier allow-list is fixed local configuration. A received envelope may choose only among a matching entry in that list.
+
+The node-state repository is a distinct, node-local SQLite/WAL inbox and lifecycle-fact store. It is not the controller’s task database and must not be replaced with the package’s in-memory test default in a production node. `MeshNodeAgent.create` binds the store to its own `nodeId` and public key, then re-verifies every persisted signed assignment through the fixed local scheduler verifier allow-list before it will use persisted work.
 
 ## Required data flow
 
@@ -47,6 +50,16 @@ The node’s trusted scheduler verifier allow-list is fixed local configuration.
 5. The assigned worker creates a receipt, signs it with its configured worker identity, and submits the signed envelope to `MeshOrchestrator.recordReceipt`.
 6. To inspect a completed chain, call `await verifyEvidenceChain` with signed receipt envelopes and a resolver backed by the authoritative assignment store. This is read-only validation, not a completion decision; a self-hashed bare receipt is not evidence.
 7. Drain the orchestrator outbox through a transport adapter only after the durable transaction commits. Transport publication is delivery, not a command path.
+
+Node-local lifecycle persistence follows a stricter execution boundary:
+
+- Admission is committed before a capacity slot is reserved for a later explicit `start` call.
+- `starting`, `running`, `cancelling`, and `cleaning` intents are committed before the respective execution-port call.
+- On a process restart, any of those uncertain states becomes `reconciliation_required`; it retains capacity and rejects lifecycle commands without invoking the execution port. It is never automatically re-run.
+- If an execution-port call rejects after an intent was committed, or its post-call lifecycle write cannot be committed, its external effect is treated as uncertain. The node enters `reconciliation_required`, emits no terminal outbox fact, and invokes no more execution-port commands for that assignment in the live process.
+- The only built-in resolution is `resolveReconciliationAsLost(assignmentId)`. A deployment may expose it only behind locally authenticated operator control after the workload is stopped/contained, or after the operator consciously accepts detaching from it. It makes one durable `lost` lifecycle fact and local terminal outbox message; it does not retry work, accept a controller instruction, create a signed receipt, or complete a controller task.
+- A persisted `admitted` assignment may remain admitted: committing `starting` before the port call proves the execution boundary was not crossed. It still requires an explicit later `start` command.
+- A known terminal outcome creates exactly one local `node.lifecycle.terminal` outbox fact in the same transaction. This is not a `SignedExecutionReceiptV1` and cannot complete a controller task; receipt signing and submission remain separate injected integrations.
 
 ## Current capability gates
 

@@ -216,6 +216,33 @@ describe("MeshNodeAgent", () => {
 		await expect(execution).resolves.toMatchObject({ type: "execution.completed", outcome: "succeeded", exitCode: 0, state: "completed" });
 	});
 
+	test("does not append a late heartbeat after a concurrent terminal result", async () => {
+		const runGate = Promise.withResolvers<MeshExecutionRunResult>();
+		const heartbeatGate = Promise.withResolvers<void>();
+		const executionCalls = calls();
+		const task = makeTask();
+		const assignment = makeAssignment(task);
+		const port = makePort(executionCalls, async () => runGate.promise);
+		port.heartbeat = async context => {
+			executionCalls.heartbeat += 1;
+			executionCalls.contexts.push(context);
+			await heartbeatGate.promise;
+		};
+		const agent = createAgent(makePresence(), port);
+
+		await agent.accept({ task, signedAssignment: await signedAssignment(assignment) });
+		await agent.start(assignment.assignmentId);
+		const execution = agent.run(assignment.assignmentId);
+		await Promise.resolve();
+		const heartbeat = agent.heartbeat(assignment.assignmentId);
+		await Promise.resolve();
+		runGate.resolve({ outcome: "succeeded", exitCode: 0 });
+		await expect(execution).resolves.toMatchObject({ type: "execution.completed", state: "completed" });
+		heartbeatGate.resolve();
+		await expect(heartbeat).resolves.toMatchObject({ type: "execution.completed", state: "completed" });
+		expect(agent.assignmentEvents(assignment.assignmentId).filter(event => event.type === "execution.heartbeat")).toHaveLength(0);
+	});
+
 	test("cancellation and cleanup are idempotent and invoke an adapter at most once", async () => {
 		const executionCalls = calls();
 		const task = makeTask();
@@ -253,7 +280,15 @@ describe("MeshNodeAgent", () => {
 
 		expect(executionCalls).toMatchObject({ start: 1, cancel: 1, cleanup: 1 });
 		expect(agent.state(assignment.assignmentId)).toBe("cleaned");
-		expect(agent.assignmentEvents(assignment.assignmentId).map(event => event.type)).toEqual(["assignment.accepted", "execution.started", "execution.cancelled", "execution.cleaned"]);
+		expect(agent.assignmentEvents(assignment.assignmentId).map(event => event.type)).toEqual([
+			"assignment.accepted",
+			"execution.starting",
+			"execution.started",
+			"execution.cancelling",
+			"execution.cancelled",
+			"execution.cleaning",
+			"execution.cleaned",
+		]);
 	});
 
 	test("rejects unsigned, altered, and untrusted scheduler deliveries before admission", async () => {

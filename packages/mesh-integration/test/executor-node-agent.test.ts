@@ -232,15 +232,17 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 
 		await agent.accept({ task, signedAssignment: await signedDelivery(assigned) });
 		await expect(agent.start(assigned.assignmentId)).rejects.toMatchObject({ code: "execution_adapter_failed" });
-		expect(agent.state(assigned.assignmentId)).toBe("failed");
+		expect(agent.state(assigned.assignmentId)).toBe("reconciliation_required");
 		expect(agent.assignmentEvents(assigned.assignmentId).at(-1)).toMatchObject({
 			type: "execution.start_failed",
+			state: "reconciliation_required",
 			code: "execution_adapter_failed",
 		});
+		expect(agent.outbox()).toHaveLength(0);
 		expect(gateway.calls).toHaveLength(0);
 	});
 
-	test("turns an Executor approval pause into a safe terminal failure without automatic resume", async () => {
+	test("turns an Executor approval pause into reconciliation-required state without automatic resume", async () => {
 		const gateway = new RecordingGateway({ status: "approval_required" });
 		const agent = createAgent(gateway);
 		const task = signedTask();
@@ -249,14 +251,15 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 		await agent.accept({ task, signedAssignment: await signedDelivery(assigned) });
 		await agent.start(assigned.assignmentId);
 		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "execution_adapter_failed" });
-		expect(agent.state(assigned.assignmentId)).toBe("failed");
+		expect(agent.state(assigned.assignmentId)).toBe("reconciliation_required");
 		expect(agent.assignmentEvents(assigned.assignmentId).at(-1)).toMatchObject({
 			type: "execution.failed",
-			state: "failed",
+			state: "reconciliation_required",
 			code: "execution_adapter_failed",
 		});
+		expect(agent.outbox()).toHaveLength(0);
 
-		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "assignment_state_invalid" });
+		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
 		expect(gateway.calls).toHaveLength(1);
 	});
 });
