@@ -262,7 +262,7 @@ describe("ExecutorMeshExecutionPort", () => {
 					transport: new FetchExecutorHttpTransport(),
 				}),
 			);
-			await expect(port.run(makeContext(makeTask()))).resolves.toEqual({ outcome: "failed" });
+			await expect(port.run(makeContext(makeTask()))).rejects.toEqual(new ExecutorHttpGatewayError("transport_unavailable"));
 			expect(redirectedRequestCount).toBe(0);
 		} finally {
 			executor.stop(true);
@@ -278,12 +278,12 @@ describe("ExecutorMeshExecutionPort", () => {
 			bounds: Object.freeze({ ...context.bounds, timeoutSeconds: 1 }),
 		};
 
-		await expect(makePort(makeHttpGateway(transport)).run(timeoutBoundContext)).resolves.toEqual({ outcome: "failed" });
+		await expect(makePort(makeHttpGateway(transport)).run(timeoutBoundContext)).rejects.toEqual(new ExecutorHttpGatewayError("transport_timed_out"));
 		expect(transport.requests).toHaveLength(1);
 		expect(transport.requests[0]?.signal.aborted).toBeTrue();
 	});
 
-	test("fails closed when a configured Executor endpoint is absent, rejects work, or returns an invalid response", async () => {
+	test("keeps an explicit Executor failure separate from ambiguous gateway outcomes", async () => {
 		const task = makeTask();
 		const context = makeContext(task);
 		const missingEndpointTransport = new RecordingHttpTransport([]);
@@ -291,20 +291,24 @@ describe("ExecutorMeshExecutionPort", () => {
 			endpoints: [{ endpointId: "differentEndpoint", origin: "http://127.0.0.1:4788" }],
 			transport: missingEndpointTransport,
 		});
-		await expect(makePort(missingEndpointGateway).run(context)).resolves.toEqual({ outcome: "failed" });
+		await expect(makePort(missingEndpointGateway).run(context)).rejects.toEqual(new ExecutorHttpGatewayError("endpoint_not_registered"));
 		expect(missingEndpointTransport.requests).toHaveLength(0);
 
-		const rejectedTransport = new RecordingHttpTransport([httpResponse({ status: "completed", text: "rejected", structured: {}, isError: true })]);
-		await expect(makePort(makeHttpGateway(rejectedTransport)).run(context)).resolves.toEqual({ outcome: "failed" });
-		expect(rejectedTransport.requests).toHaveLength(1);
+		const knownFailedTransport = new RecordingHttpTransport([httpResponse({ status: "completed", text: "rejected", structured: {}, isError: true })]);
+		await expect(makePort(makeHttpGateway(knownFailedTransport)).run(context)).resolves.toEqual({ outcome: "failed" });
+		expect(knownFailedTransport.requests).toHaveLength(1);
 
-		for (const response of [
-			httpResponse({ status: "completed", text: "unavailable", structured: {}, isError: false }, { ok: false, status: 503 }),
-			httpResponse({ status: "completed" }),
-			httpResponse({ status: "paused" }),
-		]) {
+		const unavailableTransport = new RecordingHttpTransport([]);
+		await expect(makePort(makeHttpGateway(unavailableTransport)).run(context)).rejects.toEqual(new ExecutorHttpGatewayError("transport_unavailable"));
+		expect(unavailableTransport.requests).toHaveLength(1);
+
+		for (const [response, code] of [
+			[httpResponse({ status: "completed", text: "unavailable", structured: {}, isError: false }, { ok: false, status: 503 }), "transport_unavailable"],
+			[httpResponse({ status: "completed" }), "response_invalid"],
+			[httpResponse({ status: "paused" }), "response_invalid"],
+		] as const) {
 			const transport = new RecordingHttpTransport([response]);
-			await expect(makePort(makeHttpGateway(transport)).run(context)).resolves.toEqual({ outcome: "failed" });
+			await expect(makePort(makeHttpGateway(transport)).run(context)).rejects.toEqual(new ExecutorHttpGatewayError(code));
 			expect(transport.requests).toHaveLength(1);
 		}
 

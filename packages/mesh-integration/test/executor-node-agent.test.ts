@@ -53,6 +53,15 @@ class RecordingExecutorTransport implements ExecutorHttpTransport {
 	}
 }
 
+class RejectingExecutorTransport implements ExecutorHttpTransport {
+	readonly requests: ExecutorHttpTransportRequest[] = [];
+
+	async send(request: ExecutorHttpTransportRequest): Promise<ExecutorHttpTransportResponse> {
+		this.requests.push(request);
+		throw new Error("ambiguous_executor_request_result");
+	}
+}
+
 function at(offsetMs: number): string {
 	return new Date(T0 + offsetMs).toISOString();
 }
@@ -229,6 +238,43 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 		expect(request?.body).not.toContain(task.goal);
 		expect(request?.body).not.toContain(RAW_PAYLOAD);
 		expect(request?.body).not.toContain("autoApprove");
+	});
+
+	test("records an explicit upstream Executor failure as a known terminal outcome", async () => {
+		const transport = new RecordingExecutorTransport(response({ status: "completed", text: "failed", structured: {}, isError: true }));
+		const agent = createAgent(transport);
+		const task = signedTask();
+		const assigned = assignment(task);
+
+		await agent.accept({ task, signedAssignment: await signedDelivery(assigned) });
+		await agent.start(assigned.assignmentId);
+		await expect(agent.run(assigned.assignmentId)).resolves.toMatchObject({
+			type: "execution.failed",
+			state: "failed",
+			outcome: "failed",
+		});
+		expect(agent.outbox()).toMatchObject([{ record: { type: "execution.failed", state: "failed", outcome: "failed" } }]);
+		expect(transport.requests).toHaveLength(1);
+	});
+
+	test("keeps an ambiguous Executor request result in reconciliation without a terminal fact", async () => {
+		const transport = new RejectingExecutorTransport();
+		const agent = createAgent(transport);
+		const task = signedTask();
+		const assigned = assignment(task);
+
+		await agent.accept({ task, signedAssignment: await signedDelivery(assigned) });
+		await agent.start(assigned.assignmentId);
+		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "execution_adapter_failed" });
+		expect(agent.state(assigned.assignmentId)).toBe("reconciliation_required");
+		expect(agent.assignmentEvents(assigned.assignmentId).at(-1)).toMatchObject({
+			type: "execution.failed",
+			state: "reconciliation_required",
+			code: "execution_adapter_failed",
+		});
+		expect(agent.outbox()).toHaveLength(0);
+		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
+		expect(transport.requests).toHaveLength(1);
 	});
 
 	test("blocks a wildcard permission before the Executor gateway is contacted", async () => {
