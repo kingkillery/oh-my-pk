@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	MESH_SCHEMA,
 	contractDigest,
+	parseAssignmentLease,
 	parseEvidenceRecord,
 	parseTaskContract,
 	sha256CanonicalJson,
@@ -12,7 +13,7 @@ import { InMemoryContentAddressedStore, createArtifactManifest } from "../../mes
 import { verifyEvidenceChain } from "../../mesh-evidence/src/index";
 import { InMemoryDurableEventLog } from "../../mesh-eventbus/src/index";
 import { InMemoryMeshRuntimeRepository, MeshOrchestrator, type ReceiptVerifierResolver } from "../../mesh-orchestrator/src/index";
-import { signExecutionReceipt, verifySignedExecutionReceipt } from "../../mesh-receipts/src/index";
+import { signExecutionReceipt, verifySignedExecutionReceipt, type ReceiptSignatureVerifier } from "../../mesh-receipts/src/index";
 import { placeTask, type PlacementNode } from "../../mesh-scheduler/src/index";
 import { createOmpkExecutionAdapter } from "../../mesh-worker-sdk/src/index";
 
@@ -71,14 +72,16 @@ function fixtureSignature(payload: Uint8Array): Uint8Array {
 	return signatureEncoder.encode(`fixture-worker:${signatureDecoder.decode(payload)}`);
 }
 
+const receiptVerifier: ReceiptSignatureVerifier = Object.freeze({
+	algorithm: "fixture-deterministic-v1",
+	keyId: "fixture-worker",
+	verify: (payload: Uint8Array, signature: Uint8Array) => signatureDecoder.decode(signature) === signatureDecoder.decode(fixtureSignature(payload)),
+});
+
 const receiptVerifierResolver: ReceiptVerifierResolver = Object.freeze({
 	resolve(lease) {
 		if (lease.executorPubkey !== WORKER || lease.workerNodeId !== NODE) return undefined;
-		return Object.freeze({
-			algorithm: "fixture-deterministic-v1",
-			keyId: "fixture-worker",
-			verify: (payload: Uint8Array, signature: Uint8Array) => signatureDecoder.decode(signature) === signatureDecoder.decode(fixtureSignature(payload)),
-		});
+		return receiptVerifier;
 	},
 });
 
@@ -101,7 +104,7 @@ describe("LocalMesh first vertical slice", () => {
 		expect(placement.selectedNodeId).toBe(NODE);
 
 		const scheduler = await runtime.acquireSchedulerLease({ schedulerId: SCHEDULER, durationMs: 30_000, now: T0 });
-		const assignment = {
+		const assignment = parseAssignmentLease({
 			schemaVersion: MESH_SCHEMA.assignment,
 			assignmentId: "asg_first-slice-001",
 			taskId: task.taskId,
@@ -118,7 +121,7 @@ describe("LocalMesh first vertical slice", () => {
 			permissionsDigest: sha256CanonicalJson(task.permissions),
 			placementReason: { selectedNodeId: NODE, reason: "eligible_capability_match" },
 			idempotencyKey: "first-slice-assignment-001",
-		};
+		});
 		await runtime.assign({ assignment, now: T0 + 1 });
 
 		const adapter = createOmpkExecutionAdapter(
@@ -137,7 +140,7 @@ describe("LocalMesh first vertical slice", () => {
 			},
 			{ nodeId: NODE, executorPubkey: WORKER },
 		);
-		const execution = await adapter.execute({ task, assignment: assignment as never, nowEpochMs: T0 + 2 }, new AbortController().signal);
+		const execution = await adapter.execute({ task, assignment, nowEpochMs: T0 + 2 }, new AbortController().signal);
 		const contentSha256 = execution.metadata?.contentSha256;
 		expect(typeof contentSha256).toBe("string");
 
@@ -205,7 +208,16 @@ describe("LocalMesh first vertical slice", () => {
 		expect(signatureVerification.ok).toBe(true);
 		await runtime.recordReceipt({ signedReceipt });
 
-		const evidenceChain = verifyEvidenceChain({ task, evidence: [evidence], receipts: [signedReceipt.receipt] });
+		const evidenceChain = await verifyEvidenceChain({
+			task,
+			evidence: [evidence],
+			receipts: [signedReceipt],
+			receiptAuthority: {
+				resolve(assignmentId) {
+					return assignmentId === assignment.assignmentId ? Object.freeze({ assignment, verifier: receiptVerifier }) : undefined;
+				},
+			},
+		});
 		expect(evidenceChain.ok).toBe(true);
 		expect((await runtime.getTask(task.taskId))?.state).toBe("completed");
 
