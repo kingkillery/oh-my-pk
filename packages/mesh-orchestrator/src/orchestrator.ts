@@ -213,17 +213,28 @@ export class MeshOrchestrator {
 		const now = request.now ?? Date.now();
 		return this.#repository.transaction(({ snapshot }) => {
 			assertCurrentScheduler(snapshot, assignment, now);
+			const existing = snapshot.assignments[assignment.assignmentId];
+			if (existing !== undefined) {
+				if (sha256CanonicalJson(existing.lease) !== sha256CanonicalJson(assignment)) throw new IdempotencyConflictError(assignment.assignmentId);
+				const existingTask = snapshot.tasks[existing.lease.taskId];
+				if (
+					existing.state !== "leased" ||
+					existingTask === undefined ||
+					existingTask.state !== "leased" ||
+					existingTask.currentAssignmentId !== existing.lease.assignmentId ||
+					existingTask.latestFencingToken !== existing.lease.fencingToken ||
+					leaseDeadline(existing.lease) <= now
+				) {
+					throw new FencingViolationError(assignment.assignmentId);
+				}
+				return structuredClone(existing);
+			}
 			const task = snapshot.tasks[assignment.taskId];
 			if (task === undefined) throw new TransitionViolationError(assignment.taskId, "missing", "be assigned");
 			if (task.state !== "queued") throw new TransitionViolationError(assignment.taskId, task.state, "be assigned");
 			if (task.task.digest !== assignment.taskDigest) throw new IdempotencyConflictError(assignment.assignmentId);
 			if (leaseDeadline(assignment) <= now) throw new TransitionViolationError(assignment.assignmentId, "expired", "be assigned");
 			if (assignment.fencingToken <= task.latestFencingToken) throw new FencingViolationError(assignment.assignmentId);
-			const existing = snapshot.assignments[assignment.assignmentId];
-			if (existing !== undefined) {
-				if (existing.lease.idempotencyKey !== assignment.idempotencyKey) throw new IdempotencyConflictError(assignment.assignmentId);
-				return structuredClone(existing);
-			}
 			const record: RuntimeAssignmentRecord = {
 				lease: assignment,
 				state: "leased",

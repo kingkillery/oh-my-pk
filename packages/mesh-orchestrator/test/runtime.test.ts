@@ -2,7 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { MESH_SCHEMA, contractDigest, parseTaskContract, sha256CanonicalJson, type JsonRecord, type TaskContractV1 } from "@pk-nerdsaver-ai/mesh-contracts";
 import { signExecutionReceipt, type ReceiptSignatureVerifier } from "@pk-nerdsaver-ai/mesh-receipts";
 
-import { FencingViolationError, InMemoryMeshRuntimeRepository, MeshOrchestrator, ReceiptFinalizationError, type ReceiptVerifierResolver } from "../src";
+import {
+	FencingViolationError,
+	IdempotencyConflictError,
+	InMemoryMeshRuntimeRepository,
+	MeshOrchestrator,
+	ReceiptFinalizationError,
+	SchedulerLeaseConflictError,
+	type ReceiptVerifierResolver,
+} from "../src";
 
 const T0 = Date.parse("2026-08-31T12:00:00.000Z");
 const SCHEDULER_KEY = "scheduler-public-key-001";
@@ -132,6 +140,55 @@ describe("MeshOrchestrator durable authority", () => {
 		expect(duplicate.record.messageId).toBe("relay-msg-1");
 	});
 
+	test("replays only an exact current assignment without a second issuance fact", async () => {
+		const repository = new InMemoryMeshRuntimeRepository();
+		const control = runtime(repository);
+		const contract = task("task-assignment-replay-001");
+		await control.submitTask(contract, T0);
+		const scheduler = await control.acquireSchedulerLease({ schedulerId: SCHEDULER_KEY, durationMs: 2_000, now: T0 });
+		const lease = assignment(contract, { id: "asg_assignment-replay", epoch: scheduler.epoch, fence: 1, expiresAt: 1_000 });
+
+		const [first, replay] = await Promise.all([
+			control.assign({ assignment: lease, now: T0 }),
+			control.assign({ assignment: structuredClone(lease), now: T0 }),
+		]);
+		expect(replay).toEqual(first);
+		expect(await repository.read(snapshot => Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued"))).toHaveLength(1);
+
+		for (const changedLease of [
+			{ ...lease, workerNodeId: "node_other-worker" },
+			{ ...lease, leaseExpiresAt: iso(1_500) },
+			{ ...lease, fencingToken: 2 },
+		]) {
+			await expect(control.assign({ assignment: changedLease, now: T0 })).rejects.toBeInstanceOf(IdempotencyConflictError);
+		}
+		expect(await repository.read(snapshot => snapshot.assignments[lease.assignmentId]?.lease)).toEqual(lease);
+		expect(await repository.read(snapshot => Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued"))).toHaveLength(1);
+	});
+
+	test("rejects assignment replays after scheduler authority or the assignment lease expires", async () => {
+		const repository = new InMemoryMeshRuntimeRepository();
+		const control = runtime(repository);
+		const contract = task("task-assignment-replay-expiry-001");
+		await control.submitTask(contract, T0);
+		const scheduler = await control.acquireSchedulerLease({ schedulerId: SCHEDULER_KEY, durationMs: 100, now: T0 });
+		const lease = assignment(contract, { id: "asg_assignment-replay-scheduler-expiry", epoch: scheduler.epoch, fence: 1, expiresAt: 1_000 });
+		await control.assign({ assignment: lease, now: T0 });
+		await expect(control.assign({ assignment: lease, now: T0 + 101 })).rejects.toBeInstanceOf(SchedulerLeaseConflictError);
+		await control.acquireSchedulerLease({ schedulerId: NEXT_SCHEDULER_KEY, durationMs: 1_000, now: T0 + 101 });
+		await expect(control.assign({ assignment: lease, now: T0 + 101 })).rejects.toBeInstanceOf(SchedulerLeaseConflictError);
+
+		const expiryRepository = new InMemoryMeshRuntimeRepository();
+		const expiryControl = runtime(expiryRepository);
+		const secondContract = task("task-assignment-replay-lease-expiry-001");
+		await expiryControl.submitTask(secondContract, T0 + 102);
+		const activeScheduler = await expiryControl.acquireSchedulerLease({ schedulerId: SCHEDULER_KEY, durationMs: 1_000, now: T0 + 102 });
+		const expiredLease = assignment(secondContract, { id: "asg_assignment-replay-lease-expiry", epoch: activeScheduler.epoch, fence: 1, expiresAt: 200 });
+		await expiryControl.assign({ assignment: expiredLease, now: T0 + 102 });
+		await expect(expiryControl.assign({ assignment: expiredLease, now: T0 + 201 })).rejects.toBeInstanceOf(FencingViolationError);
+		expect(await expiryRepository.read(snapshot => Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued"))).toHaveLength(1);
+	});
+
 	test("rejects a receipt from a stale scheduler epoch and fence", async () => {
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = new MeshOrchestrator(repository, { receiptVerifierResolver, clock: { nowEpochMs: () => T0 + 1_001 } });
@@ -244,6 +301,7 @@ describe("MeshOrchestrator durable authority", () => {
 		const first = await control.recordReceipt({ signedReceipt: accepted });
 		const replay = await control.recordReceipt({ signedReceipt: accepted });
 		expect(replay).toEqual(first);
+		await expect(control.assign({ assignment: lease, now: T0 + 10 })).rejects.toBeInstanceOf(FencingViolationError);
 		expect(first.receiptVerification).toMatchObject({
 			algorithm: RECEIPT_ALGORITHM,
 			keyId: RECEIPT_KEY_ID,
