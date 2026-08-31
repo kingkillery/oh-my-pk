@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { MESH_SCHEMA, contractDigest, parseTaskContract, sha256CanonicalJson, type JsonRecord, type TaskContractV1 } from "@pk-nerdsaver-ai/mesh-contracts";
+import { signAssignmentLease, type MeshEnvelopeSigner } from "@pk-nerdsaver-ai/mesh-auth";
 import { signExecutionReceipt, type ReceiptSignatureVerifier } from "@pk-nerdsaver-ai/mesh-receipts";
 
 import {
@@ -21,6 +22,8 @@ const NEXT_SCHEDULER_KEY = "scheduler-public-key-002";
 const WORKER_KEY = "worker-public-key-000001";
 const RECEIPT_ALGORITHM = "runtime-deterministic-v1";
 const RECEIPT_KEY_ID = "runtime-worker-key";
+const SCHEDULER_ALGORITHM = "runtime-scheduler-deterministic-v1";
+const SCHEDULER_KEY_ID = "runtime-scheduler-key";
 const signatureEncoder = new TextEncoder();
 const signatureDecoder = new TextDecoder();
 
@@ -35,6 +38,18 @@ function digest(value: Record<string, unknown>, field: string): string {
 function receiptSignature(payload: Uint8Array): Uint8Array {
 	return signatureEncoder.encode(`${RECEIPT_ALGORITHM}:${RECEIPT_KEY_ID}:${signatureDecoder.decode(payload).split("").reverse().join("")}`);
 }
+
+function assignmentSignature(payload: Uint8Array): Uint8Array {
+	return signatureEncoder.encode(`${SCHEDULER_ALGORITHM}:${SCHEDULER_KEY_ID}:${signatureDecoder.decode(payload).split("").reverse().join("")}`);
+}
+
+const schedulerSigner: MeshEnvelopeSigner = Object.freeze({
+	algorithm: SCHEDULER_ALGORITHM,
+	keyId: SCHEDULER_KEY_ID,
+	actorPubkey: SCHEDULER_KEY,
+	role: "scheduler",
+	sign: assignmentSignature,
+});
 
 const workerReceiptVerifier: ReceiptSignatureVerifier = Object.freeze({
 	algorithm: RECEIPT_ALGORITHM,
@@ -56,7 +71,7 @@ function runtime(repository = new InMemoryMeshRuntimeRepository(), receiptNow = 
 	return new MeshOrchestrator(repository, { receiptVerifierResolver, clock: { nowEpochMs: () => receiptNow } });
 }
 
-function task(idempotencyKey = "task-submit-001"): TaskContractV1 {
+function task(idempotencyKey = "task-submit-001", execution: TaskContractV1["execution"] = {}): TaskContractV1 {
 	const body = {
 		schemaVersion: MESH_SCHEMA.task,
 		taskId: "task_mesh-runtime",
@@ -66,7 +81,7 @@ function task(idempotencyKey = "task-submit-001"): TaskContractV1 {
 		mode: "general_tool",
 		acceptanceCriteria: [{ id: "runtime-safe", description: "Fenced state changes survive restart", level: "required" }],
 		permissions: { tools: ["test"], externalSideEffects: "none" },
-		execution: {},
+		execution,
 		routing: { activeMachineAllowed: false },
 		artifactPolicy: { encryptionRequired: true },
 		idempotencyKey,
@@ -90,7 +105,7 @@ function assignment(taskContract: TaskContractV1, options: { readonly id: string
 		issuedAt: iso(0),
 		leaseExpiresAt: iso(options.expiresAt),
 		renewAfterSeconds: 10,
-		permissionsDigest: sha256CanonicalJson({ tools: ["test"] }),
+		permissionsDigest: sha256CanonicalJson(taskContract.permissions),
 		placementReason: { activeMachineAllowed: false },
 		idempotencyKey: `assignment-${options.id}`,
 	};
@@ -178,6 +193,68 @@ describe("MeshOrchestrator durable authority", () => {
 		}
 		expect(await repository.read(snapshot => snapshot.assignments[lease.assignmentId]?.lease)).toEqual(lease);
 		expect(await repository.read(snapshot => Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued"))).toHaveLength(1);
+	});
+
+	test("atomically preserves the exact signed delivery artifact for read-only recovery", async () => {
+		const repository = new InMemoryMeshRuntimeRepository();
+		const control = runtime(repository);
+		const contract = task("task-assignment-delivery-001", { profileId: "test-profile" });
+		await control.submitTask(contract, T0);
+		const scheduler = await control.acquireSchedulerLease({ schedulerId: SCHEDULER_KEY, durationMs: 2_000, now: T0 });
+		const lease = assignment(contract, { id: "asg_assignment-delivery", epoch: scheduler.epoch, fence: 1, expiresAt: 1_000 });
+		await observeAssignmentWorker(control, lease);
+		const signedAssignment = await signAssignmentLease(lease, schedulerSigner, { signedAt: iso(0) });
+
+		const issued = await control.assign({ assignment: lease, delivery: { task: contract, signedAssignment }, now: T0 });
+		const revisionBeforeRecovery = await repository.read(snapshot => snapshot.revision);
+		const recovered = await control.recoverAssignmentDelivery(lease.assignmentId);
+
+		expect(recovered).toEqual({
+			record: issued,
+			task: contract,
+			signedAssignment,
+			idempotencyKey: `assignment.delivery:${lease.assignmentId}:${lease.fencingToken}`,
+		});
+		expect(await repository.read(snapshot => snapshot.revision)).toBe(revisionBeforeRecovery);
+		expect(await repository.read(snapshot => Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued"))).toHaveLength(1);
+
+		const differentEnvelope = await signAssignmentLease(lease, schedulerSigner, { signedAt: iso(1) });
+		await expect(control.assign({ assignment: lease, delivery: { task: contract, signedAssignment: differentEnvelope }, now: T0 })).rejects.toBeInstanceOf(
+			IdempotencyConflictError,
+		);
+		expect(await repository.read(snapshot => snapshot.revision)).toBe(revisionBeforeRecovery);
+	});
+
+	test("fails closed when recovery has no original delivery or current worker capacity", async () => {
+		const repository = new InMemoryMeshRuntimeRepository();
+		const control = runtime(repository);
+		const legacyContract = task("task-assignment-delivery-legacy-001");
+		await control.submitTask(legacyContract, T0);
+		const scheduler = await control.acquireSchedulerLease({ schedulerId: SCHEDULER_KEY, durationMs: 2_000, now: T0 });
+		const legacyLease = assignment(legacyContract, { id: "asg_assignment-delivery-legacy", epoch: scheduler.epoch, fence: 1, expiresAt: 1_000 });
+		await observeAssignmentWorker(control, legacyLease);
+		await control.assign({ assignment: legacyLease, now: T0 });
+		expect(await control.recoverAssignmentDelivery(legacyLease.assignmentId)).toBeUndefined();
+
+		const recoveredRepository = new InMemoryMeshRuntimeRepository();
+		const recoveredControl = runtime(recoveredRepository);
+		const contract = task("task-assignment-delivery-capacity-001", { profileId: "test-profile" });
+		await recoveredControl.submitTask(contract, T0);
+		const recoveredScheduler = await recoveredControl.acquireSchedulerLease({ schedulerId: SCHEDULER_KEY, durationMs: 2_000, now: T0 });
+		const lease = assignment(contract, { id: "asg_assignment-delivery-capacity", epoch: recoveredScheduler.epoch, fence: 1, expiresAt: 1_000 });
+		await observeAssignmentWorker(recoveredControl, lease);
+		const signedAssignment = await signAssignmentLease(lease, schedulerSigner, { signedAt: iso(0) });
+		await recoveredControl.assign({ assignment: lease, delivery: { task: contract, signedAssignment }, now: T0 });
+		await recoveredControl.observeWorkerCapacity({
+			workerNodeId: lease.workerNodeId,
+			actorPubkey: lease.executorPubkey,
+			availableSlots: 0,
+			observedAt: T0 + 1,
+			expiresAt: T0 + 1_000_000,
+		});
+
+		await expect(recoveredControl.recoverAssignmentDelivery(lease.assignmentId)).rejects.toBeInstanceOf(WorkerCapacityConflictError);
+		expect(await recoveredRepository.read(snapshot => Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued"))).toHaveLength(1);
 	});
 
 	test("returns an isolated assignment record for exact-current recovery", async () => {

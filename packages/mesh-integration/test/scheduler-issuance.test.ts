@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { MESH_SCHEMA, parseTaskContract, sha256CanonicalJson, type TaskContractV1 } from "../../mesh-contracts/src/index";
 import { type MeshEnvelopeSigner, type MeshEnvelopeVerifier } from "../../mesh-auth/src/index";
-import { InMemoryMeshRuntimeRepository, MeshOrchestrator } from "../../mesh-orchestrator/src/index";
+import { InMemoryMeshRuntimeRepository, MeshOrchestrator, SqliteMeshRuntimeRepository } from "../../mesh-orchestrator/src/index";
 import { MeshNodeAgent, type MeshExecutionRunResult, type MeshNodeExecutionContext } from "../../mesh-node/src/index";
 import { MeshSchedulerIssuanceCoordinator, type PlacementNode } from "../../mesh-scheduler/src/index";
 
@@ -57,6 +60,11 @@ function task(): TaskContractV1 {
 		digestAlgorithm: "sha256" as const,
 	};
 	return parseTaskContract({ ...body, digest: sha256CanonicalJson(body) });
+}
+
+function createDatabasePath(): { readonly directory: string; readonly path: string } {
+	const directory = mkdtempSync(join(tmpdir(), "mesh-scheduler-issuance-"));
+	return { directory, path: join(directory, "runtime.sqlite") };
 }
 
 function placementNode(overrides: Partial<PlacementNode> = {}): PlacementNode {
@@ -138,5 +146,95 @@ describe("scheduler issuance through node admission", () => {
 		expect(admitted).toMatchObject({ assignmentId: issued.record.lease.assignmentId, state: "admitted" });
 		expect(await repository.read(snapshot => Object.values(snapshot.assignments))).toEqual([issued.record]);
 		expect(await repository.read(snapshot => Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued"))).toHaveLength(1);
+	});
+
+	test("recovers the exact durable delivery after a SQLite controller restart without issuing again", async () => {
+		const database = createDatabasePath();
+		try {
+			let signCalls = 0;
+			const countingSigner: MeshEnvelopeSigner = Object.freeze({
+				...schedulerSigner,
+				sign(payload) {
+					signCalls += 1;
+					return signature(payload);
+				},
+			});
+			const original = await (async () => {
+				const firstRepository = new SqliteMeshRuntimeRepository(database.path);
+				try {
+					const firstRuntime = new MeshOrchestrator(firstRepository, {
+						receiptVerifierResolver: { resolve: () => undefined },
+						clock: { nowEpochMs: () => T0 },
+					});
+					const contract = task();
+					await firstRuntime.submitTask(contract, T0);
+					const issued = await new MeshSchedulerIssuanceCoordinator({
+						runtime: firstRuntime,
+						signer: countingSigner,
+						verifier: schedulerVerifier,
+						clock: { nowEpochMs: () => T0 },
+					}).issue({
+						assignmentId: "asg_scheduler-integration-restart-001",
+						taskId: contract.taskId,
+						nodes: [placementNode()],
+						schedulerLeaseDurationMs: 70_000,
+						assignmentLeaseDurationMs: 65_000,
+						renewAfterSeconds: 10,
+					});
+					return Object.freeze({
+						assignmentId: issued.record.lease.assignmentId,
+						taskId: issued.task.taskId,
+						taskDigest: issued.task.digest,
+						schedulerEpoch: issued.record.lease.schedulerEpoch,
+						fencingToken: issued.record.lease.fencingToken,
+						workerNodeId: issued.record.lease.workerNodeId,
+						envelopeDigest: sha256CanonicalJson(issued.signedAssignment),
+						deliveryIdempotencyKey: issued.deliveryIdempotencyKey,
+						revision: await firstRepository.read(snapshot => snapshot.revision),
+					});
+				} finally {
+					firstRepository.close();
+				}
+			})();
+
+			const reopenedRepository = new SqliteMeshRuntimeRepository(database.path);
+			try {
+				const reopenedRuntime = new MeshOrchestrator(reopenedRepository, {
+					receiptVerifierResolver: { resolve: () => undefined },
+					clock: { nowEpochMs: () => T0 },
+				});
+				const recovered = await new MeshSchedulerIssuanceCoordinator({
+					runtime: reopenedRuntime,
+					signer: countingSigner,
+					verifier: schedulerVerifier,
+					clock: { nowEpochMs: () => T0 },
+				}).issue({
+					assignmentId: original.assignmentId,
+					taskId: original.taskId,
+					nodes: [],
+					schedulerLeaseDurationMs: 70_000,
+					assignmentLeaseDurationMs: 65_000,
+					renewAfterSeconds: 10,
+				});
+				const admitted = await nodeAgent().accept({ task: recovered.task, signedAssignment: recovered.signedAssignment });
+
+				expect(recovered.replayed).toBeTrue();
+				expect(recovered.task.taskId).toBe(original.taskId);
+				expect(recovered.task.digest).toBe(original.taskDigest);
+				expect(recovered.record.lease.schedulerEpoch).toBe(original.schedulerEpoch);
+				expect(recovered.record.lease.fencingToken).toBe(original.fencingToken);
+				expect(recovered.record.lease.workerNodeId).toBe(original.workerNodeId);
+				expect(sha256CanonicalJson(recovered.signedAssignment)).toBe(original.envelopeDigest);
+				expect(recovered.deliveryIdempotencyKey).toBe(original.deliveryIdempotencyKey);
+				expect(admitted).toMatchObject({ assignmentId: original.assignmentId, state: "admitted" });
+				expect(signCalls).toBe(1);
+				expect(await reopenedRepository.read(snapshot => snapshot.revision)).toBe(original.revision);
+				expect(await reopenedRepository.read(snapshot => Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued"))).toHaveLength(1);
+			} finally {
+				reopenedRepository.close();
+			}
+		} finally {
+			rmSync(database.directory, { recursive: true, force: true });
+		}
 	});
 });

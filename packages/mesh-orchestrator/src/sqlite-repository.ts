@@ -2,10 +2,13 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
+import { parseAssignmentLease, parseTaskContract, sha256CanonicalJson } from "@pk-nerdsaver-ai/mesh-contracts";
+import { parseSignedMeshEnvelope } from "@pk-nerdsaver-ai/mesh-auth";
+
 import { MeshRuntimeCorruptionError, MeshRuntimeError } from "./errors";
 import { createEmptyRuntimeSnapshot, type MeshRuntimeRepository, type MeshRuntimeSnapshot, type MeshRuntimeTransaction } from "./types";
 
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 const STATE_ROW_ID = 1;
 const DATABASE_LOCKS = new Map<string, Promise<void>>();
 
@@ -150,6 +153,7 @@ export class SqliteMeshRuntimeRepository implements MeshRuntimeRepository {
 			}
 			if (!migrations.some(migration => migration.version === 1)) this.#applyVersionOne();
 			if (!migrations.some(migration => migration.version === 2)) this.#applyVersionTwo();
+			if (!migrations.some(migration => migration.version === 3)) this.#applyVersionThree();
 			this.#db.exec("COMMIT");
 		} catch (error) {
 			this.#rollbackQuietly();
@@ -205,6 +209,36 @@ export class SqliteMeshRuntimeRepository implements MeshRuntimeRepository {
 			[JSON.stringify(snapshot), new Date().toISOString(), STATE_ROW_ID],
 		);
 		this.#db.run("INSERT INTO mesh_runtime_schema_migrations (version, applied_at) VALUES (?, ?)", [2, new Date().toISOString()]);
+	}
+
+	/**
+	 * v3 recognizes optional exact signed-delivery artifacts nested under an
+	 * assignment record. Existing assignments deliberately remain artifact-less:
+	 * a restart must fail closed rather than fabricate a new scheduler signature.
+	 */
+	#applyVersionThree(): void {
+		let row: StateRow | null;
+		try {
+			row = this.#db
+				.query<StateRow, []>("SELECT revision, snapshot_json AS snapshotJson FROM mesh_runtime_state WHERE singleton = 1")
+				.get();
+		} catch {
+			throw new MeshRuntimeCorruptionError("state table is unreadable");
+		}
+		if (row === null || row === undefined) throw new MeshRuntimeCorruptionError("state row is missing");
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(row.snapshotJson);
+		} catch {
+			throw new MeshRuntimeCorruptionError("state snapshot is not valid JSON");
+		}
+		const snapshot = assertSnapshot(parsed);
+		if (snapshot.revision !== row.revision) throw new MeshRuntimeCorruptionError("state revision does not match its snapshot");
+		this.#db.run(
+			"UPDATE mesh_runtime_state SET snapshot_json = ?, updated_at = ? WHERE singleton = ?",
+			[JSON.stringify(snapshot), new Date().toISOString(), STATE_ROW_ID],
+		);
+		this.#db.run("INSERT INTO mesh_runtime_schema_migrations (version, applied_at) VALUES (?, ?)", [3, new Date().toISOString()]);
 	}
 
 	#loadSnapshot(): MeshRuntimeSnapshot {
@@ -264,6 +298,7 @@ function assertSnapshot(value: unknown): MeshRuntimeSnapshot {
 	assertObjectMap(value.assignments, "assignments");
 	assertObjectMap(value.outbox, "outbox");
 	assertObjectMap(value.deliveries, "deliveries");
+	assertAssignmentDeliveries(value.assignments, value.tasks);
 	assertWorkerCapacityObservations(value.workerCapacityObservations);
 	if (!isRecord(value.scheduler)) throw new MeshRuntimeCorruptionError("scheduler is not an object");
 	if (!isNonNegativeInteger(value.scheduler.epoch)) throw new MeshRuntimeCorruptionError("scheduler epoch is invalid");
@@ -274,6 +309,38 @@ function assertSnapshot(value: unknown): MeshRuntimeSnapshot {
 		throw new MeshRuntimeCorruptionError("scheduler owner is invalid");
 	}
 	return value as MeshRuntimeSnapshot;
+}
+
+function assertAssignmentDeliveries(assignments: unknown, tasks: unknown): void {
+	if (!isRecord(assignments) || !isRecord(tasks)) throw new MeshRuntimeCorruptionError("assignment delivery maps are invalid");
+	for (const [assignmentId, record] of Object.entries(assignments)) {
+		if (!isRecord(record) || record.delivery === undefined) continue;
+		if (!isRecord(record.delivery)) throw new MeshRuntimeCorruptionError("assignment delivery is invalid");
+		try {
+			const lease = parseAssignmentLease(record.lease);
+			if (lease.assignmentId !== assignmentId) throw new Error("assignment identity mismatch");
+			const task = parseTaskContract(record.delivery.task);
+			const envelope = parseSignedMeshEnvelope(record.delivery.signedAssignment);
+			const signedLease = parseAssignmentLease(envelope.payload);
+			const durableTask = tasks[lease.taskId];
+			if (!isRecord(durableTask)) throw new Error("durable task is missing");
+			const parsedDurableTask = parseTaskContract(durableTask.task);
+			if (
+				typeof record.delivery.idempotencyKey !== "string" ||
+				record.delivery.idempotencyKey !== `assignment.delivery:${lease.assignmentId}:${lease.fencingToken}` ||
+				sha256CanonicalJson(signedLease) !== sha256CanonicalJson(lease) ||
+				sha256CanonicalJson(task) !== sha256CanonicalJson(parsedDurableTask) ||
+				task.taskId !== lease.taskId ||
+				task.digest !== lease.taskDigest ||
+				task.execution.profileId !== lease.executionProfileId ||
+				sha256CanonicalJson(task.permissions) !== lease.permissionsDigest
+			) {
+				throw new Error("assignment delivery binding mismatch");
+			}
+		} catch {
+			throw new MeshRuntimeCorruptionError("assignment delivery binding is invalid");
+		}
+	}
 }
 
 function assertWorkerCapacityObservations(value: unknown): void {

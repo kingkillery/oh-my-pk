@@ -9,6 +9,7 @@ import {
 	type JsonRecord,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
+import { parseSignedMeshEnvelope } from "@pk-nerdsaver-ai/mesh-auth";
 import { verifySignedExecutionReceipt, type ReceiptSignatureVerifier } from "@pk-nerdsaver-ai/mesh-receipts";
 
 import {
@@ -34,6 +35,8 @@ import type {
 	OutboxMessage,
 	ReceiptRequest,
 	ReapResult,
+	RuntimeAssignmentDelivery,
+	RuntimeAssignmentDeliveryRecovery,
 	RuntimeAssignmentRecord,
 	RuntimeTaskRecord,
 	SchedulerLeaseGrant,
@@ -135,6 +138,69 @@ function currentWorkerCapacity(snapshot: MeshRuntimeSnapshot, assignment: Assign
 		throw new WorkerCapacityObservationError("capacity_observation_unavailable");
 	}
 	return observation.availableSlots;
+}
+
+function deliveryIdempotencyKey(assignment: AssignmentLeaseV1): string {
+	return `assignment.delivery:${assignment.assignmentId}:${assignment.fencingToken}`;
+}
+
+function deliveryFor(
+	input: { readonly task: unknown; readonly signedAssignment: unknown; readonly idempotencyKey?: unknown },
+	assignment: AssignmentLeaseV1,
+): RuntimeAssignmentDelivery {
+	try {
+		const task = parseTaskContract(input.task);
+		const signedAssignment = parseSignedMeshEnvelope(input.signedAssignment);
+		const signedLease = parseAssignmentLease(signedAssignment.payload);
+		if (
+			sha256CanonicalJson(signedLease) !== sha256CanonicalJson(assignment) ||
+			task.taskId !== assignment.taskId ||
+			task.digest !== assignment.taskDigest ||
+			task.execution.profileId !== assignment.executionProfileId ||
+			sha256CanonicalJson(task.permissions) !== assignment.permissionsDigest
+		) {
+			throw new Error("assignment delivery binding mismatch");
+		}
+		const idempotencyKey = deliveryIdempotencyKey(assignment);
+		if (input.idempotencyKey !== undefined && input.idempotencyKey !== idempotencyKey) {
+			throw new Error("assignment delivery idempotency mismatch");
+		}
+		return Object.freeze({
+			task,
+			signedAssignment: signedAssignment as RuntimeAssignmentDelivery["signedAssignment"],
+			idempotencyKey,
+		});
+	} catch {
+		throw new TypeError("assignment delivery artifact is invalid");
+	}
+}
+
+function sameDelivery(left: RuntimeAssignmentDelivery, right: RuntimeAssignmentDelivery): boolean {
+	return (
+		left.idempotencyKey === right.idempotencyKey &&
+		sha256CanonicalJson(left.task) === sha256CanonicalJson(right.task) &&
+		sha256CanonicalJson(left.signedAssignment) === sha256CanonicalJson(right.signedAssignment)
+	);
+}
+
+function assertExactCurrentAssignment(snapshot: MeshRuntimeSnapshot, record: RuntimeAssignmentRecord, now: number): RuntimeTaskRecord {
+	const assignment = record.lease;
+	assertCurrentScheduler(snapshot, assignment, now);
+	const task = snapshot.tasks[assignment.taskId];
+	if (
+		record.state !== "leased" ||
+		task === undefined ||
+		task.state !== "leased" ||
+		task.currentAssignmentId !== assignment.assignmentId ||
+		task.latestFencingToken !== assignment.fencingToken ||
+		leaseDeadline(assignment) <= now
+	) {
+		throw new FencingViolationError(assignment.assignmentId);
+	}
+	if (currentWorkerCapacity(snapshot, assignment, now) < 1) {
+		throw new WorkerCapacityConflictError(assignment.workerNodeId);
+	}
+	return task;
 }
 
 function assertAssignmentFence(snapshot: MeshRuntimeSnapshot, record: RuntimeAssignmentRecord | undefined, receipt: ExecutionReceiptV1, now: number): RuntimeAssignmentRecord {
@@ -331,6 +397,7 @@ export class MeshOrchestrator {
 
 	async assign(request: AssignmentRequest): Promise<RuntimeAssignmentRecord> {
 		const assignment = parseAssignmentLease(request.assignment);
+		const delivery = request.delivery === undefined ? undefined : deliveryFor(request.delivery, assignment);
 		return this.#repository.transaction(({ snapshot }) => {
 			// As above, never validate a ticket against a timestamp captured before a
 			// queued durable write obtains its transaction slot.
@@ -339,26 +406,19 @@ export class MeshOrchestrator {
 			const existing = snapshot.assignments[assignment.assignmentId];
 			if (existing !== undefined) {
 				if (sha256CanonicalJson(existing.lease) !== sha256CanonicalJson(assignment)) throw new IdempotencyConflictError(assignment.assignmentId);
-				const existingTask = snapshot.tasks[existing.lease.taskId];
-				if (
-					existing.state !== "leased" ||
-					existingTask === undefined ||
-					existingTask.state !== "leased" ||
-					existingTask.currentAssignmentId !== existing.lease.assignmentId ||
-					existingTask.latestFencingToken !== existing.lease.fencingToken ||
-					leaseDeadline(existing.lease) <= now
-				) {
-					throw new FencingViolationError(assignment.assignmentId);
+				if (delivery !== undefined && (existing.delivery === undefined || !sameDelivery(existing.delivery, delivery))) {
+					throw new IdempotencyConflictError(assignment.assignmentId);
 				}
-				if (currentWorkerCapacity(snapshot, assignment, now) < 1) {
-					throw new WorkerCapacityConflictError(assignment.workerNodeId);
-				}
+				assertExactCurrentAssignment(snapshot, existing, now);
 				return structuredClone(existing);
 			}
 			const task = snapshot.tasks[assignment.taskId];
 			if (task === undefined) throw new TransitionViolationError(assignment.taskId, "missing", "be assigned");
 			if (task.state !== "queued") throw new TransitionViolationError(assignment.taskId, task.state, "be assigned");
 			if (task.task.digest !== assignment.taskDigest) throw new IdempotencyConflictError(assignment.assignmentId);
+			if (delivery !== undefined && sha256CanonicalJson(delivery.task) !== sha256CanonicalJson(task.task)) {
+				throw new IdempotencyConflictError(assignment.assignmentId);
+			}
 			if (leaseDeadline(assignment) <= now) throw new TransitionViolationError(assignment.assignmentId, "expired", "be assigned");
 			if (assignment.fencingToken <= task.latestFencingToken) throw new FencingViolationError(assignment.assignmentId);
 			const workerCapacity = currentWorkerCapacity(snapshot, assignment, now);
@@ -369,6 +429,7 @@ export class MeshOrchestrator {
 				state: "leased",
 				createdAt: iso(now),
 				updatedAt: iso(now),
+				delivery,
 			};
 			snapshot.assignments[assignment.assignmentId] = record;
 			task.state = "leased";
@@ -383,6 +444,31 @@ export class MeshOrchestrator {
 				now,
 			});
 			return structuredClone(record);
+		});
+	}
+
+	/**
+	 * Returns a single durable snapshot of the original delivery artifact only
+	 * while the lease remains current. It neither changes authority nor creates
+	 * an outbox message, so restart delivery cannot manufacture new work.
+	 */
+	async recoverAssignmentDelivery(assignmentId: string, now?: number): Promise<RuntimeAssignmentDeliveryRecovery | undefined> {
+		nonEmpty(assignmentId, "assignmentId");
+		return this.#repository.read(snapshot => {
+			const record = snapshot.assignments[assignmentId];
+			if (record === undefined || record.delivery === undefined) return undefined;
+			const trustedNow = this.#authorityClockNow(now);
+			const task = assertExactCurrentAssignment(snapshot, record, trustedNow);
+			const delivery = deliveryFor(record.delivery, record.lease);
+			if (sha256CanonicalJson(task.task) !== sha256CanonicalJson(delivery.task)) {
+				throw new TypeError("persisted assignment delivery task does not match durable task");
+			}
+			return Object.freeze({
+				record: structuredClone(record),
+				task: structuredClone(delivery.task),
+				signedAssignment: structuredClone(delivery.signedAssignment),
+				idempotencyKey: delivery.idempotencyKey,
+			});
 		});
 	}
 

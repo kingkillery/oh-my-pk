@@ -33,7 +33,7 @@ describe("SqliteMeshRuntimeRepository", () => {
 			const migration = probe.query<{ version: number }, []>("SELECT MAX(version) AS version FROM mesh_runtime_schema_migrations").get();
 			const journalMode = probe.query<{ journal_mode: string }, []>("PRAGMA journal_mode").get();
 			probe.close();
-			expect(migration?.version).toBe(2);
+			expect(migration?.version).toBe(3);
 			expect(journalMode?.journal_mode.toLowerCase()).toBe("wal");
 
 			const reopened = new SqliteMeshRuntimeRepository(database.path);
@@ -110,7 +110,7 @@ describe("SqliteMeshRuntimeRepository", () => {
 		}
 	});
 
-	test("upgrades a v1 snapshot with no worker capacity map without changing authority revision", async () => {
+	test("upgrades a v1 snapshot with no worker capacity map or delivery artifact without changing authority revision", async () => {
 		const database = createDatabasePath();
 		try {
 			const first = new SqliteMeshRuntimeRepository(database.path);
@@ -127,7 +127,7 @@ describe("SqliteMeshRuntimeRepository", () => {
 			const legacy = JSON.parse(row.snapshotJson) as Record<string, unknown>;
 			delete legacy.workerCapacityObservations;
 			raw.run("UPDATE mesh_runtime_state SET snapshot_json = ? WHERE singleton = 1", [JSON.stringify(legacy)]);
-			raw.run("DELETE FROM mesh_runtime_schema_migrations WHERE version = 2");
+			raw.run("DELETE FROM mesh_runtime_schema_migrations WHERE version IN (2, 3)");
 			raw.close();
 
 			const upgraded = new SqliteMeshRuntimeRepository(database.path);
@@ -140,7 +140,7 @@ describe("SqliteMeshRuntimeRepository", () => {
 			const probe = new Database(database.path, { readonly: true, strict: true });
 			const migration = probe.query<{ version: number }, []>("SELECT MAX(version) AS version FROM mesh_runtime_schema_migrations").get();
 			probe.close();
-			expect(migration?.version).toBe(2);
+			expect(migration?.version).toBe(3);
 		} finally {
 			rmSync(database.directory, { recursive: true, force: true });
 		}

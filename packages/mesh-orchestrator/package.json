@@ -19,6 +19,7 @@
 		"test": "bun test --parallel"
 	},
 	"dependencies": {
+		"@pk-nerdsaver-ai/mesh-auth": "workspace:*",
 		"@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
 		"@pk-nerdsaver-ai/mesh-receipts": "workspace:*"
 	},

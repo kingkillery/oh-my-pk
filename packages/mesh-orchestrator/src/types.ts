@@ -1,4 +1,5 @@
 import type { AssignmentLeaseV1, ExecutionReceiptV1, JsonRecord, TaskContractV1 } from "@pk-nerdsaver-ai/mesh-contracts";
+import type { SignedMeshEnvelopeV1 } from "@pk-nerdsaver-ai/mesh-auth";
 import type { ReceiptSignatureVerifier, SignedExecutionReceiptV1 } from "@pk-nerdsaver-ai/mesh-receipts";
 
 export type MeshTaskState = "queued" | "leased" | "completed" | "failed" | "cancelled" | "lost";
@@ -19,8 +20,28 @@ export interface RuntimeAssignmentRecord {
 	state: MeshAssignmentState;
 	createdAt: string;
 	updatedAt: string;
+	/** Exact scheduler-verified delivery material, atomically committed with a new lease. */
+	readonly delivery?: RuntimeAssignmentDelivery;
 	receipt?: ExecutionReceiptV1;
 	receiptVerification?: ReceiptVerificationRecord;
+}
+
+/**
+ * The portable task plus its exact scheduler-signed lease envelope. This is
+ * durable recovery material, not a transport message or another authority.
+ */
+export interface RuntimeAssignmentDelivery {
+	readonly task: TaskContractV1;
+	readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+	readonly idempotencyKey: string;
+}
+
+/** One-snapshot read used to resume delivery after controller process loss. */
+export interface RuntimeAssignmentDeliveryRecovery {
+	readonly record: RuntimeAssignmentRecord;
+	readonly task: TaskContractV1;
+	readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+	readonly idempotencyKey: string;
 }
 
 /** Immutable provenance for the verifier decision that admitted an execution receipt. */
@@ -117,6 +138,11 @@ export interface SchedulerLeaseGrant {
 
 export interface AssignmentRequest {
 	readonly assignment: AssignmentLeaseV1 | unknown;
+	/** Optional only for the initial scheduler-issued commit; never overwritten on replay. */
+	readonly delivery?: {
+		readonly task: TaskContractV1 | unknown;
+		readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1> | unknown;
+	};
 	/** Deterministic trusted lower bound; durable authority always reads its clock at transaction entry. */
 	readonly now?: number;
 }

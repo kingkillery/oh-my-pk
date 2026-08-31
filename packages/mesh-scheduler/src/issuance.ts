@@ -2,16 +2,23 @@ import {
 	MESH_SCHEMA,
 	isMeshId,
 	parseAssignmentLease,
+	parseTaskContract,
 	sha256CanonicalJson,
 	type AssignmentLeaseV1,
 	type JsonRecord,
+	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
-import { signAssignmentLease, verifySignedAssignmentLease, type MeshEnvelopeSigner, type MeshEnvelopeVerifier, type SignedMeshEnvelopeV1 } from "@pk-nerdsaver-ai/mesh-auth";
 import {
-	FencingViolationError,
+	parseSignedMeshEnvelope,
+	signAssignmentLease,
+	verifySignedAssignmentLease,
+	type MeshEnvelopeSigner,
+	type MeshEnvelopeVerifier,
+	type SignedMeshEnvelopeV1,
+} from "@pk-nerdsaver-ai/mesh-auth";
+import {
 	IdempotencyConflictError,
 	MeshOrchestrator,
-	SchedulerLeaseConflictError,
 	type RuntimeAssignmentRecord,
 } from "@pk-nerdsaver-ai/mesh-orchestrator";
 
@@ -30,6 +37,8 @@ export type SchedulerIssuanceErrorCode =
 	| "presence_window_insufficient"
 	| "recovery_assignment_missing"
 	| "recovery_assignment_mismatch"
+	| "recovery_delivery_invalid"
+	| "recovery_delivery_missing"
 	| "scheduler_lease_insufficient"
 	| "selected_node_ambiguous"
 	| "signer_invalid"
@@ -66,7 +75,9 @@ export interface SchedulerIssuanceRequest {
 
 export interface SchedulerIssuedAssignment {
 	readonly record: RuntimeAssignmentRecord;
+	readonly task: TaskContractV1;
 	readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+	readonly deliveryIdempotencyKey: string;
 	readonly replayed: boolean;
 }
 
@@ -251,7 +262,7 @@ export class MeshSchedulerIssuanceCoordinator {
 			// since the original lease. Ingest its current observed capacity before
 			// considering any fresh signed delivery envelope.
 			await this.#observeNodeCapacities(request.nodes);
-			return this.#replay(request.assignmentId, taskRecord.task.taskId);
+			return this.#recover(request.assignmentId, taskRecord.task.taskId);
 		}
 		if (taskRecord.state !== "queued") throw new SchedulerIssuanceError("task_not_queued");
 
@@ -308,7 +319,7 @@ export class MeshSchedulerIssuanceCoordinator {
 		// before considering delivery of its durable lease.
 		if ((await this.#runtime.getAssignment(request.assignmentId)) !== undefined) {
 			await this.#observeNodeCapacities(request.nodes);
-			return this.#replay(request.assignmentId, task.taskId);
+			return this.#recover(request.assignmentId, task.taskId);
 		}
 		// Presence is advisory and may age while authority is acquired. Bind a ticket
 		// only to the currently safe placement, never to an earlier observation.
@@ -351,12 +362,16 @@ export class MeshSchedulerIssuanceCoordinator {
 				throw new SchedulerIssuanceError("assignment_lease_insufficient");
 			}
 			// Re-read trusted time after async signing: an expired authority may not commit.
-			record = await this.#runtime.assign({ assignment, now: commitNow });
+			record = await this.#runtime.assign({
+				assignment,
+				delivery: { task: taskRecord.task, signedAssignment },
+				now: commitNow,
+			});
 		} catch (error) {
 			if (!(error instanceof IdempotencyConflictError)) throw error;
-			return this.#replay(request.assignmentId, task.taskId);
+			return this.#recover(request.assignmentId, task.taskId);
 		}
-		return Object.freeze({ record, signedAssignment, replayed: false });
+		return this.#issued(record, false);
 	}
 
 	async #observeNodeCapacities(nodes: readonly PlacementNode[]): Promise<void> {
@@ -382,33 +397,103 @@ export class MeshSchedulerIssuanceCoordinator {
 		}
 	}
 
-	async #replay(assignmentId: string, taskId: string): Promise<SchedulerIssuedAssignment> {
-		const existing = await this.#runtime.getAssignment(assignmentId);
-		if (existing === undefined) throw new SchedulerIssuanceError("recovery_assignment_missing");
+	/** Recover a stored delivery without producing a new lease, outbox fact, or signature. */
+	async recoverDelivery(assignmentId: string): Promise<SchedulerIssuedAssignment> {
+		if (!isMeshId(assignmentId, "assignment")) throw new SchedulerIssuanceError("assignment_id_invalid");
+		return this.#recover(assignmentId);
+	}
+
+	async #recover(assignmentId: string, expectedTaskId?: string): Promise<SchedulerIssuedAssignment> {
+		const first = await this.#runtime.recoverAssignmentDelivery(assignmentId, this.#now());
+		if (first === undefined) {
+			if ((await this.#runtime.getAssignment(assignmentId)) === undefined) throw new SchedulerIssuanceError("recovery_assignment_missing");
+			throw new SchedulerIssuanceError("recovery_delivery_missing");
+		}
 		if (
-			existing.lease.taskId !== taskId ||
-			existing.lease.scheduler.pubkey !== this.#schedulerPubkey ||
-			existing.lease.scheduler.role !== "scheduler"
+			(expectedTaskId !== undefined && first.record.lease.taskId !== expectedTaskId) ||
+			first.record.lease.scheduler.pubkey !== this.#schedulerPubkey ||
+			first.record.lease.scheduler.role !== "scheduler"
 		) {
 			throw new SchedulerIssuanceError("recovery_assignment_mismatch");
 		}
-		const replayNow = this.#now();
-		if (Date.parse(existing.lease.leaseExpiresAt) <= replayNow) throw new FencingViolationError(existing.lease.assignmentId);
-		const scheduler = await this.#runtime.getSchedulerLease();
-		if (
-			scheduler === undefined ||
-			scheduler.schedulerId !== this.#schedulerPubkey ||
-			Date.parse(scheduler.leaseExpiresAt) <= replayNow
-		) {
-			throw new SchedulerLeaseConflictError();
+		await this.#verifyRecovered(first);
+		// Cryptographic verification can be asynchronous. Read current durable state
+		// again afterward so a takeover, expiry, or zero-capacity update cannot race
+		// a recovered ticket into delivery.
+		const current = await this.#runtime.recoverAssignmentDelivery(assignmentId, this.#now());
+		if (current === undefined || !this.#sameRecoveredDelivery(first, current)) {
+			throw new SchedulerIssuanceError("recovery_delivery_invalid");
 		}
-		if (scheduler.epoch !== existing.lease.schedulerEpoch) throw new FencingViolationError(existing.lease.assignmentId);
-		// Exact-current assign is read-only but revalidates capacity. Do this before
-		// signing so a known zero/offline worker receives no fresh envelope.
-		await this.#runtime.assign({ assignment: existing.lease, now: replayNow });
-		const signedAssignment = await this.#sign(existing.lease, iso(replayNow));
-		const record = await this.#runtime.assign({ assignment: existing.lease, now: this.#now() });
-		return Object.freeze({ record, signedAssignment, replayed: true });
+		return this.#issued(current.record, true);
+	}
+
+	async #verifyRecovered(recovered: {
+		readonly record: RuntimeAssignmentRecord;
+		readonly task: TaskContractV1;
+		readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+		readonly idempotencyKey: string;
+	}): Promise<void> {
+		let envelope: SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+		let task: TaskContractV1;
+		try {
+			envelope = parseSignedMeshEnvelope(recovered.signedAssignment) as SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+			task = parseTaskContract(recovered.task);
+			const signedLease = parseAssignmentLease(envelope.payload);
+			if (
+				sha256CanonicalJson(signedLease) !== sha256CanonicalJson(recovered.record.lease) ||
+				task.taskId !== recovered.record.lease.taskId ||
+				task.digest !== recovered.record.lease.taskDigest ||
+				task.execution.profileId !== recovered.record.lease.executionProfileId ||
+				sha256CanonicalJson(task.permissions) !== recovered.record.lease.permissionsDigest ||
+				recovered.idempotencyKey !== `assignment.delivery:${recovered.record.lease.assignmentId}:${recovered.record.lease.fencingToken}`
+			) {
+				throw new Error("delivery binding mismatch");
+			}
+		} catch {
+			throw new SchedulerIssuanceError("recovery_delivery_invalid");
+		}
+		try {
+			if (!(await verifySignedAssignmentLease(envelope, this.#verifier)).ok) {
+				throw new Error("signature rejected");
+			}
+		} catch {
+			throw new SchedulerIssuanceError("signature_unverified");
+		}
+	}
+
+	#sameRecoveredDelivery(
+		left: { readonly record: RuntimeAssignmentRecord; readonly task: TaskContractV1; readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>; readonly idempotencyKey: string },
+		right: { readonly record: RuntimeAssignmentRecord; readonly task: TaskContractV1; readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>; readonly idempotencyKey: string },
+	): boolean {
+		return (
+			sha256CanonicalJson(left.record.lease) === sha256CanonicalJson(right.record.lease) &&
+			sha256CanonicalJson(left.task) === sha256CanonicalJson(right.task) &&
+			sha256CanonicalJson(left.signedAssignment) === sha256CanonicalJson(right.signedAssignment) &&
+			left.idempotencyKey === right.idempotencyKey
+		);
+	}
+
+	#issued(record: RuntimeAssignmentRecord, replayed: boolean): SchedulerIssuedAssignment {
+		const delivery = record.delivery;
+		if (delivery === undefined) throw new SchedulerIssuanceError("recovery_delivery_missing");
+		try {
+			const task = parseTaskContract(delivery.task);
+			const signedAssignment = parseSignedMeshEnvelope(delivery.signedAssignment) as SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+			const signedLease = parseAssignmentLease(signedAssignment.payload);
+			if (
+				sha256CanonicalJson(signedLease) !== sha256CanonicalJson(record.lease) ||
+				sha256CanonicalJson(task.permissions) !== record.lease.permissionsDigest ||
+				task.taskId !== record.lease.taskId ||
+				task.digest !== record.lease.taskDigest ||
+				task.execution.profileId !== record.lease.executionProfileId ||
+				delivery.idempotencyKey !== `assignment.delivery:${record.lease.assignmentId}:${record.lease.fencingToken}`
+			) {
+				throw new Error("delivery binding mismatch");
+			}
+			return Object.freeze({ record, task, signedAssignment, deliveryIdempotencyKey: delivery.idempotencyKey, replayed });
+		} catch {
+			throw new SchedulerIssuanceError("recovery_delivery_invalid");
+		}
 	}
 
 	#now(): number {

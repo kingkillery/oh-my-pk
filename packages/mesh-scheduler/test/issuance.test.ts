@@ -251,22 +251,113 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		expect(await issuedOutboxCount(repository)).toBe(0);
 	});
 
-	test("re-signs and replays the authoritative lease without issuing a second fact", async () => {
+	test("replays the exact originally signed delivery without a second signature or issuance fact", async () => {
 		let now = T0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
-		const issuer = coordinator(runtime, () => now);
+		let signCalls = 0;
+		const countingSigner: MeshEnvelopeSigner = Object.freeze({
+			...signer,
+			sign(payload) {
+				signCalls += 1;
+				return signature(payload);
+			},
+		});
+		const issuer = coordinator(runtime, () => now, countingSigner);
 		const first = await issuer.issue(request());
 		now += 1_000;
 		const replay = await issuer.issue(request({ nodes: [] }));
 
 		expect(replay.replayed).toBeTrue();
 		expect(replay.record.lease).toEqual(first.record.lease);
-		expect(replay.signedAssignment.payload).toEqual(first.signedAssignment.payload);
+		expect(replay.task).toEqual(first.task);
+		expect(replay.signedAssignment).toEqual(first.signedAssignment);
+		expect(replay.deliveryIdempotencyKey).toBe(first.deliveryIdempotencyKey);
+		expect(signCalls).toBe(1);
 		expect((await verifySignedAssignmentLease(replay.signedAssignment, verifier)).ok).toBeTrue();
 		expect(await issuedOutboxCount(repository)).toBe(1);
 		await expect(issuer.issue(request({ assignmentId: "asg_scheduler-issuance-other" }))).rejects.toMatchObject({ code: "task_not_queued" });
+		expect(await issuedOutboxCount(repository)).toBe(1);
+	});
+
+	test("fails closed instead of fabricating a signature for an artifact-less legacy assignment", async () => {
+		let now = T0;
+		let signCalls = 0;
+		const repository = new InMemoryMeshRuntimeRepository();
+		const runtime = createRuntime(repository, () => now);
+		const contract = task();
+		await runtime.submitTask(contract, now);
+		const scheduler = await runtime.acquireSchedulerLease({ schedulerId: SCHEDULER, durationMs: 70_000, now });
+		const legacyLease = {
+			schemaVersion: MESH_SCHEMA.assignment,
+			assignmentId: "asg_scheduler-issuance-001",
+			taskId: contract.taskId,
+			taskDigest: contract.digest,
+			scheduler: { pubkey: SCHEDULER, role: "scheduler" as const },
+			schedulerEpoch: scheduler.epoch,
+			fencingToken: 1,
+			workerNodeId: "node_scheduler-worker-001",
+			executorPubkey: WORKER,
+			executionProfileId: "scheduler-fixture-v1",
+			issuedAt: at(now),
+			leaseExpiresAt: at(now + 65_000),
+			renewAfterSeconds: 10,
+			permissionsDigest: sha256CanonicalJson(contract.permissions),
+			placementReason: { selectedNodeId: "node_scheduler-worker-001" },
+			idempotencyKey: "scheduler-issuance:asg_scheduler-issuance-001",
+		};
+		await runtime.observeWorkerCapacity({
+			workerNodeId: legacyLease.workerNodeId,
+			actorPubkey: legacyLease.executorPubkey,
+			availableSlots: 1,
+			observedAt: now,
+			expiresAt: now + 120_000,
+		});
+		await runtime.assign({ assignment: legacyLease, now });
+		const countingSigner: MeshEnvelopeSigner = Object.freeze({
+			...signer,
+			sign(payload) {
+				signCalls += 1;
+				return signature(payload);
+			},
+		});
+
+		await expect(coordinator(runtime, () => now, countingSigner).issue(request({ nodes: [] }))).rejects.toMatchObject({ code: "recovery_delivery_missing" });
+		expect(signCalls).toBe(0);
+		expect(await issuedOutboxCount(repository)).toBe(1);
+	});
+
+	test("fails closed on a verifier-invalid persisted signature without signing a replacement", async () => {
+		let now = T0;
+		let signCalls = 0;
+		const repository = new InMemoryMeshRuntimeRepository();
+		const runtime = createRuntime(repository, () => now);
+		await runtime.submitTask(task(), now);
+		const countingSigner: MeshEnvelopeSigner = Object.freeze({
+			...signer,
+			sign(payload) {
+				signCalls += 1;
+				return signature(payload);
+			},
+		});
+		const issuer = coordinator(runtime, () => now, countingSigner);
+		const issued = await issuer.issue(request());
+		await repository.transaction(({ snapshot }) => {
+			const record = snapshot.assignments[issued.record.lease.assignmentId];
+			if (record?.delivery === undefined) throw new Error("expected stored delivery");
+			const mutableRecord = record as { delivery?: NonNullable<typeof record.delivery> };
+			mutableRecord.delivery = {
+				...record.delivery,
+				signedAssignment: {
+					...record.delivery.signedAssignment,
+					signature: { ...record.delivery.signedAssignment.signature, signatureBytes: 1, signatureBase64: "AA==" },
+				},
+			};
+		});
+
+		await expect(issuer.issue(request({ nodes: [] }))).rejects.toMatchObject({ code: "signature_unverified" });
+		expect(signCalls).toBe(1);
 		expect(await issuedOutboxCount(repository)).toBe(1);
 	});
 
@@ -567,7 +658,9 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		]);
 
 		expect(first.record.lease).toEqual(second.record.lease);
-		expect(first.signedAssignment.payload).toEqual(second.signedAssignment.payload);
+		expect(first.signedAssignment).toEqual(second.signedAssignment);
+		expect(first.task).toEqual(second.task);
+		expect(first.deliveryIdempotencyKey).toBe(second.deliveryIdempotencyKey);
 		expect(await runtime.getAssignment("asg_scheduler-issuance-001")).toMatchObject({ state: "leased", lease: first.record.lease });
 		expect(await issuedOutboxCount(repository)).toBe(1);
 	});
