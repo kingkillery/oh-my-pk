@@ -1,0 +1,32 @@
+{
+	"name": "@pk-nerdsaver-ai/mesh-control-api",
+	"version": "0.1.0",
+	"description": "Transport-free authenticated LocalMesh control API facade",
+	"private": true,
+	"type": "module",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"exports": {
+		".": {
+			"types": "./src/index.ts",
+			"import": "./src/index.ts"
+		}
+	},
+	"scripts": {
+		"check": "biome check . && bun run check:types",
+		"check:types": "tsgo -p tsconfig.json --noEmit",
+		"lint": "biome lint .",
+		"test": "bun test --parallel=4 test"
+	},
+	"dependencies": {
+		"@pk-nerdsaver-ai/mesh-cli": "workspace:*",
+		"@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+		"@pk-nerdsaver-ai/mesh-orchestrator": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:"
+	},
+	"engines": {
+		"bun": ">=1.3.14"
+	}
+}
