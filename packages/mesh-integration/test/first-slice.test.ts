@@ -11,7 +11,7 @@ import {
 import { InMemoryContentAddressedStore, createArtifactManifest } from "../../mesh-artifacts/src/index";
 import { verifyEvidenceChain } from "../../mesh-evidence/src/index";
 import { InMemoryDurableEventLog } from "../../mesh-eventbus/src/index";
-import { InMemoryMeshRuntimeRepository, MeshOrchestrator } from "../../mesh-orchestrator/src/index";
+import { InMemoryMeshRuntimeRepository, MeshOrchestrator, type ReceiptVerifierResolver } from "../../mesh-orchestrator/src/index";
 import { signExecutionReceipt, verifySignedExecutionReceipt } from "../../mesh-receipts/src/index";
 import { placeTask, type PlacementNode } from "../../mesh-scheduler/src/index";
 import { createOmpkExecutionAdapter } from "../../mesh-worker-sdk/src/index";
@@ -71,10 +71,24 @@ function fixtureSignature(payload: Uint8Array): Uint8Array {
 	return signatureEncoder.encode(`fixture-worker:${signatureDecoder.decode(payload)}`);
 }
 
+const receiptVerifierResolver: ReceiptVerifierResolver = Object.freeze({
+	resolve(lease) {
+		if (lease.executorPubkey !== WORKER || lease.workerNodeId !== NODE) return undefined;
+		return Object.freeze({
+			algorithm: "fixture-deterministic-v1",
+			keyId: "fixture-worker",
+			verify: (payload: Uint8Array, signature: Uint8Array) => signatureDecoder.decode(signature) === signatureDecoder.decode(fixtureSignature(payload)),
+		});
+	},
+});
+
 describe("LocalMesh first vertical slice", () => {
 	test("moves a harmless fixture from signed task to receipt without using an active computer", async () => {
 		const task = signedTask();
-		const runtime = new MeshOrchestrator(new InMemoryMeshRuntimeRepository());
+		const runtime = new MeshOrchestrator(new InMemoryMeshRuntimeRepository(), {
+			receiptVerifierResolver,
+			clock: { nowEpochMs: () => T0 + 5 },
+		});
 		const cas = new InMemoryContentAddressedStore();
 		const eventLog = new InMemoryDurableEventLog();
 		await runtime.submitTask(task, T0);
@@ -189,7 +203,7 @@ describe("LocalMesh first vertical slice", () => {
 			verify: (payload, signature) => signatureDecoder.decode(signature) === signatureDecoder.decode(fixtureSignature(payload)),
 		});
 		expect(signatureVerification.ok).toBe(true);
-		await runtime.recordReceipt({ receipt: signedReceipt.receipt, now: T0 + 5 });
+		await runtime.recordReceipt({ signedReceipt });
 
 		const evidenceChain = verifyEvidenceChain({ task, evidence: [evidence], receipts: [signedReceipt.receipt] });
 		expect(evidenceChain.ok).toBe(true);

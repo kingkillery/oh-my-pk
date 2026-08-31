@@ -1,4 +1,5 @@
 import type { AssignmentLeaseV1, ExecutionReceiptV1, JsonRecord, TaskContractV1 } from "@pk-nerdsaver-ai/mesh-contracts";
+import type { ReceiptSignatureVerifier, SignedExecutionReceiptV1 } from "@pk-nerdsaver-ai/mesh-receipts";
 
 export type MeshTaskState = "queued" | "leased" | "completed" | "failed" | "cancelled" | "lost";
 export type MeshAssignmentState = "leased" | "completed" | "expired" | "fenced" | "cancelled";
@@ -19,6 +20,17 @@ export interface RuntimeAssignmentRecord {
 	createdAt: string;
 	updatedAt: string;
 	receipt?: ExecutionReceiptV1;
+	receiptVerification?: ReceiptVerificationRecord;
+}
+
+/** Immutable provenance for the verifier decision that admitted an execution receipt. */
+export interface ReceiptVerificationRecord {
+	readonly algorithm: string;
+	readonly keyId: string;
+	readonly workerPubkey: string;
+	readonly nodeId: string;
+	readonly verifiedAt: string;
+	readonly signatureDigest: string;
 }
 
 /**
@@ -98,8 +110,23 @@ export interface AssignmentRequest {
 }
 
 export interface ReceiptRequest {
-	readonly receipt: ExecutionReceiptV1 | unknown;
-	readonly now?: number;
+	/** A signed envelope, never a bare receipt. */
+	readonly signedReceipt: SignedExecutionReceiptV1 | unknown;
+}
+
+/** Resolves only from an authoritative lease; untrusted receipt metadata never selects trust. */
+export interface ReceiptVerifierResolver {
+	resolve(assignment: AssignmentLeaseV1): ReceiptSignatureVerifier | undefined | Promise<ReceiptSignatureVerifier | undefined>;
+}
+
+/** The finalization authority, not the worker transport, supplies receipt-admission time. */
+export interface MeshOrchestratorClock {
+	nowEpochMs(): number;
+}
+
+export interface MeshOrchestratorOptions {
+	readonly receiptVerifierResolver: ReceiptVerifierResolver;
+	readonly clock: MeshOrchestratorClock;
 }
 
 export interface ReapResult {
