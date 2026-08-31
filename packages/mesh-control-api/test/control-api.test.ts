@@ -13,7 +13,7 @@ import {
 	type MeshEnvelopeVerifier,
 } from "../../mesh-auth/src/index";
 import type { MeshCliApi, MeshCliJsonObject, MeshCliSubmitRequest } from "../../mesh-cli/src/index";
-import { InMemoryMeshRuntimeRepository, MeshOrchestrator } from "../../mesh-orchestrator/src/index";
+import { InMemoryMeshRuntimeRepository, MeshOrchestrator, type ReceiptVerifierResolver } from "../../mesh-orchestrator/src/index";
 import { MeshControlApi, type MeshControlAuthorizationRequest, type MeshControlAuthorizer } from "../src/index";
 
 const T0 = Date.parse("2026-08-31T12:00:00.000Z");
@@ -50,6 +50,12 @@ const taskEnvelopeVerifier: MeshEnvelopeVerifier = Object.freeze({
 	role: "human",
 	verify(payload, signature) {
 		return bytesEqual(signature, deterministicSignature(payload));
+	},
+});
+
+const noReceiptVerifier: ReceiptVerifierResolver = Object.freeze({
+	resolve() {
+		return undefined;
 	},
 });
 
@@ -95,7 +101,7 @@ function controlApi(authorizer: MeshControlAuthorizer, repository = new InMemory
 	readonly repository: InMemoryMeshRuntimeRepository;
 	readonly runtime: MeshOrchestrator;
 } {
-	const runtime = new MeshOrchestrator(repository);
+	const runtime = new MeshOrchestrator(repository, { receiptVerifierResolver: noReceiptVerifier, clock: { nowEpochMs: () => T0 } });
 	return {
 		api: new MeshControlApi({ orchestrator: runtime, taskEnvelopeVerifier, authorizer, clock: { nowEpochMs: () => T0 } }),
 		repository,

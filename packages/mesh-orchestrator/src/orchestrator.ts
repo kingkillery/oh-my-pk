@@ -9,13 +9,15 @@ import {
 	type JsonRecord,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
+import { verifySignedExecutionReceipt, type ReceiptSignatureVerifier } from "@pk-nerdsaver-ai/mesh-receipts";
 
-import { FencingViolationError, IdempotencyConflictError, SchedulerLeaseConflictError, TransitionViolationError } from "./errors";
+import { FencingViolationError, IdempotencyConflictError, ReceiptFinalizationError, SchedulerLeaseConflictError, TransitionViolationError } from "./errors";
 import type {
 	AssignmentRequest,
 	DeliveryAcceptance,
 	DeliveryLedgerRecord,
 	MeshInboundDelivery,
+	MeshOrchestratorOptions,
 	MeshOutboxPublisher,
 	MeshRuntimeRepository,
 	MeshRuntimeSnapshot,
@@ -94,9 +96,10 @@ function assertCurrentScheduler(snapshot: MeshRuntimeSnapshot, assignment: Assig
 	if (snapshot.scheduler.epoch !== assignment.schedulerEpoch) throw new FencingViolationError(assignment.assignmentId);
 }
 
-function assertAssignmentFence(record: RuntimeAssignmentRecord | undefined, receipt: ExecutionReceiptV1, now: number): RuntimeAssignmentRecord {
+function assertAssignmentFence(snapshot: MeshRuntimeSnapshot, record: RuntimeAssignmentRecord | undefined, receipt: ExecutionReceiptV1, now: number): RuntimeAssignmentRecord {
 	if (record === undefined || record.state !== "leased") throw new FencingViolationError(receipt.assignmentId);
 	if (
+		snapshot.scheduler.epoch !== receipt.schedulerEpoch ||
 		record.lease.schedulerEpoch !== receipt.schedulerEpoch ||
 		record.lease.fencingToken !== receipt.fencingToken ||
 		record.lease.taskId !== receipt.taskId ||
@@ -106,6 +109,29 @@ function assertAssignmentFence(record: RuntimeAssignmentRecord | undefined, rece
 		throw new FencingViolationError(receipt.assignmentId);
 	}
 	return record;
+}
+
+function assertReceiptExecutorBinding(assignment: RuntimeAssignmentRecord, receipt: ExecutionReceiptV1): void {
+	if (receipt.worker.role !== "worker" || receipt.worker.pubkey !== assignment.lease.executorPubkey) {
+		throw new ReceiptFinalizationError("receipt_worker_mismatch");
+	}
+	if (receipt.nodeId !== assignment.lease.workerNodeId) {
+		throw new ReceiptFinalizationError("receipt_node_mismatch");
+	}
+	if (receipt.worker.nodeId !== receipt.nodeId) {
+		throw new ReceiptFinalizationError("receipt_worker_node_mismatch");
+	}
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function receiptCandidate(value: unknown): unknown {
+	if (!isRecord(value) || !Object.prototype.hasOwnProperty.call(value, "receipt")) {
+		throw new ReceiptFinalizationError("invalid_signed_receipt");
+	}
+	return value.receipt;
 }
 
 function taskOutcome(receipt: ExecutionReceiptV1): RuntimeTaskRecord["state"] {
@@ -121,9 +147,13 @@ function taskOutcome(receipt: ExecutionReceiptV1): RuntimeTaskRecord["state"] {
  */
 export class MeshOrchestrator {
 	readonly #repository: MeshRuntimeRepository;
+	readonly #receiptVerifierResolver: MeshOrchestratorOptions["receiptVerifierResolver"];
+	readonly #clock: MeshOrchestratorOptions["clock"];
 
-	constructor(repository: MeshRuntimeRepository) {
+	constructor(repository: MeshRuntimeRepository, options: MeshOrchestratorOptions) {
 		this.#repository = repository;
+		this.#receiptVerifierResolver = options.receiptVerifierResolver;
+		this.#clock = options.clock;
 	}
 
 	async submitTask(input: TaskContractV1 | unknown, now = Date.now()): Promise<RuntimeTaskRecord> {
@@ -217,17 +247,46 @@ export class MeshOrchestrator {
 	}
 
 	async recordReceipt(request: ReceiptRequest): Promise<RuntimeAssignmentRecord> {
-		const receipt = parseExecutionReceipt(request.receipt);
-		const now = request.now ?? Date.now();
+		let candidate: ExecutionReceiptV1;
+		try {
+			candidate = parseExecutionReceipt(receiptCandidate(request.signedReceipt));
+		} catch (error) {
+			if (error instanceof ReceiptFinalizationError) throw error;
+			throw new ReceiptFinalizationError("invalid_signed_receipt");
+		}
+		const lease = await this.#repository.read(snapshot => snapshot.assignments[candidate.assignmentId]?.lease);
+		if (lease === undefined) throw new FencingViolationError(candidate.assignmentId);
+		let verifier: ReceiptSignatureVerifier | undefined;
+		try {
+			verifier = await this.#receiptVerifierResolver.resolve(lease);
+		} catch {
+			throw new ReceiptFinalizationError("receipt_verifier_unavailable");
+		}
+		if (verifier === undefined) throw new ReceiptFinalizationError("receipt_verifier_unavailable");
+		const verification = await verifySignedExecutionReceipt(request.signedReceipt, verifier);
+		if (!verification.ok) throw new ReceiptFinalizationError("receipt_signature_unverified");
 		return this.#repository.transaction(({ snapshot }) => {
-			const assignment = assertAssignmentFence(snapshot.assignments[receipt.assignmentId], receipt, now);
-			if (assignment.receipt !== undefined) {
-				if (assignment.receipt.receiptHash !== receipt.receiptHash) throw new IdempotencyConflictError(receipt.receiptId);
-				return structuredClone(assignment);
+			const assignmentRecord = snapshot.assignments[candidate.assignmentId];
+			if (assignmentRecord === undefined) throw new FencingViolationError(candidate.assignmentId);
+			const receipt = verification.receipt;
+			assertReceiptExecutorBinding(assignmentRecord, receipt);
+			if (assignmentRecord.receipt !== undefined) {
+				if (assignmentRecord.receipt.receiptHash !== receipt.receiptHash) throw new IdempotencyConflictError(receipt.receiptId);
+				return structuredClone(assignmentRecord);
 			}
+			const now = this.#receiptClockNow();
+			const assignment = assertAssignmentFence(snapshot, assignmentRecord, receipt, now);
 			const task = snapshot.tasks[receipt.taskId];
 			if (task === undefined || task.currentAssignmentId !== receipt.assignmentId) throw new FencingViolationError(receipt.assignmentId);
 			assignment.receipt = receipt;
+			assignment.receiptVerification = Object.freeze({
+				algorithm: verification.signature.algorithm,
+				keyId: verification.signature.keyId,
+				workerPubkey: assignment.lease.executorPubkey,
+				nodeId: assignment.lease.workerNodeId,
+				verifiedAt: iso(now),
+				signatureDigest: sha256CanonicalJson(verification.signature),
+			});
 			assignment.state = "completed";
 			assignment.updatedAt = iso(now);
 			task.state = taskOutcome(receipt);
@@ -333,6 +392,17 @@ export class MeshOrchestrator {
 			const record = snapshot.tasks[taskId];
 			return record === undefined ? undefined : structuredClone(record);
 		});
+	}
+
+	#receiptClockNow(): number {
+		let now: number;
+		try {
+			now = this.#clock.nowEpochMs();
+		} catch {
+			throw new ReceiptFinalizationError("receipt_clock_unavailable");
+		}
+		if (!Number.isFinite(now)) throw new ReceiptFinalizationError("receipt_clock_unavailable");
+		return now;
 	}
 
 	async #claimNextOutbox(now: number): Promise<{ readonly message: OutboxMessage; readonly claimToken: string } | undefined> {

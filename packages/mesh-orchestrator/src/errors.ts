@@ -27,6 +27,26 @@ export class FencingViolationError extends MeshRuntimeError {
 	}
 }
 
+export type ReceiptFinalizationErrorCode =
+	| "invalid_signed_receipt"
+	| "receipt_clock_unavailable"
+	| "receipt_signature_unverified"
+	| "receipt_verifier_unavailable"
+	| "receipt_worker_mismatch"
+	| "receipt_node_mismatch"
+	| "receipt_worker_node_mismatch";
+
+/** A safe receipt-finalization denial that deliberately exposes no receipt or key material. */
+export class ReceiptFinalizationError extends MeshRuntimeError {
+	readonly code: ReceiptFinalizationErrorCode;
+
+	constructor(code: ReceiptFinalizationErrorCode) {
+		super(`Execution receipt finalization was denied: ${code}`);
+		this.name = "ReceiptFinalizationError";
+		this.code = code;
+	}
+}
+
 export class TransitionViolationError extends MeshRuntimeError {
 	constructor(subject: string, state: string, operation: string) {
 		super(`${subject} cannot ${operation} while in ${state}`);
