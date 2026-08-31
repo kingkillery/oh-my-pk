@@ -21,6 +21,7 @@ import {
 	type MeshNodeStateRepository,
 	type MeshNodeStateSnapshot,
 	type MeshNodeTerminalOutboxMessage,
+	type MeshNodeTerminalOutboxPublication,
 } from "./node-state";
 
 export type MeshNodeInteractivePolicy = "deny_when_active" | "deny_all" | "allow_explicit";
@@ -152,6 +153,26 @@ export interface MeshNodeExecutionPort {
 	cleanup(context: MeshNodeExecutionContext): Promise<void>;
 }
 
+/**
+ * A caller-provided delivery boundary for committed node-local terminal facts.
+ * It receives no controller authority, receipt material, or delivery state.
+ */
+export interface MeshNodeTerminalOutboxPublisher {
+	publish(message: Readonly<MeshNodeTerminalOutboxPublication>): Promise<void>;
+}
+
+export interface MeshNodeTerminalOutboxDrainOptions {
+	/** Maximum facts to attempt in this explicit drain. Defaults to all eligible facts. */
+	readonly maxMessages?: number;
+}
+
+export interface MeshNodeTerminalOutboxDrainResult {
+	/** Facts durably marked delivered after their publisher resolved. */
+	readonly delivered: readonly string[];
+	/** Facts whose publisher rejected and therefore remain pending. */
+	readonly failed: readonly string[];
+}
+
 export interface MeshNodeAgentOptions {
 	readonly identity: MeshNodeIdentity;
 	readonly execution: MeshNodeExecutionPort;
@@ -248,6 +269,40 @@ function isKnownState(value: unknown): value is MeshNodeLifecycleState {
 	);
 }
 
+function isKnownOutboxState(value: unknown): value is MeshNodeTerminalOutboxMessage["state"] {
+	return value === "pending" || value === "delivered";
+}
+
+function isTimestamp(value: unknown): value is string {
+	return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function sameLifecycleRecord(left: MeshNodeLifecycleRecord, right: MeshNodeLifecycleRecord): boolean {
+	return (
+		left.sequence === right.sequence &&
+		left.type === right.type &&
+		left.occurredAt === right.occurredAt &&
+		left.nodeId === right.nodeId &&
+		left.assignmentId === right.assignmentId &&
+		left.taskId === right.taskId &&
+		left.schedulerEpoch === right.schedulerEpoch &&
+		left.fencingToken === right.fencingToken &&
+		left.state === right.state &&
+		left.code === right.code &&
+		left.outcome === right.outcome &&
+		left.exitCode === right.exitCode
+	);
+}
+
+function isTerminalLifecycleRecord(record: MeshNodeLifecycleRecord): boolean {
+	return (
+		(record.type === "execution.cancelled" && record.state === "cancelled") ||
+		(record.type === "execution.completed" && record.state === "completed") ||
+		(record.type === "execution.failed" && record.state === "failed") ||
+		(record.type === "execution.reconciliation_resolved_as_lost" && record.state === "lost")
+	);
+}
+
 function isKnownEventType(value: unknown): value is MeshNodeLifecycleEventType {
 	return (
 		value === "assignment.accepted" ||
@@ -293,6 +348,8 @@ export class MeshNodeAgent {
 	readonly #assignments = new Map<string, AcceptedAssignment>();
 	readonly #events: MeshNodeLifecycleRecord[] = [];
 	readonly #outbox = new Map<string, MeshNodeTerminalOutboxMessage>();
+	/** Prevents two drain calls in this node process from publishing one fact twice. */
+	readonly #drainingOutbox = new Set<string>();
 	/**
 	 * A write failure after an execution-port boundary cannot be safely retried
 	 * in this process. The durable snapshot will recover conservatively on a
@@ -583,9 +640,48 @@ export class MeshNodeAgent {
 		return Object.freeze(this.#events.filter(event => event.assignmentId === assignmentId));
 	}
 
-	/** Pending node-local terminal facts; a transport drains these only in a later integration layer. */
+	/** Auditable node-local terminal facts and their local delivery state. */
 	outbox(): readonly MeshNodeTerminalOutboxMessage[] {
-		return Object.freeze([...this.#outbox.values()].map(message => Object.freeze(structuredClone(message))));
+		return Object.freeze([...this.#outbox.values()].map(message => this.#publicOutboxMessage(message)));
+	}
+
+	/**
+	 * Explicitly delivers already-committed node-local terminal facts. This does
+	 * not execute work, sign a receipt, or change controller state.
+	 */
+	async drainTerminalOutbox(
+		publisher: MeshNodeTerminalOutboxPublisher,
+		options: MeshNodeTerminalOutboxDrainOptions = {},
+	): Promise<MeshNodeTerminalOutboxDrainResult> {
+		if (publisher === null || typeof publisher !== "object" || typeof publisher.publish !== "function") {
+			throw new TypeError("A terminal outbox publisher is required.");
+		}
+		const maxMessages = options.maxMessages ?? Number.POSITIVE_INFINITY;
+		if (maxMessages !== Number.POSITIVE_INFINITY && (!Number.isSafeInteger(maxMessages) || maxMessages < 0)) {
+			throw new TypeError("Terminal outbox maxMessages must be a non-negative safe integer.");
+		}
+		const delivered: string[] = [];
+		const failed: string[] = [];
+		const attempted = new Set<string>();
+		while (delivered.length + failed.length < maxMessages) {
+			const message = this.#nextPendingTerminalOutbox(attempted);
+			if (message === undefined) break;
+			attempted.add(message.outboxId);
+			this.#drainingOutbox.add(message.outboxId);
+			try {
+				try {
+					await publisher.publish(this.#publicationFor(message));
+				} catch {
+					failed.push(message.outboxId);
+					continue;
+				}
+				this.#markTerminalOutboxDelivered(message.outboxId);
+				delivered.push(message.outboxId);
+			} finally {
+				this.#drainingOutbox.delete(message.outboxId);
+			}
+		}
+		return Object.freeze({ delivered: Object.freeze(delivered), failed: Object.freeze(failed) });
 	}
 
 	state(assignmentId: string): MeshNodeLifecycleState | undefined {
@@ -830,6 +926,58 @@ export class MeshNodeAgent {
 		);
 	}
 
+	#nextPendingTerminalOutbox(attempted: ReadonlySet<string>): MeshNodeTerminalOutboxMessage | undefined {
+		return [...this.#outbox.values()]
+			.sort((left, right) => left.outboxId.localeCompare(right.outboxId))
+			.find(message => message.state === "pending" && !attempted.has(message.outboxId) && !this.#drainingOutbox.has(message.outboxId));
+	}
+
+	#publicationFor(message: MeshNodeTerminalOutboxMessage): MeshNodeTerminalOutboxPublication {
+		return Object.freeze({
+			outboxId: message.outboxId,
+			assignmentId: message.assignmentId,
+			taskId: message.taskId,
+			type: "node.lifecycle.terminal",
+			idempotencyKey: message.idempotencyKey,
+			record: Object.freeze({ ...message.record }),
+		});
+	}
+
+	#publicOutboxMessage(message: MeshNodeTerminalOutboxMessage): MeshNodeTerminalOutboxMessage {
+		return Object.freeze({
+			...this.#publicationFor(message),
+			state: message.state,
+			...(message.deliveredAt === undefined ? {} : { deliveredAt: message.deliveredAt }),
+		});
+	}
+
+	#markTerminalOutboxDelivered(outboxId: string): void {
+		const current = this.#outbox.get(outboxId);
+		if (current === undefined || current.state !== "pending") throw new MeshNodeAgentError("node_state_conflict");
+		this.#mutate(() => {
+			const pending = this.#outbox.get(outboxId);
+			if (pending === undefined || pending.state !== "pending") throw new MeshNodeAgentError("node_state_conflict");
+			this.#outbox.set(
+				outboxId,
+				Object.freeze({
+					...pending,
+					state: "delivered",
+					deliveredAt: this.#timestampNow(),
+				}),
+			);
+		});
+	}
+
+	#timestampNow(): string {
+		try {
+			const now = this.#now();
+			if (!Number.isFinite(now)) throw new Error("node clock is invalid");
+			return new Date(now).toISOString();
+		} catch {
+			throw new MeshNodeAgentError("node_state_unavailable");
+		}
+	}
+
 	#markReconciliation(tracked: AcceptedAssignment, type: MeshNodeLifecycleEventType, code: MeshNodeAgentErrorCode): MeshNodeLifecycleRecord {
 		if (tracked.state === "reconciliation_required") {
 			for (let index = this.#events.length - 1; index >= 0; index -= 1) {
@@ -981,6 +1129,22 @@ export class MeshNodeAgent {
 		const outbox = new Map<string, MeshNodeTerminalOutboxMessage>();
 		for (const [outboxId, stored] of Object.entries(snapshot.outbox)) {
 			outbox.set(outboxId, this.#parsePersistedOutbox(outboxId, stored, assignments));
+		}
+		for (const tracked of assignments.values()) {
+			const terminalRecord = tracked.terminalRecord;
+			if (terminalRecord === undefined) continue;
+			if (
+				!isTerminalLifecycleRecord(terminalRecord) ||
+				(tracked.state !== "cleaned" && tracked.state !== terminalRecord.state) ||
+				!events.some(event => sameLifecycleRecord(event, terminalRecord))
+			) {
+				throw new MeshNodeAgentError("node_state_corrupt");
+			}
+			const outboxId = `node-terminal:${tracked.assignment.assignmentId}:${tracked.assignment.schedulerEpoch}:${tracked.assignment.fencingToken}`;
+			const message = outbox.get(outboxId);
+			if (message === undefined || !sameLifecycleRecord(message.record, terminalRecord)) {
+				throw new MeshNodeAgentError("node_state_corrupt");
+			}
 		}
 		this.#assignments.clear();
 		for (const [assignmentId, tracked] of assignments) this.#assignments.set(assignmentId, tracked);
@@ -1159,7 +1323,7 @@ export class MeshNodeAgent {
 			tracked === undefined ||
 			value.taskId !== tracked.task.taskId ||
 			value.type !== "node.lifecycle.terminal" ||
-			value.state !== "pending" ||
+			!isKnownOutboxState(value.state) ||
 			typeof value.idempotencyKey !== "string"
 		) {
 			throw new MeshNodeAgentError("node_state_corrupt");
@@ -1170,19 +1334,26 @@ export class MeshNodeAgent {
 		if (
 			outboxId !== expectedOutboxId ||
 			value.idempotencyKey !== expectedIdempotencyKey ||
-			tracked.terminalRecord?.sequence !== record.sequence
+			tracked.terminalRecord === undefined ||
+			!sameLifecycleRecord(tracked.terminalRecord, record)
 		) {
 			throw new MeshNodeAgentError("node_state_corrupt");
 		}
-		return Object.freeze({
+		const message = {
 			outboxId,
 			assignmentId: value.assignmentId,
 			taskId: value.taskId,
 			type: "node.lifecycle.terminal",
 			idempotencyKey: value.idempotencyKey,
 			record,
-			state: "pending",
-		});
+		};
+		if (value.state === "delivered") {
+			const deliveredAt = value.deliveredAt;
+			if (!isTimestamp(deliveredAt)) throw new MeshNodeAgentError("node_state_corrupt");
+			return Object.freeze({ ...message, state: "delivered", deliveredAt });
+		}
+		if (value.deliveredAt !== undefined) throw new MeshNodeAgentError("node_state_corrupt");
+		return Object.freeze({ ...message, state: "pending" });
 	}
 
 	#recoverAfterRestart(): void {

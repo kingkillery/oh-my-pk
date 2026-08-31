@@ -28,6 +28,7 @@ import {
 	type MeshNodeStateRepository,
 	type MeshNodeStateSnapshot,
 	type MeshNodeStateTransaction,
+	type MeshNodeTerminalOutboxPublication,
 } from "../src";
 
 const NOW = Date.parse("2026-08-31T12:00:00.000Z");
@@ -50,15 +51,18 @@ interface StoredAssignmentSnapshot {
 	bounds?: {
 		timeoutSeconds: number;
 	};
+	admissionRecord?: unknown;
 	signedAssignment: {
 		signature: {
 			signatureBase64: string;
 		};
 	};
+	terminalRecord?: unknown;
 }
 
 interface StoredNodeSnapshot {
 	assignments: Record<string, StoredAssignmentSnapshot>;
+	outbox?: Record<string, { record: unknown }>;
 }
 
 function createDatabasePath(): { readonly directory: string; readonly path: string } {
@@ -208,15 +212,29 @@ class FailingMeshNodeStateRepository implements MeshNodeStateRepository {
 	}
 }
 
-function createAgent(repository: MeshNodeStateRepository, port: MeshNodeExecutionPort): Promise<MeshNodeAgent> {
+function createAgent(
+	repository: MeshNodeStateRepository,
+	port: MeshNodeExecutionPort,
+	now: () => number = () => NOW,
+): Promise<MeshNodeAgent> {
 	return MeshNodeAgent.create({
 		identity: { nodeId: NODE_ID, pubkey: NODE_PUBKEY },
 		execution: port,
 		trustedSchedulerVerifiers: [schedulerVerifier],
 		getPresence: makePresence,
-		now: () => NOW,
+		now,
 		stateRepository: repository,
 	});
+}
+
+async function completeTerminalAssignment(
+	agent: MeshNodeAgent,
+	task: TaskContractV1,
+	assignment: AssignmentLeaseV1,
+): Promise<void> {
+	await agent.accept({ task, signedAssignment: await signedAssignment(assignment) });
+	await agent.start(assignment.assignmentId);
+	await agent.run(assignment.assignmentId);
 }
 
 describe("SqliteMeshNodeStateRepository", () => {
@@ -598,5 +616,225 @@ describe("SqliteMeshNodeStateRepository", () => {
 		} finally {
 			rmSync(database.directory, { recursive: true, force: true });
 		}
+	});
+
+		test("upgrades a V1 pending terminal outbox snapshot and fences its prior revision", async () => {
+		const database = createDatabasePath();
+		try {
+			const task = makeTask();
+			const assignment = makeAssignment(task);
+				const firstRepository = new SqliteMeshNodeStateRepository(database.path);
+				const first = await createAgent(firstRepository, makePort(calls()));
+				await completeTerminalAssignment(first, task, assignment);
+				const staleSnapshot = firstRepository.read(snapshot => snapshot);
+				const revisionBeforeUpgrade = staleSnapshot.revision;
+				firstRepository.close();
+
+			const raw = new Database(database.path, { create: false, readwrite: true, strict: true });
+			raw.run("DELETE FROM mesh_node_state_schema_migrations WHERE version = 2");
+			raw.close();
+
+				const upgradedRepository = new SqliteMeshNodeStateRepository(database.path);
+				expect(upgradedRepository.read(snapshot => snapshot.revision)).toBe(revisionBeforeUpgrade + 1);
+				upgradedRepository.close();
+
+				const staleWriter = new Database(database.path, { create: false, readwrite: true, strict: true });
+				const staleWrite = staleWriter.run(
+					"UPDATE mesh_node_state SET revision = ?, snapshot_json = ?, updated_at = ? WHERE singleton = 1 AND revision = ?",
+					[
+						staleSnapshot.revision + 1,
+						JSON.stringify({ ...staleSnapshot, revision: staleSnapshot.revision + 1 }),
+						"2026-08-31T12:00:00.000Z",
+						staleSnapshot.revision,
+					],
+				);
+				expect(staleWrite.changes).toBe(0);
+				staleWriter.close();
+
+				const reopenedRepository = new SqliteMeshNodeStateRepository(database.path);
+				const upgraded = await createAgent(reopenedRepository, makePort(calls()));
+				expect(upgraded.outbox()).toMatchObject([
+					{ state: "pending", idempotencyKey: `node.lifecycle.terminal:${assignment.assignmentId}:1:1` },
+				]);
+				reopenedRepository.close();
+		} finally {
+			rmSync(database.directory, { recursive: true, force: true });
+			}
+		});
+
+		test("fails closed when a terminal outbox record does not prove a terminal lifecycle event", async () => {
+			const database = createDatabasePath();
+			try {
+				const task = makeTask();
+				const assignment = makeAssignment(task);
+				const firstRepository = new SqliteMeshNodeStateRepository(database.path);
+				const first = await createAgent(firstRepository, makePort(calls()));
+				await completeTerminalAssignment(first, task, assignment);
+				firstRepository.close();
+
+				const outboxId = `node-terminal:${assignment.assignmentId}:${assignment.schedulerEpoch}:${assignment.fencingToken}`;
+				const raw = new Database(database.path, { create: false, readwrite: true, strict: true });
+				const row = raw
+					.query<{ readonly snapshotJson: string }, []>("SELECT snapshot_json AS snapshotJson FROM mesh_node_state WHERE singleton = 1")
+					.get();
+				if (row === null || row === undefined) throw new Error("durable node state row is missing");
+				const snapshot = JSON.parse(row.snapshotJson) as StoredNodeSnapshot;
+				const stored = snapshot.assignments[assignment.assignmentId];
+				const outbox = snapshot.outbox?.[outboxId];
+				if (stored?.admissionRecord === undefined || outbox === undefined) {
+					throw new Error("durable terminal fact is missing");
+				}
+				stored.terminalRecord = stored.admissionRecord;
+				outbox.record = stored.admissionRecord;
+				raw.run("UPDATE mesh_node_state SET snapshot_json = ? WHERE singleton = 1", [JSON.stringify(snapshot)]);
+				raw.close();
+
+				const corruptRepository = new SqliteMeshNodeStateRepository(database.path);
+				await expect(createAgent(corruptRepository, makePort(calls()))).rejects.toMatchObject({
+					code: "node_state_corrupt",
+				});
+				corruptRepository.close();
+			} finally {
+				rmSync(database.directory, { recursive: true, force: true });
+			}
+		});
+
+		test("delivers one terminal fact durably and exposes only the safe publication shape", async () => {
+		const database = createDatabasePath();
+		try {
+			const task = makeTask();
+			const assignment = makeAssignment(task);
+			const firstRepository = new SqliteMeshNodeStateRepository(database.path);
+			const first = await createAgent(firstRepository, makePort(calls()));
+			await completeTerminalAssignment(first, task, assignment);
+			await first.accept({ task, signedAssignment: await signedAssignment(assignment, "2026-08-31T11:59:45.000Z") });
+			const published: MeshNodeTerminalOutboxPublication[] = [];
+			const result = await first.drainTerminalOutbox({
+				async publish(message) {
+					published.push(structuredClone(message));
+				},
+			});
+			expect(result).toEqual({ delivered: [`node-terminal:${assignment.assignmentId}:1:1`], failed: [] });
+			expect(published).toHaveLength(1);
+				expect(Object.keys(published[0]).sort()).toEqual([
+					"assignmentId",
+					"idempotencyKey",
+					"outboxId",
+					"record",
+					"taskId",
+					"type",
+				]);
+			expect(first.outbox()).toMatchObject([{ state: "delivered", deliveredAt: "2026-08-31T12:00:00.000Z" }]);
+			firstRepository.close();
+
+			const reopenedRepository = new SqliteMeshNodeStateRepository(database.path);
+			const reopened = await createAgent(reopenedRepository, makePort(calls()));
+				const second = await reopened.drainTerminalOutbox({
+					async publish() {
+						throw new Error("delivered facts must not republish");
+					},
+				});
+			expect(second).toEqual({ delivered: [], failed: [] });
+			expect(reopened.outbox()).toMatchObject([{ state: "delivered", deliveredAt: "2026-08-31T12:00:00.000Z" }]);
+			reopenedRepository.close();
+		} finally {
+			rmSync(database.directory, { recursive: true, force: true });
+		}
+	});
+
+	test("leaves a rejected terminal publication pending and retries its stable key after reopen", async () => {
+		const database = createDatabasePath();
+		try {
+			const task = makeTask();
+			const assignment = makeAssignment(task);
+			const firstRepository = new SqliteMeshNodeStateRepository(database.path);
+			const first = await createAgent(firstRepository, makePort(calls()));
+			await completeTerminalAssignment(first, task, assignment);
+			const published: MeshNodeTerminalOutboxPublication[] = [];
+			const rejected = await first.drainTerminalOutbox({
+				async publish(message) {
+					published.push(structuredClone(message));
+					throw new Error("remote outcome unknown");
+				},
+			});
+			expect(rejected).toEqual({ delivered: [], failed: [`node-terminal:${assignment.assignmentId}:1:1`] });
+			expect(first.outbox()).toMatchObject([{ state: "pending" }]);
+			firstRepository.close();
+
+			const reopenedRepository = new SqliteMeshNodeStateRepository(database.path);
+			const reopened = await createAgent(reopenedRepository, makePort(calls()));
+			const retried = await reopened.drainTerminalOutbox({
+				async publish(message) {
+					published.push(structuredClone(message));
+				},
+			});
+			expect(retried).toEqual({ delivered: [`node-terminal:${assignment.assignmentId}:1:1`], failed: [] });
+			expect(published[1]).toEqual(published[0]);
+			expect(reopened.outbox()).toMatchObject([{ state: "delivered" }]);
+			reopenedRepository.close();
+		} finally {
+			rmSync(database.directory, { recursive: true, force: true });
+		}
+	});
+
+	test("retries the same publication after its delivered acknowledgement cannot be committed", async () => {
+		const database = createDatabasePath();
+		try {
+			const task = makeTask();
+			const assignment = makeAssignment(task);
+			const rawRepository = new SqliteMeshNodeStateRepository(database.path);
+			const repository = new FailingMeshNodeStateRepository(rawRepository);
+			const first = await createAgent(repository, makePort(calls()));
+			await completeTerminalAssignment(first, task, assignment);
+			const published: MeshNodeTerminalOutboxPublication[] = [];
+			await expect(
+				first.drainTerminalOutbox({
+					async publish(message) {
+						published.push(structuredClone(message));
+						repository.failNextTransactions(1);
+					},
+				}),
+			).rejects.toMatchObject({ code: "node_state_unavailable" });
+			expect(first.outbox()).toMatchObject([{ state: "pending" }]);
+			rawRepository.close();
+
+			const reopenedRepository = new SqliteMeshNodeStateRepository(database.path);
+			const reopened = await createAgent(reopenedRepository, makePort(calls()));
+			await reopened.drainTerminalOutbox({
+				async publish(message) {
+					published.push(structuredClone(message));
+				},
+			});
+			expect(published[1]).toEqual(published[0]);
+			expect(reopened.outbox()).toMatchObject([{ state: "delivered" }]);
+			reopenedRepository.close();
+		} finally {
+			rmSync(database.directory, { recursive: true, force: true });
+		}
+	});
+
+	test("does not publish a pending fact twice when drains overlap in one node process", async () => {
+		const task = makeTask();
+		const assignment = makeAssignment(task);
+		const agent = await createAgent(new InMemoryMeshNodeStateRepository(), makePort(calls()));
+		await completeTerminalAssignment(agent, task, assignment);
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		let publishCalls = 0;
+		const publisher = {
+			async publish() {
+				publishCalls += 1;
+				entered.resolve();
+				await release.promise;
+			},
+		};
+		const first = agent.drainTerminalOutbox(publisher);
+		await entered.promise;
+		const second = await agent.drainTerminalOutbox(publisher);
+		expect(second).toEqual({ delivered: [], failed: [] });
+		release.resolve();
+		expect(await first).toEqual({ delivered: [`node-terminal:${assignment.assignmentId}:1:1`], failed: [] });
+		expect(publishCalls).toBe(1);
+		expect(agent.outbox()).toMatchObject([{ state: "delivered" }]);
 	});
 });
