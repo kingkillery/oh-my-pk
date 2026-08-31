@@ -2,7 +2,8 @@
 	"extends": "../tsconfig.workspace.json",
 	"compilerOptions": {
 		"paths": {
-			"@pk-nerdsaver-ai/mesh-contracts": ["../mesh-contracts/src/index.ts"]
+			"@pk-nerdsaver-ai/mesh-contracts": ["../mesh-contracts/src/index.ts"],
+			"@pk-nerdsaver-ai/mesh-receipts": ["../mesh-receipts/src/index.ts"]
 		}
 	},
 	"include": ["src", "test"]
