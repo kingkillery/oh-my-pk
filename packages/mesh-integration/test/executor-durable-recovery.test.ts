@@ -28,6 +28,7 @@ import {
 	projectNodeAdvertisement,
 	SqliteMeshNodeStateRepository,
 	type MeshNodePresence,
+	type MeshNodeTerminalOutboxPublication,
 } from "../../mesh-node/src/index";
 
 const T0 = Date.parse("2026-08-31T12:00:00.000Z");
@@ -210,6 +211,7 @@ describe("Executor durable recovery through the MeshNodeAgent boundary", () => {
 		const database = createDatabasePath();
 		let firstRepository: SqliteMeshNodeStateRepository | undefined;
 		let reopenedRepository: SqliteMeshNodeStateRepository | undefined;
+		let finalRepository: SqliteMeshNodeStateRepository | undefined;
 		try {
 			const transport = new AmbiguousExecutorTransport();
 			const task = signedTask();
@@ -218,7 +220,12 @@ describe("Executor durable recovery through the MeshNodeAgent boundary", () => {
 			firstRepository = new SqliteMeshNodeStateRepository(database.path);
 			const first = await createAgent(firstRepository, transport);
 
-			await first.accept({ task, signedAssignment });
+			const admission = await first.accept({ task, signedAssignment });
+			const preCloseCompeting = assignment(task, {
+				assignmentId: "asg_executor-durable-recovery-capacity-preclose",
+				idempotencyKey: "executor-durable-recovery-capacity-preclose",
+			});
+			await expect(first.accept({ task, signedAssignment: await signedDelivery(preCloseCompeting) })).rejects.toMatchObject({ code: "capacity_exhausted" });
 			await first.start(assigned.assignmentId);
 			await expect(first.run(assigned.assignmentId)).rejects.toMatchObject({ code: "execution_adapter_failed" });
 			expect(first.state(assigned.assignmentId)).toBe("reconciliation_required");
@@ -233,7 +240,14 @@ describe("Executor durable recovery through the MeshNodeAgent boundary", () => {
 			expect(reopened.outbox()).toHaveLength(0);
 			expect(reopened.assignmentEvents(assigned.assignmentId).filter(event => event.type === "execution.failed")).toHaveLength(1);
 
-			await expect(reopened.accept({ task, signedAssignment })).resolves.toMatchObject({ type: "assignment.accepted", state: "admitted" });
+			await expect(reopened.accept({ task, signedAssignment })).resolves.toEqual(admission);
+			expect(reopened.state(assigned.assignmentId)).toBe("reconciliation_required");
+			expect(reopened.assignmentEvents(assigned.assignmentId).filter(event => event.type === "assignment.accepted")).toHaveLength(1);
+			expect(transport.requests).toHaveLength(1);
+			const altered = assignment(task, { leaseExpiresAt: at(55_000) });
+			await expect(reopened.accept({ task, signedAssignment: await signedDelivery(altered) })).rejects.toMatchObject({ code: "assignment_already_known" });
+			expect(reopened.state(assigned.assignmentId)).toBe("reconciliation_required");
+			expect(reopened.assignmentEvents(assigned.assignmentId).filter(event => event.type === "assignment.accepted")).toHaveLength(1);
 			expect(transport.requests).toHaveLength(1);
 			await expect(reopened.run(assigned.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
 			expect(transport.requests).toHaveLength(1);
@@ -243,7 +257,49 @@ describe("Executor durable recovery through the MeshNodeAgent boundary", () => {
 			});
 			await expect(reopened.accept({ task, signedAssignment: await signedDelivery(second) })).rejects.toMatchObject({ code: "capacity_exhausted" });
 			expect(transport.requests).toHaveLength(1);
+
+			const resolved = reopened.resolveReconciliationAsLost(assigned.assignmentId);
+			expect(resolved).toMatchObject({
+				type: "execution.reconciliation_resolved_as_lost",
+				state: "lost",
+				code: "assignment_reconciliation_required",
+			});
+			expect(reopened.resolveReconciliationAsLost(assigned.assignmentId)).toBe(resolved);
+			expect(reopened.assignmentEvents(assigned.assignmentId).filter(event => event.type === "execution.reconciliation_resolved_as_lost")).toHaveLength(1);
+			expect(reopened.outbox()).toHaveLength(1);
+			const cleaned = await reopened.cleanup(assigned.assignmentId);
+			expect(cleaned).toMatchObject({ type: "execution.cleaned", state: "cleaned" });
+			await expect(reopened.cleanup(assigned.assignmentId)).resolves.toBe(cleaned);
+			expect(reopened.assignmentEvents(assigned.assignmentId).filter(event => event.type === "execution.cleaned")).toHaveLength(1);
+			expect(transport.requests).toHaveLength(1);
+			await expect(reopened.accept({ task, signedAssignment: await signedDelivery(second) })).resolves.toMatchObject({ type: "assignment.accepted", state: "admitted" });
+
+			const published: MeshNodeTerminalOutboxPublication[] = [];
+			const delivery = await reopened.drainTerminalOutbox({
+				async publish(message) {
+					published.push(structuredClone(message));
+				},
+			});
+			expect(delivery).toEqual({ delivered: [`node-terminal:${assigned.assignmentId}:23:41`], failed: [] });
+			expect(published).toHaveLength(1);
+			expect(reopened.outbox()).toMatchObject([{ state: "delivered", record: resolved }]);
+			reopenedRepository.close();
+			reopenedRepository = undefined;
+
+			finalRepository = new SqliteMeshNodeStateRepository(database.path);
+			const final = await createAgent(finalRepository, transport);
+			const afterRestart = await final.drainTerminalOutbox({
+				async publish() {
+					throw new Error("a delivered terminal fact must not be republished");
+				},
+			});
+			expect(afterRestart).toEqual({ delivered: [], failed: [] });
+			expect(final.outbox()).toHaveLength(1);
+			expect(final.outbox()).toMatchObject([{ state: "delivered", record: resolved }]);
+			expect(final.assignmentEvents(assigned.assignmentId).filter(event => event.type === "execution.reconciliation_resolved_as_lost")).toHaveLength(1);
+			expect(transport.requests).toHaveLength(1);
 		} finally {
+			finalRepository?.close();
 			reopenedRepository?.close();
 			firstRepository?.close();
 			rmSync(database.directory, { recursive: true, force: true });
