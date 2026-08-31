@@ -37,6 +37,12 @@ describe("createCheckpointManifest", () => {
 		const rawContent = input();
 		(rawContent.files as Array<Record<string, unknown>>)[0].contents = "workspace file body";
 		expect(() => createCheckpointManifest(rawContent as never)).toThrow(CheckpointSafetyError);
+		const nestedContent = input();
+		(nestedContent.files as Array<Record<string, unknown>>)[0].metadata = { provenance: { diff: "workspace file body" } };
+		expect(() => createCheckpointManifest(nestedContent as never)).toThrow(CheckpointSafetyError);
+		const nestedBytes = input();
+		(nestedBytes.excluded as Array<Record<string, unknown>>)[0].metadata = [{ hashes: { bytes: "workspace file body" } }];
+		expect(() => createCheckpointManifest(nestedBytes as never)).toThrow(CheckpointSafetyError);
 
 		const secret = input();
 		(secret.gitState as Record<string, unknown>).apiToken = "super-secret-token";
