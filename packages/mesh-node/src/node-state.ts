@@ -7,7 +7,7 @@ import type { SignedMeshEnvelopeV1 } from "@pk-nerdsaver-ai/mesh-auth";
 
 import type { MeshNodeLifecycleRecord, MeshNodeLifecycleState } from "./lifecycle";
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 const STATE_ROW_ID = 1;
 
 interface StateRow {
@@ -25,20 +25,25 @@ export interface MeshNodeStateIdentity {
 }
 
 /** The node publishes terminal facts later; persistence never sends them. */
-export type MeshNodeOutboxState = "pending";
+export type MeshNodeOutboxState = "pending" | "delivered";
 
 /**
  * This is a node-local terminal lifecycle fact, not a replacement for the
  * signed ExecutionReceiptV1 emitted by the worker receipt authority.
  */
-export interface MeshNodeTerminalOutboxMessage {
+export interface MeshNodeTerminalOutboxPublication {
 	readonly outboxId: string;
 	readonly assignmentId: string;
 	readonly taskId: string;
 	readonly type: "node.lifecycle.terminal";
 	readonly idempotencyKey: string;
 	readonly record: MeshNodeLifecycleRecord;
-	state: MeshNodeOutboxState;
+}
+
+/** Auditable local delivery state. It is never a controller completion signal. */
+export interface MeshNodeTerminalOutboxMessage extends MeshNodeTerminalOutboxPublication {
+	readonly state: MeshNodeOutboxState;
+	readonly deliveredAt?: string;
 }
 
 export interface MeshNodeDurableAssignment {
@@ -231,6 +236,7 @@ export class SqliteMeshNodeStateRepository implements MeshNodeStateRepository {
 				}
 			}
 			if (!migrations.some(migration => migration.version === 1)) this.#applyVersionOne();
+			if (!migrations.some(migration => migration.version === 2)) this.#applyVersionTwo();
 			this.#db.exec("COMMIT");
 		} catch (error) {
 			this.#rollbackQuietly();
@@ -253,6 +259,42 @@ export class SqliteMeshNodeStateRepository implements MeshNodeStateRepository {
 			[STATE_ROW_ID, initial.revision, JSON.stringify(initial), new Date().toISOString()],
 		);
 		this.#db.run("INSERT INTO mesh_node_state_schema_migrations (version, applied_at) VALUES (?, ?)", [1, new Date().toISOString()]);
+	}
+
+	/**
+	 * V2 permits terminal facts to be durably marked delivered. Bumping the
+	 * snapshot revision fences a pre-upgrade process that still holds an old
+	 * copy, even when every existing fact remains pending.
+	 */
+	#applyVersionTwo(): void {
+		let row: StateRow | null;
+		try {
+			row = this.#db
+				.query<StateRow, []>("SELECT revision, snapshot_json AS snapshotJson FROM mesh_node_state WHERE singleton = 1")
+				.get();
+		} catch {
+			throw new MeshNodeStateCorruptionError("node state table is unreadable");
+		}
+		if (row === null || row === undefined || !isNonNegativeInteger(row.revision)) {
+			throw new MeshNodeStateCorruptionError("node state row is invalid");
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(row.snapshotJson);
+		} catch {
+			throw new MeshNodeStateCorruptionError("node state snapshot is not valid JSON");
+		}
+		const snapshot = assertSnapshot(parsed);
+		if (snapshot.revision !== row.revision) throw new MeshNodeStateCorruptionError("node state revision does not match its snapshot");
+		snapshot.revision = row.revision + 1;
+		const result = this.#db.run(
+			`UPDATE mesh_node_state
+			 SET revision = ?, snapshot_json = ?, updated_at = ?
+			 WHERE singleton = ? AND revision = ?`,
+			[snapshot.revision, JSON.stringify(snapshot), new Date().toISOString(), STATE_ROW_ID, row.revision],
+		);
+		if (result.changes !== 1) throw new MeshNodeStateError("node state revision changed during migration");
+		this.#db.run("INSERT INTO mesh_node_state_schema_migrations (version, applied_at) VALUES (?, ?)", [2, new Date().toISOString()]);
 	}
 
 	#loadSnapshot(): MeshNodeStateSnapshot {
