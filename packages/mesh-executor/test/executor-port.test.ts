@@ -25,6 +25,7 @@ import {
 
 const NODE_ID = "node_executor-001";
 const NODE_PUBKEY = "n".repeat(64);
+const NOW = Date.parse("2026-08-31T12:00:00.000Z");
 const ENDPOINT_ID = "localExecutor";
 const CATALOG_FINGERPRINT = "c".repeat(64);
 const TOOL_PATH = ["github", "issues", "create"] as const;
@@ -62,7 +63,7 @@ function makeTask(overrides: Record<string, unknown> = {}): TaskContractV1 {
 	return parseTaskContract({ ...unsigned, digest: sha256CanonicalJson(unsigned) });
 }
 
-function makeAssignment(task: TaskContractV1): AssignmentLeaseV1 {
+function makeAssignment(task: TaskContractV1, overrides: Record<string, unknown> = {}): AssignmentLeaseV1 {
 	return parseAssignmentLease({
 		schemaVersion: MESH_SCHEMA.assignment,
 		assignmentId: "asg_executor-001",
@@ -80,11 +81,11 @@ function makeAssignment(task: TaskContractV1): AssignmentLeaseV1 {
 		permissionsDigest: sha256CanonicalJson(task.permissions),
 		placementReason: { source: "test" },
 		idempotencyKey: "executor-assignment-key",
+		...overrides,
 	});
 }
 
-function makeContext(task: TaskContractV1): MeshNodeExecutionContext {
-	const assignment = makeAssignment(task);
+function makeContext(task: TaskContractV1, assignment = makeAssignment(task)): MeshNodeExecutionContext {
 	return {
 		assignmentId: assignment.assignmentId,
 		taskId: task.taskId,
@@ -100,10 +101,11 @@ function makeContext(task: TaskContractV1): MeshNodeExecutionContext {
 	};
 }
 
-function makePort(gateway: ExecutorMcpGateway, catalogFingerprint = CATALOG_FINGERPRINT): ExecutorMeshExecutionPort {
+function makePort(gateway: ExecutorMcpGateway, catalogFingerprint = CATALOG_FINGERPRINT, now: () => number = () => NOW): ExecutorMeshExecutionPort {
 	return new ExecutorMeshExecutionPort({
 		gateway,
 		trustedEndpoints: [{ endpointId: ENDPOINT_ID, catalogFingerprint }],
+		now,
 	});
 }
 
@@ -144,10 +146,11 @@ class HangingHttpTransport implements ExecutorHttpTransport {
 	}
 }
 
-function makeHttpGateway(transport: ExecutorHttpTransport): ExecutorHttpCodeGateway {
+function makeHttpGateway(transport: ExecutorHttpTransport, now: () => number = () => NOW): ExecutorHttpCodeGateway {
 	return new ExecutorHttpCodeGateway({
 		endpoints: [{ endpointId: ENDPOINT_ID, origin: "http://127.0.0.1:4788", authorization: "Bearer host-only-token" }],
 		transport,
+		now,
 	});
 }
 
@@ -171,6 +174,7 @@ describe("ExecutorMeshExecutionPort", () => {
 			endpointId: ENDPOINT_ID,
 			code: 'return await tools.github.issues.create({"owner":"kingkillery","repo":"oh-my-pk","title":"Safe request"});',
 			timeoutSeconds: 30,
+			deadlineEpochMs: Date.parse(context.assignment.leaseExpiresAt),
 			metadata: {
 				taskId: task.taskId,
 				taskDigest: task.digest,
@@ -190,6 +194,37 @@ describe("ExecutorMeshExecutionPort", () => {
 		} as TaskContractV1;
 		await expect(port.start(makeContext(malicious))).rejects.toMatchObject({ code: "invocation_invalid" });
 		expect(calls).toHaveLength(1);
+	});
+
+	test("refuses a direct Executor invocation without the full remaining assignment window", async () => {
+		const task = makeTask();
+		const deadlineEpochMs = NOW + 30_000;
+		const context = makeContext(task, makeAssignment(task, { leaseExpiresAt: new Date(deadlineEpochMs).toISOString() }));
+		let gatewayCalls = 0;
+		const gateway: ExecutorMcpGateway = {
+			async invoke() {
+				gatewayCalls += 1;
+				return { status: "succeeded" };
+			},
+		};
+
+		await expect(makePort(gateway, CATALOG_FINGERPRINT, () => NOW).run(context)).rejects.toEqual(new ExecutorMeshExecutionError("assignment_lease_insufficient"));
+		expect(gatewayCalls).toBe(0);
+	});
+
+	test("quarantines a direct Executor result that arrives after its assignment deadline", async () => {
+		let now = NOW;
+		const task = makeTask();
+		const deadlineEpochMs = NOW + 60_000;
+		const context = makeContext(task, makeAssignment(task, { leaseExpiresAt: new Date(deadlineEpochMs).toISOString() }));
+		const gateway: ExecutorMcpGateway = {
+			async invoke() {
+				now = deadlineEpochMs;
+				return { status: "succeeded" };
+			},
+		};
+
+		await expect(makePort(gateway, CATALOG_FINGERPRINT, () => now).run(context)).rejects.toEqual(new ExecutorMeshExecutionError("assignment_lease_expired"));
 	});
 
 	test("rejects missing exact permission, stale args, and untrusted catalog before the gateway", async () => {
@@ -260,6 +295,7 @@ describe("ExecutorMeshExecutionPort", () => {
 				new ExecutorHttpCodeGateway({
 					endpoints: [{ endpointId: ENDPOINT_ID, origin: executor.url.origin }],
 					transport: new FetchExecutorHttpTransport(),
+					now: () => NOW,
 				}),
 			);
 			await expect(port.run(makeContext(makeTask()))).rejects.toEqual(new ExecutorHttpGatewayError("transport_unavailable"));
@@ -283,6 +319,66 @@ describe("ExecutorMeshExecutionPort", () => {
 		expect(transport.requests[0]?.signal.aborted).toBeTrue();
 	});
 
+	test("caps the HTTP request at the absolute assignment deadline", async () => {
+		const transport = new HangingHttpTransport();
+		const gateway = makeHttpGateway(transport, () => NOW);
+		const request: ExecutorMcpGatewayRequest = {
+			endpointId: ENDPOINT_ID,
+			code: "return await tools.github.issues.create({});",
+			timeoutSeconds: 30,
+			deadlineEpochMs: NOW + 10,
+			metadata: {
+				taskId: "task_executor-deadline",
+				taskDigest: "a".repeat(64),
+				assignmentId: "asg_executor-deadline",
+				schedulerEpoch: 1,
+				fencingToken: 1,
+				inputDigest: "b".repeat(64),
+				catalogFingerprint: CATALOG_FINGERPRINT,
+				toolPermission: canonicalExecutorToolPermission(ENDPOINT_ID, TOOL_PATH),
+			},
+		};
+
+		await expect(gateway.invoke(request)).rejects.toEqual(new ExecutorHttpGatewayError("transport_timed_out"));
+		expect(transport.requests).toHaveLength(1);
+		expect(transport.requests[0]?.signal.aborted).toBeTrue();
+	});
+
+	test("does not return a direct HTTP gateway success when JSON resolves at the assignment deadline", async () => {
+		let now = NOW;
+		const deadlineEpochMs = NOW + 10;
+		const transport = new RecordingHttpTransport([
+			Object.freeze({
+				ok: true,
+				status: 200,
+				async json() {
+					now = deadlineEpochMs;
+					return { status: "completed", text: "late", structured: {}, isError: false };
+				},
+			}),
+		]);
+		const gateway = makeHttpGateway(transport, () => now);
+		const request: ExecutorMcpGatewayRequest = {
+			endpointId: ENDPOINT_ID,
+			code: "return await tools.github.issues.create({});",
+			timeoutSeconds: 30,
+			deadlineEpochMs,
+			metadata: {
+				taskId: "task_executor-deadline",
+				taskDigest: "a".repeat(64),
+				assignmentId: "asg_executor-deadline",
+				schedulerEpoch: 1,
+				fencingToken: 1,
+				inputDigest: "b".repeat(64),
+				catalogFingerprint: CATALOG_FINGERPRINT,
+				toolPermission: canonicalExecutorToolPermission(ENDPOINT_ID, TOOL_PATH),
+			},
+		};
+
+		await expect(gateway.invoke(request)).rejects.toEqual(new ExecutorHttpGatewayError("transport_timed_out"));
+		expect(transport.requests).toHaveLength(1);
+	});
+
 	test("keeps an explicit Executor failure separate from ambiguous gateway outcomes", async () => {
 		const task = makeTask();
 		const context = makeContext(task);
@@ -290,6 +386,7 @@ describe("ExecutorMeshExecutionPort", () => {
 		const missingEndpointGateway = new ExecutorHttpCodeGateway({
 			endpoints: [{ endpointId: "differentEndpoint", origin: "http://127.0.0.1:4788" }],
 			transport: missingEndpointTransport,
+			now: () => NOW,
 		});
 		await expect(makePort(missingEndpointGateway).run(context)).rejects.toEqual(new ExecutorHttpGatewayError("endpoint_not_registered"));
 		expect(missingEndpointTransport.requests).toHaveLength(0);

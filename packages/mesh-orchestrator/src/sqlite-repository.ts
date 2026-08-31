@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { MeshRuntimeCorruptionError, MeshRuntimeError } from "./errors";
 import { createEmptyRuntimeSnapshot, type MeshRuntimeRepository, type MeshRuntimeSnapshot, type MeshRuntimeTransaction } from "./types";
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 const STATE_ROW_ID = 1;
 const DATABASE_LOCKS = new Map<string, Promise<void>>();
 
@@ -28,6 +28,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonNegativeInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0;
 }
 
 async function acquireDatabaseLock(key: string): Promise<() => void> {
@@ -145,6 +149,7 @@ export class SqliteMeshRuntimeRepository implements MeshRuntimeRepository {
 				}
 			}
 			if (!migrations.some(migration => migration.version === 1)) this.#applyVersionOne();
+			if (!migrations.some(migration => migration.version === 2)) this.#applyVersionTwo();
 			this.#db.exec("COMMIT");
 		} catch (error) {
 			this.#rollbackQuietly();
@@ -167,6 +172,39 @@ export class SqliteMeshRuntimeRepository implements MeshRuntimeRepository {
 			[STATE_ROW_ID, initial.revision, JSON.stringify(initial), new Date().toISOString()],
 		);
 		this.#db.run("INSERT INTO mesh_runtime_schema_migrations (version, applied_at) VALUES (?, ?)", [1, new Date().toISOString()]);
+	}
+
+	/**
+	 * v2 adds a monotonic worker-capacity map to the durable snapshot. It makes
+	 * no authority change, so its snapshot revision remains untouched.
+	 */
+	#applyVersionTwo(): void {
+		let row: StateRow | null;
+		try {
+			row = this.#db
+				.query<StateRow, []>("SELECT revision, snapshot_json AS snapshotJson FROM mesh_runtime_state WHERE singleton = 1")
+				.get();
+		} catch {
+			throw new MeshRuntimeCorruptionError("state table is unreadable");
+		}
+		if (row === null || row === undefined) throw new MeshRuntimeCorruptionError("state row is missing");
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(row.snapshotJson);
+		} catch {
+			throw new MeshRuntimeCorruptionError("state snapshot is not valid JSON");
+		}
+		if (!isRecord(parsed)) throw new MeshRuntimeCorruptionError("state snapshot is not an object");
+		if (!Object.prototype.hasOwnProperty.call(parsed, "workerCapacityObservations")) {
+			parsed.workerCapacityObservations = {};
+		}
+		const snapshot = assertSnapshot(parsed);
+		if (snapshot.revision !== row.revision) throw new MeshRuntimeCorruptionError("state revision does not match its snapshot");
+		this.#db.run(
+			"UPDATE mesh_runtime_state SET snapshot_json = ?, updated_at = ? WHERE singleton = ?",
+			[JSON.stringify(snapshot), new Date().toISOString(), STATE_ROW_ID],
+		);
+		this.#db.run("INSERT INTO mesh_runtime_schema_migrations (version, applied_at) VALUES (?, ?)", [2, new Date().toISOString()]);
 	}
 
 	#loadSnapshot(): MeshRuntimeSnapshot {
@@ -226,6 +264,7 @@ function assertSnapshot(value: unknown): MeshRuntimeSnapshot {
 	assertObjectMap(value.assignments, "assignments");
 	assertObjectMap(value.outbox, "outbox");
 	assertObjectMap(value.deliveries, "deliveries");
+	assertWorkerCapacityObservations(value.workerCapacityObservations);
 	if (!isRecord(value.scheduler)) throw new MeshRuntimeCorruptionError("scheduler is not an object");
 	if (!isNonNegativeInteger(value.scheduler.epoch)) throw new MeshRuntimeCorruptionError("scheduler epoch is invalid");
 	if (typeof value.scheduler.leaseExpiresAt !== "number" || !Number.isFinite(value.scheduler.leaseExpiresAt)) {
@@ -235,4 +274,23 @@ function assertSnapshot(value: unknown): MeshRuntimeSnapshot {
 		throw new MeshRuntimeCorruptionError("scheduler owner is invalid");
 	}
 	return value as MeshRuntimeSnapshot;
+}
+
+function assertWorkerCapacityObservations(value: unknown): void {
+	if (!isRecord(value)) throw new MeshRuntimeCorruptionError("worker capacity observations are not an object map");
+	for (const [workerNodeId, observation] of Object.entries(value)) {
+		if (!isNonEmptyString(workerNodeId) || !isRecord(observation)) {
+			throw new MeshRuntimeCorruptionError("worker capacity observations contain an invalid record");
+		}
+		if (!isNonEmptyString(observation.actorPubkey) || !isNonNegativeInteger(observation.availableSlots)) {
+			throw new MeshRuntimeCorruptionError("worker capacity observation identity or slots are invalid");
+		}
+		if (
+			!isNonNegativeInteger(observation.observedAt) ||
+			!isNonNegativeInteger(observation.expiresAt) ||
+			observation.expiresAt <= observation.observedAt
+		) {
+			throw new MeshRuntimeCorruptionError("worker capacity observation window is invalid");
+		}
+	}
 }

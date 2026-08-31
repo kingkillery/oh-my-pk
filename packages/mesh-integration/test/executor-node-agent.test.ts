@@ -186,19 +186,21 @@ function response(value: unknown): ExecutorHttpTransportResponse {
 	});
 }
 
-function createAgent(transport: ExecutorHttpTransport): MeshNodeAgent {
+function createAgent(transport: ExecutorHttpTransport, now: () => number = () => T0): MeshNodeAgent {
 	return new MeshNodeAgent({
 		identity: { nodeId: NODE_ID, pubkey: NODE_PUBKEY },
 		execution: new ExecutorMeshExecutionPort({
 			gateway: new ExecutorHttpCodeGateway({
 				endpoints: [{ endpointId: ENDPOINT_ID, origin: "http://127.0.0.1:4788", authorization: "Bearer integration-host-token" }],
 				transport,
+				now,
 			}),
 			trustedEndpoints: [{ endpointId: ENDPOINT_ID, catalogFingerprint: CATALOG_FINGERPRINT }],
+			now,
 		}),
 		trustedSchedulerVerifiers: [schedulerVerifier],
 		getPresence: healthyPresence,
-		now: () => T0,
+		now,
 	});
 }
 
@@ -275,6 +277,29 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 		expect(agent.outbox()).toHaveLength(0);
 		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
 		expect(transport.requests).toHaveLength(1);
+	});
+
+	test("quarantines a late Executor response instead of recording a terminal fact", async () => {
+		let now = T0;
+		const requests: ExecutorHttpTransportRequest[] = [];
+		const transport: ExecutorHttpTransport = {
+			async send(request) {
+				requests.push(request);
+				now = T0 + 60_000;
+				return response({ status: "completed", text: "completed", structured: {}, isError: false });
+			},
+		};
+		const agent = createAgent(transport, () => now);
+		const task = signedTask();
+		const assigned = assignment(task);
+
+		await agent.accept({ task, signedAssignment: await signedDelivery(assigned) });
+		await agent.start(assigned.assignmentId);
+		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "execution_adapter_failed" });
+		expect(agent.state(assigned.assignmentId)).toBe("reconciliation_required");
+		expect(agent.assignmentEvents(assigned.assignmentId).at(-1)).toMatchObject({ type: "execution.failed", code: "execution_adapter_failed" });
+		expect(agent.outbox()).toHaveLength(0);
+		expect(requests).toHaveLength(1);
 	});
 
 	test("blocks a wildcard permission before the Executor gateway is contacted", async () => {

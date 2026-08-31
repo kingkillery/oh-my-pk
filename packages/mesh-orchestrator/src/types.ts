@@ -65,6 +65,15 @@ export interface SchedulerAuthorityState {
 	leaseExpiresAt: number;
 }
 
+/** Latest trusted capacity observation for one worker; older observations never replace it. */
+export interface WorkerCapacityObservation {
+	/** The worker identity that advertised this capacity for the node. */
+	readonly actorPubkey: string;
+	readonly availableSlots: number;
+	readonly observedAt: number;
+	readonly expiresAt: number;
+}
+
 /**
  * The serialisable schema for the control-plane authority. A SQLite adapter can
  * persist it in normalized rows or as one transactionally-versioned document.
@@ -75,6 +84,7 @@ export interface MeshRuntimeSnapshot {
 	assignments: Record<string, RuntimeAssignmentRecord>;
 	outbox: Record<string, OutboxMessage>;
 	deliveries: Record<string, DeliveryLedgerRecord>;
+	workerCapacityObservations: Record<string, WorkerCapacityObservation>;
 	scheduler: SchedulerAuthorityState;
 }
 
@@ -95,6 +105,7 @@ export interface SchedulerLeaseRequest {
 	/** Stable scheduler actor key; it must match AssignmentLeaseV1.scheduler.pubkey. */
 	readonly schedulerId: string;
 	readonly durationMs: number;
+	/** Deterministic trusted lower bound; durable authority always reads its clock at transaction entry. */
 	readonly now?: number;
 }
 
@@ -106,7 +117,21 @@ export interface SchedulerLeaseGrant {
 
 export interface AssignmentRequest {
 	readonly assignment: AssignmentLeaseV1 | unknown;
+	/** Deterministic trusted lower bound; durable authority always reads its clock at transaction entry. */
 	readonly now?: number;
+}
+
+/**
+ * A scheduler-derived capacity fact that is durably monotonic per worker.
+ * Callers must pass only provenance-verified local presence; the durable
+ * runtime owns ordering and admission, not presence signature verification.
+ */
+export interface WorkerCapacityObservationRequest {
+	readonly workerNodeId: string;
+	readonly actorPubkey: string;
+	readonly availableSlots: number;
+	readonly observedAt: number;
+	readonly expiresAt: number;
 }
 
 export interface ReceiptRequest {
@@ -119,7 +144,7 @@ export interface ReceiptVerifierResolver {
 	resolve(assignment: AssignmentLeaseV1): ReceiptSignatureVerifier | undefined | Promise<ReceiptSignatureVerifier | undefined>;
 }
 
-/** The finalization authority, not the worker transport, supplies receipt-admission time. */
+/** Durable authority time for scheduler leases, assignment commits, and receipt admission. */
 export interface MeshOrchestratorClock {
 	nowEpochMs(): number;
 }
@@ -163,6 +188,7 @@ export function createEmptyRuntimeSnapshot(): MeshRuntimeSnapshot {
 		assignments: {},
 		outbox: {},
 		deliveries: {},
+		workerCapacityObservations: {},
 		scheduler: {
 			epoch: 0,
 			leaseExpiresAt: 0,

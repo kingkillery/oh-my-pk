@@ -155,13 +155,13 @@ function makePort(calls: ExecutionCalls, run: (context: MeshNodeExecutionContext
 	};
 }
 
-function createAgent(presence: MeshNodePresence, port: MeshNodeExecutionPort): MeshNodeAgent {
+function createAgent(presence: MeshNodePresence, port: MeshNodeExecutionPort, now: () => number = () => NOW): MeshNodeAgent {
 	return new MeshNodeAgent({
 		identity: { nodeId: NODE_ID, pubkey: NODE_PUBKEY },
 		execution: port,
 		trustedSchedulerVerifiers: [schedulerVerifier],
 		getPresence: () => presence,
-		now: () => NOW,
+		now,
 	});
 }
 
@@ -183,6 +183,76 @@ describe("MeshNodeAgent", () => {
 		await expect(agent.accept({ task, signedAssignment: await signedAssignment(adversarial) })).rejects.toMatchObject({ code: "lease_invalid_binding" });
 		expect(agent.events().at(-1)).toMatchObject({ type: "assignment.rejected", code: "lease_invalid_binding" });
 		expect(executionCalls).toMatchObject({ start: 0, run: 0, heartbeat: 0, cancel: 0, cleanup: 0 });
+	});
+
+	test("rejects a delayed delivery that lacks the task's full execution window", async () => {
+		const task = makeTask();
+		const assignment = makeAssignment(task);
+		const executionCalls = calls();
+		const expiresAt = Date.parse(assignment.leaseExpiresAt);
+		const agent = createAgent(makePresence(), makePort(executionCalls), () => expiresAt - 30_000);
+
+		await expect(agent.accept({ task, signedAssignment: await signedAssignment(assignment) })).rejects.toMatchObject({ code: "lease_insufficient_for_execution" });
+		expect(executionCalls).toMatchObject({ start: 0, run: 0, heartbeat: 0, cancel: 0, cleanup: 0 });
+	});
+
+	test("rechecks the full window before and after an asynchronous executor start", async () => {
+		let now = NOW;
+		const task = makeTask();
+		const assignment = makeAssignment(task);
+		const expiresAt = Date.parse(assignment.leaseExpiresAt);
+		const executionCalls = calls();
+		const port = makePort(executionCalls);
+		port.start = async context => {
+			executionCalls.start += 1;
+			executionCalls.contexts.push(context);
+			now = expiresAt;
+		};
+		const agent = createAgent(makePresence(), port, () => now);
+
+		await agent.accept({ task, signedAssignment: await signedAssignment(assignment) });
+		await expect(agent.start(assignment.assignmentId)).rejects.toMatchObject({ code: "lease_expired" });
+		expect(executionCalls.start).toBe(1);
+		expect(agent.state(assignment.assignmentId)).toBe("reconciliation_required");
+		expect(agent.assignmentEvents(assignment.assignmentId).at(-1)).toMatchObject({ type: "execution.start_failed", code: "lease_expired" });
+	});
+
+	test("never records a terminal result when execution crosses its assignment deadline", async () => {
+		let now = NOW;
+		const task = makeTask();
+		const assignment = makeAssignment(task);
+		const expiresAt = Date.parse(assignment.leaseExpiresAt);
+		const executionCalls = calls();
+		const port = makePort(executionCalls, async () => {
+			now = expiresAt;
+			return { outcome: "succeeded", exitCode: 0 };
+		});
+		const agent = createAgent(makePresence(), port, () => now);
+
+		await agent.accept({ task, signedAssignment: await signedAssignment(assignment) });
+		await agent.start(assignment.assignmentId);
+		await expect(agent.run(assignment.assignmentId)).rejects.toMatchObject({ code: "lease_expired" });
+		expect(agent.state(assignment.assignmentId)).toBe("reconciliation_required");
+		expect(agent.assignmentEvents(assignment.assignmentId).at(-1)).toMatchObject({ type: "execution.failed", code: "lease_expired" });
+	});
+
+	test("allows a heartbeat for a running job while its ticket is live but no longer has a new full-timeout window", async () => {
+		let now = NOW;
+		const task = makeTask();
+		const assignment = makeAssignment(task);
+		const expiresAt = Date.parse(assignment.leaseExpiresAt);
+		const runGate = Promise.withResolvers<MeshExecutionRunResult>();
+		const executionCalls = calls();
+		const agent = createAgent(makePresence(), makePort(executionCalls, async () => runGate.promise), () => now);
+
+		await agent.accept({ task, signedAssignment: await signedAssignment(assignment) });
+		await agent.start(assignment.assignmentId);
+		const running = agent.run(assignment.assignmentId);
+		await Promise.resolve();
+		now = expiresAt - 1;
+		await expect(agent.heartbeat(assignment.assignmentId)).resolves.toMatchObject({ type: "execution.heartbeat" });
+		runGate.resolve({ outcome: "succeeded", exitCode: 0 });
+		await expect(running).resolves.toMatchObject({ type: "execution.completed" });
 	});
 
 	test("local active-interactive policy remains final even when a task opts in", async () => {

@@ -3,7 +3,9 @@
 	"compilerOptions": {
 		"baseUrl": ".",
 		"paths": {
-			"@pk-nerdsaver-ai/mesh-contracts": ["../mesh-contracts/src/index.ts"]
+			"@pk-nerdsaver-ai/mesh-auth": ["../mesh-auth/src/index.ts"],
+			"@pk-nerdsaver-ai/mesh-contracts": ["../mesh-contracts/src/index.ts"],
+			"@pk-nerdsaver-ai/mesh-orchestrator": ["../mesh-orchestrator/src/index.ts"]
 		}
 	},
 	"include": ["src", "test"]

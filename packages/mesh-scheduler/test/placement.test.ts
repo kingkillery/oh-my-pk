@@ -86,6 +86,53 @@ describe("capability-aware placement", () => {
 		expect(decision.evaluations[0]?.reasons).toContain("missing_capabilities");
 	});
 
+	test("requires an integral durable worker-slot count", () => {
+		const decision = placeTask({
+			task: task(),
+			nodes: [node({ availableSlots: 1.5 })],
+			nowEpochMs: NOW,
+		});
+
+		expect(decision.selectedNodeId).toBeUndefined();
+		expect(decision.evaluations[0]?.reasons).toContain("no_available_slots");
+	});
+
+	test("rejects a future-dated or inverted presence window", () => {
+		const future = placeTask({
+			task: task(),
+			nodes: [node({ observedAt: "2026-08-31T00:31:00Z" })],
+			nowEpochMs: NOW,
+		});
+		const inverted = placeTask({
+			task: task(),
+			nodes: [node({ observedAt: "2026-08-31T00:29:00Z", expiresAt: "2026-08-31T00:28:00Z" })],
+			nowEpochMs: NOW,
+		});
+
+		expect(future.selectedNodeId).toBeUndefined();
+		expect(future.evaluations[0]?.reasons).toContain("stale_presence");
+		expect(inverted.selectedNodeId).toBeUndefined();
+		expect(inverted.evaluations[0]?.reasons).toContain("stale_presence");
+		const bypassAttempt = placeTask({
+			task: task(),
+			nodes: [node({ observedAt: "2026-08-31T00:31:00Z" })],
+			nowEpochMs: NOW,
+			policy: { requireFreshPresence: false },
+		});
+		expect(bypassAttempt.selectedNodeId).toBeUndefined();
+	});
+
+	test("fails closed for an unknown trust zone", () => {
+		const decision = placeTask({
+			task: task(),
+			nodes: [node({ trustZone: "unknown" as PlacementNode["trustZone"] })],
+			nowEpochMs: NOW,
+		});
+
+		expect(decision.selectedNodeId).toBeUndefined();
+		expect(decision.evaluations[0]?.reasons).toContain("trust_zone_exceeds_task_limit");
+	});
+
 	test("treats local as more trusted than private, partner, and public", () => {
 		const decision = placeTask({
 			task: task({ trustZoneMin: "private" }),

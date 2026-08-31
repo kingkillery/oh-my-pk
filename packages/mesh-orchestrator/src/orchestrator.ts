@@ -11,7 +11,16 @@ import {
 } from "@pk-nerdsaver-ai/mesh-contracts";
 import { verifySignedExecutionReceipt, type ReceiptSignatureVerifier } from "@pk-nerdsaver-ai/mesh-receipts";
 
-import { FencingViolationError, IdempotencyConflictError, ReceiptFinalizationError, SchedulerLeaseConflictError, TransitionViolationError } from "./errors";
+import {
+	AssignmentLeaseAuthorityError,
+	FencingViolationError,
+	IdempotencyConflictError,
+	ReceiptFinalizationError,
+	SchedulerLeaseConflictError,
+	TransitionViolationError,
+	WorkerCapacityConflictError,
+	WorkerCapacityObservationError,
+} from "./errors";
 import type {
 	AssignmentRequest,
 	DeliveryAcceptance,
@@ -29,6 +38,8 @@ import type {
 	RuntimeTaskRecord,
 	SchedulerLeaseGrant,
 	SchedulerLeaseRequest,
+	WorkerCapacityObservation,
+	WorkerCapacityObservationRequest,
 } from "./types";
 
 const OUTBOX_LOCK_MS = 30_000;
@@ -48,6 +59,10 @@ function nonEmpty(value: string, name: string): void {
 
 function positive(value: number, name: string): void {
 	if (!Number.isFinite(value) || value <= 0) throw new TypeError(`${name} must be a positive finite number`);
+}
+
+function nonNegativeInteger(value: number, name: string): void {
+	if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative safe integer`);
 }
 
 function positiveOrInfinity(value: number, name: string): void {
@@ -94,6 +109,32 @@ function assertCurrentScheduler(snapshot: MeshRuntimeSnapshot, assignment: Assig
 		throw new SchedulerLeaseConflictError();
 	}
 	if (snapshot.scheduler.epoch !== assignment.schedulerEpoch) throw new FencingViolationError(assignment.assignmentId);
+	if (leaseDeadline(assignment) >= snapshot.scheduler.leaseExpiresAt) throw new AssignmentLeaseAuthorityError();
+}
+
+function sameCapacityObservation(left: WorkerCapacityObservation, right: WorkerCapacityObservation): boolean {
+	return (
+		left.actorPubkey === right.actorPubkey &&
+		left.availableSlots === right.availableSlots &&
+		left.observedAt === right.observedAt &&
+		left.expiresAt === right.expiresAt
+	);
+}
+
+function currentWorkerCapacity(snapshot: MeshRuntimeSnapshot, assignment: AssignmentLeaseV1, now: number): number {
+	const observation = snapshot.workerCapacityObservations[assignment.workerNodeId];
+	// Scheduling without a current, identity-bound advertisement is a fail-closed
+	// condition. A legacy default capacity could turn an offline worker into a
+	// valid target.
+	if (observation === undefined) throw new WorkerCapacityObservationError("capacity_observation_unavailable");
+	if (
+		observation.actorPubkey !== assignment.executorPubkey ||
+		observation.observedAt > now ||
+		observation.expiresAt <= now
+	) {
+		throw new WorkerCapacityObservationError("capacity_observation_unavailable");
+	}
+	return observation.availableSlots;
 }
 
 function assertAssignmentFence(snapshot: MeshRuntimeSnapshot, record: RuntimeAssignmentRecord | undefined, receipt: ExecutionReceiptV1, now: number): RuntimeAssignmentRecord {
@@ -191,15 +232,21 @@ export class MeshOrchestrator {
 	async acquireSchedulerLease(request: SchedulerLeaseRequest): Promise<SchedulerLeaseGrant> {
 		nonEmpty(request.schedulerId, "schedulerId");
 		positive(request.durationMs, "durationMs");
-		const now = request.now ?? Date.now();
 		return this.#repository.transaction(({ snapshot }) => {
+			// The repository may wait for an earlier durable transaction. Read trusted
+			// time only after it has admitted this authority-changing operation.
+			const now = this.#authorityClockNow(request.now);
 			const activeOtherScheduler = snapshot.scheduler.leaseExpiresAt > now && snapshot.scheduler.ownerId !== undefined && snapshot.scheduler.ownerId !== request.schedulerId;
 			if (activeOtherScheduler) throw new SchedulerLeaseConflictError();
-			if (snapshot.scheduler.ownerId !== request.schedulerId || snapshot.scheduler.leaseExpiresAt <= now) {
+			const continuingOwner = snapshot.scheduler.ownerId === request.schedulerId && snapshot.scheduler.leaseExpiresAt > now;
+			if (!continuingOwner) {
 				snapshot.scheduler.epoch += 1;
 				snapshot.scheduler.ownerId = request.schedulerId;
+				snapshot.scheduler.leaseExpiresAt = now + request.durationMs;
+			} else {
+				// An older-but-valid coordinator must never shorten a live authority lease.
+				snapshot.scheduler.leaseExpiresAt = Math.max(snapshot.scheduler.leaseExpiresAt, now + request.durationMs);
 			}
-			snapshot.scheduler.leaseExpiresAt = now + request.durationMs;
 			return Object.freeze({
 				schedulerId: request.schedulerId,
 				epoch: snapshot.scheduler.epoch,
@@ -208,10 +255,86 @@ export class MeshOrchestrator {
 		});
 	}
 
+	/** Read-only scheduler authority used to fail closed before re-signing a recovered lease. */
+	async getSchedulerLease(): Promise<SchedulerLeaseGrant | undefined> {
+		return this.#repository.read(snapshot => {
+			if (snapshot.scheduler.ownerId === undefined) return undefined;
+			return Object.freeze({
+				schedulerId: snapshot.scheduler.ownerId,
+				epoch: snapshot.scheduler.epoch,
+				leaseExpiresAt: iso(snapshot.scheduler.leaseExpiresAt),
+			});
+		});
+	}
+
+	/**
+	 * Persist a trusted node-advertised capacity fact before it can authorize an
+	 * assignment. Older facts, including an older larger capacity, never replace
+	 * the latest observation. A zero-slot observation is valid and closes a
+	 * worker's durable admission window.
+	 */
+	async observeWorkerCapacity(request: WorkerCapacityObservationRequest): Promise<WorkerCapacityObservation> {
+		nonEmpty(request.workerNodeId, "workerNodeId");
+		nonEmpty(request.actorPubkey, "actorPubkey");
+		nonNegativeInteger(request.availableSlots, "availableSlots");
+		if (
+			!Number.isSafeInteger(request.observedAt) ||
+			!Number.isSafeInteger(request.expiresAt) ||
+			request.observedAt < 0 ||
+			request.expiresAt < 0 ||
+			request.expiresAt <= request.observedAt
+		) {
+			throw new TypeError("capacity observation window is invalid");
+		}
+		const result = await this.#repository.transaction(({ snapshot }) => {
+			const now = this.#authorityClockNow();
+			// An older-advertisement expiry is still useful as a newer monotonic
+			// deauthorization signal. It may replace a live higher capacity, but it
+			// can never authorize a new ticket because assign rejects it below.
+			if (request.observedAt > now) {
+				throw new WorkerCapacityObservationError("capacity_observation_unavailable");
+			}
+			const next: WorkerCapacityObservation = {
+				actorPubkey: request.actorPubkey,
+				availableSlots: request.availableSlots,
+				observedAt: request.observedAt,
+				expiresAt: request.expiresAt,
+			};
+			const current = snapshot.workerCapacityObservations[request.workerNodeId];
+			if (current !== undefined) {
+				if (request.observedAt < current.observedAt) {
+					throw new WorkerCapacityObservationError("capacity_observation_stale");
+				}
+				if (request.observedAt === current.observedAt) {
+					if (!sameCapacityObservation(current, next)) {
+						// A clock-only ordering key cannot tell which equal-time source is
+						// authoritative. Persist a zero-slot quarantine before reporting the
+						// conflict so the prior larger capacity cannot remain usable.
+						const quarantined: WorkerCapacityObservation = {
+							actorPubkey: current.actorPubkey,
+							availableSlots: 0,
+							observedAt: current.observedAt,
+							expiresAt: Math.max(current.expiresAt, next.expiresAt),
+						};
+						snapshot.workerCapacityObservations[request.workerNodeId] = quarantined;
+						return Object.freeze({ observation: structuredClone(quarantined), conflicted: true });
+					}
+					return Object.freeze({ observation: structuredClone(current), conflicted: false });
+				}
+			}
+			snapshot.workerCapacityObservations[request.workerNodeId] = next;
+			return Object.freeze({ observation: structuredClone(next), conflicted: false });
+		});
+		if (result.conflicted) throw new WorkerCapacityObservationError("capacity_observation_conflict");
+		return result.observation;
+	}
+
 	async assign(request: AssignmentRequest): Promise<RuntimeAssignmentRecord> {
 		const assignment = parseAssignmentLease(request.assignment);
-		const now = request.now ?? Date.now();
 		return this.#repository.transaction(({ snapshot }) => {
+			// As above, never validate a ticket against a timestamp captured before a
+			// queued durable write obtains its transaction slot.
+			const now = this.#authorityClockNow(request.now);
 			assertCurrentScheduler(snapshot, assignment, now);
 			const existing = snapshot.assignments[assignment.assignmentId];
 			if (existing !== undefined) {
@@ -227,6 +350,9 @@ export class MeshOrchestrator {
 				) {
 					throw new FencingViolationError(assignment.assignmentId);
 				}
+				if (currentWorkerCapacity(snapshot, assignment, now) < 1) {
+					throw new WorkerCapacityConflictError(assignment.workerNodeId);
+				}
 				return structuredClone(existing);
 			}
 			const task = snapshot.tasks[assignment.taskId];
@@ -235,6 +361,9 @@ export class MeshOrchestrator {
 			if (task.task.digest !== assignment.taskDigest) throw new IdempotencyConflictError(assignment.assignmentId);
 			if (leaseDeadline(assignment) <= now) throw new TransitionViolationError(assignment.assignmentId, "expired", "be assigned");
 			if (assignment.fencingToken <= task.latestFencingToken) throw new FencingViolationError(assignment.assignmentId);
+			const workerCapacity = currentWorkerCapacity(snapshot, assignment, now);
+			const leasedWorkerAssignments = Object.values(snapshot.assignments).filter(record => record.state === "leased" && record.lease.workerNodeId === assignment.workerNodeId).length;
+			if (leasedWorkerAssignments >= workerCapacity) throw new WorkerCapacityConflictError(assignment.workerNodeId);
 			const record: RuntimeAssignmentRecord = {
 				lease: assignment,
 				state: "leased",
@@ -405,6 +534,14 @@ export class MeshOrchestrator {
 		});
 	}
 
+	/** Read-only lease recovery for a caller that already knows the stable assignment ID. */
+	async getAssignment(assignmentId: string): Promise<RuntimeAssignmentRecord | undefined> {
+		return this.#repository.read(snapshot => {
+			const record = snapshot.assignments[assignmentId];
+			return record === undefined ? undefined : structuredClone(record);
+		});
+	}
+
 	#receiptClockNow(): number {
 		let now: number;
 		try {
@@ -414,6 +551,23 @@ export class MeshOrchestrator {
 		}
 		if (!Number.isFinite(now)) throw new ReceiptFinalizationError("receipt_clock_unavailable");
 		return now;
+	}
+
+	/**
+	 * `request.now` remains a deterministic lower bound for trusted in-process
+	 * callers, but cannot make a queued write evaluate against an older clock.
+	 */
+	#authorityClockNow(requestedNow?: number): number {
+		let durableNow: number;
+		try {
+			durableNow = this.#clock.nowEpochMs();
+		} catch {
+			throw new TypeError("Authority clock is unavailable.");
+		}
+		if (!Number.isFinite(durableNow)) throw new TypeError("Authority clock is unavailable.");
+		if (requestedNow === undefined) return durableNow;
+		if (!Number.isFinite(requestedNow)) throw new TypeError("now must be a finite epoch-millisecond timestamp.");
+		return Math.max(durableNow, requestedNow);
 	}
 
 	async #claimNextOutbox(now: number): Promise<{ readonly message: OutboxMessage; readonly claimToken: string } | undefined> {

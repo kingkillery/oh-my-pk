@@ -76,6 +76,7 @@ export type MeshNodeAgentErrorCode =
 	| "invalid_contract"
 	| "lease_expired"
 	| "lease_future_issued"
+	| "lease_insufficient_for_execution"
 	| "lease_invalid_binding"
 	| "lease_invalid_fencing"
 	| "node_capability_missing"
@@ -425,7 +426,7 @@ export class MeshNodeAgent {
 
 		try {
 			const presence = this.#getPresence();
-			const bounds = this.#validateAdmission(task, assignment, presence, true);
+			const bounds = this.#validateAdmission(task, assignment, presence, true, true);
 			const tracked: AcceptedAssignment = {
 				task,
 				assignment,
@@ -448,7 +449,7 @@ export class MeshNodeAgent {
 	async start(assignmentId: string): Promise<MeshNodeLifecycleRecord> {
 		const tracked = this.#assignmentFor(assignmentId);
 		this.#requireState(tracked, "admitted");
-		this.#revalidateForOperation(tracked, "execution.start_failed");
+		this.#revalidateForOperation(tracked, "execution.start_failed", true);
 		this.#transition(tracked, "starting", "execution.starting");
 		try {
 			await this.#execution.start(this.#contextFor(tracked));
@@ -461,6 +462,7 @@ export class MeshNodeAgent {
 			return current.cancelRecord;
 		}
 		if (current.state === "cancelling" && current.cancelPromise !== undefined) return current.cancelPromise;
+		this.#revalidateAfterPort(current, "execution.start_failed", true);
 		this.#requireNotReconciliation(current);
 		try {
 			return this.#transition(current, "started", "execution.started");
@@ -472,7 +474,7 @@ export class MeshNodeAgent {
 	async run(assignmentId: string): Promise<MeshNodeLifecycleRecord> {
 		const tracked = this.#assignmentFor(assignmentId);
 		this.#requireState(tracked, "started");
-		this.#revalidateForOperation(tracked, "execution.failed");
+		this.#revalidateForOperation(tracked, "execution.failed", true);
 		this.#transition(tracked, "running", "execution.running");
 		let result: MeshExecutionRunResult;
 		try {
@@ -486,6 +488,7 @@ export class MeshNodeAgent {
 			return current.cancelRecord;
 		}
 		if (current.state === "cancelling" && current.cancelPromise !== undefined) return current.cancelPromise;
+		this.#revalidateAfterPort(current, "execution.failed");
 		this.#requireNotReconciliation(current);
 		try {
 			if (result.outcome === "succeeded") {
@@ -748,23 +751,44 @@ export class MeshNodeAgent {
 		return current;
 	}
 
-	#revalidateForOperation(tracked: AcceptedAssignment, rejectedEvent: MeshNodeLifecycleEventType): void {
+	#revalidateForOperation(tracked: AcceptedAssignment, rejectedEvent: MeshNodeLifecycleEventType, requireFullExecutionWindow = false): void {
 		try {
-			this.#validateAdmission(tracked.task, tracked.assignment, this.#getPresence(), false);
+			this.#validateAdmission(tracked.task, tracked.assignment, this.#getPresence(), false, requireFullExecutionWindow);
 		} catch (error) {
 			this.#markReconciliation(tracked, rejectedEvent, this.#toCode(error));
 			throw new MeshNodeAgentError(this.#toCode(error));
 		}
 	}
 
-	#validateAdmission(task: TaskContractV1, assignment: AssignmentLeaseV1, presence: MeshNodePresence, reserveCapacity: boolean): MeshExecutionBounds {
-		const now = this.#now();
-		this.#validateLease(task, assignment, now);
-		this.#validatePresence(task, assignment, presence, now, reserveCapacity);
-		return this.#executionBounds(task);
+	/**
+	 * A port may have launched work before its promise settles. If the deadline
+	 * or local admission conditions changed while it was awaited, quarantine the
+	 * ticket rather than emitting a success or releasing the reservation.
+	 */
+	#revalidateAfterPort(tracked: AcceptedAssignment, rejectedEvent: MeshNodeLifecycleEventType, requireFullExecutionWindow = false): void {
+		try {
+			this.#validateAdmission(tracked.task, tracked.assignment, this.#getPresence(), false, requireFullExecutionWindow);
+		} catch (error) {
+			const code = this.#toCode(error);
+			return this.#reconcileAfterPort(tracked.assignment.assignmentId, rejectedEvent, code, code);
+		}
 	}
 
-	#validateLease(task: TaskContractV1, assignment: AssignmentLeaseV1, now: number): void {
+	#validateAdmission(
+		task: TaskContractV1,
+		assignment: AssignmentLeaseV1,
+		presence: MeshNodePresence,
+		reserveCapacity: boolean,
+		requireFullExecutionWindow: boolean,
+	): MeshExecutionBounds {
+		const now = this.#now();
+		const bounds = this.#executionBounds(task);
+		this.#validateLease(task, assignment, now, bounds, requireFullExecutionWindow);
+		this.#validatePresence(task, assignment, presence, now, reserveCapacity);
+		return bounds;
+	}
+
+	#validateLease(task: TaskContractV1, assignment: AssignmentLeaseV1, now: number, bounds: MeshExecutionBounds, requireFullExecutionWindow: boolean): void {
 		if (assignment.taskId !== task.taskId || assignment.taskDigest !== task.digest || assignment.permissionsDigest !== sha256CanonicalJson(task.permissions)) {
 			throw new MeshNodeAgentError("lease_invalid_binding");
 		}
@@ -776,6 +800,9 @@ export class MeshNodeAgent {
 		const expiresAt = Date.parse(assignment.leaseExpiresAt);
 		if (!Number.isFinite(issuedAt) || issuedAt > now) throw new MeshNodeAgentError("lease_future_issued");
 		if (!Number.isFinite(expiresAt) || expiresAt <= now) throw new MeshNodeAgentError("lease_expired");
+		if (requireFullExecutionWindow && expiresAt - now <= bounds.timeoutSeconds * 1_000) {
+			throw new MeshNodeAgentError("lease_insufficient_for_execution");
+		}
 	}
 
 	#validatePresence(task: TaskContractV1, assignment: AssignmentLeaseV1, presence: MeshNodePresence, now: number, reserveCapacity: boolean): void {

@@ -122,6 +122,13 @@ describe("LocalMesh first vertical slice", () => {
 			placementReason: { selectedNodeId: NODE, reason: "eligible_capability_match" },
 			idempotencyKey: "first-slice-assignment-001",
 		});
+		await runtime.observeWorkerCapacity({
+			workerNodeId: NODE,
+			actorPubkey: WORKER,
+			availableSlots: 1,
+			observedAt: T0,
+			expiresAt: T0 + 30_000,
+		});
 		await runtime.assign({ assignment, now: T0 + 1 });
 
 		const adapter = createOmpkExecutionAdapter(

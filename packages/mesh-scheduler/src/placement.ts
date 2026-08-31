@@ -87,6 +87,17 @@ function finiteNumber(value: number, fallback: number): number {
 	return Number.isFinite(value) ? value : fallback;
 }
 
+function hasInvalidPresenceWindow(node: PlacementNode, nowEpochMs: number): boolean {
+	const observedAt = Date.parse(node.observedAt);
+	const expiresAt = Date.parse(node.expiresAt);
+	return (
+		!Number.isFinite(observedAt) ||
+		!Number.isFinite(expiresAt) ||
+		observedAt > nowEpochMs ||
+		expiresAt <= observedAt
+	);
+}
+
 function hasExpiredPresence(node: PlacementNode, nowEpochMs: number): boolean {
 	const expiresAt = Date.parse(node.expiresAt);
 	return !Number.isFinite(expiresAt) || expiresAt <= nowEpochMs;
@@ -107,6 +118,7 @@ function taskDisallowsNode(task: TaskContractV1, node: PlacementNode): boolean {
 }
 
 function exceedsTrustZone(task: TaskContractV1, node: PlacementNode): boolean {
+	if (EXPOSURE_RANK[node.trustZone] === undefined) return true;
 	const maximumExposure = task.routing.trustZoneMin;
 	return maximumExposure !== undefined && EXPOSURE_RANK[node.trustZone] > EXPOSURE_RANK[maximumExposure];
 }
@@ -132,8 +144,10 @@ function evaluateNode(request: PlacementRequest, node: PlacementNode): Placement
 	const reasons: PlacementRejectionCode[] = [];
 	if (node.draining) reasons.push("draining");
 	if (!node.healthy) reasons.push("unhealthy");
-	if (policy?.requireFreshPresence !== false && hasExpiredPresence(node, request.nowEpochMs)) reasons.push("stale_presence");
-	if (!Number.isFinite(node.availableSlots) || node.availableSlots < 1) reasons.push("no_available_slots");
+	if (hasInvalidPresenceWindow(node, request.nowEpochMs) || (policy?.requireFreshPresence !== false && hasExpiredPresence(node, request.nowEpochMs))) {
+		reasons.push("stale_presence");
+	}
+	if (!Number.isSafeInteger(node.availableSlots) || node.availableSlots < 1) reasons.push("no_available_slots");
 	if (taskDisallowsNode(task, node)) reasons.push("forbidden_node");
 	if (node.interactive && task.routing.activeMachineAllowed !== true) reasons.push("interactive_node_protected");
 	if (node.activeInteractiveUser && policy?.allowActiveInteractiveNodes !== true) {

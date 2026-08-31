@@ -17,6 +17,8 @@ const FORBIDDEN_PATH_SEGMENTS = new Set(["__proto__", "constructor", "prototype"
 
 export type ExecutorMeshExecutionErrorCode =
 	| "approval_required"
+	| "assignment_lease_expired"
+	| "assignment_lease_insufficient"
 	| "cancellation_uncertain"
 	| "catalog_fingerprint_mismatch"
 	| "context_binding_mismatch"
@@ -59,6 +61,8 @@ export interface ExecutorMcpGatewayRequest {
 	readonly endpointId: string;
 	readonly code: string;
 	readonly timeoutSeconds: number;
+	/** Absolute node-issued ticket deadline; adapters must never outlive it. */
+	readonly deadlineEpochMs: number;
 	readonly metadata: ExecutorMcpInvocationMetadata;
 }
 
@@ -153,6 +157,8 @@ export class ExecutorHttpGatewayError extends Error {
 export interface ExecutorHttpCodeGatewayOptions {
 	readonly endpoints: readonly ExecutorHttpEndpoint[];
 	readonly transport?: ExecutorHttpTransport;
+	/** Node-local clock; injectable so deadline behavior is independently testable. */
+	readonly now?: () => number;
 }
 
 interface RegisteredExecutorHttpEndpoint {
@@ -163,6 +169,8 @@ interface RegisteredExecutorHttpEndpoint {
 export interface ExecutorMeshExecutionPortOptions {
 	readonly gateway: ExecutorMcpGateway;
 	readonly trustedEndpoints: readonly TrustedExecutorEndpoint[];
+	/** Node-local clock; production uses the system clock and tests may inject one. */
+	readonly now?: () => number;
 }
 
 interface PreparedInvocation {
@@ -220,13 +228,21 @@ interface ExecutorRequestDeadline {
 	cancel(): void;
 }
 
-function createExecutorRequestDeadline(timeoutSeconds: number): ExecutorRequestDeadline {
+function createExecutorRequestDeadline(timeoutSeconds: number, deadlineEpochMs: number, nowEpochMs: number): ExecutorRequestDeadline {
 	const timeoutMs = timeoutSeconds * 1_000;
-	if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds <= 0 || timeoutMs > 2_147_483_647) {
+	if (
+		!Number.isSafeInteger(timeoutSeconds) ||
+		timeoutSeconds <= 0 ||
+		timeoutMs > 2_147_483_647 ||
+		!Number.isFinite(deadlineEpochMs) ||
+		!Number.isFinite(nowEpochMs)
+	) {
 		throw new ExecutorHttpGatewayError("request_invalid");
 	}
+	const deadlineMs = Math.min(timeoutMs, Math.floor(deadlineEpochMs - nowEpochMs));
+	if (deadlineMs <= 0) throw new ExecutorHttpGatewayError("transport_timed_out");
 	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), timeoutMs);
+	const timeout = setTimeout(() => controller.abort(), deadlineMs);
 	return Object.freeze({
 		signal: controller.signal,
 		cancel: () => clearTimeout(timeout),
@@ -265,6 +281,7 @@ function awaitAbortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<
 export class ExecutorHttpCodeGateway implements ExecutorMcpGateway {
 	readonly #endpoints: ReadonlyMap<string, RegisteredExecutorHttpEndpoint>;
 	readonly #transport: ExecutorHttpTransport;
+	readonly #now: () => number;
 
 	constructor(options: ExecutorHttpCodeGatewayOptions) {
 		const endpoints = new Map<string, RegisteredExecutorHttpEndpoint>();
@@ -288,12 +305,13 @@ export class ExecutorHttpCodeGateway implements ExecutorMcpGateway {
 		}
 		this.#endpoints = endpoints;
 		this.#transport = options.transport ?? new FetchExecutorHttpTransport();
+		this.#now = options.now ?? Date.now;
 	}
 
 	async invoke(request: ExecutorMcpGatewayRequest): Promise<ExecutorMcpGatewayResult> {
 		const endpoint = this.#endpoints.get(request.endpointId);
 		if (endpoint === undefined) throw new ExecutorHttpGatewayError("endpoint_not_registered");
-		const deadline = createExecutorRequestDeadline(request.timeoutSeconds);
+		const deadline = createExecutorRequestDeadline(request.timeoutSeconds, request.deadlineEpochMs, this.#now());
 		const headers: Record<string, string> = {
 			accept: "application/json",
 			"content-type": "application/json",
@@ -322,7 +340,11 @@ export class ExecutorHttpCodeGateway implements ExecutorMcpGateway {
 
 			try {
 				if (!response.ok) throw new ExecutorHttpGatewayError("transport_unavailable");
-				return parseExecutorHttpResult(await awaitAbortable(response.json(), deadline.signal));
+				const result = parseExecutorHttpResult(await awaitAbortable(response.json(), deadline.signal));
+				// A response can win the event loop race with the abort timer. Never
+				// expose a direct-gateway success after the absolute ticket deadline.
+				if (this.#now() >= request.deadlineEpochMs) throw new ExecutorHttpGatewayError("transport_timed_out");
+				return result;
 			} catch (error) {
 				if (error instanceof ExecutorHttpGatewayError) throw error;
 				throw new ExecutorHttpGatewayError("response_invalid");
@@ -355,6 +377,7 @@ function checkedExitCode(value: number | undefined): number | undefined {
 export class ExecutorMeshExecutionPort implements MeshNodeExecutionPort {
 	readonly #gateway: ExecutorMcpGateway;
 	readonly #trustedEndpoints: ReadonlyMap<string, TrustedExecutorEndpoint>;
+	readonly #now: () => number;
 
 	constructor(options: ExecutorMeshExecutionPortOptions) {
 		this.#gateway = options.gateway;
@@ -365,6 +388,7 @@ export class ExecutorMeshExecutionPort implements MeshNodeExecutionPort {
 			endpoints.set(endpoint.endpointId, Object.freeze({ ...endpoint }));
 		}
 		this.#trustedEndpoints = endpoints;
+		this.#now = options.now ?? Date.now;
 	}
 
 	async start(context: MeshNodeExecutionContext): Promise<void> {
@@ -373,6 +397,7 @@ export class ExecutorMeshExecutionPort implements MeshNodeExecutionPort {
 
 	async run(context: MeshNodeExecutionContext): Promise<MeshExecutionRunResult> {
 		const invocation = this.#prepare(context);
+		const deadlineEpochMs = this.#executionDeadline(context);
 		// A rejected gateway call can follow an accepted POST. It is not evidence of
 		// a known remote failure, so the node must reconcile instead of terminally
 		// recording failure and releasing its reservation.
@@ -381,9 +406,11 @@ export class ExecutorMeshExecutionPort implements MeshNodeExecutionPort {
 				endpointId: invocation.endpointId,
 				code: invocation.code,
 				timeoutSeconds: context.bounds.timeoutSeconds,
+				deadlineEpochMs,
 				metadata: invocation.metadata,
 			}),
 		);
+		if (this.#now() >= deadlineEpochMs) throw new ExecutorMeshExecutionError("assignment_lease_expired");
 
 		if (result.status === "approval_required") throw new ExecutorMeshExecutionError("approval_required");
 		if (result.status === "succeeded") {
@@ -464,6 +491,19 @@ export class ExecutorMeshExecutionPort implements MeshNodeExecutionPort {
 			code: `return await tools.${spec.toolPath.join(".")}(${canonicalizeJson(spec.args)});`,
 			metadata,
 		});
+	}
+
+	/** A direct port caller receives the same strict deadline protection as a node lifecycle caller. */
+	#executionDeadline(context: MeshNodeExecutionContext): number {
+		const deadlineEpochMs = Date.parse(context.assignment.leaseExpiresAt);
+		const nowEpochMs = this.#now();
+		const timeoutMs = context.bounds.timeoutSeconds * 1_000;
+		if (!Number.isFinite(deadlineEpochMs) || !Number.isFinite(nowEpochMs) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+			throw new ExecutorMeshExecutionError("assignment_lease_insufficient");
+		}
+		if (deadlineEpochMs <= nowEpochMs) throw new ExecutorMeshExecutionError("assignment_lease_expired");
+		if (deadlineEpochMs - nowEpochMs <= timeoutMs) throw new ExecutorMeshExecutionError("assignment_lease_insufficient");
+		return deadlineEpochMs;
 	}
 
 	#assertInvocation(spec: ExecutorInvocationSpec): void {

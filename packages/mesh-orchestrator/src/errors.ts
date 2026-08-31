@@ -20,10 +20,41 @@ export class SchedulerLeaseConflictError extends MeshRuntimeError {
 	}
 }
 
+/** A worker ticket can never survive the scheduler authority that issued it. */
+export class AssignmentLeaseAuthorityError extends MeshRuntimeError {
+	constructor() {
+		super("An assignment lease must expire before its scheduler authority lease");
+		this.name = "AssignmentLeaseAuthorityError";
+	}
+}
+
 export class FencingViolationError extends MeshRuntimeError {
 	constructor(assignmentId: string) {
 		super(`Assignment ${assignmentId} is no longer the current fenced lease`);
 		this.name = "FencingViolationError";
+	}
+}
+
+export class WorkerCapacityConflictError extends MeshRuntimeError {
+	constructor(workerNodeId: string) {
+		super(`Worker ${workerNodeId} has no durable execution capacity available`);
+		this.name = "WorkerCapacityConflictError";
+	}
+}
+
+export type WorkerCapacityObservationErrorCode =
+	| "capacity_observation_conflict"
+	| "capacity_observation_stale"
+	| "capacity_observation_unavailable";
+
+/** A capacity fact could not safely become (or remain) authoritative. */
+export class WorkerCapacityObservationError extends MeshRuntimeError {
+	readonly code: WorkerCapacityObservationErrorCode;
+
+	constructor(code: WorkerCapacityObservationErrorCode) {
+		super(`Worker capacity observation was denied: ${code}`);
+		this.name = "WorkerCapacityObservationError";
+		this.code = code;
 	}
 }
 
