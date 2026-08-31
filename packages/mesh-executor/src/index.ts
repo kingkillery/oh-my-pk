@@ -373,19 +373,17 @@ export class ExecutorMeshExecutionPort implements MeshNodeExecutionPort {
 
 	async run(context: MeshNodeExecutionContext): Promise<MeshExecutionRunResult> {
 		const invocation = this.#prepare(context);
-		let result: ExecutorMcpGatewayResult;
-		try {
-			result = await this.#gateway.invoke(
-				Object.freeze({
-					endpointId: invocation.endpointId,
-					code: invocation.code,
-					timeoutSeconds: context.bounds.timeoutSeconds,
-					metadata: invocation.metadata,
-				}),
-			);
-		} catch {
-			return Object.freeze({ outcome: "failed" });
-		}
+		// A rejected gateway call can follow an accepted POST. It is not evidence of
+		// a known remote failure, so the node must reconcile instead of terminally
+		// recording failure and releasing its reservation.
+		const result = await this.#gateway.invoke(
+			Object.freeze({
+				endpointId: invocation.endpointId,
+				code: invocation.code,
+				timeoutSeconds: context.bounds.timeoutSeconds,
+				metadata: invocation.metadata,
+			}),
+		);
 
 		if (result.status === "approval_required") throw new ExecutorMeshExecutionError("approval_required");
 		if (result.status === "succeeded") {
