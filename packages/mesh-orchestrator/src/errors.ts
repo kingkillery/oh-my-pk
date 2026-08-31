@@ -33,3 +33,15 @@ export class TransitionViolationError extends MeshRuntimeError {
 		this.name = "TransitionViolationError";
 	}
 }
+
+/**
+ * The durable state document was present but cannot safely be interpreted.
+ * Callers must repair or restore the database; this adapter never replaces a
+ * suspect document with an empty authority state.
+ */
+export class MeshRuntimeCorruptionError extends MeshRuntimeError {
+	constructor(reason: string) {
+		super(`Mesh runtime durable state is corrupt: ${reason}`);
+		this.name = "MeshRuntimeCorruptionError";
+	}
+}
