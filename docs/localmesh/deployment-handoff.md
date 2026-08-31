@@ -22,6 +22,7 @@ Create one durable runtime authority for a deployment scope:
 ```text
 SqliteMeshRuntimeRepository
   -> MeshOrchestrator(receiptVerifierResolver, clock)
+  -> MeshSchedulerIssuanceCoordinator(runtime, signer, verifier, clock)
   -> MeshControlApi(taskEnvelopeVerifier, authorizer, clock)
 ```
 
@@ -29,6 +30,8 @@ SqliteMeshRuntimeRepository
 - The receipt verifier resolver is backed by the authoritative assignment record. It returns the expected worker verifier for that lease, never one selected from a receipt signature.
 - The clock is controller-owned and used at every durable boundary. Do not use worker-provided timestamps for current lease or scheduler authority.
 - Persist and reopen the same repository; do not create an in-memory fallback in a production controller.
+- Construct `MeshSchedulerIssuanceCoordinator` with the same durable `MeshOrchestrator`, a fixed scheduler signer, its exact trusted public verifier, and the controller clock. The coordinator owns deterministic placement, scheduler-lease acquisition, fencing-token allocation, signed assignment construction, durable assignment commit, capacity observations, and exact-current recovery replay.
+- Generate a caller-stable `assignmentId` per task attempt and persist it with delivery state. Reusing it after a restart asks for exact-current replay only; never generate a new assignment ID merely because delivery acknowledgement was lost.
 
 Each node is composed separately:
 
@@ -42,11 +45,12 @@ The node’s trusted scheduler verifier allow-list is fixed local configuration.
 
 1. Accept task ingress only as a signed task envelope with a matching outer idempotency key through `MeshControlApi`.
 2. Let the controller’s policy adapter decide only after signature verification succeeds.
-3. Acquire the scheduler lease and call `MeshOrchestrator.assign` with a validated assignment. The assignment must be signed by the current scheduler before delivery.
-4. Call `await MeshNodeAgent.accept({ task, signedAssignment })`. Never deliver a bare assignment to a node or call lifecycle operations before this admission succeeds.
-5. The assigned worker creates a receipt, signs it with its configured worker identity, and submits the signed envelope to `MeshOrchestrator.recordReceipt`.
-6. To inspect a completed chain, call `await verifyEvidenceChain` with signed receipt envelopes and a resolver backed by the authoritative assignment store. This is read-only validation, not a completion decision; a self-hashed bare receipt is not evidence.
-7. Drain the orchestrator outbox through a transport adapter only after the durable transaction commits. Transport publication is delivery, not a command path.
+3. Call `await MeshSchedulerIssuanceCoordinator.issue({ assignmentId, taskId, nodes, schedulerLeaseDurationMs, assignmentLeaseDurationMs, renewAfterSeconds, policy })`. Do not acquire the scheduler lease, allocate fencing tokens, construct assignment leases, sign assignments, or call `MeshOrchestrator.assign` directly in deployment code.
+4. Persist the returned signed assignment in the deployment delivery journal before transport. On restart, call `issue` again with the same assignment ID and current node observations; deliver only the returned exact-current envelope. A replay can fail closed when scheduler authority, assignment lease, worker capacity, or presence is no longer current.
+5. Call `await MeshNodeAgent.accept({ task, signedAssignment })`. Never deliver a bare assignment to a node or call lifecycle operations before this admission succeeds.
+6. The assigned worker creates a receipt, signs it with its configured worker identity, and submits the signed envelope to `MeshOrchestrator.recordReceipt`.
+7. To inspect a completed chain, call `await verifyEvidenceChain` with signed receipt envelopes and a resolver backed by the authoritative assignment store. This is read-only validation, not a completion decision; a self-hashed bare receipt is not evidence.
+8. Drain the orchestrator outbox through a transport adapter only after the durable transaction commits. Transport publication is delivery, not a command path.
 
 ## Current capability gates
 
@@ -70,6 +74,8 @@ The deployment-side integration is ready for independent review when it demonstr
 - An unsigned or altered task fails before local authorization.
 - An unsigned, altered, untrusted, expired, or conflicting scheduler assignment never reaches the execution port.
 - A duplicate delivery of the exact same signed assignment is idempotent; a reused assignment ID with a different signed payload is rejected.
+- A controller restart reopens the same SQLite authority and delivery journal, reissues with the same assignment ID, and either delivers the byte-equivalent current assignment payload or fails closed. It must not reserve capacity twice, create a second assignment, or publish a second terminal transition.
+- A zero-slot or newer capacity observation closes an older capacity window and prevents fresh signing or recovery delivery to that worker.
 - A bare, bad-key, or lease-mismatched receipt cannot complete a task or appear as verified evidence.
 - A receipt from an old scheduler epoch or an expired lease cannot finalize work.
 - An active interactive computer is not selected or admitted for protected work.
