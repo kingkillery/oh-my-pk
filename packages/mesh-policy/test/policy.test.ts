@@ -121,4 +121,41 @@ describe("mesh policy", () => {
 			obligations: ["bind_exact_action_parameters"],
 		});
 	});
+
+	test("permits a more trusted local placement under a private delegation", () => {
+		const root = task();
+		const delegation = parseIdentityDelegation({
+			schemaVersion: "ompk.identity-delegation/v1",
+			delegationId: "delegation-local-001",
+			issuerPubkey: "a".repeat(64),
+			subjectPubkey: "b".repeat(64),
+			role: "agent",
+			allowedActions: ["publish"],
+			toolScopes: ["shell"],
+			secretScopes: ["mesh-token"],
+			repositoryScopes: ["kingkillery/localmesh"],
+			trustZone: "private",
+			notBefore: "2026-08-01T00:00:00Z",
+			expiresAt: "2026-09-01T00:00:00Z",
+			revocationEpoch: 1,
+			serial: 1,
+		});
+		const decision = evaluateAuthorization({
+			task: root,
+			scope: { ...scopeFor(root), routing: { ...root.routing, trustZoneMin: "local" } },
+			evaluatedAt: "2026-08-31T00:00:00Z",
+			signatureVerified: true,
+			delegation,
+			revocations: [],
+			subjectPubkey: delegation.subjectPubkey,
+			action: "publish",
+			tools: ["shell"],
+			secrets: ["mesh-token"],
+			repository: "kingkillery/localmesh",
+			trustZone: "local",
+			approvalGranted: true,
+		});
+
+		expect(decision).toEqual({ outcome: "allow", reasons: [], obligations: [] });
+	});
 });

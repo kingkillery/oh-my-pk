@@ -50,7 +50,8 @@ export interface AuthorizationRequest {
 	readonly approvalGranted?: boolean;
 }
 
-const TRUST_ORDER: Readonly<Record<TrustZone, number>> = Object.freeze({ local: 0, private: 1, partner: 2, public: 3 });
+/** Higher rank means a more trusted, less externally exposed execution zone. */
+const TRUST_ORDER: Readonly<Record<TrustZone, number>> = Object.freeze({ public: 0, partner: 1, private: 2, local: 3 });
 const SIDE_EFFECT_ORDER: Readonly<Record<TaskPermissions["externalSideEffects"], number>> = Object.freeze({ none: 0, approval_required: 1, preapproved_scoped: 2 });
 const LIMIT_FIELDS = ["timeoutSeconds", "cpuMax", "memoryBytesMax", "diskBytesMax", "pidMax", "networkBytesMax", "retriesMax"] as const;
 
@@ -242,7 +243,7 @@ export function evaluateAuthorization(request: AuthorizationRequest): PolicyDeci
 	if (!stringsAreSubset(request.tools, delegation.toolScopes)) reasons.push("tool_outside_delegation");
 	if (!stringsAreSubset(request.secrets, delegation.secretScopes)) reasons.push("secret_outside_delegation");
 	if (request.repository !== undefined && !delegation.repositoryScopes.includes(request.repository)) reasons.push("repository_outside_delegation");
-	if (TRUST_ORDER[request.trustZone] > TRUST_ORDER[delegation.trustZone]) reasons.push("trust_zone_downgraded");
+	if (TRUST_ORDER[request.trustZone] < TRUST_ORDER[delegation.trustZone]) reasons.push("trust_zone_downgraded");
 	if (request.costUsd !== undefined && delegation.maxCostUsd !== undefined && request.costUsd > delegation.maxCostUsd) reasons.push("delegation_cost_exceeded");
 	if (reasons.length > 0) return frozenDecision("deny", reasons);
 	const approvalNeeded = request.task.permissions.externalSideEffects === "approval_required" || request.task.approvalPolicy?.requiredFor?.includes(request.action) === true;
