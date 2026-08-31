@@ -1,0 +1,11 @@
+{
+	"defaults": {
+		"teamId": "5dc9095f-1177-475c-975f-6450e591972f"
+	},
+	"projects": {
+		"kingkillery/oh-my-pk": {
+			"projectId": "26671d64-19b8-4281-99ba-dfd00447986c",
+			"adoptedAt": "2026-08-31T19:10:50.587Z"
+		}
+	}
+}
