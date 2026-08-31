@@ -45,6 +45,22 @@ function signedTask(): Record<string, unknown> {
 	return { ...task, digest: sha256CanonicalJson(task) };
 }
 
+function executorInvocation(args: unknown = { owner: "kingkillery", repo: "oh-my-pk" }): Record<string, unknown> {
+	return {
+		protocol: "executor-mcp-v1",
+		endpointId: "localExecutor",
+		toolPath: ["github", "issues", "create"],
+		args,
+		inputDigest: sha256CanonicalJson(args),
+		catalogFingerprint: "c".repeat(64),
+	};
+}
+
+function signedExecutorTask(): Record<string, unknown> {
+	const task = { ...unsignedTask(), executorInvocation: executorInvocation() };
+	return { ...task, digest: sha256CanonicalJson(task) };
+}
+
 describe("mesh contracts", () => {
 	test("canonicalizes key order and validates a correctly signed task", () => {
 		expect(sha256CanonicalJson({ z: [2, { b: true, a: null }], a: "first" })).toBe(
@@ -74,6 +90,36 @@ describe("mesh contracts", () => {
 		} catch (error) {
 			expect(error).toBeInstanceOf(MeshValidationError);
 			expect(String(error)).not.toContain("secret-value-must-not-appear");
+		}
+	});
+
+	test("validates a signed, data-only Executor invocation and binds its canonical args", () => {
+		const parsed = parseTaskContract(signedExecutorTask());
+		expect(parsed.executorInvocation).toEqual({
+			protocol: "executor-mcp-v1",
+			endpointId: "localExecutor",
+			toolPath: ["github", "issues", "create"],
+			args: { owner: "kingkillery", repo: "oh-my-pk" },
+			inputDigest: sha256CanonicalJson({ repo: "oh-my-pk", owner: "kingkillery" }),
+			catalogFingerprint: "c".repeat(64),
+		});
+
+		const changedPath = signedExecutorTask();
+		const invocation = changedPath.executorInvocation as Record<string, unknown>;
+		changedPath.executorInvocation = { ...invocation, toolPath: ["github", "repos", "delete"] };
+		expect(() => parseTaskContract(changedPath)).toThrow(MeshValidationError);
+	});
+
+	test("rejects unsafe Executor paths, stale arg digests, and extra invocation fields", () => {
+		for (const invocation of [
+			{ ...executorInvocation(), toolPath: ["github", "issues;process.exit()"] },
+			{ ...executorInvocation(), toolPath: ["__proto__", "pollute"] },
+			{ ...executorInvocation(), args: { changed: true } },
+			{ ...executorInvocation(), extra: "not-allowed" },
+		]) {
+			const task = { ...unsignedTask(), executorInvocation: invocation };
+			const signed = { ...task, digest: sha256CanonicalJson(task) };
+			expect(() => parseTaskContract(signed)).toThrow(MeshValidationError);
 		}
 	});
 });

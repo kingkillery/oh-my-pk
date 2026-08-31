@@ -10,6 +10,7 @@ import type {
 	CompletionDecisionV1,
 	EventEnvelopeV1,
 	EvidenceRecordV1,
+	ExecutorInvocationSpec,
 	ExecutionReceiptV1,
 	NodeAdvertisementV1,
 	PolicyDecisionV1,
@@ -40,11 +41,13 @@ const ROLES = new Set(["human", "orchestrator", "scheduler", "node", "worker", "
 const TRUST_ZONES = new Set(["local", "private", "partner", "public"]);
 const SHA256 = /^[a-f0-9]{64}$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const EXECUTOR_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const EXECUTOR_FORBIDDEN_PATH_SEGMENTS = new Set(["__proto__", "constructor", "prototype"]);
 
 const taskRule: ContractRule = {
 	schemaVersion: MESH_SCHEMA.task,
 	required: ["schemaVersion", "taskId", "createdAt", "requester", "goal", "mode", "acceptanceCriteria", "permissions", "execution", "routing", "artifactPolicy", "idempotencyKey", "digestAlgorithm", "digest"],
-	allowed: ["schemaVersion", "taskId", "sessionId", "createdAt", "requester", "goal", "mode", "context", "acceptanceCriteria", "constraints", "permissions", "execution", "routing", "artifactPolicy", "approvalPolicy", "idempotencyKey", "digestAlgorithm", "digest"],
+	allowed: ["schemaVersion", "taskId", "sessionId", "createdAt", "requester", "goal", "mode", "context", "acceptanceCriteria", "constraints", "permissions", "execution", "executorInvocation", "routing", "artifactPolicy", "approvalPolicy", "idempotencyKey", "digestAlgorithm", "digest"],
 	ids: { taskId: "task", sessionId: "session" },
 	timestamps: ["createdAt"],
 	sha256: ["digest"],
@@ -201,6 +204,36 @@ function assertStringArray(value: unknown, path: string): void {
 	for (const [index, entry] of assertArray(value, path).entries()) assertString(entry, `${path}[${index}]`);
 }
 
+function assertExecutorIdentifier(value: unknown, path: string): string {
+	const identifier = assertString(value, path);
+	if (!EXECUTOR_IDENTIFIER.test(identifier) || EXECUTOR_FORBIDDEN_PATH_SEGMENTS.has(identifier)) {
+		fail("invalid_format", path, "must be a safe JavaScript identifier segment");
+	}
+	return identifier;
+}
+
+function validateExecutorInvocationSpec(record: JsonRecord, path: string): ExecutorInvocationSpec {
+	const required = ["protocol", "endpointId", "toolPath", "args", "inputDigest", "catalogFingerprint"] as const;
+	for (const field of required) if (!hasOwn(record, field)) fail("missing_field", `${path}.${field}`, "is required");
+	for (const key of Object.keys(record)) if (!required.includes(key as (typeof required)[number])) fail("additional_property", `${path}.${key}`, "is not permitted");
+	if (record.protocol !== "executor-mcp-v1") fail("invalid_value", `${path}.protocol`, "must be executor-mcp-v1");
+	assertExecutorIdentifier(record.endpointId, `${path}.endpointId`);
+	const toolPath = assertArray(record.toolPath, `${path}.toolPath`);
+	if (toolPath.length === 0) fail("invalid_value", `${path}.toolPath`, "must contain at least one tool identifier segment");
+	for (const [index, segment] of toolPath.entries()) assertExecutorIdentifier(segment, `${path}.toolPath[${index}]`);
+	assertSha256(record.inputDigest, `${path}.inputDigest`);
+	assertSha256(record.catalogFingerprint, `${path}.catalogFingerprint`);
+	if (sha256CanonicalJson(record.args) !== record.inputDigest) {
+		fail("digest_mismatch", `${path}.inputDigest`, "does not match the canonical invocation args digest");
+	}
+	return record as ExecutorInvocationSpec;
+}
+
+/** Parses an Executor invocation independently for adapters that receive it out of band. */
+export function parseExecutorInvocationSpec(input: unknown): ExecutorInvocationSpec {
+	return validateExecutorInvocationSpec(assertRecord(toImmutableJson(input), "$"), "$");
+}
+
 function omitField(record: JsonRecord, field: string): JsonRecord {
 	const result: Record<string, unknown> = {};
 	for (const key of Object.keys(record)) if (key !== field) result[key] = record[key];
@@ -216,6 +249,7 @@ function validateTaskSpecifics(record: JsonRecord): void {
 	assertStringArray(permissions.tools, "$.permissions.tools");
 	for (const field of ["secrets", "network", "filesystem"] as const) if (permissions[field] !== undefined) assertStringArray(permissions[field], `$.permissions.${field}`);
 	if (!["none", "approval_required", "preapproved_scoped"].includes(String(permissions.externalSideEffects))) fail("invalid_value", "$.permissions.externalSideEffects", "must be a known side-effect policy");
+	if (record.executorInvocation !== undefined) validateExecutorInvocationSpec(assertRecord(record.executorInvocation, "$.executorInvocation"), "$.executorInvocation");
 	const routing = assertRecord(record.routing, "$.routing");
 	if (routing.trustZoneMin !== undefined && !TRUST_ZONES.has(String(routing.trustZoneMin))) fail("invalid_value", "$.routing.trustZoneMin", "must be a known trust zone");
 	for (const field of ["preferredNodes", "forbiddenNodes", "requiredCapabilities"] as const) if (routing[field] !== undefined) assertStringArray(routing[field], `$.routing.${field}`);

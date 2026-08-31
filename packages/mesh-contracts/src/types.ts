@@ -103,6 +103,20 @@ export interface TaskContextItem extends JsonRecord {
 	readonly description?: string;
 }
 
+/**
+ * A signed, data-only request for the Executor MCP bridge. The tool path is
+ * deliberately separated into validated identifier segments so it can never
+ * carry arbitrary JavaScript into a node-local Executor adapter.
+ */
+export interface ExecutorInvocationSpec extends JsonRecord {
+	readonly protocol: "executor-mcp-v1";
+	readonly endpointId: string;
+	readonly toolPath: readonly string[];
+	readonly args: JsonValue;
+	readonly inputDigest: string;
+	readonly catalogFingerprint: string;
+}
+
 export interface TaskContractV1 extends JsonRecord {
 	readonly schemaVersion: typeof MESH_SCHEMA.task;
 	readonly taskId: string;
@@ -116,6 +130,7 @@ export interface TaskContractV1 extends JsonRecord {
 	readonly constraints?: JsonRecord;
 	readonly permissions: TaskPermissions;
 	readonly execution: ExecutionLimits;
+	readonly executorInvocation?: ExecutorInvocationSpec;
 	readonly routing: RoutingRequirements;
 	readonly artifactPolicy: ArtifactPolicy;
 	readonly approvalPolicy?: ApprovalPolicy;
