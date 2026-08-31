@@ -54,15 +54,24 @@ function assertNoSecretMaterial(value: JsonValue, path: string): void {
 	}
 }
 
+/** Metadata entries may be nested, but no nested object may smuggle file bytes or a patch. */
+function assertNoEmbeddedFileContent(value: JsonValue, path: string): void {
+	if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return;
+	if (Array.isArray(value)) {
+		for (const [index, entry] of value.entries()) assertNoEmbeddedFileContent(entry, `${path}[${index}]`);
+		return;
+	}
+	for (const [key, entry] of Object.entries(value)) {
+		if (FORBIDDEN_FILE_FIELDS.has(key.toLowerCase())) fail(`${path}.${key}`, "must not embed workspace file content");
+		assertNoEmbeddedFileContent(entry, `${path}.${key}`);
+	}
+}
+
 function assertMetadataEntries(value: JsonValue | undefined, path: string): void {
 	if (!Array.isArray(value)) fail(path, "must be an array of metadata records");
 	for (const [index, entry] of value.entries()) {
 		const record = asRecord(entry, `${path}[${index}]`);
-		for (const key of Object.keys(record)) {
-			if (FORBIDDEN_FILE_FIELDS.has(key.toLowerCase())) {
-				fail(`${path}[${index}].${key}`, "must not embed workspace file content");
-			}
-		}
+		assertNoEmbeddedFileContent(record, `${path}[${index}]`);
 		if (typeof record.path !== "string" || record.path.length === 0) fail(`${path}[${index}].path`, "must be a path");
 	}
 }
