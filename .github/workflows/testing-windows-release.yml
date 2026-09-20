@@ -1,0 +1,292 @@
+name: Testing Windows Release
+
+# Dedicated Windows-only testing channel. Pushing a `testing-windows-*` tag
+# builds the tagged source on GitHub-hosted runners and publishes a GitHub
+# prerelease with a zipped `oh-my-pk.exe` plus a SHA-256 checksum file.
+#
+# This workflow is intentionally separate from `ci.yml`:
+#   * `ci.yml` only triggers on `main` branch pushes / PRs / dispatch, so a
+#     `testing-windows-*` tag push never reaches the stable release pipeline.
+#   * This workflow never publishes to npm, Homebrew, or the Hugging Face
+#     distribution endpoint, and never marks the release "latest".
+#   * The tag must NOT start with `v` — `v*` tags are reserved for stable
+#     releases and are rejected by the prepare job below.
+on:
+   push:
+      tags:
+         - "testing-windows-*"
+   workflow_dispatch:
+
+concurrency:
+   group: testing-windows-${{ github.ref }}
+   cancel-in-progress: false
+
+env:
+   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# Dependency/build jobs inherit read-only contents access. Only the final
+# release job widens to contents: write.
+permissions:
+   contents: read
+   actions: read
+
+jobs:
+   prepare:
+      name: Validate tag and resolve build metadata
+      runs-on: ubuntu-22.04
+      outputs:
+         tag: ${{ steps.meta.outputs.tag }}
+         version: ${{ steps.meta.outputs.version }}
+         label: ${{ steps.meta.outputs.label }}
+         expected-version: ${{ steps.meta.outputs.expected-version }}
+         source-hash: ${{ steps.hash.outputs.source-hash }}
+      steps:
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+           with:
+              persist-credentials: false
+         - name: Validate testing tag
+           id: meta
+           shell: bash
+           env:
+              REF_NAME: ${{ github.ref_name }}
+              GIT_SHA: ${{ github.sha }}
+           run: |
+              set -euo pipefail
+              # Only tag pushes may release. A manual dispatch from any other
+              # ref fails closed here.
+              if [ "${{ github.ref_type }}" != "tag" ]; then
+                echo "::error::testing releases only run from pushed testing-windows-* tags (got ${{ github.ref }})."
+                exit 1
+              fi
+              # Stable releases own v* tags; a testing tag must never look like one.
+              case "$REF_NAME" in
+                v*) echo "::error::tag '$REF_NAME' starts with 'v'; testing tags must not collide with stable release tags."; exit 1 ;;
+              esac
+              # Strict shape: testing-windows-<semver>-<yyyymmdd>
+              if ! printf '%s' "$REF_NAME" | grep -Eq '^testing-windows-[0-9]+\.[0-9]+\.[0-9]+-[0-9]{8}$'; then
+                echo "::error::tag '$REF_NAME' must match testing-windows-<semver>-<yyyymmdd> (e.g. testing-windows-16.4.25-20260920)."
+                exit 1
+              fi
+              tag_version="${REF_NAME#testing-windows-}"
+              tag_version="${tag_version%-*}"
+              pkg_version="$(jq -r .version packages/coding-agent/package.json)"
+              if [ "$tag_version" != "$pkg_version" ]; then
+                echo "::error::tag version '$tag_version' does not match packages/coding-agent/package.json version '$pkg_version'."
+                exit 1
+              fi
+              tag_date="${REF_NAME##*-}"
+              short_sha="${GIT_SHA:0:10}"
+              label="testing.${tag_date}.${short_sha}"
+              expected="${pkg_version}+${label}"
+              {
+                echo "tag=$REF_NAME"
+                echo "version=$pkg_version"
+                echo "label=$label"
+                echo "expected-version=$expected"
+              } >> "$GITHUB_OUTPUT"
+              echo "Tag $REF_NAME -> display version $expected"
+         - name: Compute native source hash
+           id: hash
+           shell: bash
+           run: |
+              set -euo pipefail
+              # Same input set as ci.yml's native_artifact_lookup so artifact
+              # names and caches stay comparable across workflows.
+              source_hash=$(find crates Cargo.toml Cargo.lock rust-toolchain.toml \
+                      packages/natives/scripts packages/natives/package.json \
+                      scripts/ci-build-native.ts scripts/host-detect.ts \
+                      -type f -print0 \
+                    | sort -z \
+                    | xargs -0 sha256sum \
+                    | sha256sum \
+                    | cut -c1-16)
+              echo "source-hash=$source_hash" >> "$GITHUB_OUTPUT"
+              echo "Native source hash: $source_hash"
+
+   native_win32:
+      name: "Native: win32 x64 (${{ matrix.variant }})"
+      needs: [prepare]
+      strategy:
+         fail-fast: false
+         matrix:
+            variant: [baseline, modern]
+      runs-on: ubuntu-22.04
+      steps:
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+           with:
+              persist-credentials: false
+         - uses: ./.github/actions/build-native
+           with:
+              hash: ${{ needs.prepare.outputs.source-hash }}
+              platform: win32
+              arch: x64
+              variant: ${{ matrix.variant }}
+              target: x86_64-pc-windows-msvc
+
+   build_windows:
+      name: Build and verify Windows testing binary
+      needs: [prepare, native_win32]
+      runs-on: windows-latest
+      timeout-minutes: 60
+      steps:
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+           with:
+              persist-credentials: false
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+           with:
+              bun-version: "1.3.14"
+         - name: Cache bun dependencies
+           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+           with:
+              path: ~/.bun/install/cache
+              key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+         - run: bun install --frozen-lockfile
+         - name: Download native addon(s)
+           uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+           with:
+              pattern: pi-natives-win32-x64-*-h${{ needs.prepare.outputs.source-hash }}
+              path: packages/natives/native
+              merge-multiple: true
+         - name: Build testing binary
+           # Package builder (not ci-release-build-binaries.ts): it is the only
+           # build path that defines OMPK_BUILD_LABEL. The candidate name keeps
+           # the output distinct from the committed dist/*.exe binaries and
+           # skips the distribution-alias refresh.
+           env:
+              OMPK_BUILD_CANDIDATE_NAME: oh-my-pk-testing
+              OMPK_BUILD_LABEL: ${{ needs.prepare.outputs.label }}
+           run: bun run build
+           working-directory: packages/coding-agent
+         - name: Gate on exact display version
+           shell: pwsh
+           env:
+              EXPECTED: ${{ needs.prepare.outputs.expected-version }}
+           run: |
+              $exe = "packages/coding-agent/dist/oh-my-pk-testing.exe"
+              if (-not (Test-Path $exe)) { $exe = "packages/coding-agent/dist/oh-my-pk-testing" }
+              if (-not (Test-Path $exe)) { throw "built binary not found at $exe" }
+              $out = (& $exe --version | Out-String).Trim()
+              if ($LASTEXITCODE -ne 0) { throw "--version exited $LASTEXITCODE" }
+              Write-Host "--version output: $out"
+              if ($out -ne "oh-my-pk/$env:EXPECTED") {
+                throw "version gate failed: expected 'oh-my-pk/$env:EXPECTED', got '$out'"
+              }
+         - name: Smoke test binary
+           shell: pwsh
+           run: |
+              $exe = "packages/coding-agent/dist/oh-my-pk-testing.exe"
+              if (-not (Test-Path $exe)) { $exe = "packages/coding-agent/dist/oh-my-pk-testing" }
+              $runtime = Join-Path $env:RUNNER_TEMP "omp-smoke"
+              $env:HOME = "$runtime/home"; $env:USERPROFILE = $env:HOME
+              $env:XDG_DATA_HOME = "$runtime/xdg"; $env:LOCALAPPDATA = "$runtime/localappdata"
+              New-Item -ItemType Directory -Force -Path $env:HOME, $env:XDG_DATA_HOME, $env:LOCALAPPDATA | Out-Null
+              & $exe --smoke-test
+              if ($LASTEXITCODE -ne 0) { throw "--smoke-test exited $LASTEXITCODE" }
+         - name: Package release archive and checksum
+           shell: pwsh
+           run: |
+              $exe = "packages/coding-agent/dist/oh-my-pk-testing.exe"
+              if (-not (Test-Path $exe)) { $exe = "packages/coding-agent/dist/oh-my-pk-testing" }
+              $stage = Join-Path $env:RUNNER_TEMP "pkg"
+              New-Item -ItemType Directory -Force -Path $stage | Out-Null
+              # Windows installer contract: the archive entry is oh-my-pk.exe.
+              Copy-Item $exe (Join-Path $stage "oh-my-pk.exe")
+              $zip = "oh-my-pk-windows-x64-testing.zip"
+              Compress-Archive -Path (Join-Path $stage "oh-my-pk.exe") -DestinationPath $zip -Force
+              $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+              "$hash  $zip" | Out-File -Encoding ascii -NoNewline "$zip.sha256"
+              Write-Host "SHA256: $hash"
+         - name: Upload release payload
+           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+           with:
+              name: testing-windows-payload
+              path: |
+                 oh-my-pk-windows-x64-testing.zip
+                 oh-my-pk-windows-x64-testing.zip.sha256
+              if-no-files-found: error
+
+   release:
+      name: Publish testing prerelease
+      needs: [prepare, build_windows]
+      runs-on: ubuntu-22.04
+      permissions:
+         contents: write
+      env:
+         TAG: ${{ needs.prepare.outputs.tag }}
+         EXPECTED_VERSION: ${{ needs.prepare.outputs.expected-version }}
+         LABEL: ${{ needs.prepare.outputs.label }}
+         SOURCE_SHA: ${{ github.sha }}
+      steps:
+         - name: Download release payload
+           uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+           with:
+              name: testing-windows-payload
+              path: payload
+         - name: Verify payload checksum and archive entry
+           shell: bash
+           run: |
+              set -euo pipefail
+              cd payload
+              sha256sum -c oh-my-pk-windows-x64-testing.zip.sha256
+              unzip -l oh-my-pk-windows-x64-testing.zip | grep -F "oh-my-pk.exe"
+         - name: Write release notes
+           shell: bash
+           run: |
+              set -euo pipefail
+              printf '%s\n' \
+                '## Windows testing prerelease' \
+                '' \
+                '**Testing build — not a stable release.** This prerelease ships a' \
+                'Windows x64 binary built from the tagged source for evaluation' \
+                'only. It is **unsigned**: Windows SmartScreen and some antivirus' \
+                'tools will warn on first run. There is no security certification;' \
+                'do not deploy it where that matters.' \
+                '' \
+                'The binary reports a testing display version' \
+                '(`VERSION+OMPK_BUILD_LABEL`); the base version and update checks' \
+                'are unchanged, so it never impersonates or supersedes a stable' \
+                'release.' \
+                '' \
+                '### Install (checksum first)' \
+                '' \
+                'Download `oh-my-pk-windows-x64-testing.zip` and' \
+                '`oh-my-pk-windows-x64-testing.zip.sha256`, verify the SHA-256' \
+                'checksum, then extract. See the README "Windows testing' \
+                'prereleases" section on this tag for a copy-paste PowerShell' \
+                'example. The archive contains `oh-my-pk.exe` (the same entry name' \
+                'the Windows installer uses); it is not on PATH automatically.' \
+                '' \
+                '### Provenance' \
+                '' \
+                '- Built by GitHub Actions from the tagged tree (no local' \
+                '  artifacts uploaded).' \
+                '- Native addons: win32-x64 baseline + modern variants built in' \
+                '  the same run.' \
+                '- Not published to npm, Homebrew, or the Hugging Face' \
+                '  distribution endpoint; the stable `latest` release is' \
+                '  untouched.' \
+                > release-notes.md
+              {
+                echo ""
+                echo "- Tag: \`$TAG\`"
+                echo "- Source commit: \`$SOURCE_SHA\`"
+                echo "- Display version: \`$EXPECTED_VERSION\` (label \`$LABEL\`)"
+              } >> release-notes.md
+         - name: Create GitHub prerelease
+           shell: bash
+           env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+           run: |
+              set -euo pipefail
+              cd payload
+              gh release create "$TAG" \
+                --repo "${{ github.repository }}" \
+                --verify-tag \
+                --target "$SOURCE_SHA" \
+                --title "$TAG (Windows testing)" \
+                --notes-file ../release-notes.md \
+                --prerelease \
+                --latest=false \
+                --draft=false \
+                oh-my-pk-windows-x64-testing.zip \
+                oh-my-pk-windows-x64-testing.zip.sha256

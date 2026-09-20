@@ -84,6 +84,53 @@ There is no Homebrew tap or mise registry entry for this fork — don't use
 `brew install kingkillery/tap/omp` or
 `mise use -g github:kingkillery/oh-my-pi`; neither is published.
 
+### Windows testing prereleases
+
+Occasional Windows-only **testing** builds are published as GitHub
+prereleases under `testing-windows-*` tags. They are built by GitHub Actions
+from the tagged source, are **unsigned** (expect a SmartScreen warning — do
+not disable SmartScreen or antivirus to run them), and are never marked
+"latest" or published to npm/Homebrew/Hugging Face. They are for evaluation
+only — use the stable install commands above for anything else.
+
+Current testing prerelease:
+[`testing-windows-16.4.25-20260920`](https://github.com/kingkillery/oh-my-pk/releases/tag/testing-windows-16.4.25-20260920)
+· [source tree](https://github.com/kingkillery/oh-my-pk/tree/testing-windows-16.4.25-20260920)
+· [zip asset](https://github.com/kingkillery/oh-my-pk/releases/download/testing-windows-16.4.25-20260920/oh-my-pk-windows-x64-testing.zip)
+· [checksum](https://github.com/kingkillery/oh-my-pk/releases/download/testing-windows-16.4.25-20260920/oh-my-pk-windows-x64-testing.zip.sha256)
+· [all testing releases](https://github.com/kingkillery/oh-my-pk/releases?q=testing-windows)
+
+Checksum-first install (PowerShell) — downloads the archive and its checksum
+to a unique temp directory, verifies the SHA-256 before extracting, and
+installs to a tag-specific directory so it never overwrites a stable install
+or a running testing exe. The checksum proves download integrity only — it is
+not a signature and not a security certification:
+
+```powershell
+$ErrorActionPreference = "Stop"
+$tag = "testing-windows-16.4.25-20260920"
+$base = "https://github.com/kingkillery/oh-my-pk/releases/download/$tag"
+$work = Join-Path $env:TEMP ("ompk-testing-" + [System.Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $work | Out-Null
+$zip = Join-Path $work "oh-my-pk-windows-x64-testing.zip"
+Invoke-WebRequest "$base/oh-my-pk-windows-x64-testing.zip" -OutFile $zip
+Invoke-WebRequest "$base/oh-my-pk-windows-x64-testing.zip.sha256" -OutFile "$zip.sha256"
+$expected = (Get-Content "$zip.sha256" -Raw).Trim().Split()[0].ToLower()
+if ($expected -notmatch '^[0-9a-f]{64}$') { throw "bad checksum file: '$expected'" }
+$actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+if ($actual -ne $expected) { throw "checksum mismatch: $actual != $expected" }
+$dest = "$env:LOCALAPPDATA\omp-testing\$tag"
+if (Test-Path $dest) { throw "Testing build already installed at $dest; choose a fresh directory or close/remove it deliberately." }
+Expand-Archive $zip -DestinationPath $dest
+& "$dest\oh-my-pk.exe" --version   # prints oh-my-pk/16.4.25+testing.<date>.<sha>
+```
+
+The archive contains `oh-my-pk.exe` (the same entry name the installer uses).
+Add `$dest` to `Path` or invoke it by full path; nothing is registered or
+auto-started. The separate folder only isolates the binary — it still shares
+your normal oh-my-pk user config and sessions unless you also set
+`PI_CONFIG_DIR`/`PI_CODING_AGENT_DIR` to a testing directory.
+
 ### Shell completions
 
 `oh-my-pk` (aliases: `omp`, `ompk`) generates its own completion scripts for **bash**, **zsh**, and **fish** from the live command/flag metadata, so they never drift from the actual CLI. Subcommands, flags, and enum values complete statically; model names (`--model`, `--smol`, `--slow`, `--plan`) resolve against the bundled model catalog and `--resume` against your on-disk sessions.
