@@ -2414,7 +2414,7 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 		// SQLITE_BUSY committed nothing, and re-running the same input returns
 		// the same recorded allocation. Never blind-retry where that is not
 		// true.
-		const maxAttempts = 4;
+		const maxAttempts = 8;
 		for (let attemptNo = 1; ; attemptNo++) {
 			try {
 				return this.#db
@@ -2501,7 +2501,7 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 				const message = error instanceof Error ? error.message : String(error);
 				if (/locked|busy/i.test(message) && attemptNo < maxAttempts) {
 					// Jittered backoff so queued writers do not re-collide.
-					const backoff = 25 * 2 ** (attemptNo - 1) + Math.floor(Math.random() * 20);
+					const backoff = Math.min(25 * 2 ** (attemptNo - 1), 400) + Math.floor(Math.random() * 40);
 					Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, backoff);
 					continue;
 				}

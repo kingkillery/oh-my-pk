@@ -10,8 +10,13 @@
  *   same    → 4 ok, exactly 1 allocation, 3 replays
  *   clash   → exactly 1 allocation, 3 admission_conflict refusals
  *
+ * Results arrive as one file per contender slot (not shared-file appends,
+ * which lose writes on Windows; not stdout, which vanished under load). A
+ * missing slot file makes the run INVALID — the race never happened — rather
+ * than a well-formed summary over a shrunken field.
+ *
  * Usage: bun launch-authority-race.ts <same|clash>
- * Prints JSON: {"kind":..., "allocations":n, "replays":n, "conflicts":n, "ok":n}
+ * Prints JSON: {"kind":...,"ok":n,"allocations":n,"replays":n,"conflicts":n}
  */
 
 import * as os from "node:os";
@@ -27,11 +32,15 @@ const barrierPath = `${dbPath}.barrier`;
 
 const objectives =
 	kind === "same" ? ["same mission", "same mission", "same mission", "same mission"] : ["a", "b", "c", "d"];
-const procs = objectives.map(objective =>
-	Bun.spawn(["bun", CONTENDER, dbPath, objective, barrierPath], { stdout: "pipe", stderr: "pipe" }),
+const slots = ["0", "1", "2", "3"];
+const procs = objectives.map((objective, index) =>
+	Bun.spawn(["bun", CONTENDER, dbPath, objective, barrierPath, slots[index] as string], {
+		stdout: "pipe",
+		stderr: "pipe",
+	}),
 );
 
-const readyDeadline = Date.now() + 30_000;
+const readyDeadline = Date.now() + 60_000;
 for (;;) {
 	const readyFile = Bun.file(`${barrierPath}.ready`);
 	const text = (await readyFile.exists()) ? await readyFile.text() : "";
@@ -40,12 +49,20 @@ for (;;) {
 	await Bun.sleep(10);
 }
 await Bun.write(barrierPath, "go");
+await Promise.all(procs.map(proc => proc.exited));
 
-const results: { ok: boolean; replayed?: boolean; code?: string }[] = [];
-for (const proc of procs) {
-	const out = (await new Response(proc.stdout).text()).trim();
-	await proc.exited;
-	results.push(JSON.parse(out.split("\n").filter(Boolean).pop() ?? "{}"));
+const results: { ok: boolean; replayed?: boolean; code?: string; detail?: string | null }[] = [];
+for (const slot of slots) {
+	const file = Bun.file(`${dbPath}.result.${slot}`);
+	if (!(await file.exists())) {
+		console.error(`race invalid: slot ${slot} produced no result file; refusing to summarize`);
+		process.exit(2);
+	}
+	results.push(JSON.parse(await file.text()) as { ok: boolean; replayed?: boolean; code?: string });
+}
+if (results.length !== procs.length) {
+	console.error(`race invalid: only ${results.length} of ${procs.length} contenders reported`);
+	process.exit(2);
 }
 
 const summary = {
@@ -58,11 +75,11 @@ const summary = {
 
 if (kind === "same") {
 	if (summary.ok !== 4 || summary.allocations !== 1 || summary.replays !== 3) {
-		console.error(`same-contract race violated: ${JSON.stringify(summary)}`);
+		console.error(`same-contract race violated: ${JSON.stringify(summary)} ${JSON.stringify(results)}`);
 		process.exit(1);
 	}
 } else if (summary.allocations !== 1 || summary.conflicts !== 3) {
-	console.error(`conflicting-contract race violated: ${JSON.stringify(summary)}`);
+	console.error(`conflicting-contract race violated: ${JSON.stringify(summary)} ${JSON.stringify(results)}`);
 	process.exit(1);
 }
 

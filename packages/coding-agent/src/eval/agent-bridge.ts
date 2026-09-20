@@ -9,6 +9,7 @@ import { type } from "arktype";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
+import { authorizeLifecycleAction } from "../orchestration/lifecycle-authority";
 import {
 	resolveSubagentModelRouting,
 	type SubagentModelRoutingDecision,
@@ -357,6 +358,27 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 	};
 	const parentArtifactManager = options.session.getArtifactManager?.() ?? undefined;
 	const mcpManager = options.session.mcpManager ?? MCPManager.instance();
+
+	// W3 lifecycle guard (§14.6 eval/programmatic row): when the parent
+	// session carries a registered lifecycle context, this agent() call IS a
+	// delegated child spawn and must be authorized before any allocation
+	// below (artifacts dir, output id reservation). Everything above is pure
+	// reads. An absent accessor is the legacy path, unchanged.
+	const lifecycleContext = options.session.getLifecycleExecutionContext?.();
+	if (lifecycleContext) {
+		const decision = authorizeLifecycleAction(lifecycleContext, {
+			tool: null,
+			action: "spawn_agent",
+			targets: [agentName],
+			effect: "control",
+			invocationId: outputIdBase(parsed.label, agentName),
+		});
+		if (!decision.allowed) {
+			throw new ToolError(
+				`agent() denied by lifecycle authority (${decision.code}): ${decision.reason} Escalate to the owning planner if this work is required.`,
+			);
+		}
+	}
 	const { sessionFile, artifactsDir, unregisterArtifactsDir, tempArtifactsDir } = await getArtifacts(options.session);
 	const outputManager = getOutputManager(options.session);
 	const id = await outputManager.allocate(outputIdBase(parsed.label, agentName));
