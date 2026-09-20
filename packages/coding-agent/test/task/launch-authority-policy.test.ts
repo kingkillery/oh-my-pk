@@ -9,6 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import {
 	compareRuntimeGuarantees,
+	compileLaunchAuthority,
 	computeLaunchContractDigest,
 	type GrantRecordV1,
 	KNOWN_COMPATIBILITY_CLASSIFICATIONS,
@@ -21,6 +22,15 @@ import {
 	type RuntimeGuaranteesV1,
 	validateLaunchBindingGuarantees,
 } from "../../src/task/launch-contract";
+import {
+	createTestArtifactRef,
+	createTestAuthorizationSnapshot,
+	createTestEnvelope,
+	createTestLaunchAuthority,
+	createTestResultAuthority,
+	createTestRunLimits,
+	createTestSpawnAuthority,
+} from "../helpers/lifecycle-fixtures";
 
 const DIGEST_A = "a".repeat(64);
 
@@ -330,5 +340,228 @@ describe("computeLaunchContractDigest (§14.2)", () => {
 	it("changes when any hashed field changes", () => {
 		const body = { contractId: "c-1", contractRevision: 1 };
 		expect(computeLaunchContractDigest({ ...body, contractRevision: 2 })).not.toBe(computeLaunchContractDigest(body));
+	});
+});
+
+describe("compileLaunchAuthority (§14.3)", () => {
+	it("keeps a capability that every ancestor ceiling allows", () => {
+		const result = compileLaunchAuthority(createTestAuthorizationSnapshot());
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.authority.usableCapabilities).toEqual([{ source: "builtin", name: "read" }]);
+	});
+
+	it("drops a capability the parent cannot delegate and says so", () => {
+		// `edit` is in the parent's usable set but the child requests it while
+		// an intermediate ceiling withholds it.
+		const snapshot = createTestAuthorizationSnapshot({
+			requestedAuthority: createTestLaunchAuthority({
+				usableCapabilities: [
+					{ source: "builtin", name: "read" },
+					{ source: "builtin", name: "bash" },
+				],
+			}),
+		});
+		const result = compileLaunchAuthority(snapshot);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.diagnostics.some(d => d.code === "capability_not_delegable")).toBe(true);
+	});
+
+	it("distinguishes the tool source, so a same-named tool from elsewhere is not admitted", () => {
+		const snapshot = createTestAuthorizationSnapshot({
+			requestedAuthority: createTestLaunchAuthority({
+				usableCapabilities: [{ source: "mcp", name: "read" }],
+			}),
+		});
+		const result = compileLaunchAuthority(snapshot);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.diagnostics[0]?.code).toBe("capability_not_delegable");
+	});
+
+	it("lets a planner delegate a tool it cannot itself invoke", () => {
+		// delegable is compiled against the issuer's delegable ceiling, not
+		// derived from usable. Deriving it would strip this planner.
+		const snapshot = createTestAuthorizationSnapshot({
+			requestedAuthority: createTestLaunchAuthority({
+				usableCapabilities: [],
+				delegableCapabilities: [{ source: "builtin", name: "read" }],
+			}),
+		});
+		const result = compileLaunchAuthority(snapshot);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.authority.usableCapabilities).toEqual([]);
+		expect(result.authority.delegableCapabilities).toEqual([{ source: "builtin", name: "read" }]);
+	});
+
+	it("refuses onward rights the issuer may use but may not hand on", () => {
+		// The fixture parent can USE edit but only delegates read.
+		const snapshot = createTestAuthorizationSnapshot({
+			requestedAuthority: createTestLaunchAuthority({
+				delegableCapabilities: [{ source: "builtin", name: "edit" }],
+			}),
+		});
+		const result = compileLaunchAuthority(snapshot);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.diagnostics.some(d => d.code === "capability_not_issuable")).toBe(true);
+	});
+
+	it("requires spawn depth to strictly decrease", () => {
+		const parentDelegable = createTestEnvelope({
+			spawn: createTestSpawnAuthority({ maySpawn: true, mayDelegateSpawn: true, maxDepth: 2, maxChildren: 4 }),
+		});
+		const equalDepth = compileLaunchAuthority(
+			createTestAuthorizationSnapshot({
+				parentDelegable,
+				requestedAuthority: createTestLaunchAuthority({
+					spawn: createTestSpawnAuthority({ maySpawn: true, maxDepth: 2, maxChildren: 1 }),
+				}),
+			}),
+		);
+		expect(equalDepth.ok).toBe(false);
+		if (equalDepth.ok) return;
+		expect(equalDepth.diagnostics.some(d => d.code === "spawn_depth_not_decreasing")).toBe(true);
+
+		const decreasing = compileLaunchAuthority(
+			createTestAuthorizationSnapshot({
+				parentDelegable,
+				requestedAuthority: createTestLaunchAuthority({
+					spawn: createTestSpawnAuthority({ maySpawn: true, maxDepth: 1, maxChildren: 1 }),
+				}),
+			}),
+		);
+		expect(decreasing.ok).toBe(true);
+	});
+
+	it("refuses to let a non-delegating parent confer spawn rights", () => {
+		const result = compileLaunchAuthority(
+			createTestAuthorizationSnapshot({
+				requestedAuthority: createTestLaunchAuthority({
+					spawn: createTestSpawnAuthority({ maySpawn: true, maxDepth: 1 }),
+				}),
+			}),
+		);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.diagnostics.some(d => d.code === "spawn_not_delegable")).toBe(true);
+	});
+
+	it("refuses legacy unlimited budgeting for a strict worker", () => {
+		const result = compileLaunchAuthority(
+			createTestAuthorizationSnapshot({
+				requestedAuthority: createTestLaunchAuthority({
+					budget: {
+						kind: "legacy",
+						limits: createTestRunLimits(),
+						reservation: { requests: 0, runtimeMs: 0, tokens: null, costMicrounits: null },
+						zeroMeansUnlimited: true,
+						authorityRef: "legacy-authz",
+					},
+				}),
+			}),
+		);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.diagnostics.some(d => d.code === "budget_required")).toBe(true);
+	});
+
+	it("refuses a privileged fork on a non-privileged launch class", () => {
+		const result = compileLaunchAuthority(
+			createTestAuthorizationSnapshot({
+				requestedAuthority: createTestLaunchAuthority({
+					launchClass: "strict-worker",
+					contextMode: {
+						kind: "privileged-fork",
+						parentSnapshotRef: createTestArtifactRef("artifact-fork"),
+						parentSnapshotGrantIntentId: "intent-fork",
+						snapshotVersion: 1,
+						reason: "resume parent reasoning",
+					},
+				}),
+			}),
+		);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.diagnostics.some(d => d.code === "fork_requires_privileged_helper")).toBe(true);
+	});
+
+	it("refuses a blind child that would expose its transcript", () => {
+		const result = compileLaunchAuthority(
+			createTestAuthorizationSnapshot({
+				requestedAuthority: createTestLaunchAuthority({
+					contextMode: { kind: "fresh", strategy: "blind", independence: "independent-verifier" },
+					observation: { observers: [{ principalId: "principal-parent", rights: ["transcript"] }] },
+				}),
+			}),
+		);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.diagnostics.some(d => d.code === "blind_context_transcript_observer")).toBe(true);
+	});
+
+	it("refuses a contract requiring publication it may not apply", () => {
+		const result = compileLaunchAuthority(
+			createTestAuthorizationSnapshot({
+				requestedAuthority: createTestLaunchAuthority({
+					result: createTestResultAuthority({
+						publicationRequired: true,
+						// Demanding publication while forbidding apply is the
+						// contradiction: the child could never satisfy it.
+						mutation: {
+							schemaVersion: 1,
+							apply: false,
+							allowCommit: false,
+							allowPush: false,
+							allowMerge: false,
+							approvalRef: null,
+						},
+					}),
+				}),
+			}),
+		);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.diagnostics.some(d => d.code === "inconsistent_launch_policy")).toBe(true);
+	});
+
+	it("accepts required publication when the mutation contract permits apply", () => {
+		const result = compileLaunchAuthority(
+			createTestAuthorizationSnapshot({
+				requestedAuthority: createTestLaunchAuthority({
+					result: createTestResultAuthority({ publicationRequired: true }),
+				}),
+			}),
+		);
+		expect(result.ok).toBe(true);
+	});
+
+	it("rejects an unsupported authorization snapshot version before doing any work", () => {
+		const result = compileLaunchAuthority({
+			...createTestAuthorizationSnapshot(),
+			schemaVersion: 2 as unknown as 1,
+		});
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.diagnostics).toHaveLength(1);
+		expect(result.diagnostics[0]?.code).toBe("unsupported_authorization_version");
+	});
+
+	it("deduplicates a repeated capability request", () => {
+		const result = compileLaunchAuthority(
+			createTestAuthorizationSnapshot({
+				requestedAuthority: createTestLaunchAuthority({
+					usableCapabilities: [
+						{ source: "builtin", name: "read" },
+						{ source: "builtin", name: "read" },
+					],
+				}),
+			}),
+		);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.authority.usableCapabilities).toHaveLength(1);
 	});
 });

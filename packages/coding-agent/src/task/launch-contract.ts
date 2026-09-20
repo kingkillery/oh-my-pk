@@ -2649,3 +2649,178 @@ export function computeLaunchContractDigest(contract: Record<string, unknown>): 
 	const { contractDigest: _omitted, ...rest } = contract;
 	return sha256Hex(canonicalJson(rest));
 }
+
+// --- Authority compilation (§14.3) -----------------------------------------
+
+/** Canonical identity for a source-qualified capability. */
+function capabilityKey(capability: ToolCapability): string {
+	return `${capability.source}\u0000${capability.name}`;
+}
+
+function intersectCapabilities(
+	requested: readonly ToolCapability[],
+	ceilings: readonly (readonly ToolCapability[])[],
+): readonly ToolCapability[] {
+	const ceilingKeys = ceilings.map(ceiling => new Set(ceiling.map(capabilityKey)));
+	const seen = new Set<string>();
+	const kept: ToolCapability[] = [];
+	for (const capability of requested) {
+		const key = capabilityKey(capability);
+		if (seen.has(key)) continue;
+		if (!ceilingKeys.every(ceiling => ceiling.has(key))) continue;
+		seen.add(key);
+		kept.push(Object.freeze({ source: capability.source, name: capability.name }));
+	}
+	return Object.freeze(kept);
+}
+
+export type LaunchAuthorityCompileResult =
+	| { readonly ok: true; readonly authority: LaunchAuthorityV1 }
+	| { readonly ok: false; readonly diagnostics: readonly LaunchContractDiagnostic[] };
+
+/**
+ * Compile the authority a child may hold, from an authenticated preflight
+ * snapshot.
+ *
+ * Pure: this validates structure and subset relationships only. Whether the
+ * issuer is currently authentic, and whether its grants are still live, is
+ * decided by the authorizer and the commit transaction.
+ *
+ * Two separate intersections, deliberately:
+ *   usable    = requested n parent.delegable n agent n workflow n host
+ *   delegable = requested-onward n parent.delegable n agent n workflow n host
+ *
+ * `delegable` is NOT derived from `usable`. A planner may legitimately hold
+ * the right to hand a tool to a child without holding the right to invoke it
+ * itself, so deriving one from the other would either strip that planner or
+ * silently grant it execution it was never given.
+ */
+export function compileLaunchAuthority(snapshot: LaunchAuthorizationSnapshotV1): LaunchAuthorityCompileResult {
+	const diagnostics: LaunchContractDiagnostic[] = [];
+	const requested = snapshot.requestedAuthority;
+
+	if (snapshot.schemaVersion !== 1) {
+		diagnostics.push({
+			code: "unsupported_authorization_version",
+			message: `authorization snapshot version ${String(snapshot.schemaVersion)} is not supported`,
+			path: "authorization.schemaVersion",
+		});
+		return { ok: false, diagnostics: Object.freeze(diagnostics) };
+	}
+
+	const ceilings = [
+		snapshot.parentDelegable.usableCapabilities,
+		snapshot.agentMaximum.usableCapabilities,
+		snapshot.workflowMaximum.usableCapabilities,
+		snapshot.hostMaximum.usableCapabilities,
+	];
+	const usableCapabilities = intersectCapabilities(requested.usableCapabilities, ceilings);
+	for (const capability of requested.usableCapabilities) {
+		if (!usableCapabilities.some(kept => capabilityKey(kept) === capabilityKey(capability))) {
+			diagnostics.push({
+				code: "capability_not_delegable",
+				message: `requested tool ${capability.source}:${capability.name} exceeds an ancestor ceiling`,
+				path: "authority.usableCapabilities",
+			});
+		}
+	}
+
+	const delegableCeilings = [
+		snapshot.parentDelegable.delegableCapabilities,
+		snapshot.agentMaximum.usableCapabilities,
+		snapshot.workflowMaximum.usableCapabilities,
+		snapshot.hostMaximum.usableCapabilities,
+	];
+	const delegableCapabilities = intersectCapabilities(requested.delegableCapabilities, delegableCeilings);
+	for (const capability of requested.delegableCapabilities) {
+		if (!delegableCapabilities.some(kept => capabilityKey(kept) === capabilityKey(capability))) {
+			diagnostics.push({
+				code: "capability_not_issuable",
+				message: `requested onward tool ${capability.source}:${capability.name} exceeds the issuer's delegable ceiling`,
+				path: "authority.delegableCapabilities",
+			});
+		}
+	}
+
+	// Spawn rights must strictly decrease inside the ancestor envelope, or a
+	// chain of children could hold the parent's depth forever.
+	const parentSpawn = snapshot.parentDelegable.spawn;
+	const spawn = requested.spawn;
+	if (spawn.maySpawn && !parentSpawn.mayDelegateSpawn) {
+		diagnostics.push({
+			code: "spawn_not_delegable",
+			message: "issuer may not delegate the right to spawn",
+			path: "authority.spawn.maySpawn",
+		});
+	}
+	if (spawn.maySpawn && spawn.maxDepth >= parentSpawn.maxDepth) {
+		diagnostics.push({
+			code: "spawn_depth_not_decreasing",
+			message: `child maxDepth ${spawn.maxDepth} must be below the issuer's ${parentSpawn.maxDepth}`,
+			path: "authority.spawn.maxDepth",
+		});
+	}
+	if (spawn.maxChildren > parentSpawn.maxChildren) {
+		diagnostics.push({
+			code: "spawn_fanout_exceeds_issuer",
+			message: `child maxChildren ${spawn.maxChildren} exceeds the issuer's ${parentSpawn.maxChildren}`,
+			path: "authority.spawn.maxChildren",
+		});
+	}
+	for (const launchClass of spawn.allowedLaunchClasses) {
+		if (!parentSpawn.allowedLaunchClasses.includes(launchClass)) {
+			diagnostics.push({
+				code: "launch_class_not_delegable",
+				message: `issuer cannot delegate launch class '${launchClass}'`,
+				path: "authority.spawn.allowedLaunchClasses",
+			});
+		}
+	}
+
+	// A strict worker must not run on legacy zero-means-unlimited budgeting:
+	// that is precisely how an unattended hierarchy recurses without bound.
+	if (requested.launchClass === "strict-worker" && requested.budget.kind !== "finite") {
+		diagnostics.push({
+			code: "budget_required",
+			message: "a strict worker requires a finite budget, not legacy unlimited semantics",
+			path: "authority.budget.kind",
+		});
+	}
+
+	// A fork carries the parent's history, so it can never be the independent
+	// reviewer the caller asked for. Reject rather than quietly downgrading
+	// either the independence claim or the context mode.
+	if (requested.contextMode.kind === "privileged-fork" && requested.launchClass !== "privileged-helper") {
+		diagnostics.push({
+			code: "fork_requires_privileged_helper",
+			message: "privileged-fork context is only available to a privileged-helper launch",
+			path: "authority.contextMode",
+		});
+	}
+	if (requested.contextMode.kind === "fresh" && requested.contextMode.strategy === "blind") {
+		const observers = requested.observation.observers;
+		if (observers.some(observer => observer.rights.includes("transcript"))) {
+			diagnostics.push({
+				code: "blind_context_transcript_observer",
+				message: "a blind child cannot expose its transcript to an observer",
+				path: "authority.observation",
+			});
+		}
+	}
+
+	// Result authority must match the capsule-derived policy exactly rather
+	// than silently selecting whichever copy is wider.
+	if (requested.result.publicationRequired && !requested.result.mutation.apply) {
+		diagnostics.push({
+			code: "inconsistent_launch_policy",
+			message: "publication is required but the mutation contract does not permit apply",
+			path: "authority.result",
+		});
+	}
+
+	if (diagnostics.length > 0) return { ok: false, diagnostics: Object.freeze(diagnostics) };
+	return {
+		ok: true,
+		authority: Object.freeze({ ...requested, usableCapabilities, delegableCapabilities }),
+	};
+}

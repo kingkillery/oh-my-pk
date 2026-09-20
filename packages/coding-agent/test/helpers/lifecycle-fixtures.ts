@@ -10,12 +10,19 @@ import { computeHarnessManifestHash } from "../../src/orchestration/harness-mani
 import type { LifecycleCompletionSnapshot, VerificationReceiptV1 } from "../../src/orchestration/snapshot-completion";
 import type {
 	ArtifactRefV1,
+	AuthorityEnvelopeV1,
+	CommunicationAuthorityV1,
 	CompiledLaunchContract,
+	LaunchAuthorityV1,
+	LaunchAuthorizationSnapshotV1,
 	MissionCapsule,
 	MutationContractV1,
+	ResultAuthorityV1,
 	RunLimitsV1,
+	RuntimeGuaranteesV1,
 	RuntimePolicySnapshotV1,
 	SnapshotRefV1,
+	SpawnAuthorityV1,
 } from "../../src/task/launch-contract";
 import { compileLaunchContract } from "../../src/task/launch-contract";
 import type { ResolvedToolProfile } from "../../src/tools/tool-profiles";
@@ -253,6 +260,154 @@ export function createTestCompletionSnapshot(
 		scopeReceiptId: "scope-rcpt-1",
 		dependencyTerminalStates: Object.freeze([]),
 		executionOutcome: "completed",
+		...overrides,
+	});
+}
+
+/** Deny-all-by-default authority envelope; widen explicitly per scenario. */
+export function createTestEnvelope(overrides?: Partial<AuthorityEnvelopeV1>): AuthorityEnvelopeV1 {
+	return Object.freeze({
+		schemaVersion: 1 as const,
+		usableCapabilities: Object.freeze([
+			{ source: "builtin" as const, name: "read" },
+			{ source: "builtin" as const, name: "edit" },
+		]),
+		delegableCapabilities: Object.freeze([{ source: "builtin" as const, name: "read" }]),
+		resources: Object.freeze([]),
+		collaboration: createTestCommunicationAuthority(),
+		spawn: createTestSpawnAuthority(),
+		budget: Object.freeze({
+			kind: "finite" as const,
+			limits: createTestRunLimits(),
+			reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
+		}),
+		result: createTestResultAuthority(),
+		...overrides,
+	});
+}
+
+export function createTestCommunicationAuthority(
+	overrides?: Partial<CommunicationAuthorityV1>,
+): CommunicationAuthorityV1 {
+	return Object.freeze({
+		policy: createTestCollaborationPolicy(),
+		visiblePrincipalIds: Object.freeze([]),
+		sendPrincipalIds: Object.freeze([]),
+		receivePrincipalIds: Object.freeze([]),
+		wakePrincipalIds: Object.freeze([]),
+		broadcastPrincipalIds: Object.freeze([]),
+		busyReplyPrincipalIds: Object.freeze([]),
+		controlPrincipalIds: Object.freeze([]),
+		delegablePrincipalIds: Object.freeze([]),
+		channelIds: Object.freeze([]),
+		...overrides,
+	});
+}
+
+export function createTestSpawnAuthority(overrides?: Partial<SpawnAuthorityV1>): SpawnAuthorityV1 {
+	return Object.freeze({
+		maySpawn: false,
+		mayDelegateSpawn: false,
+		allowedAgentTypes: Object.freeze([]),
+		allowedLaunchClasses: Object.freeze([]),
+		maxDepth: 0,
+		maxChildren: 0,
+		delegableResourceGrantIds: Object.freeze([]),
+		...overrides,
+	});
+}
+
+export function createTestResultAuthority(overrides?: Partial<ResultAuthorityV1>): ResultAuthorityV1 {
+	return Object.freeze({
+		outputSchemaRef: null,
+		maxOutputBytes: 8000,
+		requiredCriterionIds: Object.freeze([]),
+		publicationRequired: false,
+		mutation: createTestMutationContract(),
+		publicationGrantIds: Object.freeze([]),
+		acceptedRecipientPrincipalIds: Object.freeze([]),
+		...overrides,
+	});
+}
+
+export function createTestRuntimeGuarantees(overrides?: Partial<RuntimeGuaranteesV1>): RuntimeGuaranteesV1 {
+	return Object.freeze({
+		initialContext: "explicit-grants-only" as const,
+		transcriptAccess: "principal-scoped" as const,
+		serviceAccess: "principal-scoped" as const,
+		artifactAccess: "principal-scoped" as const,
+		memoryAccess: "principal-scoped" as const,
+		evalState: "child-owned" as const,
+		filesystemRead: "mediated" as const,
+		filesystemWrite: "mediated" as const,
+		process: "contained" as const,
+		network: "mediated" as const,
+		credentials: "brokered" as const,
+		...overrides,
+	});
+}
+
+export function createTestLaunchAuthority(overrides?: Partial<LaunchAuthorityV1>): LaunchAuthorityV1 {
+	return Object.freeze({
+		schemaVersion: 1 as const,
+		launchClass: "strict-worker" as const,
+		contextMode: Object.freeze({
+			kind: "fresh" as const,
+			strategy: "shared" as const,
+			independence: "none" as const,
+		}),
+		baseContextManifest: Object.freeze({
+			schemaVersion: 1 as const,
+			manifestHash: DUMMY_HASH_1,
+			segments: Object.freeze([
+				{ segmentId: "safety", kind: "safety" as const, contentRef: createTestArtifactRef("artifact-safety") },
+			]),
+		}),
+		workspaceInstructionRefs: Object.freeze([]),
+		agentTemplateRef: createTestArtifactRef("artifact-template"),
+		initialDisclosures: Object.freeze([]),
+		deliveryChannels: Object.freeze([]),
+		usableCapabilities: Object.freeze([{ source: "builtin" as const, name: "read" }]),
+		delegableCapabilities: Object.freeze([]),
+		resources: Object.freeze([]),
+		collaboration: createTestCommunicationAuthority(),
+		observation: Object.freeze({ observers: Object.freeze([]) }),
+		spawn: createTestSpawnAuthority(),
+		budget: Object.freeze({
+			kind: "finite" as const,
+			limits: createTestRunLimits(),
+			reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
+		}),
+		result: createTestResultAuthority(),
+		requiredRuntimeGuarantees: createTestRuntimeGuarantees(),
+		compatibility: Object.freeze([]),
+		...overrides,
+	});
+}
+
+export function createTestAuthorizationSnapshot(
+	overrides?: Partial<LaunchAuthorizationSnapshotV1>,
+): LaunchAuthorizationSnapshotV1 {
+	return Object.freeze({
+		schemaVersion: 1 as const,
+		authorizationRef: "authz-1",
+		issuerPrincipalId: "principal-parent",
+		rootPrincipalId: "principal-root",
+		parentPrincipalId: "principal-parent",
+		childPrincipalId: "principal-child",
+		contractId: "contract-1",
+		contractRevision: 1,
+		priorContractDigest: null,
+		issuerPolicyEpoch: 1,
+		entryPoint: "task.spawn",
+		reason: "delegate a bounded implementation slice",
+		requestedAuthority: createTestLaunchAuthority(),
+		sourceGrants: Object.freeze([]),
+		parentDelegable: createTestEnvelope(),
+		hostMaximum: createTestEnvelope(),
+		agentMaximum: createTestEnvelope(),
+		workflowMaximum: createTestEnvelope(),
+		toolCatalogDigest: DUMMY_HASH_2,
 		...overrides,
 	});
 }
