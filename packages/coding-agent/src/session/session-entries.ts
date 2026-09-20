@@ -1,8 +1,9 @@
 import type { AgentMessage } from "@pk-nerdsaver-ai/pi-agent-core";
 import type { ImageContent, MessageAttribution, ServiceTier, TextContent } from "@pk-nerdsaver-ai/pi-ai";
 import type { AgentExecutionProfile } from "../orchestration/agent-execution-profile";
-import type { PersistedCollaborationPolicy } from "../orchestration/collaboration-policy";
-import type { ToolCapability } from "../tools/tool-profiles";
+import type { CollaborationPolicy, PersistedCollaborationPolicy } from "../orchestration/collaboration-policy";
+import type { HarnessManifestV1 } from "../orchestration/harness-manifest";
+import type { ResolvedToolProfile, ToolCapability } from "../tools/tool-profiles";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -140,6 +141,29 @@ export interface MCPToolSelectionEntry extends SessionEntryBase {
 /** JSON-safe source-aware tool ceiling persisted for subagent revival. */
 export type SessionToolCeiling = readonly ToolCapability[];
 
+/** Versioned lifecycle metadata persisted in session_init. */
+export type SessionLifecycleMetadata =
+	| {
+			readonly schemaVersion: 1;
+			readonly mode: "hierarchical-v1";
+			readonly runId: string;
+			readonly nodeId: string;
+			readonly attemptId: string;
+			readonly launchHash: string;
+			readonly policyHash: string;
+			readonly harnessHash: string;
+			readonly projectionManifestHash: string;
+			readonly sessionGeneration: number;
+	  }
+	| {
+			readonly schemaVersion: 1;
+			readonly mode: "direct-v1";
+			readonly executionProfile: AgentExecutionProfile;
+			readonly toolProfile: ResolvedToolProfile;
+			readonly collaborationPolicy: CollaborationPolicy;
+			readonly harnessSnapshot: HarnessManifestV1;
+	  };
+
 /** Session init entry - captures initial context for subagent sessions (debugging/replay). */
 export interface SessionInitEntry extends SessionEntryBase {
 	type: "session_init";
@@ -165,6 +189,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	collaborationPolicy?: PersistedCollaborationPolicy;
 	/** Source-aware tool ceiling restored before tool construction or activation. */
 	toolCeiling?: SessionToolCeiling;
+	/** Versioned runtime lifecycle metadata for hierarchical and direct sessions. */
+	lifecycle?: SessionLifecycleMetadata;
 }
 
 /** Mode change entry - tracks agent mode transitions (e.g. plan mode). */

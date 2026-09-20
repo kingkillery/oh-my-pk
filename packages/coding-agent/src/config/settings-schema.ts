@@ -4406,6 +4406,81 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"task.lifecycle.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Lifecycle Execution",
+			description:
+				"Enable hierarchical lifecycle execution for new delegated work. Defaults off until architecture acceptance; active hierarchical runs resume by recorded policy regardless of this flag.",
+		},
+	},
+
+	"task.topology": {
+		type: "enum",
+		values: ["legacy", "hierarchical", "direct"] as const,
+		default: "legacy",
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Task Topology",
+			description:
+				"Default topology for new runs. Historical runs retain recorded policy. Hierarchical remains opt-in until rollout acceptance.",
+			options: [
+				{ value: "legacy", label: "Legacy", description: "Existing task behavior" },
+				{ value: "hierarchical", label: "Hierarchical", description: "Lifecycle-managed delegation" },
+				{ value: "direct", label: "Direct", description: "Single-agent execution without delegation" },
+			],
+		},
+	},
+
+	"task.lifecycle.observations.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Lifecycle Observations",
+			description: "Retain exact observation records for lifecycle tool calls. Opt-in until measured acceptance.",
+		},
+	},
+
+	"task.lifecycle.reducer.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Lifecycle Reducer",
+			description:
+				"Enable deterministic observation reduction with integrity receipts. Opt-in until measured acceptance.",
+		},
+	},
+
+	"task.lifecycle.actionFusion.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Lifecycle Action Fusion",
+			description: "Fuse predeclared edit-check steps. Opt-in until measured acceptance.",
+		},
+	},
+
+	"task.lifecycle.semanticCompaction.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Lifecycle Semantic Compaction",
+			description: "Enable provenance-carrying semantic compaction. Opt-in until measured acceptance.",
+		},
+	},
+
 	"task.eager": {
 		type: "enum",
 		values: ["default", "preferred", "always"] as const,

@@ -18,6 +18,12 @@
  * Step 1 happens once per top-level call (the baseline is cloned per spawn
  * before mutation); steps 2 and 3 are per-spawn.
  */
+export {
+	type ArtifactManifest,
+	captureLifecycleArtifacts,
+	type LifecycleCaptureInput,
+} from "./lifecycle-capture";
+
 import * as path from "node:path";
 import type * as natives from "@pk-nerdsaver-ai/pi-natives";
 import type { ToolSession } from "../tools";
@@ -25,6 +31,7 @@ import { generateCommitMessage } from "../utils/commit-message-generator";
 import * as git from "../utils/git";
 import type { ExecutorOptions } from "./executor";
 import { runSubprocess } from "./executor";
+import { captureLifecycleArtifacts } from "./lifecycle-capture";
 import type { SingleResult } from "./types";
 import {
 	applyNestedPatches,
@@ -112,6 +119,18 @@ export interface IsolatedRunOptions {
 	 * build a result shape consistent with their non-isolated path.
 	 */
 	buildFailureResult: (err: unknown) => SingleResult;
+	/**
+	 * Optional lifecycle identity enabling durable artifact capture.
+	 * When present, a lifecycle manifest is recorded alongside the existing
+	 * branch/patch capture before isolation teardown. Absence preserves
+	 * legacy behavior exactly.
+	 */
+	lifecycle?: {
+		readonly runId: string;
+		readonly nodeId: string;
+		readonly attemptId: string;
+		readonly contractVersion: number;
+	};
 }
 
 /**
@@ -136,6 +155,23 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 		const taskBaseline = structuredClone(opts.context.baseline);
 		handle = await ensureIsolation(opts.context.repoRoot, opts.agentId, opts.preferredBackend);
 		const isolationDir = handle.mergedDir;
+		const recordLifecycleManifest = async (current: SingleResult): Promise<void> => {
+			if (!opts.lifecycle || !handle) return;
+			try {
+				await captureLifecycleArtifacts({
+					runId: opts.lifecycle.runId,
+					nodeId: opts.lifecycle.nodeId,
+					attemptId: opts.lifecycle.attemptId,
+					contractVersion: opts.lifecycle.contractVersion,
+					baseline: taskBaseline,
+					isolation: handle,
+					result: current,
+					artifactRoot: opts.artifactsDir,
+				});
+			} catch {
+				// Best-effort: lifecycle manifest failure must never mask the run result.
+			}
+		};
 		let result = await runSubprocess({
 			...opts.baseOptions,
 			worktree: isolationDir,
@@ -151,11 +187,13 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 					opts.description,
 					opts.buildCommitMessage?.(),
 				);
-				return {
+				const completed = {
 					...result,
 					branchName: commitResult?.branchName,
 					nestedPatches: commitResult?.nestedPatches,
 				};
+				await recordLifecycleManifest(completed);
+				return completed;
 			} catch (mergeErr) {
 				// Agent succeeded but branch commit failed — clean up stale branch
 				const branchName = `omp/task/${opts.agentId}`;
@@ -169,11 +207,13 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 				const delta = await captureDeltaPatch(isolationDir, taskBaseline);
 				const patchPath = path.join(opts.artifactsDir, `${opts.agentId}.patch`);
 				await Bun.write(patchPath, delta.rootPatch);
-				return {
+				const completed = {
 					...result,
 					patchPath,
 					nestedPatches: delta.nestedPatches,
 				};
+				await recordLifecycleManifest(completed);
+				return completed;
 			} catch (patchErr) {
 				const msg = patchErr instanceof Error ? patchErr.message : String(patchErr);
 				return { ...result, error: `Patch capture failed: ${msg}` };
@@ -191,6 +231,7 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 				// Best-effort: a capture failure must never mask the original run failure.
 			}
 		}
+		await recordLifecycleManifest(result);
 		return result;
 	} catch (err) {
 		return opts.buildFailureResult(err);

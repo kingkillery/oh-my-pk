@@ -65,7 +65,7 @@ const baselineSchema = type({
 	nested: type({ relativePath: "string", baseline: baselineRepoSchema }).array(),
 });
 
-export interface NativeTaskJobPayload {
+export interface NativeTaskJobPayloadV1 {
 	version: 1;
 	cwd: string;
 	agentId: string;
@@ -75,6 +75,33 @@ export interface NativeTaskJobPayload {
 	effectiveModel: string;
 	agentDefinition: JsonObject;
 	policy: JsonObject;
+}
+
+export interface NativeTaskJobPayloadV2 {
+	version: 2;
+	cwd: string;
+	agentId: string;
+	parentSessionId: string | null;
+	taskDepth: number;
+	params: JsonObject;
+	effectiveModel: string;
+	agentDefinition: JsonObject;
+	policy: JsonObject;
+	runId: string;
+	nodeId: string;
+	attemptId: string;
+	launchHash: string;
+	policyHash: string;
+}
+
+export type NativeTaskJobPayload = NativeTaskJobPayloadV1 | NativeTaskJobPayloadV2;
+
+export interface LifecycleTaskJobPayloadV1 {
+	version: 1;
+	runId: string;
+	nodeId: string;
+	attemptId: string;
+	launchHash: string;
 }
 
 /** Strict JSON boundary: never silently discard callbacks, cyclic state or missing dependencies. */
@@ -136,7 +163,7 @@ export function parseNativeTaskDefinition(value: JsonObject): AgentDefinition {
 
 export function parseNativeTaskJobPayload(value: JsonValue): NativeTaskJobPayload {
 	const object = nativeTaskObject(value, "payload");
-	if (object.version !== 1)
+	if (object.version !== 1 && object.version !== 2)
 		throw new Error("Unsupported native_task payload version; legacy incomplete rows require reconciliation.");
 	const required = [
 		"version",
@@ -148,6 +175,7 @@ export function parseNativeTaskJobPayload(value: JsonValue): NativeTaskJobPayloa
 		"effectiveModel",
 		"agentDefinition",
 		"policy",
+		...(object.version === 2 ? ["runId", "nodeId", "attemptId", "launchHash", "policyHash"] : []),
 	];
 	if (Object.keys(object).length !== required.length || required.some(key => !Object.hasOwn(object, key)))
 		throw new Error("Malformed native_task payload fields; legacy incomplete rows require reconciliation.");
@@ -183,8 +211,8 @@ export function parseNativeTaskJobPayload(value: JsonValue): NativeTaskJobPayloa
 	if (definition.name !== params.agent) throw new Error("Native task agent definition does not match its request.");
 	const policy = nativeTaskObject(object.policy, "policy");
 	parseNativeTaskPolicy(policy);
-	return {
-		version: 1,
+
+	const base = {
 		cwd,
 		agentId,
 		parentSessionId: type("string|null").assert(object.parentSessionId),
@@ -193,6 +221,38 @@ export function parseNativeTaskJobPayload(value: JsonValue): NativeTaskJobPayloa
 		effectiveModel,
 		agentDefinition,
 		policy,
+	};
+
+	if (object.version === 1) {
+		return { version: 1, ...base };
+	}
+
+	return {
+		version: 2,
+		...base,
+		runId: type("string > 0").assert(object.runId),
+		nodeId: type("string > 0").assert(object.nodeId),
+		attemptId: type("string > 0").assert(object.attemptId),
+		launchHash: type("string > 0").assert(object.launchHash),
+		policyHash: type("string > 0").assert(object.policyHash),
+	};
+}
+
+export function parseLifecycleTaskJobPayload(value: JsonValue): LifecycleTaskJobPayloadV1 {
+	const object = nativeTaskObject(value, "payload");
+	if (object.version !== 1) {
+		throw new Error("Unsupported lifecycle_task payload version.");
+	}
+	const required = ["version", "runId", "nodeId", "attemptId", "launchHash"];
+	if (Object.keys(object).length !== required.length || required.some(k => !Object.hasOwn(object, k))) {
+		throw new Error("Malformed lifecycle_task payload fields.");
+	}
+	return {
+		version: 1,
+		runId: type("string > 0").assert(object.runId),
+		nodeId: type("string > 0").assert(object.nodeId),
+		attemptId: type("string > 0").assert(object.attemptId),
+		launchHash: type("string > 0").assert(object.launchHash),
 	};
 }
 

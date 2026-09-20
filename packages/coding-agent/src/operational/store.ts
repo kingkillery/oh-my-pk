@@ -1,7 +1,42 @@
 import { Database, type SQLQueryBindings, type Statement } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir } from "@pk-nerdsaver-ai/pi-utils";
+import {
+	type AgentRole,
+	bindLaunchContract,
+	type CompiledLaunchContract,
+	LAUNCH_CONTRACT_VERSION,
+	type LifecycleHandoffV1,
+	type ObligationV1,
+	parseObligationV1,
+	parseReservationVector,
+	parseRunLimitsV1,
+	type RunLimitsV1,
+} from "../task/launch-contract";
+import type {
+	CaptureDimension,
+	DeliveryDimension,
+	ExecutionDimension,
+	LifecycleAdmissionInput,
+	LifecycleAdmissionResult,
+	LifecycleCancellationInput,
+	LifecycleCancellationResult,
+	LifecycleRunOutcome,
+	LifecycleRunSnapshot,
+	LifecycleSettlementInput,
+	LifecycleSettlementResult,
+	LifecycleUsageInput,
+	ObligationTransitionInput,
+	PlannerActivity,
+	PlannerTurnCommitInput,
+	PlannerTurnCommitResult,
+	PlannerTurnInput,
+	PlannerTurnRecord,
+	PublicationDimension,
+	VerificationDimension,
+} from "./lifecycle-types";
 import {
 	type AppendEventInput,
 	type CreateEpisodeInput,
@@ -30,7 +65,71 @@ import {
 	type UpsertScheduleInput,
 } from "./types";
 
-const SCHEMA_VERSION = 1;
+/**
+ * Raised when a persisted lifecycle record is absent, incomplete, or cannot be
+ * projected into its frozen wire shape. Adapters translate these into local
+ * failure outcomes; they are never swallowed into a fabricated success value.
+ */
+export class LifecycleReadError extends Error {
+	readonly code: string;
+
+	constructor(code: string, message: string) {
+		super(message);
+		this.name = "LifecycleReadError";
+		this.code = code;
+	}
+}
+
+interface LifecycleRunRow {
+	readonly run_id: string;
+	readonly outcome: LifecycleRunOutcome;
+	readonly plan_version: number;
+	readonly cancellation_generation: number;
+	readonly limits_json: string;
+	readonly consumed_json: string;
+	readonly reserved_json: string;
+}
+
+interface LifecycleNodeRow {
+	readonly node_id: string;
+	readonly owner_node_id: string | null;
+	readonly depth: number;
+	readonly role: AgentRole;
+	readonly current_attempt_id: string | null;
+	readonly session_id: string | null;
+	readonly session_generation: number;
+	readonly planner_activity: PlannerActivity;
+}
+
+interface LifecycleAttemptRow {
+	readonly attempt_id: string;
+	readonly node_id: string;
+	readonly job_id: string | null;
+	readonly contract_ref: string;
+	readonly lease_owner: string | null;
+	readonly lease_epoch: number;
+	readonly cancellation_generation: number;
+	readonly execution_state: ExecutionDimension;
+	readonly capture_state: CaptureDimension;
+	readonly delivery_state: DeliveryDimension;
+	readonly publication_state: PublicationDimension;
+	readonly verification_state: VerificationDimension;
+	readonly manifest_ref: string | null;
+}
+
+interface LifecycleObligationRow {
+	readonly obligation_id: string;
+	readonly run_id: string;
+	readonly node_id: string;
+	readonly criterion_id: string;
+	readonly kind: string;
+	readonly state: string;
+	readonly evidence_receipt_ids_json: string;
+	readonly waiver_authorization_ref: string | null;
+	readonly version: number;
+}
+
+const SCHEMA_VERSION = 3;
 const DEFAULT_LEASE_MS = 60_000;
 /**
  * Episode search prefers FTS5 (`episodes_fts`) when available.
@@ -560,8 +659,205 @@ CREATE INDEX IF NOT EXISTS idx_events_job ON trajectory_events(job_id, created_a
 		}
 	}
 
-	#migrateSchema(_fromVersion: number): void {
-		// v1 is the initial schema created by CREATE TABLE IF NOT EXISTS above.
+	#migrateSchema(fromVersion: number): void {
+		if (fromVersion < 2) {
+			this.#db.run(`
+CREATE TABLE IF NOT EXISTS lifecycle_runs (
+	run_id TEXT PRIMARY KEY,
+	contract_ref TEXT NOT NULL,
+	policy_ref TEXT NOT NULL,
+	harness_ref TEXT NOT NULL,
+	outcome TEXT NOT NULL CHECK(outcome IN ('active','completed','partial','blocked','failed','cancelled')),
+	plan_version INTEGER NOT NULL DEFAULT 1,
+	cancellation_generation INTEGER NOT NULL DEFAULT 0,
+	root_snapshot_ref TEXT,
+	limits_json TEXT NOT NULL,
+	consumed_json TEXT NOT NULL,
+	reserved_json TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_nodes (
+	node_id TEXT PRIMARY KEY,
+	run_id TEXT NOT NULL REFERENCES lifecycle_runs(run_id) ON DELETE CASCADE,
+	owner_node_id TEXT REFERENCES lifecycle_nodes(node_id),
+	depth INTEGER NOT NULL DEFAULT 0,
+	role TEXT NOT NULL CHECK(role IN ('root-planner','subplanner','worker','verifier')),
+	compiled_contract_ref TEXT NOT NULL,
+	planner_activity TEXT NOT NULL DEFAULT 'ready' CHECK(planner_activity IN ('ready','planning','waiting','blocked','quiescent')),
+	current_attempt_id TEXT,
+	session_id TEXT,
+	session_generation INTEGER NOT NULL DEFAULT 0,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_nodes_run ON lifecycle_nodes(run_id);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_nodes_owner ON lifecycle_nodes(owner_node_id);
+
+CREATE TABLE IF NOT EXISTS lifecycle_dependencies (
+	node_id TEXT NOT NULL REFERENCES lifecycle_nodes(node_id) ON DELETE CASCADE,
+	prerequisite_id TEXT NOT NULL REFERENCES lifecycle_nodes(node_id) ON DELETE CASCADE,
+	PRIMARY KEY (node_id, prerequisite_id)
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_attempts (
+	attempt_id TEXT PRIMARY KEY,
+	node_id TEXT NOT NULL REFERENCES lifecycle_nodes(node_id) ON DELETE CASCADE,
+	ordinal INTEGER NOT NULL,
+	job_id TEXT UNIQUE REFERENCES jobs(id),
+	contract_ref TEXT NOT NULL,
+	harness_ref TEXT NOT NULL,
+	lease_owner TEXT,
+	lease_epoch INTEGER NOT NULL DEFAULT 1,
+	cancellation_generation INTEGER NOT NULL DEFAULT 0,
+	execution_state TEXT NOT NULL DEFAULT 'queued',
+	capture_state TEXT NOT NULL DEFAULT 'pending',
+	delivery_state TEXT NOT NULL DEFAULT 'pending',
+	publication_state TEXT NOT NULL DEFAULT 'not-requested',
+	verification_state TEXT NOT NULL DEFAULT 'not-required',
+	manifest_ref TEXT,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	UNIQUE (node_id, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_reservations (
+	reservation_id TEXT PRIMARY KEY,
+	attempt_id TEXT UNIQUE REFERENCES lifecycle_attempts(attempt_id) ON DELETE CASCADE,
+	parent_reservation_id TEXT,
+	reserved_json TEXT NOT NULL,
+	consumed_json TEXT NOT NULL,
+	active_compute INTEGER NOT NULL DEFAULT 0,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_usage (
+	event_id TEXT PRIMARY KEY,
+	attempt_id TEXT NOT NULL REFERENCES lifecycle_attempts(attempt_id) ON DELETE CASCADE,
+	request_id TEXT NOT NULL,
+	provider TEXT NOT NULL,
+	model TEXT NOT NULL,
+	pricing_ref TEXT,
+	counts_json TEXT NOT NULL,
+	cost_microunits INTEGER,
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_usage_attempt ON lifecycle_usage(attempt_id);
+
+CREATE TABLE IF NOT EXISTS lifecycle_handoffs (
+	event_id TEXT PRIMARY KEY,
+	attempt_id TEXT NOT NULL REFERENCES lifecycle_attempts(attempt_id) ON DELETE CASCADE,
+	kind TEXT NOT NULL CHECK(kind IN ('settled','clarification','reply')),
+	owner_node_id TEXT REFERENCES lifecycle_nodes(node_id),
+	target_node_id TEXT REFERENCES lifecycle_nodes(node_id),
+	correlation_id TEXT,
+	packet_json TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','delivered','consumed','superseded')),
+	created_at INTEGER NOT NULL,
+	UNIQUE (attempt_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_inbox (
+	owner_node_id TEXT NOT NULL REFERENCES lifecycle_nodes(node_id) ON DELETE CASCADE,
+	event_id TEXT NOT NULL REFERENCES lifecycle_handoffs(event_id) ON DELETE CASCADE,
+	status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','claimed','consumed','superseded')),
+	planner_turn_id TEXT,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (owner_node_id, event_id)
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_planner_turns (
+	turn_id TEXT PRIMARY KEY,
+	owner_node_id TEXT NOT NULL REFERENCES lifecycle_nodes(node_id) ON DELETE CASCADE,
+	expected_plan_version INTEGER NOT NULL,
+	input_event_hash TEXT NOT NULL,
+	state TEXT NOT NULL DEFAULT 'committed',
+	result_ref TEXT,
+	created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_publications (
+	publication_id TEXT PRIMARY KEY,
+	attempt_id TEXT NOT NULL REFERENCES lifecycle_attempts(attempt_id) ON DELETE CASCADE,
+	target_kind TEXT NOT NULL CHECK(target_kind IN ('run-candidate','user-workspace')),
+	target_id TEXT NOT NULL,
+	manifest_hash TEXT NOT NULL,
+	expected_snapshot_hash TEXT NOT NULL,
+	resulting_snapshot_hash TEXT,
+	publisher_owner TEXT,
+	publisher_epoch INTEGER NOT NULL DEFAULT 1,
+	publisher_expires_at INTEGER,
+	stage_journal_json TEXT,
+	mutation_policy_json TEXT NOT NULL,
+	state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','integrated','conflicted','rejected','partial')),
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	UNIQUE (attempt_id, target_kind, target_id, manifest_hash, expected_snapshot_hash)
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_obligations (
+	obligation_id TEXT PRIMARY KEY,
+	run_id TEXT NOT NULL REFERENCES lifecycle_runs(run_id) ON DELETE CASCADE,
+	node_id TEXT NOT NULL REFERENCES lifecycle_nodes(node_id) ON DELETE CASCADE,
+	criterion_id TEXT NOT NULL,
+	kind TEXT NOT NULL CHECK(kind IN ('mandatory_criterion','unresolved_dependency','scope_verification','publication_partial')),
+	state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','resolved','waived')),
+	evidence_receipt_ids_json TEXT NOT NULL DEFAULT '[]',
+	waiver_authorization_ref TEXT,
+	version INTEGER NOT NULL DEFAULT 1,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	UNIQUE (run_id, node_id, criterion_id)
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_receipts (
+	receipt_id TEXT PRIMARY KEY,
+	candidate_hash TEXT NOT NULL,
+	contract_hash TEXT NOT NULL,
+	verifier_id TEXT NOT NULL,
+	env_hash TEXT NOT NULL,
+	artifact_refs_json TEXT NOT NULL,
+	outcome TEXT NOT NULL CHECK(outcome IN ('passed','failed','unverified')),
+	created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_versions (
+	kind TEXT NOT NULL,
+	digest TEXT NOT NULL,
+	content_json TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (kind, digest)
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_grants (
+	grant_id TEXT PRIMARY KEY,
+	run_id TEXT NOT NULL REFERENCES lifecycle_runs(run_id) ON DELETE CASCADE,
+	owner_node_id TEXT REFERENCES lifecycle_nodes(node_id),
+	resource_identity TEXT NOT NULL,
+	resource_hash TEXT NOT NULL,
+	rights_json TEXT NOT NULL,
+	max_read_bytes INTEGER,
+	expiry INTEGER,
+	revoked INTEGER NOT NULL DEFAULT 0,
+	provenance_json TEXT,
+	created_at INTEGER NOT NULL
+);
+`);
+		}
+		if (fromVersion < 3) {
+			this.#db.run(`
+CREATE TABLE IF NOT EXISTS lifecycle_idempotency (
+	idempotency_key TEXT PRIMARY KEY,
+	run_id TEXT NOT NULL REFERENCES lifecycle_runs(run_id) ON DELETE CASCADE,
+	node_id TEXT NOT NULL REFERENCES lifecycle_nodes(node_id) ON DELETE CASCADE,
+	attempt_id TEXT NOT NULL REFERENCES lifecycle_attempts(attempt_id) ON DELETE CASCADE,
+	digest TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+);
+`);
+		}
 	}
 
 	#ensureEpisodeFts(): boolean {
@@ -1303,6 +1599,798 @@ CREATE INDEX IF NOT EXISTS idx_events_job ON trajectory_events(job_id, created_a
 			payload: parseJsonValue(row.payload_json),
 			createdAt: row.created_at,
 		};
+	}
+	// ---------------------------------------------------------------------------
+	// Lifecycle Store Methods (A06/A07/A08)
+
+	createLifecycleRun(
+		runId: string,
+		compiled: CompiledLaunchContract,
+		limits: RunLimitsV1,
+		idempotencyKey: string,
+	): LifecycleAdmissionResult {
+		this.#assertOpen();
+		const tx = this.#db.transaction(() => {
+			const now = this.#now();
+			const existing = this.#db.prepare("SELECT run_id FROM lifecycle_runs WHERE run_id = ?").get(runId) as
+				| { run_id: string }
+				| undefined;
+			if (!existing) {
+				this.#db
+					.prepare(`
+					INSERT INTO lifecycle_runs (run_id, contract_ref, policy_ref, harness_ref, outcome, plan_version, cancellation_generation, root_snapshot_ref, limits_json, consumed_json, reserved_json, created_at, updated_at)
+					VALUES (?, ?, ?, ?, 'active', 1, 0, ?, ?, ?, ?, ?, ?)
+				`)
+					.run(
+						runId,
+						compiled.missionHash,
+						compiled.policyHash,
+						compiled.policy.harnessRef,
+						compiled.policy.baseline.manifestHash,
+						serializeJsonValue(limits),
+						serializeJsonValue({ requests: 0, runtimeMs: 0, tokens: 0, costMicrounits: 0 }),
+						serializeJsonValue({ requests: 0, runtimeMs: 0, tokens: 0, costMicrounits: 0 }),
+						now,
+						now,
+					);
+				const rootNodeId = `${runId}-root`;
+				this.#db
+					.prepare(`
+					INSERT OR IGNORE INTO lifecycle_nodes (node_id, run_id, owner_node_id, depth, role, compiled_contract_ref, created_at, updated_at)
+					VALUES (?, ?, NULL, 0, 'root-planner', ?, ?, ?)
+				`)
+					.run(rootNodeId, runId, compiled.missionHash, now, now);
+			}
+			const rootNodeId = `${runId}-root`;
+			return this.admitLifecycleAttempt({
+				runId,
+				ownerNodeId: rootNodeId,
+				nodeId: rootNodeId,
+				idempotencyKey: `${idempotencyKey}:root-attempt`,
+				compiled,
+				expectedPlanVersion: 1,
+				expectedCancellationGeneration: 0,
+				reservation: {
+					requests: limits.maxRequests,
+					runtimeMs: limits.maxRuntimeMs,
+					tokens: limits.maxTokens,
+					costMicrounits: limits.maxCostMicrounits,
+				},
+				prerequisiteIds: [],
+			});
+		});
+		return tx.immediate();
+	}
+
+	admitLifecycleAttempt(input: LifecycleAdmissionInput): LifecycleAdmissionResult {
+		this.#assertOpen();
+		const tx = this.#db.transaction(() => {
+			const now = this.#now();
+			const run = this.#db.prepare("SELECT * FROM lifecycle_runs WHERE run_id = ?").get(input.runId) as
+				| { plan_version: number; cancellation_generation: number }
+				| undefined;
+			if (!run) {
+				return { ok: false, code: "run_not_found", message: `Run '${input.runId}' does not exist.` } as const;
+			}
+			if (run.plan_version !== input.expectedPlanVersion) {
+				return {
+					ok: false,
+					code: "version_conflict",
+					message: `Expected plan version ${input.expectedPlanVersion} does not match current ${run.plan_version}.`,
+				} as const;
+			}
+			if (run.cancellation_generation !== input.expectedCancellationGeneration) {
+				return { ok: false, code: "cancellation_conflict", message: `Run has been cancelled.` } as const;
+			}
+
+			const digest = createHash("sha256")
+				.update(
+					JSON.stringify({
+						mission: input.compiled.missionHash,
+						policy: input.compiled.policyHash,
+						owner: input.ownerNodeId,
+						node: input.nodeId,
+						reservation: input.reservation,
+						prerequisites: [...input.prerequisiteIds].sort(),
+					}),
+				)
+				.digest("hex");
+			const prior = this.#db
+				.prepare("SELECT node_id, attempt_id, digest FROM lifecycle_idempotency WHERE idempotency_key = ?")
+				.get(input.idempotencyKey) as { node_id: string; attempt_id: string; digest: string } | undefined;
+			if (prior) {
+				if (prior.digest !== digest) {
+					return {
+						ok: false,
+						code: "admission_conflict",
+						message: `Idempotency key '${input.idempotencyKey}' was already used with different inputs.`,
+					} as const;
+				}
+				const priorAttempt = this.#db
+					.prepare("SELECT job_id, contract_ref, harness_ref FROM lifecycle_attempts WHERE attempt_id = ?")
+					.get(prior.attempt_id) as { job_id: string; contract_ref: string; harness_ref: string } | undefined;
+				if (priorAttempt) {
+					const priorReservation = this.#db
+						.prepare("SELECT reservation_id FROM lifecycle_reservations WHERE attempt_id = ?")
+						.get(prior.attempt_id) as { reservation_id: string } | undefined;
+					const boundPrior = bindLaunchContract(input.compiled, {
+						runId: input.runId,
+						nodeId: prior.node_id,
+						ownerNodeId: input.ownerNodeId,
+						attemptId: prior.attempt_id,
+						budgetReservationId: priorReservation?.reservation_id ?? `res-${prior.attempt_id}`,
+						leaseEpoch: 1,
+						cancellationGeneration: run.cancellation_generation,
+					});
+					// Idempotent replay returns the SAME job that was admitted
+					// originally, so a retrying caller can never create a second
+					// execution unit for one authorized attempt.
+					const priorJob = this.getJob(priorAttempt.job_id);
+					if (!priorJob) {
+						throw new LifecycleReadError(
+							"lifecycle_attempt_missing_job",
+							`Attempt '${prior.attempt_id}' references job '${priorAttempt.job_id}', which no longer exists`,
+						);
+					}
+					return {
+						ok: true,
+						launch: boundPrior,
+						job: priorJob,
+					} as const;
+				}
+			}
+
+			if (!input.nodeId) {
+				const limitsRow = this.#db
+					.prepare("SELECT limits_json FROM lifecycle_runs WHERE run_id = ?")
+					.get(input.runId) as { limits_json: string } | undefined;
+				const maxNodes = (parseJsonValue(limitsRow?.limits_json ?? null) as unknown as { maxNodes?: number } | null)
+					?.maxNodes;
+				if (typeof maxNodes === "number") {
+					const nodeCount = this.#db
+						.prepare("SELECT COUNT(*) as count FROM lifecycle_nodes WHERE run_id = ?")
+						.get(input.runId) as {
+						count: number;
+					};
+					if (nodeCount.count >= maxNodes) {
+						return {
+							ok: false,
+							code: "budget_exhausted",
+							message: `Run node limit (${maxNodes}) reached.`,
+						} as const;
+					}
+				}
+			}
+
+			const nodeId = input.nodeId ?? this.#createId();
+			const nodeExists = this.#db
+				.prepare("SELECT node_id, depth FROM lifecycle_nodes WHERE node_id = ?")
+				.get(nodeId) as { depth: number } | undefined;
+			if (!nodeExists) {
+				this.#db
+					.prepare(`
+					INSERT INTO lifecycle_nodes (node_id, run_id, owner_node_id, depth, role, compiled_contract_ref, created_at, updated_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				`)
+					.run(
+						nodeId,
+						input.runId,
+						input.ownerNodeId,
+						input.compiled.policy.limits.maxDepth,
+						input.compiled.policy.role,
+						input.compiled.missionHash,
+						now,
+						now,
+					);
+			}
+
+			for (const prereq of input.prerequisiteIds) {
+				this.#db
+					.prepare(`
+					INSERT OR IGNORE INTO lifecycle_dependencies (node_id, prerequisite_id)
+					VALUES (?, ?)
+				`)
+					.run(nodeId, prereq);
+			}
+
+			const attemptCount = this.#db
+				.prepare("SELECT COUNT(*) as count FROM lifecycle_attempts WHERE node_id = ?")
+				.get(nodeId) as { count: number };
+			const ordinal = attemptCount.count + 1;
+			const attemptId = `${nodeId}-attempt-${ordinal}`;
+
+			const jobId = this.#createId();
+			this.#db
+				.prepare(`
+				INSERT INTO jobs (id, type, status, payload_json, created_at, updated_at)
+				VALUES (?, 'native_task', 'queued', ?, ?, ?)
+			`)
+				.run(jobId, serializeJsonValue({ runId: input.runId, nodeId, attemptId }), now, now);
+
+			this.#db
+				.prepare(`
+				INSERT INTO lifecycle_attempts (attempt_id, node_id, ordinal, job_id, contract_ref, harness_ref, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			`)
+				.run(
+					attemptId,
+					nodeId,
+					ordinal,
+					jobId,
+					input.compiled.missionHash,
+					input.compiled.policy.harnessRef,
+					now,
+					now,
+				);
+
+			const reservationId = `res-${attemptId}`;
+			this.#db
+				.prepare(`
+				INSERT INTO lifecycle_reservations (reservation_id, attempt_id, reserved_json, consumed_json, active_compute, created_at, updated_at)
+				VALUES (?, ?, ?, ?, 1, ?, ?)
+			`)
+				.run(
+					reservationId,
+					attemptId,
+					serializeJsonValue(input.reservation),
+					serializeJsonValue({ requests: 0, runtimeMs: 0, tokens: 0, costMicrounits: 0 }),
+					now,
+					now,
+				);
+			this.#db
+				.prepare(`
+				INSERT OR IGNORE INTO lifecycle_idempotency (idempotency_key, run_id, node_id, attempt_id, digest, created_at)
+				VALUES (?, ?, ?, ?, ?, ?)
+			`)
+				.run(input.idempotencyKey, input.runId, nodeId, attemptId, digest, now);
+
+			const boundLaunch = bindLaunchContract(input.compiled, {
+				runId: input.runId,
+				nodeId,
+				ownerNodeId: input.ownerNodeId,
+				attemptId,
+				budgetReservationId: reservationId,
+				leaseEpoch: 1,
+				cancellationGeneration: run.cancellation_generation,
+			});
+
+			const job = this.getJob(jobId);
+			if (!job) {
+				throw new LifecycleReadError(
+					"lifecycle_attempt_missing_job",
+					`Job '${jobId}' was inserted for attempt '${attemptId}' but could not be read back`,
+				);
+			}
+
+			return { ok: true, launch: boundLaunch, job } as const;
+		});
+
+		return tx.immediate();
+	}
+
+	recordLifecycleUsage(input: LifecycleUsageInput): void {
+		this.#assertOpen();
+		const tx = this.#db.transaction(() => {
+			const now = this.#now();
+			this.#db
+				.prepare(`
+				INSERT OR IGNORE INTO lifecycle_usage (event_id, attempt_id, request_id, provider, model, pricing_ref, counts_json, cost_microunits, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`)
+				.run(
+					input.eventId,
+					input.fence.attemptId,
+					input.requestId,
+					input.provider,
+					input.model,
+					input.pricingVersion,
+					serializeJsonValue(input.observed),
+					input.observed.costMicrounits ?? null,
+					now,
+				);
+		});
+		tx.immediate();
+	}
+
+	settleLifecycleAttempt(input: LifecycleSettlementInput): LifecycleSettlementResult {
+		this.#assertOpen();
+		const tx = this.#db.transaction(() => {
+			const attempt = this.#db
+				.prepare("SELECT * FROM lifecycle_attempts WHERE attempt_id = ?")
+				.get(input.fence.attemptId) as
+				| { lease_epoch: number; cancellation_generation: number; execution_state: string }
+				| undefined;
+			if (!attempt) {
+				return { ok: false, code: "invalid_transition", message: "Attempt not found" } as const;
+			}
+			if (attempt.lease_epoch !== input.fence.leaseEpoch) {
+				return { ok: false, code: "fence_stale", message: "Lease epoch is stale" } as const;
+			}
+			if (attempt.cancellation_generation !== input.fence.cancellationGeneration) {
+				return { ok: false, code: "cancellation_conflict", message: "Cancellation generation mismatch" } as const;
+			}
+
+			const now = this.#now();
+			this.#db
+				.prepare(`
+				UPDATE lifecycle_attempts
+				SET execution_state = 'succeeded', capture_state = ?, manifest_ref = ?, updated_at = ?
+				WHERE attempt_id = ?
+			`)
+				.run(input.captureState, input.manifest ? input.manifest.uri : null, now, input.fence.attemptId);
+
+			this.#db
+				.prepare(`
+				INSERT OR IGNORE INTO lifecycle_handoffs (event_id, attempt_id, kind, owner_node_id, target_node_id, correlation_id, packet_json, status, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+			`)
+				.run(
+					input.handoff.eventId,
+					input.fence.attemptId,
+					input.handoff.kind,
+					input.handoff.ownerNodeId,
+					input.handoff.targetNodeId,
+					input.handoff.correlationId,
+					serializeJsonValue(input.handoff),
+					now,
+				);
+
+			if (input.handoff.ownerNodeId) {
+				this.#db
+					.prepare(`
+					INSERT OR IGNORE INTO lifecycle_inbox (owner_node_id, event_id, status, created_at)
+					VALUES (?, ?, 'pending', ?)
+				`)
+					.run(input.handoff.ownerNodeId, input.handoff.eventId, now);
+			}
+
+			return { ok: true, status: "settled" } as const;
+		});
+		return tx.immediate();
+	}
+
+	cancelLifecycleRun(input: LifecycleCancellationInput): LifecycleCancellationResult {
+		this.#assertOpen();
+		const tx = this.#db.transaction(() => {
+			const now = this.#now();
+			const run = this.#db.prepare("SELECT * FROM lifecycle_runs WHERE run_id = ?").get(input.runId) as
+				| { cancellation_generation: number; plan_version: number; limits_json: string }
+				| undefined;
+			if (!run) {
+				return { ok: false, code: "run_not_found", message: `Run '${input.runId}' not found` } as const;
+			}
+			if (run.cancellation_generation !== input.expectedCancellationGeneration) {
+				return { ok: false, code: "cancellation_conflict", message: "Cancellation generation conflict" } as const;
+			}
+			const nextGen = run.cancellation_generation + 1;
+			this.#db
+				.prepare(`
+				UPDATE lifecycle_runs
+				SET outcome = 'cancelled', cancellation_generation = ?, updated_at = ?
+				WHERE run_id = ?
+			`)
+				.run(nextGen, now, input.runId);
+
+			// The run row was just updated inside this transaction, so an
+			// absent snapshot here means the record is corrupt, not missing.
+			// Let the typed read error surface rather than relabelling it.
+			return { ok: true, snapshot: this.getLifecycleRunSnapshot(input.runId) } as const;
+		});
+		return tx.immediate();
+	}
+
+	/**
+	 * Authoritative run snapshot read (A15).
+	 *
+	 * Maps the persisted v3 rows only. Anything the v3 schema genuinely does
+	 * not record is reported as empty; anything it records but cannot be
+	 * faithfully projected raises an explicit read error instead of a forged
+	 * reference. Missing run throws `run_not_found` rather than fabricating an
+	 * empty snapshot that reads like a real, empty run.
+	 */
+	getLifecycleRunSnapshot(runId: string): LifecycleRunSnapshot {
+		this.#assertOpen();
+		const row = this.#db
+			.prepare(
+				"SELECT run_id, outcome, plan_version, cancellation_generation, limits_json, consumed_json, reserved_json FROM lifecycle_runs WHERE run_id = ?",
+			)
+			.get(runId) as LifecycleRunRow | undefined;
+		if (!row) throw new LifecycleReadError("run_not_found", `Lifecycle run '${runId}' not found`);
+
+		const rootNode = this.#db
+			.prepare("SELECT node_id FROM lifecycle_nodes WHERE run_id = ? AND owner_node_id IS NULL")
+			.get(runId) as { node_id: string } | undefined;
+		if (!rootNode) {
+			throw new LifecycleReadError(
+				"lifecycle_run_missing_root_node",
+				`Lifecycle run '${runId}' has no root node; the run record is incomplete`,
+			);
+		}
+
+		const nodes = (
+			this.#db
+				.prepare(
+					"SELECT node_id, owner_node_id, depth, role, current_attempt_id, session_id, session_generation, planner_activity FROM lifecycle_nodes WHERE run_id = ? ORDER BY node_id ASC",
+				)
+				.all(runId) as LifecycleNodeRow[]
+		).map(n => ({
+			nodeId: n.node_id,
+			ownerNodeId: n.owner_node_id,
+			depth: n.depth,
+			role: n.role,
+			currentAttemptId: n.current_attempt_id,
+			sessionId: n.session_id,
+			sessionGeneration: n.session_generation,
+			plannerActivity: n.planner_activity,
+		}));
+
+		// lifecycle_attempts has no run_id column: attempts are run-scoped only
+		// through their owning node. There is also no fence_json column — the
+		// fence is reconstructed from the authoritative lease/generation columns.
+		const attempts = (
+			this.#db
+				.prepare(
+					"SELECT a.attempt_id, a.node_id, a.job_id, a.contract_ref, a.lease_owner, a.lease_epoch, a.cancellation_generation, a.execution_state, a.capture_state, a.delivery_state, a.publication_state, a.verification_state, a.manifest_ref FROM lifecycle_attempts a JOIN lifecycle_nodes n ON a.node_id = n.node_id WHERE n.run_id = ? ORDER BY a.attempt_id ASC",
+				)
+				.all(runId) as LifecycleAttemptRow[]
+		).map(a => {
+			if (a.job_id === null) {
+				throw new LifecycleReadError(
+					"lifecycle_attempt_missing_job",
+					`Attempt '${a.attempt_id}' has no job row; the attempt record is incomplete`,
+				);
+			}
+			return {
+				attemptId: a.attempt_id,
+				nodeId: a.node_id,
+				jobId: a.job_id,
+				// An unclaimed attempt genuinely has no write-authentication
+				// token yet. Emitting a fence with an empty owner would hand
+				// out a token that authenticates nothing.
+				fence:
+					a.lease_owner === null
+						? null
+						: {
+								runId,
+								nodeId: a.node_id,
+								attemptId: a.attempt_id,
+								leaseOwner: a.lease_owner,
+								leaseEpoch: a.lease_epoch,
+								cancellationGeneration: a.cancellation_generation,
+								contractVersion: LAUNCH_CONTRACT_VERSION,
+							},
+				execution: a.execution_state,
+				capture: a.capture_state,
+				delivery: a.delivery_state,
+				publication: a.publication_state,
+				verification: a.verification_state,
+				manifestRef: a.manifest_ref,
+			};
+		});
+
+		const dependencies = (
+			this.#db
+				.prepare(
+					"SELECT d.node_id, d.prerequisite_id FROM lifecycle_dependencies d JOIN lifecycle_nodes n ON d.node_id = n.node_id WHERE n.run_id = ? ORDER BY d.node_id, d.prerequisite_id ASC",
+				)
+				.all(runId) as { node_id: string; prerequisite_id: string }[]
+		).map(d => ({
+			nodeId: d.node_id,
+			prerequisiteId: d.prerequisite_id,
+		}));
+
+		const obligations = (
+			this.#db
+				.prepare(
+					"SELECT obligation_id, run_id, node_id, criterion_id, kind, state, evidence_receipt_ids_json, waiver_authorization_ref, version FROM lifecycle_obligations WHERE run_id = ? ORDER BY obligation_id ASC",
+				)
+				.all(runId) as LifecycleObligationRow[]
+		).map(o =>
+			parseObligationV1({
+				schemaVersion: 1,
+				obligationId: o.obligation_id,
+				runId: o.run_id,
+				nodeId: o.node_id,
+				criterionId: o.criterion_id,
+				kind: o.kind,
+				state: o.state,
+				evidenceReceiptIds: parseJsonValue(o.evidence_receipt_ids_json),
+				waiverAuthorizationRef: o.waiver_authorization_ref,
+				version: o.version,
+			}),
+		);
+
+		const pendingInboxEventIds = (
+			this.#db
+				.prepare(
+					"SELECT i.event_id FROM lifecycle_inbox i JOIN lifecycle_nodes n ON i.owner_node_id = n.node_id WHERE n.run_id = ? AND i.status = 'pending' ORDER BY i.event_id ASC",
+				)
+				.all(runId) as { event_id: string }[]
+		).map(e => e.event_id);
+
+		// v3 persists neither a complete PublicationReceipt (no mutated
+		// repositories, changesApplied, recovery refs or obligation links) nor
+		// any run/attempt scoping on lifecycle_receipts. Empty is therefore the
+		// honest answer only while those tables hold nothing for this run;
+		// existing rows cannot be projected without inventing fields, so they
+		// surface as an explicit read error until the v4 migration adds the
+		// missing columns.
+		this.#assertUnrepresentableLifecycleEvidence(runId);
+
+		return {
+			schemaVersion: 1 as const,
+			runId: row.run_id,
+			rootNodeId: rootNode.node_id,
+			outcome: row.outcome,
+			planVersion: row.plan_version,
+			cancellationGeneration: row.cancellation_generation,
+			limits: parseRunLimitsV1(parseJsonValue(row.limits_json), `lifecycle_runs[${runId}].limits_json`),
+			consumed: parseReservationVector(parseJsonValue(row.consumed_json), `lifecycle_runs[${runId}].consumed_json`),
+			reserved: parseReservationVector(parseJsonValue(row.reserved_json), `lifecycle_runs[${runId}].reserved_json`),
+			nodes,
+			attempts,
+			dependencies,
+			obligations,
+			publicationReceipts: [],
+			verificationReceipts: [],
+			pendingInboxEventIds,
+			// v3 has no projection manifest table, so no manifests are recorded.
+			projectionManifestRefs: [],
+		};
+	}
+
+	#assertUnrepresentableLifecycleEvidence(runId: string): void {
+		const publication = this.#db
+			.prepare(
+				"SELECT COUNT(*) AS n FROM lifecycle_publications p JOIN lifecycle_attempts a ON p.attempt_id = a.attempt_id JOIN lifecycle_nodes n ON a.node_id = n.node_id WHERE n.run_id = ?",
+			)
+			.get(runId) as { n: number };
+		if (publication.n > 0) {
+			throw new LifecycleReadError(
+				"lifecycle_publication_unrepresentable",
+				`Run '${runId}' has ${publication.n} publication row(s) that the v3 schema cannot project into a PublicationReceipt`,
+			);
+		}
+		const receipts = this.#db.prepare("SELECT COUNT(*) AS n FROM lifecycle_receipts").get() as { n: number };
+		if (receipts.n > 0) {
+			throw new LifecycleReadError(
+				"lifecycle_receipt_unattributable",
+				`${receipts.n} verification receipt(s) exist but the v3 schema records no run or attempt scope for them`,
+			);
+		}
+	}
+
+	listLifecycleNodes(
+		runId: string,
+	): { nodeId: string; ownerNodeId: string | null; role: string; plannerActivity: string }[] {
+		this.#assertOpen();
+		const rows = this.#db
+			.prepare(
+				"SELECT node_id, owner_node_id, role, planner_activity FROM lifecycle_nodes WHERE run_id = ? ORDER BY node_id ASC",
+			)
+			.all(runId) as { node_id: string; owner_node_id: string | null; role: string; planner_activity: string }[];
+		return rows.map(row => ({
+			nodeId: row.node_id,
+			ownerNodeId: row.owner_node_id,
+			role: row.role,
+			plannerActivity: row.planner_activity,
+		}));
+	}
+
+	listLifecycleAttempts(nodeId: string): {
+		attemptId: string;
+		execution: string;
+		capture: string;
+		delivery: string;
+		publication: string;
+		verification: string;
+	}[] {
+		this.#assertOpen();
+		const rows = this.#db
+			.prepare(
+				"SELECT attempt_id, execution_state, capture_state, delivery_state, publication_state, verification_state FROM lifecycle_attempts WHERE node_id = ? ORDER BY ordinal ASC",
+			)
+			.all(nodeId) as {
+			attempt_id: string;
+			execution_state: string;
+			capture_state: string;
+			delivery_state: string;
+			publication_state: string;
+			verification_state: string;
+		}[];
+		return rows.map(row => ({
+			attemptId: row.attempt_id,
+			execution: row.execution_state,
+			capture: row.capture_state,
+			delivery: row.delivery_state,
+			publication: row.publication_state,
+			verification: row.verification_state,
+		}));
+	}
+
+	listPendingHandoffs(limit = 100): string[] {
+		this.#assertOpen();
+		const rows = this.#db
+			.prepare(
+				"SELECT event_id FROM lifecycle_handoffs WHERE status = 'pending' ORDER BY created_at ASC, event_id ASC LIMIT ?",
+			)
+			.all(this.#normalizeLimit(limit) || 100) as { event_id: string }[];
+		return rows.map(row => row.event_id);
+	}
+
+	deliverLifecycleHandoff(eventId: string): boolean {
+		this.#assertOpen();
+		const tx = this.#db.transaction(() => {
+			const handoff = this.#db.prepare("SELECT * FROM lifecycle_handoffs WHERE event_id = ?").get(eventId) as
+				| { status: string; owner_node_id: string | null }
+				| undefined;
+			if (handoff?.status !== "pending") return false;
+			const now = this.#now();
+			if (handoff.owner_node_id) {
+				this.#db
+					.prepare(`
+					INSERT OR IGNORE INTO lifecycle_inbox (owner_node_id, event_id, status, created_at)
+					VALUES (?, ?, 'pending', ?)
+				`)
+					.run(handoff.owner_node_id, eventId, now);
+			}
+			this.#db.prepare("UPDATE lifecycle_handoffs SET status = 'delivered' WHERE event_id = ?").run(eventId);
+			return true;
+		});
+		return tx.immediate();
+	}
+
+	prepareLifecyclePlannerTurn(input: PlannerTurnInput): PlannerTurnRecord {
+		this.#assertOpen();
+		if (input.maxEvents <= 0) throw new Error("maxEvents must be positive");
+		const tx = this.#db.transaction(() => {
+			const now = this.#now();
+			const rows = this.#db
+				.prepare(`
+					SELECT i.event_id, h.packet_json FROM lifecycle_inbox i
+					JOIN lifecycle_handoffs h ON h.event_id = i.event_id
+					WHERE i.owner_node_id = ? AND i.status = 'pending'
+					ORDER BY h.created_at ASC, h.event_id ASC LIMIT ?
+				`)
+				.all(input.ownerNodeId, input.maxEvents) as { event_id: string; packet_json: string }[];
+			const inputEvents = rows.map(row => parseJsonValue(row.packet_json) as unknown as LifecycleHandoffV1);
+			const inputHash = createHash("sha256")
+				.update(JSON.stringify(rows.map(row => row.event_id)))
+				.digest("hex");
+			const turnId = this.#createId();
+			this.#db
+				.prepare(`
+					INSERT INTO lifecycle_planner_turns (turn_id, owner_node_id, expected_plan_version, input_event_hash, state, created_at)
+					VALUES (?, ?, ?, ?, 'prepared', ?)
+				`)
+				.run(turnId, input.ownerNodeId, input.expectedPlanVersion, inputHash, now);
+			for (const row of rows) {
+				this.#db
+					.prepare(
+						"UPDATE lifecycle_inbox SET status = 'claimed', planner_turn_id = ? WHERE owner_node_id = ? AND event_id = ?",
+					)
+					.run(turnId, input.ownerNodeId, row.event_id);
+			}
+			return { turnId, inputEvents, inputHash };
+		});
+		return tx.immediate();
+	}
+
+	commitLifecyclePlannerTurn(input: PlannerTurnCommitInput): PlannerTurnCommitResult {
+		this.#assertOpen();
+		const tx = this.#db.transaction(() => {
+			const turn = this.#db.prepare("SELECT * FROM lifecycle_planner_turns WHERE turn_id = ?").get(input.turnId) as
+				| { owner_node_id: string; expected_plan_version: number; input_event_hash: string; state: string }
+				| undefined;
+			if (!turn) {
+				return { ok: false, code: "stale_fence", message: "Planner turn not found." } as const;
+			}
+			if (turn.state !== "prepared") {
+				return { ok: false, code: "stale_fence", message: "Planner turn already committed." } as const;
+			}
+			const node = this.#db
+				.prepare("SELECT run_id FROM lifecycle_nodes WHERE node_id = ?")
+				.get(turn.owner_node_id) as { run_id: string } | undefined;
+			if (!node) {
+				return { ok: false, code: "stale_fence", message: "Owner node not found." } as const;
+			}
+			const run = this.#db.prepare("SELECT plan_version FROM lifecycle_runs WHERE run_id = ?").get(node.run_id) as
+				| { plan_version: number }
+				| undefined;
+			if (
+				!run ||
+				run.plan_version !== input.expectedPlanVersion ||
+				run.plan_version !== turn.expected_plan_version
+			) {
+				return {
+					ok: false,
+					code: "version_conflict",
+					message: "Plan version changed since the turn was prepared.",
+				} as const;
+			}
+			const now = this.#now();
+			for (const action of input.actions) {
+				if (action.kind === "add-dependency") {
+					this.#db
+						.prepare("INSERT OR IGNORE INTO lifecycle_dependencies (node_id, prerequisite_id) VALUES (?, ?)")
+						.run(action.nodeId, action.prerequisiteId);
+				} else if (action.kind === "resolve-obligation") {
+					this.#db
+						.prepare(
+							"UPDATE lifecycle_obligations SET state = 'resolved', evidence_receipt_ids_json = ?, version = version + 1, updated_at = ? WHERE obligation_id = ?",
+						)
+						.run(JSON.stringify(action.evidenceReceiptIds), now, action.obligationId);
+				}
+			}
+			const newPlanVersion = run.plan_version + 1;
+			this.#db
+				.prepare("UPDATE lifecycle_runs SET plan_version = ?, updated_at = ? WHERE run_id = ?")
+				.run(newPlanVersion, now, node.run_id);
+			this.#db
+				.prepare("UPDATE lifecycle_planner_turns SET state = 'committed', result_ref = ? WHERE turn_id = ?")
+				.run(input.result.uri, input.turnId);
+			this.#db
+				.prepare("UPDATE lifecycle_inbox SET status = 'consumed' WHERE planner_turn_id = ? AND status = 'claimed'")
+				.run(input.turnId);
+			return { ok: true, newPlanVersion } as const;
+		});
+		return tx.immediate();
+	}
+
+	transitionLifecycleObligation(input: ObligationTransitionInput): ObligationV1 {
+		this.#assertOpen();
+		const tx = this.#db.transaction(() => {
+			const row = this.#db
+				.prepare("SELECT * FROM lifecycle_obligations WHERE obligation_id = ?")
+				.get(input.obligationId) as
+				| {
+						obligation_id: string;
+						run_id: string;
+						node_id: string;
+						criterion_id: string;
+						kind: ObligationV1["kind"];
+						state: ObligationV1["state"];
+						evidence_receipt_ids_json: string;
+						waiver_authorization_ref: string | null;
+						version: number;
+				  }
+				| undefined;
+			if (!row) throw new Error(`Obligation '${input.obligationId}' not found`);
+			if (row.version !== input.expectedVersion) throw new Error("Obligation version conflict");
+			if (input.state === "resolved" && input.evidenceReceiptIds.length === 0) {
+				throw new Error("Resolving an obligation requires evidence receipt ids");
+			}
+			if (input.state === "waived" && !input.waiverAuthorizationRef) {
+				throw new Error("Waiving an obligation requires an authorization ref");
+			}
+			const now = this.#now();
+			this.#db
+				.prepare(`
+					UPDATE lifecycle_obligations
+					SET state = ?, evidence_receipt_ids_json = ?, waiver_authorization_ref = ?, version = version + 1, updated_at = ?
+					WHERE obligation_id = ?
+				`)
+				.run(
+					input.state,
+					JSON.stringify(input.evidenceReceiptIds),
+					input.waiverAuthorizationRef,
+					now,
+					input.obligationId,
+				);
+			return {
+				schemaVersion: 1,
+				obligationId: row.obligation_id,
+				runId: row.run_id,
+				nodeId: row.node_id,
+				criterionId: row.criterion_id,
+				kind: row.kind,
+				state: input.state,
+				evidenceReceiptIds: [...input.evidenceReceiptIds],
+				waiverAuthorizationRef: input.waiverAuthorizationRef,
+				version: row.version + 1,
+			} satisfies ObligationV1;
+		});
+		return tx.immediate();
 	}
 
 	#normalizeLimit(limit: number): number {

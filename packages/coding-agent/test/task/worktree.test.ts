@@ -42,6 +42,8 @@ async function createGitRepo(): Promise<{ baseBranch: string; repo: string }> {
 	await runGit(repo, ["init"]);
 	await runGit(repo, ["config", "user.email", "test@example.com"]);
 	await runGit(repo, ["config", "user.name", "Test User"]);
+	await runGit(repo, ["config", "core.autocrlf", "false"]);
+	await runGit(repo, ["config", "core.eol", "lf"]);
 	await fs.writeFile(path.join(repo, "merged.txt"), "base version\n");
 	await fs.writeFile(path.join(repo, "staged.txt"), "base staged\n");
 	await runGit(repo, ["add", "."]);
@@ -96,6 +98,8 @@ describe("worktree isolation helpers", () => {
 			await runGit(repo, ["init", "-q", "-b", BASE_BRANCH]);
 			await runGit(repo, ["config", "user.email", "test@example.com"]);
 			await runGit(repo, ["config", "user.name", "Test User"]);
+			await runGit(repo, ["config", "core.autocrlf", "false"]);
+			await runGit(repo, ["config", "core.eol", "lf"]);
 			await Promise.all([
 				fs.writeFile(path.join(repo, "merged.txt"), "base version\n"),
 				fs.writeFile(path.join(repo, "staged.txt"), "base staged\n"),
@@ -292,6 +296,8 @@ describe("applyNestedPatches", () => {
 		await runGit(parentRepo, ["init", "-q", "-b", "main"]);
 		await runGit(parentRepo, ["config", "user.email", "test@example.com"]);
 		await runGit(parentRepo, ["config", "user.name", "Test User"]);
+		await runGit(parentRepo, ["config", "core.autocrlf", "false"]);
+		await runGit(parentRepo, ["config", "core.eol", "lf"]);
 		await fs.writeFile(path.join(parentRepo, ".gitignore"), "sub/\n");
 		await runGit(parentRepo, ["add", "."]);
 		await runGit(parentRepo, ["commit", "-q", "-m", "parent-init"]);
@@ -302,6 +308,8 @@ describe("applyNestedPatches", () => {
 		await runGit(nestedDir, ["init", "-q", "-b", "main"]);
 		await runGit(nestedDir, ["config", "user.email", "test@example.com"]);
 		await runGit(nestedDir, ["config", "user.name", "Test User"]);
+		await runGit(nestedDir, ["config", "core.autocrlf", "false"]);
+		await runGit(nestedDir, ["config", "core.eol", "lf"]);
 		await fs.writeFile(path.join(nestedDir, "file.txt"), "v1\n");
 		await runGit(nestedDir, ["add", "."]);
 		await runGit(nestedDir, ["commit", "-q", "-m", "nested-init"]);
