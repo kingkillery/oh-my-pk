@@ -22,6 +22,7 @@ import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { JobExecutorContext } from "../operational/runner";
+import type { LifecycleExecutionContext } from "../orchestration/lifecycle-authority";
 import type { PlanModeState } from "../plan-mode/state";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
@@ -244,6 +245,19 @@ export interface ToolSession {
 	/** Task recursion depth (0 = top-level, 1 = first child, etc.) */
 	taskDepth?: number;
 	delegatedIo?: DelegatedIo;
+	/**
+	 * Host-registered lifecycle authority context (W3). Present only when
+	 * this session runs as a delegated child with a registered binding;
+	 * `undefined` preserves legacy unrestricted behavior during migration.
+	 *
+	 * Read-only accessor, consistent with getEvalSessionId and peers: the
+	 * context itself is an opaque handle minted by
+	 * registerLifecycleExecutionContext, so tool, eval and extension code can
+	 * observe its presence but cannot forge or replace it. Callers that
+	 * carry one MUST authorize through authorizeLifecycleAction before
+	 * side effects.
+	 */
+	getLifecycleExecutionContext?: () => LifecycleExecutionContext | undefined;
 	nativeTaskExecution?: JobExecutorContext;
 	/** Get shared eval executor session ID. Subagents inherit this to share JS/Python/Ruby/Julia state. */
 	getEvalSessionId?: () => string | null;

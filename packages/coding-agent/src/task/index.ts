@@ -47,6 +47,7 @@ import {
 import { shouldRejectDuplicateBlockedSpawn } from "../orchestration/approach-registry";
 import { type CollaborationPolicy, clampCollaborationPolicyForContext } from "../orchestration/collaboration-policy";
 import { compileLanePolicy, resolveWorkerMode } from "../orchestration/context-policy";
+import { authorizeLifecycleAction } from "../orchestration/lifecycle-authority";
 import {
 	recordApproachUpdateTelemetry,
 	recordBlockerTelemetry,
@@ -845,6 +846,29 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (parentSpawns === "" || (parentSpawns !== "*" && !allowedSpawns.includes(agentName))) {
 			const allowed = parentSpawns === "" ? "none (spawns disabled for this agent)" : parentSpawns;
 			return fail(`Cannot spawn '${agentName}'. Allowed: ${allowed}`);
+		}
+
+		// W3 lifecycle guard: when this session runs as a delegated child with
+		// a registered binding, the spawn must be authorized BEFORE any
+		// allocation or isolation work below (codeWrite prep, output
+		// allocation, agent-directory resolution beyond this read). The
+		// structural checks above are pure reads; everything after this point
+		// allocates. An absent accessor is the legacy path, unchanged.
+		const lifecycleContext = this.session.getLifecycleExecutionContext?.();
+		if (lifecycleContext) {
+			const decision = authorizeLifecycleAction(lifecycleContext, {
+				tool: null,
+				action: "spawn_agent",
+				targets: [agentName],
+				effect: "control",
+				invocationId:
+					typeof params.id === "string" && params.id.trim() !== "" ? params.id : `spawn-${agentName}-${startedAt}`,
+			});
+			if (!decision.allowed) {
+				return fail(
+					`Spawn denied by lifecycle authority (${decision.code}): ${decision.reason} Request an escalation to the owning planner if this work is required.`,
+				);
+			}
 		}
 
 		const planModeState = this.session.getPlanModeState?.();
