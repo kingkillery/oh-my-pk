@@ -7,7 +7,7 @@ through the proxy's notebook tools.
 
 ## Arguments
 
-- `$ARGUMENTS` — `[tskey-auth-...] [hostname] [password] [gh-token] [repos...]`, all optional.
+- `$ARGUMENTS` — `[--session <name>] [--port <number>] [tskey-auth-...] [hostname] [password] [gh-token] [repos...]`, all optional.
 - **Bare `/colab-ssh` (no args):** check for a live session first (see
   step 0), then offer the user two options:
   1. **Launch existing** — if a warmed VM is still on the tailnet, hand
@@ -24,6 +24,16 @@ through the proxy's notebook tools.
     Contents read/write only on the repos you need.
   - Repos (optional): `owner/repo,...` passed as `GH_REPOS`, cloned into
     `~/work` during warm-up.
+
+## Target an active session without warming a new VM
+
+Use `/colab-model --session <name> --port <number>` sessions directly:
+`colab sessions`, then `colab exec --session <name> -- <command>`.
+The default L4 session is `ompk-colab-model` on local bridge port `18082`
+and stays undisturbed; e.g. an isolated T4 uses
+`/colab-model --session ompk-colab-t4 --port 18083 <model>` with bridge
+`http://127.0.0.1:18083/v1`. VM-local `PID`/`LOG` filenames are shared, so
+prefer one model server per VM and stop the prior server before replacing it.
 
 ## Steps
 

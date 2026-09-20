@@ -98,6 +98,12 @@ packages/coding-agent/omp-config-cli-*/
 .omo/
 .llm-router/
 scratch/
+local/
+sandbox/
+tasks/
+out(colab-plan-*)/
+colab-session-log-*
+*.local.md
 # Side-agent/browser bridge runtime artifacts
 docs/improvements/
 /UsersprestAppDataLocalTemplin_snap*.json

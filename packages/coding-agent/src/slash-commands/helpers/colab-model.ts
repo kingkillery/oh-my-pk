@@ -1,12 +1,13 @@
 import type { Server } from "bun";
 import { kNoAuth } from "../../config/model-registry";
 import type { SlashCommandRuntime } from "../types";
+import { startPersistentColabBridge } from "./colab-persistent-bridge";
 
 const DEFAULT_SESSION_NAME = "ompk-colab-model";
-const DEFAULT_CONTEXT_WINDOW = 32_768;
+const DEFAULT_LOCAL_PORT = 18_082;
 const DEFAULT_MAX_TOKENS = 8_192;
 const DEFAULT_REMOTE_PORT = 8_081;
-const RUNTIME_PROVIDER = "llama.cpp";
+const RUNTIME_PROVIDER = "llama.cpp (colab)";
 const RUNTIME_SOURCE_ID = "builtin://colab-model";
 const PROGRESS_PREFIX = "__OMPK_COLAB_PROGRESS__";
 const READY_PREFIX = "__OMPK_COLAB_READY__";
@@ -19,6 +20,7 @@ export type ColabAccelerator = "T4" | "L4" | "A100" | "H100" | "G4";
 
 export interface ColabAcceleratorProfile {
 	cmakeArchitecture: string;
+	defaultContextWindow: number;
 	modelSizeBudget: number;
 	preferredQuantizations: readonly string[];
 }
@@ -26,26 +28,31 @@ export interface ColabAcceleratorProfile {
 const ACCELERATOR_PROFILES: Record<ColabAccelerator, ColabAcceleratorProfile> = {
 	T4: {
 		cmakeArchitecture: "75-real",
+		defaultContextWindow: 32_768,
 		modelSizeBudget: 12_000_000_000,
 		preferredQuantizations: ["Q3_K_M", "Q3_K_S", "IQ4_XS", "Q4_K_S", "Q4_K_M"],
 	},
 	L4: {
 		cmakeArchitecture: "89-real",
+		defaultContextWindow: 65_536,
 		modelSizeBudget: 18_000_000_000,
 		preferredQuantizations: ["Q4_K_M", "Q4_K_S", "IQ4_XS", "Q3_K_M", "Q3_K_S", "Q5_K_M"],
 	},
 	A100: {
 		cmakeArchitecture: "80-real",
+		defaultContextWindow: 65_536,
 		modelSizeBudget: 28_000_000_000,
 		preferredQuantizations: ["Q6_K", "Q5_K_M", "Q5_K_S", "Q4_K_M", "Q4_K_S", "Q8_0"],
 	},
 	H100: {
 		cmakeArchitecture: "90-real",
+		defaultContextWindow: 131_072,
 		modelSizeBudget: 60_000_000_000,
 		preferredQuantizations: ["Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q4_K_M"],
 	},
 	G4: {
 		cmakeArchitecture: "120-real",
+		defaultContextWindow: 131_072,
 		modelSizeBudget: 72_000_000_000,
 		preferredQuantizations: ["Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q4_K_M"],
 	},
@@ -76,6 +83,117 @@ export interface GgufArtifact {
 	totalSize: number;
 }
 
+export type ColabRuntimeProfileId = "upstream" | "prism";
+
+/** How the serving `llama-server` was obtained on the VM. */
+export type ColabRuntimeSource = "prebuilt" | "source";
+
+const RUNTIME_CACHE_ROOT = "/content/ompk-runtime-cache";
+
+/**
+ * Publisher release archive validated end to end on one accelerator.
+ * Restored (download → SHA-256 → data-filtered untar → `--version` commit →
+ * `ldd`) instead of compiling the pinned checkout on that accelerator.
+ */
+export interface ColabPrebuiltRuntime {
+	/** Release asset file name, also the cached archive name under `directory`. */
+	archive: string;
+	/** CUDA toolkit the archive links against; host libraries must satisfy it (checked via `ldd`). */
+	cuda: string;
+	/** VM cache directory holding the archive, `unpacked/`, and the `runtime.json` manifest. */
+	directory: string;
+	/** `llama-server` location relative to `directory/unpacked`. */
+	serverPath: string;
+	/** Hex SHA-256 of the archive; cached and downloaded copies are rejected on mismatch. */
+	sha256: string;
+	url: string;
+}
+
+/** Source checkout that produces the remote `llama-server` binary. */
+export interface ColabRuntimeProfile {
+	id: ColabRuntimeProfileId;
+	/** Checkout directory on the Colab VM; each profile owns its own tree and build. */
+	directory: string;
+	repositoryUrl: string;
+	/** Exact commit to build. Undefined builds the default branch head. */
+	pinnedCommit?: string;
+	/** Release tag matching `pinnedCommit`, for status output only. */
+	pinnedTag?: string;
+	/**
+	 * Validated release archives keyed by the accelerator they were verified on.
+	 * Accelerators without an entry compile `pinnedCommit` from source.
+	 */
+	prebuilt?: Partial<Record<ColabAccelerator, ColabPrebuiltRuntime>>;
+	/** GGUF packings that only this runtime can load. */
+	requiredQuantizations: readonly string[];
+	/** Models served by this runtime think by default (per publisher model card). */
+	reasoning: boolean;
+}
+
+const UPSTREAM_RUNTIME: ColabRuntimeProfile = {
+	id: "upstream",
+	directory: "/content/llama.cpp",
+	repositoryUrl: "https://github.com/ggml-org/llama.cpp.git",
+	// Validated Colab T4 CUDA runtime.
+	pinnedCommit: "b23efaa2ef147f547ee75cbf0c621d61904de80e",
+	requiredQuantizations: [],
+	reasoning: false,
+};
+
+const PRISM_REPOSITORY = "https://github.com/PrismML-Eng/llama.cpp";
+const PRISM_TAG = "prism-b10709-9a9394a";
+
+function prismReleaseArchive(cuda: string, sha256: string): ColabPrebuiltRuntime {
+	const archive = `llama-${PRISM_TAG}-bin-linux-cuda-${cuda}-x64.tar.gz`;
+	return {
+		archive,
+		cuda,
+		directory: `${RUNTIME_CACHE_ROOT}/${PRISM_TAG}/cuda-${cuda}-x64`,
+		serverPath: `llama-${PRISM_TAG}/llama-server`,
+		sha256,
+		url: `${PRISM_REPOSITORY}/releases/download/${PRISM_TAG}/${archive}`,
+	};
+}
+
+/**
+ * PrismML ternary kernels (PQ2_0 / PTQ1_0 + Hadamard activation transform).
+ * Stock llama.cpp rejects both packings; the publisher's Bonsai-demo pins this
+ * release (lightweight tag → commit verified via `git ls-remote`).
+ *
+ * The CUDA 12.4 release archive is pinned per accelerator only where it was
+ * verified with real generation and tool calls on that hardware: T4 and L4
+ * (L4 verified 2026-09-20: visible text generation "KERNELS OK" plus a
+ * constrained tool call with Ternary-Bonsai-2-27B-PQ2_0, sm_89). Other
+ * accelerators keep building the pinned commit for their own CUDA architecture.
+ */
+const PRISM_RUNTIME: ColabRuntimeProfile = {
+	id: "prism",
+	directory: "/content/prism-llama.cpp",
+	repositoryUrl: `${PRISM_REPOSITORY}.git`,
+	pinnedCommit: "9a9394a895b96003ca842a6041cb28ac49a108f7",
+	pinnedTag: PRISM_TAG,
+	prebuilt: {
+		T4: prismReleaseArchive("12.4", "f542fdcc818562359e947db65e0b11c4658dd5ca3bd240490448252e817d8e7a"),
+		L4: prismReleaseArchive("12.4", "f542fdcc818562359e947db65e0b11c4658dd5ca3bd240490448252e817d8e7a"),
+	},
+	requiredQuantizations: ["PQ2_0", "PTQ1_0"],
+	reasoning: true,
+};
+
+const PRISM_PUBLISHER = "prism-ml";
+
+export interface ColabRuntimeSummary {
+	id: ColabRuntimeProfileId;
+	/** Commit actually serving on the VM, as reported by the remote setup script. */
+	commit?: string;
+	pinnedTag?: string;
+	repositoryUrl: string;
+	/** Serving `llama-server` path on the VM, as reported by the remote setup script. */
+	server?: string;
+	/** Whether the VM restored a validated release archive or compiled the checkout. */
+	source?: ColabRuntimeSource;
+}
+
 export interface ColabModelLaunchResult {
 	accelerator: ColabAccelerator;
 	apiBaseUrl: string;
@@ -85,14 +203,18 @@ export interface ColabModelLaunchResult {
 	modelName: string;
 	quantization: string;
 	repoId: string;
+	/** True when the runtime profile marks the model as thinking by default. */
+	reasoning: boolean;
+	runtime: ColabRuntimeSummary;
 	sessionName: string;
 	/** True only after the remote runtime emitted a valid synthetic tool call. */
 	toolCallReady: boolean;
 }
-
 export interface ColabModelCommandRequest {
 	accelerator?: ColabAccelerator;
 	modelReference: string;
+	sessionName?: string;
+	localPort?: number;
 }
 
 interface CommandResult {
@@ -106,6 +228,11 @@ interface RemoteReadyPayload {
 	modelId: string;
 	modelName: string;
 	port: number;
+	/** Commit of the serving binary: verified `--version` output for a prebuilt, git HEAD for a source build. */
+	runtimeCommit?: string;
+	/** Serving `llama-server` path on the VM. */
+	runtimeServer?: string;
+	runtimeSource?: ColabRuntimeSource;
 	toolCallReady: boolean;
 }
 
@@ -113,11 +240,11 @@ interface HttpMetadata {
 	headers?: Record<string, string>;
 	status: number;
 }
-
 interface ColabModelLaunchOptions {
 	accelerator?: ColabAccelerator;
 	fetch?: typeof globalThis.fetch;
 	sessionName?: string;
+	localPort?: number;
 }
 
 type StatusEmitter = (message: string) => Promise<void> | void;
@@ -206,6 +333,16 @@ export function parseColabModelCommandArgs(input: string): ColabModelCommandRequ
 	const tokens = input.trim().split(/\s+/).filter(Boolean);
 	const modelTokens: string[] = [];
 	let accelerator: ColabAccelerator | undefined;
+	let sessionName: string | undefined;
+	let localPort: number | undefined;
+	const parsePort = (raw: string): number => {
+		if (!/^\d+$/.test(raw)) throw new Error(`Invalid /colab-model port "${raw}". Expected 1-65535.`);
+		const port = Number(raw);
+		if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+			throw new Error(`Invalid /colab-model port "${raw}". Expected 1-65535.`);
+		}
+		return port;
+	};
 	for (let index = 0; index < tokens.length; index += 1) {
 		const token = tokens[index];
 		if (token === "--gpu") {
@@ -219,13 +356,37 @@ export function parseColabModelCommandArgs(input: string): ColabModelCommandRequ
 			accelerator = normalizeAccelerator(token.slice("--gpu=".length));
 			continue;
 		}
+		if (token === "--session") {
+			const value = tokens[index + 1];
+			if (!value) throw new Error("--session requires a session name.");
+			sessionName = value;
+			index += 1;
+			continue;
+		}
+		if (token.startsWith("--session=")) {
+			const value = token.slice("--session=".length);
+			if (!value) throw new Error("--session requires a session name.");
+			sessionName = value;
+			continue;
+		}
+		if (token === "--port") {
+			const value = tokens[index + 1];
+			if (!value) throw new Error("--port requires a port number 1-65535.");
+			localPort = parsePort(value);
+			index += 1;
+			continue;
+		}
+		if (token.startsWith("--port=")) {
+			localPort = parsePort(token.slice("--port=".length));
+			continue;
+		}
 		if (token.startsWith("--")) throw new Error(`Unknown /colab-model option "${token}".`);
 		modelTokens.push(token);
 	}
 	if (modelTokens.length > 1) {
 		throw new Error("Expected one Hugging Face model id or URL.");
 	}
-	return { accelerator, modelReference: modelTokens[0] ?? "" };
+	return { accelerator, modelReference: modelTokens[0] ?? "", sessionName, localPort };
 }
 
 function isTreeEntry(value: unknown): value is Record<string, unknown> {
@@ -276,7 +437,7 @@ function splitGroupKey(file: string): string {
 }
 
 function extractQuantization(file: string): string {
-	const match = file.toUpperCase().match(/(?:^|[-_.])(IQ\d(?:_[A-Z0-9]+)+|Q\d(?:_[A-Z0-9]+)+|BF16|F16)(?:[-_.]|$)/);
+	const match = file.toUpperCase().match(/(?:^|[-_.])((?:IQ|PTQ|PQ|Q)\d(?:_[A-Z0-9]+)+|BF16|F16)(?:[-_.]|$)/);
 	return match?.[1] ?? "UNKNOWN";
 }
 
@@ -356,6 +517,55 @@ export function selectAutomaticColabAccelerators(
 			return false;
 		}
 	});
+}
+
+/**
+ * Pick the llama.cpp source tree that can load the selected GGUF.
+ *
+ * PQ2_0 / PTQ1_0 require the PrismML fork regardless of publisher. A bare
+ * `Q2_0` file from a prism-ml repository is the deprecated pre-migration
+ * packing: stock llama.cpp loads it silently and emits garbage, and current
+ * fork binaries refuse it, so it is rejected instead of falling back.
+ */
+export function selectColabRuntimeProfile(
+	reference: Pick<HuggingFaceModelReference, "repoId">,
+	artifact: Pick<GgufArtifact, "quantization" | "primaryFile">,
+): ColabRuntimeProfile {
+	if (PRISM_RUNTIME.requiredQuantizations.includes(artifact.quantization)) return PRISM_RUNTIME;
+	const publisher = reference.repoId.split("/")[0]?.toLowerCase();
+	if (publisher === PRISM_PUBLISHER && artifact.quantization === "Q2_0") {
+		throw new Error(
+			`${artifact.primaryFile} uses the deprecated ${PRISM_PUBLISHER} Q2_0 packing that stock llama.cpp loads without validation. Pick a PQ2_0 or PTQ1_0 GGUF from ${reference.repoId} instead.`,
+		);
+	}
+	return UPSTREAM_RUNTIME;
+}
+
+/**
+ * Release archive to restore for this profile on this accelerator, if one was
+ * validated there. Requires a pinned commit so the archive's reported build can
+ * be checked against known provenance; everything else compiles from source.
+ */
+export function selectColabPrebuiltRuntime(
+	profile: ColabRuntimeProfile,
+	accelerator: ColabAccelerator,
+): ColabPrebuiltRuntime | undefined {
+	if (!profile.pinnedCommit) return undefined;
+	return profile.prebuilt?.[accelerator];
+}
+
+function summarizeRuntime(
+	profile: ColabRuntimeProfile,
+	ready?: Pick<RemoteReadyPayload, "runtimeCommit" | "runtimeServer" | "runtimeSource">,
+): ColabRuntimeSummary {
+	return {
+		id: profile.id,
+		commit: ready?.runtimeCommit ?? profile.pinnedCommit,
+		pinnedTag: profile.pinnedTag,
+		repositoryUrl: profile.repositoryUrl,
+		server: ready?.runtimeServer,
+		source: ready?.runtimeSource,
+	};
 }
 
 export function buildColabCommand(args: readonly string[], platform = process.platform): string[] {
@@ -484,7 +694,10 @@ export function buildRemoteSetupScript(config: {
 	contextWindow: number;
 	reference: HuggingFaceModelReference;
 	remotePort: number;
+	runtime?: ColabRuntimeProfile;
 }): string {
+	const runtime = config.runtime ?? selectColabRuntimeProfile(config.reference, config.artifact);
+	const prebuilt = selectColabPrebuiltRuntime(runtime, config.accelerator);
 	const payload = {
 		accelerator: config.accelerator,
 		cmakeArchitecture: getColabAcceleratorProfile(config.accelerator).cmakeArchitecture,
@@ -495,14 +708,35 @@ export function buildRemoteSetupScript(config: {
 		remotePort: config.remotePort,
 		repoId: config.reference.repoId,
 		revision: config.reference.revision,
+		runtime: {
+			id: runtime.id,
+			directory: runtime.directory,
+			repositoryUrl: runtime.repositoryUrl,
+			pinnedCommit: runtime.pinnedCommit ?? null,
+			pinnedTag: runtime.pinnedTag ?? null,
+			prebuilt: prebuilt
+				? {
+						archive: prebuilt.archive,
+						cuda: prebuilt.cuda,
+						directory: prebuilt.directory,
+						serverPath: prebuilt.serverPath,
+						sha256: prebuilt.sha256,
+						url: prebuilt.url,
+					}
+				: null,
+		},
 	};
-	return `import json
+	return `import hashlib
+import json
+from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 import os
 import signal
+import socket
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -511,11 +745,21 @@ from pathlib import Path
 CONFIG = json.loads(${pythonJson(payload)})
 PROGRESS_PREFIX = ${JSON.stringify(PROGRESS_PREFIX)}
 READY_PREFIX = ${JSON.stringify(READY_PREFIX)}
-LLAMA_DIR = Path("/content/llama.cpp")
+RUNTIME = CONFIG["runtime"]
+PREBUILT = RUNTIME["prebuilt"]
+LLAMA_DIR = Path(RUNTIME["directory"])
 MODEL_ROOT = Path("/content/ompk-models")
 PID_FILE = Path("/content/ompk-colab-model.pid")
 LOG_FILE = Path("/content/ompk-colab-model.log")
+HEX_DIGITS = frozenset("0123456789abcdef")
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+# A llama-server whose provenance is verified for this launch: restored release archive or pinned source build.
+RuntimeTarget = namedtuple("RuntimeTarget", ["source", "server", "commit"])
+
+
+class PrebuiltCompatibilityError(RuntimeError):
+    pass
 
 
 def progress(message):
@@ -529,6 +773,394 @@ def run(args, cwd=None):
         raise RuntimeError(f"Command failed ({completed.returncode}): {' '.join(args)}\\n{tail}")
 
 
+def git_output(args):
+    if not LLAMA_DIR.is_dir():
+        return ""
+    completed = subprocess.run(["git", *args], cwd=LLAMA_DIR, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
+def runtime_label():
+    return f"{RUNTIME['id']} llama.cpp {RUNTIME['pinnedTag'] or (RUNTIME['pinnedCommit'] or 'head')[:12]}"
+
+
+def cmake_cache_value(key):
+    cache = LLAMA_DIR / "build" / "CMakeCache.txt"
+    if not cache.is_file():
+        return ""
+    for line in cache.read_text(errors="replace").splitlines():
+        if line.startswith("//") or line.startswith("#"):
+            continue
+        name, separator, value = line.partition("=")
+        if separator and name.split(":")[0] == key:
+            return value.strip()
+    return ""
+
+
+def source_server_path():
+    return LLAMA_DIR / "build" / "bin" / "llama-server"
+
+
+def source_binary_is_valid():
+    """Reuse a compiled llama-server only when its build is keyed to this runtime: pinned commit, CUDA arch, Release."""
+    if not source_server_path().is_file():
+        return False
+    expected = {
+        "CMAKE_CUDA_ARCHITECTURES": CONFIG["cmakeArchitecture"],
+        "CMAKE_BUILD_TYPE": "Release",
+        "GGML_CUDA": "ON",
+    }
+    if any(cmake_cache_value(key) != value for key, value in expected.items()):
+        return False
+    pinned = RUNTIME["pinnedCommit"]
+    if pinned and git_output(["rev-parse", "HEAD"]) != pinned:
+        return False
+    try:
+        version = subprocess.run([str(source_server_path()), "--version"], env=library_env(source_server_path()), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if version.returncode != 0:
+        return False
+    commit = reported_commit(version.stdout)
+    return not pinned or (commit is not None and pinned.startswith(commit))
+
+
+def source_target():
+    return RuntimeTarget("source", source_server_path(), git_output(["rev-parse", "HEAD"]) or None)
+
+
+def prepare_runtime_source():
+    pinned = RUNTIME["pinnedCommit"]
+    if not (LLAMA_DIR / ".git").is_dir():
+        if LLAMA_DIR.exists():
+            shutil.rmtree(LLAMA_DIR)
+        if not pinned:
+            progress("cloning llama.cpp")
+            run(["git", "clone", "--depth", "1", RUNTIME["repositoryUrl"], str(LLAMA_DIR)])
+            return
+        LLAMA_DIR.mkdir(parents=True)
+        run(["git", "init", "-q"], cwd=LLAMA_DIR)
+    if not pinned:
+        progress("updating llama.cpp")
+        run(["git", "pull", "--ff-only"], cwd=LLAMA_DIR)
+        return
+    if git_output(["rev-parse", "HEAD"]) != pinned:
+        progress(f"checking out {runtime_label()}")
+        subprocess.run(["git", "remote", "remove", "origin"], cwd=LLAMA_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run(["git", "remote", "add", "origin", RUNTIME["repositoryUrl"]], cwd=LLAMA_DIR)
+        run(["git", "fetch", "--depth", "1", "origin", pinned], cwd=LLAMA_DIR)
+        run(["git", "checkout", "--detach", "--force", pinned], cwd=LLAMA_DIR)
+    head = git_output(["rev-parse", "HEAD"])
+    if head != pinned:
+        raise RuntimeError(f"{LLAMA_DIR} is at {head or 'an unknown commit'}, expected pinned {pinned}")
+
+
+def build_source_runtime():
+    """Compile llama-server from the runtime checkout; the result must pass the same validation as a reused build."""
+    build_dir = LLAMA_DIR / "build"
+    if build_dir.exists() and tree_in_use(build_dir):
+        raise RuntimeError(f"Refusing to replace in-use runtime build {build_dir}")
+    prepare_runtime_source()
+    if build_dir.exists():
+        progress(f"discarding unvalidated {RUNTIME['id']} llama.cpp build")
+        shutil.rmtree(build_dir)
+    progress(f"building CUDA llama-server from {runtime_label()}")
+    configure = [
+        "cmake", "-S", str(LLAMA_DIR), "-B", str(build_dir),
+        "-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={CONFIG['cmakeArchitecture']}",
+        "-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_CURL=OFF",
+    ]
+    if shutil.which("ninja"):
+        configure.extend(["-G", "Ninja"])
+    run(configure)
+    run([
+        "cmake", "--build", str(build_dir), "--config", "Release",
+        "--parallel", str(max(2, os.cpu_count() or 2)), "--target", "llama-server",
+    ])
+    if not source_binary_is_valid():
+        raise RuntimeError(f"Built llama-server did not pass the {runtime_label()} validation")
+    return source_target()
+
+
+def prebuilt_paths():
+    """(cache root, archive, unpacked tree, manifest) for the pinned release archive."""
+    root = Path(PREBUILT["directory"])
+    return root, root / PREBUILT["archive"], root / "unpacked", root / "runtime.json"
+
+
+def prebuilt_server_path():
+    return prebuilt_paths()[2] / PREBUILT["serverPath"]
+
+
+def prebuilt_label():
+    return f"prebuilt {PREBUILT['archive']}"
+
+
+def library_env(server):
+    """Resolve the shared libraries bundled beside the executable ahead of anything else on the host."""
+    env = dict(os.environ)
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(part for part in (str(server.parent), env.get("LD_LIBRARY_PATH", "")) if part)
+    return env
+
+
+def sha256_of(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def reported_commit(version_output):
+    """Commit hash printed by 'llama-server --version' (a 7+ hex token on its version line), or None."""
+    for line in version_output.splitlines():
+        if not line.strip().lower().startswith("version:"):
+            continue
+        for token in line.replace("(", " ").replace(")", " ").replace(",", " ").split():
+            candidate = token.lower()
+            if len(candidate) >= 7 and set(candidate) <= HEX_DIGITS and not candidate.isdigit():
+                return candidate
+    return None
+
+
+def verify_prebuilt_server(server):
+    """Raise unless the executable runs on this host, reports the pinned commit, and every bundled library resolves."""
+    pinned = RUNTIME["pinnedCommit"] or ""
+    env = library_env(server)
+    try:
+        version = subprocess.run([str(server), "--version"], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise PrebuiltCompatibilityError(f"{server} could not report its version: {error}") from error
+    if version.returncode != 0:
+        tail = "\\n".join(version.stdout.splitlines()[-20:])
+        raise PrebuiltCompatibilityError(f"{server} --version exited with {version.returncode}: {tail}")
+    commit = reported_commit(version.stdout)
+    if commit is None:
+        raise RuntimeError(f"{server} did not report a llama.cpp build commit")
+    if not pinned or not pinned.startswith(commit):
+        raise RuntimeError(f"{server} was built from {commit}, expected pinned {pinned or 'commit'}")
+    libraries = [server, *sorted(path for path in server.parent.glob("*.so*") if path.is_file() and not path.is_symlink())]
+    for library in libraries:
+        try:
+            ldd = subprocess.run(["ldd", str(library)], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise PrebuiltCompatibilityError(f"ldd could not inspect {library.name}: {error}") from error
+        missing = sorted({line.strip() for line in ldd.stdout.splitlines() if "not found" in line})
+        if ldd.returncode != 0 or missing:
+            detail = "; ".join(missing) or "\\n".join(ldd.stdout.splitlines()[-5:])
+            raise PrebuiltCompatibilityError(f"{library.name} cannot load on this host: {detail}")
+    return commit
+
+
+def prebuilt_rejection():
+    """None when the unpacked release matches the pinned archive and still runs here; otherwise the reason."""
+    root, archive, unpacked, manifest = prebuilt_paths()
+    server = prebuilt_server_path()
+    if not server.is_file():
+        return "not installed"
+    if not manifest.is_file():
+        return f"{manifest} is missing"
+    try:
+        recorded = json.loads(manifest.read_text())
+    except (OSError, ValueError) as error:
+        return f"{manifest} is unreadable: {error}"
+    expected = {"sha256": PREBUILT["sha256"], "commit": RUNTIME["pinnedCommit"], "server": str(server)}
+    if not isinstance(recorded, dict) or any(recorded.get(key) != value for key, value in expected.items()):
+        return f"{manifest} does not describe {PREBUILT['archive']} at {runtime_label()}"
+    if not archive.is_file() or sha256_of(archive) != PREBUILT["sha256"]:
+        return f"{archive} is missing or fails its pinned checksum"
+    try:
+        verify_prebuilt_server(server)
+    except RuntimeError as error:
+        return str(error)
+    return None
+
+
+def prebuilt_target():
+    return RuntimeTarget("prebuilt", prebuilt_server_path(), RUNTIME["pinnedCommit"])
+
+
+def ensure_prebuilt_archive(archive):
+    """Keep the cached archive only when it hashes to the pinned digest; otherwise download and verify a fresh copy."""
+    if archive.is_file():
+        if sha256_of(archive) == PREBUILT["sha256"]:
+            progress(f"reusing cached {PREBUILT['archive']}")
+            return
+        progress(f"discarding cached {PREBUILT['archive']} with an unexpected checksum")
+        archive.unlink()
+    progress(f"downloading {PREBUILT['archive']}")
+    part = archive.with_name(archive.name + ".part")
+    try:
+        with urllib.request.urlopen(PREBUILT["url"], timeout=120) as response, part.open("wb") as handle:
+            shutil.copyfileobj(response, handle, 1 << 20)
+        actual = sha256_of(part)
+        if actual != PREBUILT["sha256"]:
+            raise RuntimeError(f"{PREBUILT['archive']} sha256 {actual} does not match pinned {PREBUILT['sha256']}")
+        part.replace(archive)
+    finally:
+        if part.exists():
+            part.unlink()
+
+
+def process_argv(proc_dir):
+    try:
+        return [part.decode("utf-8", errors="replace") for part in (proc_dir / "cmdline").read_bytes().split(b"\\0") if part]
+    except OSError:
+        return []
+
+
+def iter_processes():
+    """(pid, exe, argv) for every readable process; exe is None when its link cannot be read."""
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return
+    for proc_dir in proc_root.iterdir():
+        if not proc_dir.name.isdigit():
+            continue
+        argv = process_argv(proc_dir)
+        if not argv:
+            continue
+        try:
+            exe = Path(os.readlink(proc_dir / "exe"))
+        except OSError:
+            exe = None
+        yield int(proc_dir.name), exe, argv
+
+
+def tree_in_use(directory, processes=None):
+    """True when a running process executes from inside the directory."""
+    resolved = directory.resolve()
+    for _pid, exe, _argv in (iter_processes() if processes is None else processes):
+        if exe is None:
+            continue
+        try:
+            exe.resolve().relative_to(resolved)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def retire_tree(directory):
+    """Remove a superseded tree, or rename it aside when a process still runs from it (never delete an active tree)."""
+    if tree_in_use(directory):
+        retired = directory.with_name(f"{directory.name}.retired-{int(time.time())}")
+        progress(f"keeping in-use {directory} as {retired.name}")
+        directory.rename(retired)
+    else:
+        shutil.rmtree(directory)
+
+
+def restore_prebuilt():
+    """Download, verify, unpack, and validate the pinned release archive; returns its target or raises."""
+    if not hasattr(tarfile, "data_filter"):
+        raise RuntimeError("this Python lacks tarfile's data filter; refusing to unpack the release unsafely")
+    root, archive, unpacked, manifest = prebuilt_paths()
+    root.mkdir(parents=True, exist_ok=True)
+    ensure_prebuilt_archive(archive)
+    staging = root / "unpacked.staging"
+    if staging.exists():
+        shutil.rmtree(staging)
+    progress(f"unpacking {PREBUILT['archive']}")
+    try:
+        with tarfile.open(archive, "r:gz") as bundle:
+            bundle.extractall(staging, filter="data")
+        staged_server = staging / PREBUILT["serverPath"]
+        if not staged_server.is_file():
+            raise RuntimeError(f"{PREBUILT['archive']} does not contain {PREBUILT['serverPath']}")
+        staged_server.chmod(staged_server.stat().st_mode | 0o100)
+        commit = verify_prebuilt_server(staged_server)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    if unpacked.exists():
+        retire_tree(unpacked)
+    staging.rename(unpacked)
+    server = prebuilt_server_path()
+    manifest.write_text(json.dumps({
+        "server": str(server),
+        "archive": str(archive),
+        "sha256": PREBUILT["sha256"],
+        "tag": RUNTIME["pinnedTag"],
+        "commit": RUNTIME["pinnedCommit"],
+        "reportedCommit": commit,
+        "cuda": PREBUILT["cuda"],
+        "accelerator": CONFIG["accelerator"],
+        "verifiedAt": time.time(),
+    }))
+    rejection = prebuilt_rejection()
+    if rejection is not None:
+        raise RuntimeError(f"restored {PREBUILT['archive']} failed validation: {rejection}")
+    return prebuilt_target()
+
+
+def validated_targets():
+    """Servers whose provenance is verified for this launch, most preferred first; never adopts an unknown binary."""
+    targets = []
+    if PREBUILT:
+        rejection = prebuilt_rejection()
+        if rejection is None:
+            targets.append(prebuilt_target())
+        elif rejection != "not installed":
+            progress(f"{prebuilt_label()} is not reusable: {rejection}")
+    if source_binary_is_valid():
+        targets.append(source_target())
+    return targets
+
+
+def prepare_runtime_target(targets):
+    """Pick a validated server, restoring the pinned release when possible and compiling only as a last resort."""
+    if targets:
+        progress(f"reusing validated {targets[0].source} llama-server ({runtime_label()})")
+        return targets[0]
+    if PREBUILT:
+        try:
+            return restore_prebuilt()
+        except PrebuiltCompatibilityError as error:
+            progress(f"{prebuilt_label()} unavailable ({error}); building from source instead")
+    return build_source_runtime()
+
+
+def argv_option(argv, flag):
+    if flag not in argv:
+        return None
+    index = argv.index(flag) + 1
+    return argv[index] if index < len(argv) else None
+
+
+def serving_process(port, processes=None):
+    """(pid, exe, argv) of the llama-server bound to the port, or None when nothing matches."""
+    for pid, exe, argv in (iter_processes() if processes is None else processes):
+        if "llama-server" not in Path(argv[0]).name:
+            continue
+        if argv_option(argv, "--port") != str(port):
+            continue
+        return pid, exe, argv
+    return None
+
+
+def target_for_executable(targets, exe):
+    """The validated target whose llama-server is the very file the process executes, or None."""
+    if exe is None:
+        return None
+    for target in targets:
+        try:
+            if os.path.samefile(exe, target.server):
+                return target
+        except OSError:
+            continue
+    return None
+
+
+def served_model_matches(argv, primary_name, required_names):
+    """True when the process serves this exact GGUF: same file name, every split still present beside it."""
+    model = argv_option(argv, "--model")
+    if not model:
+        return False
+    model_path = Path(model)
+    return model_path.name == primary_name and model_path.is_file() and all((model_path.parent / name).is_file() for name in required_names)
+
+
 def request_json(url, payload=None, timeout=30):
     data = None if payload is None else json.dumps(payload).encode()
     headers = {} if payload is None else {"Content-Type": "application/json"}
@@ -537,7 +1169,7 @@ def request_json(url, payload=None, timeout=30):
         return json.loads(response.read())
 
 
-def announce_ready(model_id, primary_name, base_url):
+def announce_ready(model_id, primary_name, base_url, target):
     context_window = CONFIG["contextWindow"]
     try:
         props = request_json(base_url + "/props")
@@ -617,18 +1249,48 @@ def announce_ready(model_id, primary_name, base_url):
         "modelId": model_id,
         "modelName": Path(primary_name).stem,
         "port": CONFIG["remotePort"],
+        "runtimeCommit": target.commit,
+        "runtimeServer": str(target.server),
+        "runtimeSource": target.source,
         "toolCallReady": True,
     }), flush=True)
 
 
 def resolve_model_path(primary_name, required_names):
-    for root in (MODEL_ROOT, Path("/content/models")):
+    # 1. Local VM storage cache (/content/ompk-models, /content/models)
+    # 2. Google Drive FUSE mount (/content/drive/MyDrive/models, etc.)
+    # 3. In-region Google Cloud Storage (gsutil copy)
+    search_roots = [
+        MODEL_ROOT,
+        Path("/content/models"),
+        Path("/content/drive/MyDrive/models"),
+        Path("/content/drive/MyDrive/ompk-models"),
+        Path("/content/drive/MyDrive"),
+    ]
+    for root in search_roots:
         if not root.exists():
             continue
         for candidate in root.rglob(primary_name):
             if candidate.is_file() and all((candidate.parent / name).is_file() for name in required_names):
-                progress(f"reusing downloaded {primary_name}")
+                progress(f"reusing cached {primary_name} from {root}")
                 return candidate
+
+    # Check GCS bucket if OMPK_GCS_MODEL_BUCKET or GCS_BUCKET environment variable is defined
+    gcs_bucket = os.environ.get("OMPK_GCS_MODEL_BUCKET") or os.environ.get("GCS_BUCKET")
+    if gcs_bucket:
+        gcs_target_dir = MODEL_ROOT / CONFIG["repoId"].replace("/", "--")
+        gcs_target_dir.mkdir(parents=True, exist_ok=True)
+        progress(f"checking GCS bucket {gcs_bucket} for {primary_name}")
+        gcs_uri = f"{gcs_bucket.rstrip('/')}/{primary_name}"
+        try:
+            res = subprocess.run(["gsutil", "-q", "stat", gcs_uri], capture_output=True, timeout=10)
+            if res.returncode == 0:
+                progress(f"downloading {primary_name} from in-region GCS ({gcs_uri})")
+                dl_res = subprocess.run(["gsutil", "-m", "cp", gcs_uri, str(gcs_target_dir / primary_name)], capture_output=True, text=True, timeout=120)
+                if dl_res.returncode == 0 and (gcs_target_dir / primary_name).is_file():
+                    return gcs_target_dir / primary_name
+        except Exception as e:
+            progress(f"GCS check error ({e}); falling back to Hugging Face")
     progress(f"downloading {CONFIG['repoId']} {CONFIG['quantization']}")
     try:
         from huggingface_hub import snapshot_download
@@ -648,69 +1310,56 @@ def resolve_model_path(primary_name, required_names):
     return model_path
 
 
-progress("checking CUDA runtime")
-run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
-primary_name = Path(CONFIG["primaryFile"]).name
-required_names = [Path(name).name for name in CONFIG["files"]]
-base_url = f"http://127.0.0.1:{CONFIG['remotePort']}"
-models_payload = None
-try:
-    models_payload = request_json(base_url + "/v1/models", timeout=5)
-except (OSError, urllib.error.URLError, json.JSONDecodeError):
-    pass
-running_ids = [item.get("id", "") for item in (models_payload or {}).get("data", []) if isinstance(item, dict)]
-matching_names = {primary_name, Path(primary_name).stem}
-matching_id = next((model_id for model_id in running_ids if Path(model_id).name in matching_names), None)
-if matching_id is not None:
-    progress(f"reusing running {Path(primary_name).stem}")
-    announce_ready(matching_id, primary_name, base_url)
-    raise SystemExit(0)
-
-with ThreadPoolExecutor(max_workers=1) as executor:
-    model_future = executor.submit(resolve_model_path, primary_name, required_names)
-    server = LLAMA_DIR / "build" / "bin" / "llama-server"
-    if server.is_file():
-        progress("reusing CUDA llama-server")
-    else:
-        if not LLAMA_DIR.exists():
-            progress("cloning llama.cpp")
-            run(["git", "clone", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git", str(LLAMA_DIR)])
-        else:
-            progress("updating llama.cpp")
-            run(["git", "pull", "--ff-only"], cwd=LLAMA_DIR)
-        progress("building CUDA llama-server")
-        build_dir = LLAMA_DIR / "build"
-        configure = [
-            "cmake", "-S", str(LLAMA_DIR), "-B", str(build_dir),
-            "-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={CONFIG['cmakeArchitecture']}",
-            "-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_CURL=OFF",
-        ]
-        if shutil.which("ninja") and not (build_dir / "CMakeCache.txt").exists():
-            configure.extend(["-G", "Ninja"])
-        run(configure)
-        run([
-            "cmake", "--build", str(build_dir), "--config", "Release",
-            "--parallel", str(max(2, os.cpu_count() or 2)), "--target", "llama-server",
-        ])
-    model_path = model_future.result()
-
-if matching_id is None:
-    if PID_FILE.exists():
+def stop_prior_server():
+    """Retire the prior llama-server on this port, never trusting a stale PID file alone."""
+    try:
+        recorded_pid = int(PID_FILE.read_text().strip())
+    except (OSError, ValueError):
+        recorded_pid = None
+    running = serving_process(CONFIG["remotePort"])
+    if running is None:
+        return
+    pid = running[0]
+    if recorded_pid is not None and recorded_pid != pid:
+        progress("ignoring stale llama-server PID file; using the server on the requested port")
+    progress(f"stopping prior llama-server {pid} on port {CONFIG['remotePort']}")
+    for termination_signal in (signal.SIGTERM, signal.SIGKILL):
+        # Recheck identity before each signal so a recycled PID is not terminated.
+        if serving_process(CONFIG["remotePort"]) != running:
+            break
         try:
-            os.kill(int(PID_FILE.read_text().strip()), signal.SIGTERM)
-            time.sleep(2)
-        except (ProcessLookupError, ValueError):
-            pass
-    subprocess.run(["fuser", "-k", f"{CONFIG['remotePort']}/tcp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            os.kill(pid, termination_signal)
+        except ProcessLookupError:
+            break
+        for attempt in range(100):
+            if serving_process(CONFIG["remotePort"]) != running:
+                break
+            time.sleep(0.1)
+        else:
+            continue
+        break
+    if serving_process(CONFIG["remotePort"]) == running:
+        raise RuntimeError(f"Prior llama-server {pid} did not stop")
+    PID_FILE.unlink(missing_ok=True)
+
+
+def assert_port_unused():
+    with socket.socket() as probe:
+        probe.settimeout(1)
+        if probe.connect_ex(("127.0.0.1", CONFIG["remotePort"])) == 0:
+            raise RuntimeError("Existing server is not a validated reusable match. It was left running; stop it explicitly only after checking ownership and activity.")
+
+
+def start_server(target, model_path, primary_name, base_url):
     alias = Path(primary_name).stem
-    progress(f"loading {alias} on the GPU")
+    progress(f"loading {alias} on the GPU with {target.source} {runtime_label()}")
     log_handle = LOG_FILE.open("w", buffering=1)
     server_process = subprocess.Popen([
-        str(server), "--model", str(model_path), "--alias", alias,
+        str(target.server), "--model", str(model_path), "--alias", alias,
         "--host", "127.0.0.1", "--port", str(CONFIG["remotePort"]),
         "--ctx-size", str(CONFIG["contextWindow"]), "--n-gpu-layers", "99",
         "--flash-attn", "on", "--jinja", "--parallel", "1", "--metrics",
-    ], stdout=log_handle, stderr=subprocess.STDOUT, start_new_session=True)
+    ], env=library_env(target.server), stdout=log_handle, stderr=subprocess.STDOUT, start_new_session=True)
     PID_FILE.write_text(str(server_process.pid))
     for attempt in range(180):
         if server_process.poll() is not None:
@@ -720,20 +1369,57 @@ if matching_id is None:
         try:
             health = request_json(base_url + "/health", timeout=3)
             if health.get("status") == "ok":
-                break
+                return
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
             pass
         time.sleep(5)
-    else:
-        server_process.terminate()
-        raise TimeoutError("llama-server did not become healthy within 15 minutes")
+    server_process.terminate()
+    raise TimeoutError("llama-server did not become healthy within 15 minutes")
 
-models_payload = request_json(base_url + "/v1/models")
-model_items = models_payload.get("data", [])
-if not model_items or not isinstance(model_items[0], dict) or not model_items[0].get("id"):
-    raise RuntimeError("llama-server did not advertise a model id")
-model_id = model_items[0]["id"]
-announce_ready(model_id, primary_name, base_url)
+
+def main():
+    progress("checking CUDA runtime")
+    run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    primary_name = Path(CONFIG["primaryFile"]).name
+    required_names = [Path(name).name for name in CONFIG["files"]]
+    base_url = f"http://127.0.0.1:{CONFIG['remotePort']}"
+    models_payload = None
+    try:
+        models_payload = request_json(base_url + "/v1/models", timeout=5)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        pass
+    running_ids = [item.get("id", "") for item in (models_payload or {}).get("data", []) if isinstance(item, dict)]
+    matching_names = {primary_name, Path(primary_name).stem}
+    matching_id = next((model_id for model_id in running_ids if Path(model_id).name in matching_names), None)
+    targets = validated_targets()
+    if matching_id is not None:
+        running = serving_process(CONFIG["remotePort"])
+        target = target_for_executable(targets, running[1]) if running else None
+        if target is not None and served_model_matches(running[2], primary_name, required_names):
+            progress(f"reusing running {Path(primary_name).stem} on validated {target.source} {runtime_label()}")
+            PID_FILE.write_text(str(running[0]))
+            announce_ready(matching_id, primary_name, base_url, target)
+            return
+        raise RuntimeError("Running model is not served by the validated runtime; it was left running and was not replaced.")
+
+    stop_prior_server()
+    assert_port_unused()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        model_future = executor.submit(resolve_model_path, primary_name, required_names)
+        target = prepare_runtime_target(targets)
+        model_path = model_future.result()
+
+    assert_port_unused()
+    start_server(target, model_path, primary_name, base_url)
+    models_payload = request_json(base_url + "/v1/models")
+    model_items = models_payload.get("data", [])
+    if not model_items or not isinstance(model_items[0], dict) or not model_items[0].get("id"):
+        raise RuntimeError("llama-server did not advertise a model id")
+    announce_ready(model_items[0]["id"], primary_name, base_url, target)
+
+
+if __name__ == "__main__":
+    main()
 `;
 }
 
@@ -762,7 +1448,7 @@ function createProgressParser(emit: StatusEmitter): (chunk: string) => Promise<v
 	};
 }
 
-function buildRemoteHttpScript(config: {
+export function buildRemoteHttpScript(config: {
 	bodyBase64: string;
 	headers: Record<string, string>;
 	method: string;
@@ -799,8 +1485,12 @@ if "text/event-stream" in content_type:
         if not line:
             break
         print(line.decode("utf-8", errors="replace"), end="", flush=True)
+        if line.strip() == b"data: [DONE]":
+            print("", flush=True)
+            break
 else:
     print(response.read().decode("utf-8", errors="replace"), end="", flush=True)
+response.close()
 `;
 }
 
@@ -894,14 +1584,34 @@ async function proxyToColab(request: Request, sessionName: string, remotePort: n
 	}
 }
 
-function startOpenAiBridge(sessionName: string, remotePort: number): string {
+export function startOpenAiBridge(sessionName: string, remotePort: number, localPort = 0): string {
 	activeBridge?.stop(true);
 	activeBridge = Bun.serve({
 		hostname: "127.0.0.1",
-		port: 0,
+		port: localPort,
 		fetch: request => proxyToColab(request, sessionName, remotePort),
 	});
 	return `http://127.0.0.1:${activeBridge.port}/v1`;
+}
+
+async function fetchLiveColabModelId(apiBaseUrl: string, fetchImpl = globalThis.fetch): Promise<string> {
+	const response = await fetchImpl(`${apiBaseUrl}/models`, { signal: AbortSignal.timeout(5_000) });
+	if (!response.ok) throw new Error(`Colab model list returned HTTP ${response.status}.`);
+	const payload: unknown = await response.json();
+	if (payload && typeof payload === "object" && "data" in payload && Array.isArray(payload.data)) {
+		const first: unknown = payload.data[0];
+		if (first && typeof first === "object" && "id" in first && typeof first.id === "string" && first.id.trim()) {
+			return first.id;
+		}
+	}
+	throw new Error("Colab model list did not contain a live model id.");
+}
+
+function liveColabModelName(modelId: string): string {
+	return modelId
+		.split("/")
+		.pop()!
+		.replace(/\.gguf$/i, "");
 }
 
 export async function launchColabModel(
@@ -913,6 +1623,17 @@ export async function launchColabModel(
 	await emit(`Colab: resolving ${reference.repoId}@${reference.revision}…`);
 	const entries = await fetchHuggingFaceGgufs(reference, options.fetch);
 	const sessionName = options.sessionName ?? (Bun.env.OMPK_COLAB_SESSION?.trim() || DEFAULT_SESSION_NAME);
+	const localPort = (() => {
+		const raw =
+			options.localPort ??
+			(Bun.env.OMPK_COLAB_PORT?.trim() ? Number(Bun.env.OMPK_COLAB_PORT.trim()) : DEFAULT_LOCAL_PORT);
+		if (!Number.isInteger(raw) || raw < 1 || raw > 65_535) {
+			throw new Error(
+				`Invalid Colab bridge port "${options.localPort ?? Bun.env.OMPK_COLAB_PORT}". Expected 1-65535.`,
+			);
+		}
+		return raw;
+	})();
 	const acquisitionCandidates = options.accelerator
 		? [options.accelerator]
 		: selectAutomaticColabAccelerators(entries, reference);
@@ -921,55 +1642,72 @@ export async function launchColabModel(
 			`No GGUF in ${reference.repoId} fits an automatic T4, L4, or A100 launch. Pass --gpu H100 or --gpu G4, or use a smaller GGUF.`,
 		);
 	}
-	let accelerator = await ensureColabSession(sessionName, acquisitionCandidates, options.accelerator, emit);
-	let artifact = selectGgufArtifact(entries, reference, accelerator);
-	let ready: RemoteReadyPayload | undefined;
-	for (let attempt = 0; attempt < 2; attempt += 1) {
-		await emit(
-			`Colab: selected ${artifact.quantization} (${artifact.totalSize > 0 ? `${(artifact.totalSize / 1_000_000_000).toFixed(1)} GB` : "size unknown"}) for ${accelerator}.`,
+	const accelerator = await ensureColabSession(sessionName, acquisitionCandidates, options.accelerator, emit);
+	const artifact = selectGgufArtifact(entries, reference, accelerator);
+	const runtime = selectColabRuntimeProfile(reference, artifact);
+	const prebuilt = selectColabPrebuiltRuntime(runtime, accelerator);
+	await emit(
+		`Colab: selected ${artifact.quantization} (${artifact.totalSize > 0 ? `${(artifact.totalSize / 1_000_000_000).toFixed(1)} GB` : "size unknown"}) for ${accelerator} on ${runtime.id} llama.cpp${runtime.pinnedTag ? ` ${runtime.pinnedTag}` : ""}${prebuilt ? ` (prebuilt CUDA ${prebuilt.cuda} release, source fallback)` : ""}.`,
+	);
+	const setup = await runCommand(["exec", "--session", sessionName, "--timeout", "3600"], {
+		input: buildRemoteSetupScript({
+			accelerator,
+			artifact,
+			contextWindow: getColabAcceleratorProfile(accelerator).defaultContextWindow,
+			reference,
+			remotePort: DEFAULT_REMOTE_PORT,
+			runtime,
+		}),
+		onStdout: createProgressParser(emit),
+		timeoutMs: 60 * 60_000,
+	});
+	if (setup.exitCode !== 0) {
+		throw new Error(
+			`Colab setup failed; no replacement was provisioned. Reconnect explicitly if the runtime expired: ${setup.stderr || setup.stdout}`,
 		);
-		const setup = await runCommand(["exec", "--session", sessionName, "--timeout", "3600"], {
-			input: buildRemoteSetupScript({
-				accelerator,
-				artifact,
-				contextWindow: DEFAULT_CONTEXT_WINDOW,
-				reference,
-				remotePort: DEFAULT_REMOTE_PORT,
-			}),
-			onStdout: createProgressParser(emit),
-			timeoutMs: 60 * 60_000,
-		});
-		if (setup.exitCode === 0) {
-			ready = parseMarkedJson<RemoteReadyPayload>(setup.stdout, READY_PREFIX);
-			if (!ready?.modelId || !ready.port || ready.toolCallReady !== true) {
-				throw new Error(
-					`Colab setup completed without a validated tool-call readiness probe: ${setup.stdout || setup.stderr}`,
-				);
-			}
-			break;
-		}
-		const failure = setup.stderr || setup.stdout;
-		if (attempt === 0 && /appears to be lost|session .* not found|\b40[14]\b/i.test(failure)) {
-			await emit("Colab: stale runtime expired; acquiring a replacement…");
-			accelerator = await ensureColabSession(sessionName, acquisitionCandidates, options.accelerator, emit);
-			artifact = selectGgufArtifact(entries, reference, accelerator);
-			continue;
-		}
-		throw new Error(`Colab setup failed: ${failure}`);
 	}
-	if (!ready) throw new Error("Colab setup did not produce a ready model.");
+	const ready = parseMarkedJson<RemoteReadyPayload>(setup.stdout, READY_PREFIX);
+	if (!ready?.modelId || !ready.port || ready.toolCallReady !== true) {
+		throw new Error(
+			`Colab setup completed without a validated tool-call readiness probe: ${setup.stdout || setup.stderr}`,
+		);
+	}
+	if (runtime.pinnedCommit && ready.runtimeCommit !== runtime.pinnedCommit) {
+		throw new Error(
+			`Colab runtime reported commit ${ready.runtimeCommit ?? "unknown"}; expected pinned ${runtime.pinnedTag ?? runtime.pinnedCommit}.`,
+		);
+	}
 	await emit("Colab: opening private localhost API bridge…");
-	const apiBaseUrl = startOpenAiBridge(sessionName, ready.port);
+	const bridge = await startPersistentColabBridge({
+		sessionName,
+		remotePort: ready.port,
+		modelId: ready.modelId,
+		localPort,
+	});
+	const apiBaseUrl = bridge.apiBaseUrl;
+	let modelId = ready.modelId;
+	try {
+		modelId = await fetchLiveColabModelId(apiBaseUrl, options.fetch);
+	} catch (error) {
+		await emit(
+			`Colab warning: could not confirm the live model alias; keeping ${ready.modelId}: ${errorMessage(error)}`,
+		);
+	}
 	return {
 		accelerator,
 		toolCallReady: ready.toolCallReady,
 		apiBaseUrl,
-		contextWindow: ready.contextWindow || DEFAULT_CONTEXT_WINDOW,
-		maxTokens: Math.min(DEFAULT_MAX_TOKENS, ready.contextWindow || DEFAULT_CONTEXT_WINDOW),
-		modelId: ready.modelId,
-		modelName: ready.modelName,
+		contextWindow: ready.contextWindow || getColabAcceleratorProfile(accelerator).defaultContextWindow,
+		maxTokens: Math.min(
+			DEFAULT_MAX_TOKENS,
+			ready.contextWindow || getColabAcceleratorProfile(accelerator).defaultContextWindow,
+		),
+		modelId,
+		modelName: modelId === ready.modelId ? ready.modelName : liveColabModelName(modelId),
 		quantization: artifact.quantization,
+		reasoning: runtime.reasoning,
 		repoId: reference.repoId,
+		runtime: summarizeRuntime(runtime, ready),
 		sessionName,
 	};
 }
@@ -983,16 +1721,20 @@ export async function handleColabModelSlashCommand(
 		const request = parseColabModelCommandArgs(args);
 		if (!request.modelReference) {
 			await runtime.output(
-				"Usage: /colab-model [--gpu T4|L4|A100|H100|G4] <owner/repository | huggingface.co model or GGUF URL>\nExample: /colab-model --gpu L4 unsloth/Qwen3.8-27B-GGUF",
+				"Usage: /colab-model [--gpu T4|L4|A100|H100|G4] [--session <name>] [--port <number>] <owner/repository | huggingface.co model or GGUF URL>\nExample: /colab-model --gpu L4 unsloth/Qwen3.8-27B-GGUF\nExample: /colab-model --session ompk-colab-t4 --port 18083 unsloth/Qwen3-32B-GGUF",
 			);
 			return { consumed: true };
 		}
 		const result = await launch(request.modelReference, message => runtime.output(message), {
 			accelerator: request.accelerator,
+			sessionName: request.sessionName,
+			localPort: request.localPort,
 		});
 		if (result.toolCallReady !== true) {
 			throw new Error("Colab model failed the tool-call readiness probe; refusing to register it as tool-capable.");
 		}
+		const liveId = await fetchLiveColabModelId(result.apiBaseUrl);
+		const modelName = liveId === result.modelId ? result.modelName : liveColabModelName(liveId);
 		runtime.session.modelRegistry.registerProvider(
 			RUNTIME_PROVIDER,
 			{
@@ -1006,11 +1748,11 @@ export async function handleColabModelSlashCommand(
 				},
 				models: [
 					{
-						id: result.modelId,
-						name: `${result.modelName} · Colab ${result.accelerator}`,
-						reasoning: /qwen3(?:[._-]|$)|deepseek-r1|gpt-oss|reasoning|thinking/i.test(
-							`${result.repoId}/${result.modelName}`,
-						),
+						id: liveId,
+						name: `${modelName} · Colab ${result.accelerator}`,
+						reasoning:
+							result.reasoning ||
+							/qwen3(?:[._-]|$)|deepseek-r1|gpt-oss|reasoning|thinking/i.test(`${result.repoId}/${modelName}`),
 						input: ["text"],
 						supportsTools: true,
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -1021,17 +1763,20 @@ export async function handleColabModelSlashCommand(
 			},
 			RUNTIME_SOURCE_ID,
 		);
-		const model = runtime.session.modelRegistry.find(RUNTIME_PROVIDER, result.modelId);
+		const model = runtime.session.modelRegistry.find(RUNTIME_PROVIDER, liveId);
 		if (!model) {
-			throw new Error(`Registered model ${RUNTIME_PROVIDER}/${result.modelId} was not found.`);
+			throw new Error(`Registered model ${RUNTIME_PROVIDER}/${liveId} was not found.`);
 		}
 		await runtime.session.setModel(model);
 		await runtime.notifyTitleChanged?.();
 		await runtime.notifyConfigChanged?.();
 		await runtime.output(
 			[
-				`Colab model ready: ${RUNTIME_PROVIDER}/${result.modelId}`,
+				`Colab model ready: ${RUNTIME_PROVIDER}/${liveId}`,
 				`${result.repoId} ${result.quantization} on ${result.accelerator}`,
+				`llama.cpp: ${result.runtime.id} ${result.runtime.pinnedTag ?? ""} ${result.runtime.commit ?? ""}`
+					.replace(/\s+/g, " ")
+					.trim(),
 				`OpenAI-compatible API: ${result.apiBaseUrl}`,
 				`Runtime: ${result.sessionName} (stop with: colab stop --session ${result.sessionName})`,
 			].join("\n"),
