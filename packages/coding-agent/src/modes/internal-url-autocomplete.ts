@@ -82,7 +82,7 @@ export function extractInternalUrlContext(textBeforeCursor: string): InternalUrl
 	const parts = SCHEME_SPLIT_RE.exec(token);
 	if (!parts) return null;
 	const typedScheme = parts[1]!.toLowerCase();
-	const scheme = typedScheme === "vaults" || typedScheme === "vauts" ? "vault" : typedScheme;
+	const scheme = typedScheme === "vaults" ? "vault" : typedScheme;
 	if (!InternalUrlRouter.instance().completionSchemes().includes(scheme)) return null;
 	return { scheme, query: parts[2] ?? "", token };
 }

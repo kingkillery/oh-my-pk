@@ -45,7 +45,7 @@ describe("vault link autocomplete", () => {
 		await removeWithRetries(temp);
 	});
 
-	for (const prefix of ["vault:/", "vault://", "vaults:/", "vaults://", "vauts:/", "vauts://", "VAULT://"]) {
+	for (const prefix of ["vault:/", "vault://", "vaults:/", "vaults://", "VAULT://"]) {
 		it(`offers canonical vault links from ${prefix}`, async () => {
 			expect(extractInternalUrlContext(`discuss ${prefix}`)).toEqual({ scheme: "vault", query: "", token: prefix });
 			const result = await getInternalUrlSuggestions(`discuss ${prefix}`);
@@ -55,6 +55,12 @@ describe("vault link autocomplete", () => {
 			expect(result?.prefix).toBe(prefix);
 		});
 	}
+
+	it("ignores a misspelled vault scheme", async () => {
+		for (const typo of ["vauts://", "valut://", "vault:"]) {
+			expect(await getInternalUrlSuggestions(`discuss ${typo}`)).toBeNull();
+		}
+	});
 
 	it("filters vaults and browses immediate folders/files with encoded paths", async () => {
 		expect((await getInternalUrlSuggestions("vault://wn"))?.items[0]?.value).toBe("vault://Work%20Notes/");
