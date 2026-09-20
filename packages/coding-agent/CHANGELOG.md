@@ -2,9 +2,16 @@
 
 ## [Unreleased]
 
+## [16.4.25] - 2026-09-20
+
 ### Added
 
 - Added Obsidian vault-link autocomplete: type `vault:/`, `vault://`, `vaults:/`, or `vauts://` to select a locally registered vault, drill into folders, and insert a readable `vault://` reference. Requires `vault.enabled`; discovery stays local and does not launch the Obsidian CLI while typing.
+
+### Changed
+
+- Colab T4 sessions now restore the llama.cpp runtime from the pinned upstream `b11064` CUDA 12.8 release instead of compiling the pinned commit on every cold start, and only adopt a prebuilt whose reported commit matches the pin. Accelerators without a prebuilt entry still build from source.
+- The Colab warm bridge can bind a VM-routable address via `--host` and authorize the exact hostnames the launcher dials via `--allow-host`, so a Windows host can reuse a warm bridge over WSL. The launcher probes candidate hosts and verifies model identity before adopting a listener, and a wildcard bind cannot authorize itself.
 
 ## [16.4.24] - 2026-09-20
 
