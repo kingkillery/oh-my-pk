@@ -26,6 +26,11 @@ export const CONFIG_DIR_NAME: string = ".ompk";
 /** Version (e.g. "1.0.0") */
 export const VERSION: string = version;
 
+declare const OMPK_BUILD_LABEL: string | undefined;
+/** Display-only build identity; update comparisons retain the base VERSION. */
+export const DISPLAY_VERSION: string =
+	typeof OMPK_BUILD_LABEL === "string" && OMPK_BUILD_LABEL ? `${VERSION}+${OMPK_BUILD_LABEL}` : VERSION;
+
 /** Minimum Bun version */
 export const MIN_BUN_VERSION: string = engines.bun.replace(/[^0-9.]/g, "");
 

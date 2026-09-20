@@ -11,6 +11,7 @@ import { EventLoopKeepalive } from "@pk-nerdsaver-ai/pi-agent-core";
 import type { ImageContent } from "@pk-nerdsaver-ai/pi-ai";
 import {
 	$env,
+	DISPLAY_VERSION,
 	directoryExists,
 	getLogPath,
 	getProjectDir,
@@ -999,7 +1000,7 @@ export async function runRootCommand(
 	const modelRegistry = logger.time("modelRegistry:init", () => new ModelRegistry(authStorage));
 
 	if (parsedArgs.version) {
-		writeStartupNotice(parsedArgs, `${VERSION}\n`);
+		writeStartupNotice(parsedArgs, `${DISPLAY_VERSION}\n`);
 		process.exit(0);
 	}
 
@@ -1467,7 +1468,7 @@ export async function runRootCommand(
 				const runInteractiveModeImpl = deps.runInteractiveMode ?? runInteractiveMode;
 				await runInteractiveModeImpl(
 					session,
-					VERSION,
+					DISPLAY_VERSION,
 					changelogMarkdown,
 					notifs,
 					versionCheckPromise,

@@ -5,6 +5,7 @@
 ### Added
 
 - Added a persisted Huihui-Ornith 1.5 9B Q4_K_M Colab profile with dynamic VRAM-aware context sizing, Qwen thinking compatibility, Q8 K/V cache configuration, prompt caching, and 1024 physical microbatch prefill tuning.
+- Binary builds can set `OMPK_BUILD_LABEL` to display testing/nightly metadata in CLI and startup versions without changing package versions or stable-update comparisons.
 
 ### Changed
 

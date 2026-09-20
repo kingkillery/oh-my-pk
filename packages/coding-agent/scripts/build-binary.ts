@@ -21,6 +21,11 @@ if (candidateName && !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(candidateName)) {
 if (candidateName && ["oh-my-pk", "omp", "ompk"].includes(candidateName.toLowerCase())) {
 	throw new Error("OMPK_BUILD_CANDIDATE_NAME must not overwrite a distribution executable.");
 }
+// Display-only metadata; never change package versions or update comparisons.
+const buildLabel = Bun.env.OMPK_BUILD_LABEL?.trim() ?? "";
+if (buildLabel && !/^[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*$/.test(buildLabel)) {
+	throw new Error("OMPK_BUILD_LABEL must contain dot-separated SemVer build metadata identifiers.");
+}
 const outName = candidateName ?? (crossTarget ? `oh-my-pk-${crossTarget}` : "oh-my-pk");
 const outputPath = path.join(packageDir, "dist", outName);
 
@@ -104,6 +109,8 @@ async function main(): Promise<void> {
 					'process.env.PI_COMPILED="true"',
 					"--define",
 					`process.env.PI_TINY_TRANSFORMERS_VERSION=${JSON.stringify(transformersVersion)}`,
+					"--define",
+					`OMPK_BUILD_LABEL=${JSON.stringify(buildLabel)}`,
 					"--external",
 					"fastembed",
 					"--external",

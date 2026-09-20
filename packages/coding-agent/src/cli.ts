@@ -18,11 +18,11 @@ import { parentPort } from "node:worker_threads";
 import type { CliConfig } from "@pk-nerdsaver-ai/pi-utils/cli";
 import {
 	APP_NAME,
+	DISPLAY_VERSION,
 	getActiveProfile,
 	MIN_BUN_VERSION,
 	resolveProfileEnv,
 	setProfile,
-	VERSION,
 } from "@pk-nerdsaver-ai/pi-utils/dirs";
 import { declareWorkerHostEntry, installWorkerInbox } from "@pk-nerdsaver-ai/pi-utils/worker-host";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
@@ -337,7 +337,7 @@ export async function runCli(argv: string[]): Promise<void> {
 		process.exitCode = 1;
 		return;
 	}
-	return run({ bin: APP_NAME, version: VERSION, argv: resolved.argv, commands, help: showHelp });
+	return run({ bin: APP_NAME, version: DISPLAY_VERSION, argv: resolved.argv, commands, help: showHelp });
 }
 
 // Floating call instead of top-level await: TLA forces `--bytecode` (CJS
