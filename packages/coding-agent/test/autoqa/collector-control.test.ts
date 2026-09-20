@@ -18,11 +18,11 @@ import {
 	countUnpushedReports,
 	findCollectorBinary,
 	localCollectorUrl,
+	resolveBundledCollectorPath,
 	resolveCollectorMode,
 	resolveCollectorTarget,
 } from "@pk-nerdsaver-ai/pi-coding-agent/autoqa/collector-control";
 import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { resolveBundledCollectorPath } from "@pk-nerdsaver-ai/pi-natives/native/loader-state.js";
 
 const COLLECTOR_EXE = process.platform === "win32" ? "ompk-collector.exe" : "ompk-collector";
 

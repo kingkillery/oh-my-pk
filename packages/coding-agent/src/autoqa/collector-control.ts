@@ -18,7 +18,6 @@
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { resolveBundledCollectorPath } from "@pk-nerdsaver-ai/pi-natives/native/loader-state.js";
 import { getAutoQaCollectorDir, getAutoQaDbDir, logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { Settings } from "../config/settings";
 
@@ -42,10 +41,24 @@ export function resolveCollectorMode(settings: Settings | undefined): CollectorM
 	return mode === "local" || mode === "remote" ? mode : "off";
 }
 /**
- * Locate the collector binary: explicit setting → the sidecar that shipped
- * with this build (extracted from the compiled binary's embedded archive, or
- * sitting beside the N-API addon in an npm/workspace install) → sibling of the
- * running `omp` binary → PATH. Returns null when the helper isn't installed.
+ * Locate the collector sidecar bundled with this build: the helper sitting
+ * beside the N-API addon in the natives package (workspace/monorepo layout).
+ * Returns null when this install has no bundled sidecar.
+ */
+export function resolveBundledCollectorPath(): string | null {
+	// packages/coding-agent/src/autoqa → packages/natives/native
+	const candidate = join(import.meta.dirname, "..", "..", "..", "..", "natives", "native", COLLECTOR_EXE);
+	try {
+		return existsSync(candidate) ? candidate : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Locate the collector binary: bundled sidecar → sibling of the running
+ * `omp` binary → PATH (bare name, verified by spawn failure rather than a
+ * filesystem probe). Returns null when the helper isn't installed.
  */
 export function findCollectorBinary(explicit?: string): string | null {
 	if (explicit && existsSync(explicit)) return explicit;
