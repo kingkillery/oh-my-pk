@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Hook and reminder selectors now support single-digit quick-select (`1`–`9`), `Ctrl+P`/`Ctrl+N` cursor navigation, raw carriage return (`\r`), and explicit cancel keys (`Esc`/`Ctrl+C`/`Ctrl+G`), preventing degraded or dumb terminals from deadlocking prompt interaction.
+
 ## [16.4.26] - 2026-09-20
 
 ### Added

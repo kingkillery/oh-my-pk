@@ -7,6 +7,7 @@ import {
 	Ellipsis,
 	extractPrintableText,
 	fuzzyFilter,
+	getKeybindings,
 	Markdown,
 	type MarkdownTheme,
 	matchesKey,
@@ -245,7 +246,7 @@ export class HookSelectorComponent extends Container {
 			this.addChild(this.#listContainer);
 		}
 		this.addChild(new Spacer(1));
-		const controlsHint = opts?.helpText ?? "up/down navigate  enter select  esc cancel";
+		const controlsHint = opts?.helpText ?? "up/down navigate  1-9 quick-select  enter select  esc cancel";
 		this.addChild(new Text(theme.fg("dim", controlsHint), 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
@@ -612,12 +613,35 @@ export class HookSelectorComponent extends Container {
 		this.#setSearchQuery(this.#searchQuery + printableText);
 		return true;
 	}
+	/**
+	 * Cancel matching with raw fallbacks. The `tui.select.cancel` binding
+	 * covers the configured keys; the literal fallbacks keep Esc/Ctrl+C/Ctrl+G
+	 * working even when the global registry was replaced without that binding.
+	 */
+	#matchesCancel(keyData: string): boolean {
+		if (matchesSelectCancel(keyData)) return true;
+		return (
+			matchesKey(keyData, "escape") ||
+			matchesKey(keyData, "esc") ||
+			matchesKey(keyData, "ctrl+c") ||
+			matchesKey(keyData, "ctrl+g")
+		);
+	}
+
+	/**
+	 * Confirm matching honors the `tui.select.confirm` binding (so remaps keep
+	 * working) plus the raw Enter forms terminals emit (`\n`, `\r`).
+	 */
+	#matchesConfirm(keyData: string): boolean {
+		if (getKeybindings().matches(keyData, "tui.select.confirm")) return true;
+		return matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n" || keyData === "\r";
+	}
 
 	handleInput(keyData: string): void {
 		// Reset countdown on any interaction
 		this.#countdown?.reset();
 
-		if (matchesSelectCancel(keyData)) {
+		if (this.#matchesCancel(keyData)) {
 			this.#onCancelCallback();
 			return;
 		}
@@ -626,11 +650,26 @@ export class HookSelectorComponent extends Container {
 			return;
 		}
 
-		if (matchesSelectUp(keyData) || (!this.#isSearchEnabled() && keyData === "k")) {
+		// Single-digit quick-select. Every action stays available as a single
+		// byte so the dialog remains operable when multi-byte escape sequences
+		// (arrows) never arrive — dumb terminals, broken raw mode, or split
+		// stdin chunks. Only active while fuzzy search is off, where digits
+		// would otherwise do nothing.
+		if (!this.#isSearchEnabled() && keyData.length === 1 && keyData >= "1" && keyData <= "9") {
+			const target = this.#filteredOptions[Number(keyData) - 1];
+			if (target && !this.#isDisabled(target.index)) this.#onSelectCallback(target.option.label);
+			return;
+		}
+
+		if (matchesSelectUp(keyData) || matchesKey(keyData, "ctrl+p") || (!this.#isSearchEnabled() && keyData === "k")) {
 			this.#moveSelection(-1);
-		} else if (matchesSelectDown(keyData) || (!this.#isSearchEnabled() && keyData === "j")) {
+		} else if (
+			matchesSelectDown(keyData) ||
+			matchesKey(keyData, "ctrl+n") ||
+			(!this.#isSearchEnabled() && keyData === "j")
+		) {
 			this.#moveSelection(1);
-		} else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
+		} else if (this.#matchesConfirm(keyData)) {
 			const selected = this.#filteredOptions[this.#selectedIndex];
 			if (selected && !this.#isDisabled(selected.index)) this.#onSelectCallback(selected.option.label);
 		} else if (matchesKey(keyData, "left") || (this.#slider && !this.#isSearchEnabled() && keyData === "h")) {
