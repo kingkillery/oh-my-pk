@@ -44,15 +44,16 @@ Branch `revamp/lifecycle-w1` (base `dadcd517`). Committed, NOT merged, NOT relea
 |---|---|---|
 | Opaque runtime-registered context | Done | Branded handle + host-private WeakMap; forged literal, revoked context and missing identity all denied `missing_lifecycle_binding` |
 | Authorizer repair | Done | Legacy blanket allow removed; source-qualified alias-resolved tool check, read/write root separation, traversal denial, external-write gating; 11 pass |
-| Adapter cutover per §14.6 caller matrix | **In progress (3 rows)** | Done: TaskTool spawn seam (`583ae6e`), eval `runEvalAgent` seam (`5ffac30`), child-session chain via `ExecutorOptions.lifecycle` + sdk accessor + `deriveChildLifecycleContext` (`170b250`) — recursion bounded end to end. Not started: JS/Python bridges (`callSessionTool`), slash helpers, advisor, session replacement, native replay, isolation-runner branch |
+| Adapter cutover per §14.6 caller matrix | **In progress (4 rows)** | Done: TaskTool spawn seam (`583ae6e`), eval `runEvalAgent` seam (`5ffac30`), child-session chain — `ExecutorOptions.lifecycle` + sdk accessor + `deriveChildLifecycleContext` (`170b250`) bounding recursion end to end, JS-bridge `callSessionTool` guard (`355655e`, name-level; LC07 owns source identity). Not started: Python/Ruby/Julia bridges, slash helpers, advisor, session replacement, native replay, isolation-runner branch |
 | Scoped services and provider projection | **Not started** | — |
 | LC01–LC24 live suite | **Not started** | No live provider-wire or entry-point coverage exists |
 
 All W1–W3 evidence above is unit, schema, cross-process and seam scope. The
-three cut-over rows DO constrain live dispatch paths (TaskTool spawn, eval
-agent(), child-session recursion) when a registered context is present; no
-context is registered anywhere by default yet, so existing product behavior
-is unchanged. No live provider-wire test and no LC row is claimed.
+four cut-over rows DO constrain live dispatch paths (TaskTool spawn, eval
+agent(), child-session recursion, JS-bridge tool calls) when a registered
+context is present; no context is registered anywhere by default yet, so
+existing product behavior is unchanged. No live provider-wire test and no
+LC row is claimed.
 
 ## Phase 0 gates B01–B06
 
