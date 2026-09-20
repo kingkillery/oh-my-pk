@@ -167,7 +167,7 @@ class WarmBridge:
             raise RuntimeError("Remote response did not complete")
 
 
-def make_handler(bridge):
+def make_handler(bridge, allowed_hosts=frozenset({"127.0.0.1", "localhost"})):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         disable_nagle_algorithm = True
@@ -183,7 +183,7 @@ def make_handler(bridge):
 
         def handle_request(self):
             host = self.headers.get("Host", "").split(":", 1)[0].lower()
-            if host not in {"127.0.0.1", "localhost"} or self.headers.get("Origin"):
+            if host not in allowed_hosts or self.headers.get("Origin"):
                 self.send_error(403, "Loopback clients only")
                 return
             if self.path not in ALLOWED:
@@ -317,6 +317,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--session", required=True)
     parser.add_argument("--port", type=int, default=18082)
+    # WSL's localhost relay is unreliable: when it stops forwarding, a bridge
+    # bound to 127.0.0.1 inside the VM is unreachable from the Windows host.
+    # Binding the VM-routable address keeps the Windows launcher working. NAT
+    # keeps this off the LAN, and the Host/Origin guard below still applies.
+    parser.add_argument("--host", default="127.0.0.1")
+    # A wildcard bind cannot authorize itself: "0.0.0.0" never matches the Host
+    # header a client actually sends. The launcher passes each address it will
+    # dial so the guard stays an explicit allowlist instead of "any host".
+    parser.add_argument("--allow-host", action="append", default=[])
     parser.add_argument("--remote-port", type=int, default=8081)
     args = parser.parse_args()
     from colab_cli.common import state
@@ -325,7 +334,7 @@ def main():
     if session is None:
         parser.error("Existing Colab session missing; bridge never provisions or replaces a runtime")
     # Bind first: an occupied port must not open a kernel connection.
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), BaseHTTPRequestHandler)
+    server = ThreadingHTTPServer((args.host, args.port), BaseHTTPRequestHandler)
     server.daemon_threads = True
     try:
         # Mirror the working prototype attach exactly: the CLI-maintained kernel
@@ -337,7 +346,8 @@ def main():
         runtime = ColabRuntime(session.url, session.token, kernel_id=kernel_id, session_id=str(uuid.uuid4()))
         runtime.kernel_client
         bridge = WarmBridge(runtime, args.remote_port, make_abort_uploader(session, abort_marker_path(args.remote_port)))
-        server.RequestHandlerClass = make_handler(bridge)
+        allowed_hosts = frozenset({"127.0.0.1", "localhost", *args.allow_host})
+        server.RequestHandlerClass = make_handler(bridge, allowed_hosts=allowed_hosts)
         print(json.dumps({"event": "ready", "port": args.port}), flush=True)
         server.serve_forever()
     finally:

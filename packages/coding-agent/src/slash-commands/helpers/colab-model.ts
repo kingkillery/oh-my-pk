@@ -130,12 +130,51 @@ export interface ColabRuntimeProfile {
 	reasoning: boolean;
 }
 
+const UPSTREAM_REPOSITORY = "https://github.com/ggml-org/llama.cpp";
+const UPSTREAM_TAG = "b11064";
+
+/**
+ * Official ggml-org release archive. CI builds these without
+ * `CMAKE_CUDA_ARCHITECTURES`, so they carry the broad default arch set from
+ * `ggml/src/ggml-cuda/CMakeLists.txt` (`75-virtual` covers Turing via PTX JIT,
+ * `86-real`/`89-real` cover Ampere/Ada) and unpack to `llama-<tag>/`.
+ */
+function upstreamReleaseArchive(cuda: string, sha256: string): ColabPrebuiltRuntime {
+	const archive = `llama-${UPSTREAM_TAG}-bin-ubuntu-cuda-${cuda}-x64.tar.gz`;
+	return {
+		archive,
+		cuda,
+		directory: `${RUNTIME_CACHE_ROOT}/${UPSTREAM_TAG}/cuda-${cuda}-x64`,
+		serverPath: `llama-${UPSTREAM_TAG}/llama-server`,
+		sha256,
+		url: `${UPSTREAM_REPOSITORY}/releases/download/${UPSTREAM_TAG}/${archive}`,
+	};
+}
+
+/**
+ * Stock llama.cpp for ordinary GGUF packings.
+ *
+ * The pinned commit is the one tagged `b11064`, so the published release
+ * archive and a source fallback build byte-identical provenance: the remote
+ * setup script only adopts a prebuilt whose `--version` commit prefixes
+ * `pinnedCommit`.
+ *
+ * The CUDA 12.8 archive is pinned for T4 because Colab's T4 VM image ships
+ * CUDA 12.8 (`libcudart.so.12.8.90`), so every bundled library resolves under
+ * `ldd` (verified 2026-09-20 on Tesla T4, driver 580.82.07: restore in ~5 s
+ * against a ~45 min source compile). Accelerators without an entry keep
+ * compiling the pinned commit for their own CUDA architecture.
+ */
 const UPSTREAM_RUNTIME: ColabRuntimeProfile = {
 	id: "upstream",
 	directory: "/content/llama.cpp",
-	repositoryUrl: "https://github.com/ggml-org/llama.cpp.git",
+	repositoryUrl: `${UPSTREAM_REPOSITORY}.git`,
 	// Validated Colab T4 CUDA runtime.
-	pinnedCommit: "b23efaa2ef147f547ee75cbf0c621d61904de80e",
+	pinnedCommit: "a894dae939d426954ce54bb604824f1ae918a0c5",
+	pinnedTag: UPSTREAM_TAG,
+	prebuilt: {
+		T4: upstreamReleaseArchive("12.8", "658c391b6c93483960433b160975b938a727315311320dbf2ab24bae41488fb7"),
+	},
 	requiredQuantizations: [],
 	reasoning: false,
 };

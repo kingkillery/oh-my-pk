@@ -46,19 +46,38 @@ async function verifyBridge(apiBaseUrl: string, modelId: string): Promise<boolea
 	);
 }
 
-/** No provisioning, runtime restart, generation retry, or idle polling. */
-export async function startPersistentColabBridge(
-	options: PersistentColabBridgeOptions,
-): Promise<PersistentColabBridge> {
-	const localPort = options.localPort ?? 18082;
-	if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65_535)
-		throw new Error("Invalid local bridge port");
-	const apiBaseUrl = `http://127.0.0.1:${localPort}/v1`;
-	let listenerExists = false;
+/**
+ * Hosts that can reach a bridge bound inside WSL, best first.
+ *
+ * Windows normally reaches the VM through WSL's localhost relay, but that relay
+ * silently stops forwarding on some hosts, leaving 127.0.0.1 either refused or
+ * accepted-but-dead. The VM's own address keeps working, so offer it as a
+ * fallback instead of assuming the relay is healthy.
+ */
+async function bridgeHostCandidates(): Promise<string[]> {
+	if (process.platform !== "win32") return ["127.0.0.1"];
+	try {
+		const probe = Bun.spawn(["wsl.exe", "-d", "Ubuntu", "-e", "hostname", "-I"], {
+			stdout: "pipe",
+			stderr: "ignore",
+		});
+		const reported = await new Response(probe.stdout).text();
+		await probe.exited;
+		const address = reported
+			.trim()
+			.split(/\s+/)
+			.find(entry => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(entry));
+		return address ? ["127.0.0.1", address] : ["127.0.0.1"];
+	} catch {
+		return ["127.0.0.1"];
+	}
+}
+
+async function hasListener(hostname: string, port: number): Promise<boolean> {
 	try {
 		const connection = await Bun.connect({
-			hostname: "127.0.0.1",
-			port: localPort,
+			hostname,
+			port,
 			socket: {
 				data() {},
 				open(socket) {
@@ -69,14 +88,28 @@ export async function startPersistentColabBridge(
 			},
 		});
 		connection.end();
-		listenerExists = true;
+		return true;
 	} catch {
-		// No listener: bind in the child before connecting to the remote kernel.
+		return false;
 	}
-	if (listenerExists) {
-		if (!(await verifyBridge(apiBaseUrl, options.modelId)))
-			throw new Error("Existing bridge serves a different model; it was not replaced.");
-		return { apiBaseUrl, reused: true, async stop() {} };
+}
+
+/** No provisioning, runtime restart, generation retry, or idle polling. */
+export async function startPersistentColabBridge(
+	options: PersistentColabBridgeOptions,
+): Promise<PersistentColabBridge> {
+	const localPort = options.localPort ?? 18082;
+	if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65_535)
+		throw new Error("Invalid local bridge port");
+	// A dead WSL relay accepts connections without serving, so a reachable host
+	// is the one that both connects and answers as our model.
+	const hosts = await bridgeHostCandidates();
+	const bindHost = process.platform === "win32" ? "0.0.0.0" : "127.0.0.1";
+	for (const hostname of hosts) {
+		if (!(await hasListener(hostname, localPort))) continue;
+		const candidate = `http://${hostname}:${localPort}/v1`;
+		if (!(await verifyBridge(candidate, options.modelId).catch(() => false))) continue;
+		return { apiBaseUrl: candidate, reused: true, async stop() {} };
 	}
 	const python =
 		Bun.env.OMPK_COLAB_PYTHON?.trim() || (process.platform === "win32" ? "/opt/colab-cli/bin/python" : "python3");
@@ -95,6 +128,10 @@ export async function startPersistentColabBridge(
 		options.sessionName,
 		"--port",
 		String(localPort),
+		"--host",
+		bindHost,
+		// Authorize exactly the addresses this launcher will dial.
+		...hosts.flatMap(hostname => ["--allow-host", hostname]),
 		"--remote-port",
 		String(options.remotePort),
 	];
@@ -148,7 +185,18 @@ export async function startPersistentColabBridge(
 				/* discard redacted diagnostics */
 			}
 		})().catch(() => {});
-		if (!(await verifyBridge(apiBaseUrl, options.modelId))) throw new Error("Colab bridge model identity mismatch");
+		let apiBaseUrl = "";
+		for (const hostname of hosts) {
+			const candidate = `http://${hostname}:${localPort}/v1`;
+			if (!(await hasListener(hostname, localPort))) continue;
+			if (!(await verifyBridge(candidate, options.modelId).catch(() => false))) continue;
+			apiBaseUrl = candidate;
+			break;
+		}
+		if (!apiBaseUrl)
+			throw new Error(
+				`Colab bridge is not reachable on ${hosts.join(", ")}:${localPort} (WSL localhost forwarding may be down).`,
+			);
 		return { apiBaseUrl, reused: false, stop };
 	} catch (error) {
 		const exitCode = await Promise.race([child.exited, Bun.sleep(2_000).then(() => null)]);

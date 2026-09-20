@@ -276,7 +276,7 @@ describe("llama.cpp runtime selection", () => {
 		const profile = selectColabRuntimeProfile(qwen, selectGgufArtifact(QWEN_FILES, qwen, "A100"));
 		expect(profile.id).toBe("upstream");
 		expect(profile.repositoryUrl).toBe("https://github.com/ggml-org/llama.cpp.git");
-		expect(profile.pinnedCommit).toBe("b23efaa2ef147f547ee75cbf0c621d61904de80e");
+		expect(profile.pinnedCommit).toBe("a894dae939d426954ce54bb604824f1ae918a0c5");
 		expect(profile.reasoning).toBe(false);
 		const other = selectColabRuntimeProfile(
 			{ repoId: "other/model" },
@@ -301,12 +301,16 @@ describe("llama.cpp runtime selection", () => {
 			sha256: "f542fdcc818562359e947db65e0b11c4658dd5ca3bd240490448252e817d8e7a",
 		});
 		expect(selectColabPrebuiltRuntime(profile, "A100")).toBeUndefined();
-		expect(
-			selectColabPrebuiltRuntime(
-				selectColabRuntimeProfile(qwen, { quantization: "Q4_K_M", primaryFile: "model-Q4_K_M.gguf" }),
-				"T4",
-			),
-		).toBeUndefined();
+		const upstream = selectColabRuntimeProfile(qwen, { quantization: "Q4_K_M", primaryFile: "model-Q4_K_M.gguf" });
+		expect(selectColabPrebuiltRuntime(upstream, "T4")).toMatchObject({
+			archive: "llama-b11064-bin-ubuntu-cuda-12.8-x64.tar.gz",
+			cuda: "12.8",
+			directory: "/content/ompk-runtime-cache/b11064/cuda-12.8-x64",
+			serverPath: "llama-b11064/llama-server",
+			sha256: "658c391b6c93483960433b160975b938a727315311320dbf2ab24bae41488fb7",
+			url: "https://github.com/ggml-org/llama.cpp/releases/download/b11064/llama-b11064-bin-ubuntu-cuda-12.8-x64.tar.gz",
+		});
+		expect(selectColabPrebuiltRuntime(upstream, "A100")).toBeUndefined();
 	});
 
 	test("builds each runtime in its own tree with pinned checkouts", async () => {
@@ -347,7 +351,7 @@ describe("llama.cpp runtime selection", () => {
 		});
 		expect(bonsaiConfig.cmakeArchitecture).toBe("75-real");
 		expect(qwenConfig.runtime.id).toBe("upstream");
-		expect(qwenConfig.runtime.pinnedCommit).toBe("b23efaa2ef147f547ee75cbf0c621d61904de80e");
+		expect(qwenConfig.runtime.pinnedCommit).toBe("a894dae939d426954ce54bb604824f1ae918a0c5");
 		expect(qwenConfig.runtime.directory).not.toBe(bonsaiConfig.runtime.directory);
 	});
 });
