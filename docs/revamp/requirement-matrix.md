@@ -4,8 +4,29 @@
  Vault ownership: `C:/dev/Vaults/Design-and-Building/Daily Todos/Open/oh-my-pk-revamp-completion-v16.4.24.md` (Linear bypass per operator override).
  Target pin: `dadcd517e52d957e52282697550e309b62145c5a` (`main` / `v16.4.24`). Primary main has advanced to `b0bdac8310b4316c7e1554fafee1eebb93b6ab50` — compare touched seams only, never replay donor history.
  Package gate: `bun run check` in `packages/coding-agent` passes (Biome + tsgo) — scoped helper evidence, not live-path acceptance.
- New lifecycle suites: 62 tests across 14 files + 10 revamp acceptance tests pass — helper/unit scope; live provider-wire, independent-process contention, and installed-channel receipts still required.
+ New lifecycle suites: helper/unit scope only; live provider-wire, independent-process contention, and installed-channel receipts still required.
  Baseline differential 2026-09-20: pristine `dadcd51` worktree reproduced the same 2 `test/task/worktree.test.ts` failures (lines 197, 334) — proven baseline EOL defects, NOT draft-caused. Root cause: host `core.autocrlf=true` converts fixture LF to CRLF on checkout. Fix: fixture-local `core.autocrlf=false` + `core.eol=lf` in all 4 test-repo fixtures, binary-byte assertions retained. Verified: pristine disposable 15/15 green, PINNED 15/15 green (`artifact://68`, `artifact://70`), combined with `phase0-entrypaths` 18/18 (`artifact://77`). Operational group 102/102 in 82.65s (`artifact://49`). Lane-A baseline fix complete; W0 candidate still requires Gate A union.
+
+## W1 checkpoint and extension (2026-09-20)
+
+Branch `revamp/lifecycle-w1` (base `dadcd517`). Committed, NOT merged, NOT released.
+
+| Item | Status | Evidence |
+|---|---|---|
+| W1 checkpoint: v3 snapshot read repair | Done | `getLifecycleRunSnapshot` rewritten against real v3 DDL; `test/operational/lifecycle-run-snapshot.test.ts` 8 pass on real temp SQLite |
+| W1 checkpoint: strict wire parsers | Done | `test/task/lifecycle-schema-roundtrip.test.ts` 11 pass covering every frozen shape × missing/wrong-type/unknown-field/bad-version/non-integral/tampered-hash/null-vs-absent |
+| W1 checkpoint: fixture migration | Done | Invalid local fixtures migrated to shared helpers; scenario budgets preserved |
+| W1 checkpoint: package gate | Done | `bun run check` passes; `test/task/` 365, `test/orchestration/` 303, `test/operational/`+`test/revamp/` 123 — all 0 fail |
+| W1 checkpoint: freeze manifest | Done | `docs/revamp/contract-freeze.json` — 21 shapes, 0 unresolved, digest recorded |
+| W1 extension: authority dictionary | Done | §14.2 record vocabulary + per-dimension `compareRuntimeGuarantees` |
+| W1 extension: envelope/binding/operation records | Done | §14.2/§14.5 persisted records and operation inputs; precursor `LaunchBinding` renamed `LaunchBindingInput` |
+| W1 extension: authority parsers | Done | `parseResourceSelectorV1`, `parseGrantRecordV1`, `validateLaunchBindingGuarantees`, `computeLaunchContractDigest`; `test/task/launch-authority-policy.test.ts` 27 pass |
+| W1 extension: v2 `CompiledLaunchContract` cutover | **Not started** | §14.2 contractId/revision/digest/principals/authority + `LaunchCompileInput.authorization`; ripples into compiler, store, fixtures and all consumers |
+| W1 extension: authority round-trip fixtures in freeze manifest | **Not started** | New authority shapes are not yet listed in `FROZEN_SHAPES` |
+
+All W1 extension evidence is pure-data and typecheck scope. Rejecting a forged
+serialized grant, enforcing subset ceilings at a live seam, and every LC01–LC24
+row remain W2/W3 work and are NOT claimed.
 
 ## Phase 0 gates B01–B06
 
