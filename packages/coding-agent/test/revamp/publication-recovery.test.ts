@@ -7,6 +7,7 @@ import { prepareLifecycleLaunch } from "../../src/task/launch-admission";
 import type { RuntimePolicySnapshotV1 } from "../../src/task/launch-contract";
 import { createSpawnPlan } from "../../src/task/spawn-plan";
 import {
+	createTestAuthorizationSnapshot,
 	createTestCapsule,
 	createTestCompiledContract,
 	createTestPolicy,
@@ -57,7 +58,7 @@ describe("Acceptance 6 — declared confinement", () => {
 				compileInput: {
 					capsule: makeCapsule(),
 					policy: makePolicy({ isolationLevel: "confined" }),
-					parentPolicy: null,
+					authorization: createTestAuthorizationSnapshot(),
 					requiredInputIds: [],
 				},
 				ownerNodeId: null,

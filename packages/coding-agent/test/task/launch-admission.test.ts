@@ -6,7 +6,13 @@ import { prepareLifecycleLaunch } from "../../src/task/launch-admission";
 import type { MissionCapsule, RuntimePolicySnapshotV1 } from "../../src/task/launch-contract";
 import { compileLaunchContract } from "../../src/task/launch-contract";
 import { createSpawnPlan, type SpawnPlan } from "../../src/task/spawn-plan";
-import { createTestCapsule, createTestPolicy, createTestRunLimits } from "../helpers/lifecycle-fixtures";
+import {
+	createTestAuthorizationSnapshot,
+	createTestCapsule,
+	createTestGrantRecord,
+	createTestPolicy,
+	createTestRunLimits,
+} from "../helpers/lifecycle-fixtures";
 
 // Scenario-specific budget: room for a root plus the admitted child.
 const ADMISSION_LIMITS = Object.freeze({
@@ -50,6 +56,13 @@ function makePolicy(): RuntimePolicySnapshotV1 {
 	return createTestPolicy({ limits: ADMISSION_LIMITS });
 }
 
+/** Issuer holds exactly the grants the child policy asks for. */
+function makeAuthorization(policy: RuntimePolicySnapshotV1) {
+	return createTestAuthorizationSnapshot({
+		sourceGrants: policy.grantRefs.map(grantId => createTestGrantRecord({ grantId })),
+	});
+}
+
 describe("Lifecycle launch admission (B1)", () => {
 	it("rejects invalid scope with diagnostics and zero allocations", () => {
 		const dbPath = path.join(os.tmpdir(), `admit-invalid-${Date.now()}.db`);
@@ -60,7 +73,7 @@ describe("Lifecycle launch admission (B1)", () => {
 				compileInput: {
 					capsule: { ...makeCapsule(), writableScope: ["../escape.ts"] },
 					policy: makePolicy(),
-					parentPolicy: null,
+					authorization: makeAuthorization(makePolicy()),
 					requiredInputIds: [],
 				},
 				ownerNodeId: null,
@@ -85,7 +98,7 @@ describe("Lifecycle launch admission (B1)", () => {
 			const compiled = compileLaunchContract({
 				capsule: makeCapsule(),
 				policy,
-				parentPolicy: null,
+				authorization: makeAuthorization(policy),
 				requiredInputIds: [],
 			});
 			expect(compiled.ok).toBe(true);
@@ -96,7 +109,12 @@ describe("Lifecycle launch admission (B1)", () => {
 
 			const result = prepareLifecycleLaunch(store, {
 				spawnPlan: makeSpawnPlan(),
-				compileInput: { capsule: makeCapsule(), policy, parentPolicy: null, requiredInputIds: [] },
+				compileInput: {
+					capsule: makeCapsule(),
+					policy,
+					authorization: makeAuthorization(policy),
+					requiredInputIds: [],
+				},
 				ownerNodeId: "run-1-root",
 				runId: "run-1",
 				idempotencyKey: "key-child-1",

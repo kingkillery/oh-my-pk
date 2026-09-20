@@ -179,17 +179,38 @@ export interface LaunchContractDiagnostic {
 export interface LaunchCompileInput {
 	readonly capsule: MissionCapsule;
 	readonly policy: RuntimePolicySnapshotV1;
-	readonly parentPolicy: RuntimePolicySnapshotV1 | null;
+	/**
+	 * Complete authenticated preflight snapshot (§14.2), replacing the former
+	 * bare `parentPolicy`. Parent ceilings, source grants and the requested
+	 * authority arrive together, so the compiler proves narrowing instead of
+	 * taking the caller's word for the parent's shape.
+	 */
+	readonly authorization: LaunchAuthorizationSnapshotV1;
 	readonly requiredInputIds: readonly string[];
 }
 
 export interface CompiledLaunchContract {
-	readonly schemaVersion: 1;
-	readonly contractVersion: number;
+	readonly schemaVersion: 2;
+	readonly policyVersion: 1;
+	/** Stable across a child's lineage; revision increments per authority change. */
+	readonly contractId: string;
+	readonly contractRevision: number;
+	/** Digest over every field except itself. */
+	readonly contractDigest: string;
+	readonly priorContractDigest: string | null;
+	readonly rootPrincipalId: string;
+	readonly parentPrincipalId: string;
+	readonly childPrincipalId: string;
 	readonly capsule: MissionCapsule;
 	readonly policy: RuntimePolicySnapshotV1;
 	readonly missionHash: string;
 	readonly policyHash: string;
+	readonly authority: LaunchAuthorityV1;
+	readonly provenance: {
+		readonly authorizationRef: string;
+		readonly reason: string;
+		readonly issuerPrincipalId: string;
+	};
 }
 
 export type LaunchCompileResult =
@@ -1334,58 +1355,87 @@ export function compileLaunchContract(input: LaunchCompileInput): LaunchCompileR
 		}
 	}
 
-	// Parent narrowing: the child policy may only hold grants its parent
-	// holds, and must not exceed the parent depth. Literal scope-vs-scope
-	// narrowing (equal inherited globs or narrower concrete roots via
-	// isScopeSubsetOfParent) is proven at admission preflight, where the
-	// parent capsule scopes are loadable from the store.
-	const parent = (input as { parentPolicy?: unknown }).parentPolicy ?? null;
-	if (parent !== null) {
-		if (!isPlainObject(parent)) {
-			diagnostics.push(diag("invalid_policy", "parentPolicy must be an object or null.", "parentPolicy"));
-		} else {
-			const parentPolicy = validateRuntimePolicy(parent, diagnostics, "parentPolicy");
-			if (parentPolicy) {
-				const parentGrants = new Set(parentPolicy.grantRefs);
-				for (const grant of policy.grantRefs) {
-					if (!parentGrants.has(grant)) {
-						diagnostics.push(
-							diag(
-								"scope_not_proven_subset",
-								`Grant '${grant}' is not held by the parent policy.`,
-								"policy.grantRefs",
-							),
-						);
-					}
-				}
-				if (policy.limits.maxDepth > parentPolicy.limits.maxDepth) {
-					diagnostics.push(
-						diag(
-							"depth_exceeds_parent",
-							`Child maxDepth (${policy.limits.maxDepth}) exceeds parent maxDepth (${parentPolicy.limits.maxDepth}).`,
-							"policy.limits.maxDepth",
-						),
-					);
-				}
-			}
+	// Parent narrowing now reads the authenticated snapshot rather than a
+	// caller-supplied parent policy object: the child may only hold grants
+	// the issuer actually holds, and must not exceed the issuer's depth.
+	// Literal scope-vs-scope narrowing is still proven at admission preflight,
+	// where parent capsule scopes are loadable from the store.
+	const authorization = (input as { authorization?: unknown }).authorization;
+	if (!isPlainObject(authorization)) {
+		return {
+			ok: false,
+			diagnostics: [diag("invalid_authorization", "authorization snapshot must be an object.", "authorization")],
+		};
+	}
+	const snapshot = authorization as unknown as LaunchAuthorizationSnapshotV1;
+	for (const field of ["contractId", "rootPrincipalId", "parentPrincipalId", "childPrincipalId"] as const) {
+		if (!isNonEmptyString(snapshot[field])) {
+			diagnostics.push(
+				diag("invalid_authorization", `authorization.${field} is required.`, `authorization.${field}`),
+			);
 		}
 	}
+	if (!isSafeNonNegativeInt(snapshot.contractRevision) || snapshot.contractRevision < 1) {
+		diagnostics.push(
+			diag(
+				"invalid_authorization",
+				"authorization.contractRevision must be >= 1.",
+				"authorization.contractRevision",
+			),
+		);
+	}
 
-	if (diagnostics.length > 0) {
+	const issuerGrants = new Set((snapshot.sourceGrants ?? []).map(grant => grant.grantId));
+	for (const grant of policy.grantRefs) {
+		if (!issuerGrants.has(grant)) {
+			diagnostics.push(
+				diag("scope_not_proven_subset", `Grant '${grant}' is not held by the issuer.`, "policy.grantRefs"),
+			);
+		}
+	}
+	const issuerDepth = snapshot.parentDelegable?.budget?.limits?.maxDepth;
+	if (isSafeNonNegativeInt(issuerDepth) && policy.limits.maxDepth > issuerDepth) {
+		diagnostics.push(
+			diag(
+				"depth_exceeds_parent",
+				`Child maxDepth (${policy.limits.maxDepth}) exceeds issuer maxDepth (${issuerDepth}).`,
+				"policy.limits.maxDepth",
+			),
+		);
+	}
+
+	const authorityResult = compileLaunchAuthority(snapshot);
+	if (!authorityResult.ok) diagnostics.push(...authorityResult.diagnostics);
+
+	if (diagnostics.length > 0 || !authorityResult.ok) {
 		return { ok: false, diagnostics: Object.freeze([...diagnostics]) };
 	}
 
 	const frozenCapsule = deepFreezeCopy(capsule);
 	const frozenPolicy = deepFreezeCopy(policy);
-	const missionHash = computeMissionHash(frozenCapsule);
-	const policyHash = computePolicyHash(frozenPolicy);
-	const compiled: CompiledLaunchContract = Object.freeze({
-		schemaVersion: 1,
-		contractVersion: LAUNCH_CONTRACT_VERSION,
+	const body = {
+		schemaVersion: 2 as const,
+		policyVersion: 1 as const,
+		contractId: snapshot.contractId,
+		contractRevision: snapshot.contractRevision,
+		priorContractDigest: snapshot.priorContractDigest ?? null,
+		rootPrincipalId: snapshot.rootPrincipalId,
+		parentPrincipalId: snapshot.parentPrincipalId,
+		childPrincipalId: snapshot.childPrincipalId,
 		capsule: frozenCapsule,
 		policy: frozenPolicy,
-		missionHash,
-		policyHash,
+		missionHash: computeMissionHash(frozenCapsule),
+		policyHash: computePolicyHash(frozenPolicy),
+		authority: authorityResult.authority,
+		provenance: Object.freeze({
+			authorizationRef: snapshot.authorizationRef,
+			reason: snapshot.reason,
+			issuerPrincipalId: snapshot.issuerPrincipalId,
+		}),
+	};
+	const compiled: CompiledLaunchContract = Object.freeze({
+		...body,
+		contractDigest: computeLaunchContractDigest(body),
 	});
 	return { ok: true, compiled };
 }
@@ -1449,10 +1499,14 @@ export function bindLaunchContract(compiled: CompiledLaunchContract, binding: La
 	const checked = validateBinding(binding);
 	if (!checked.binding) throw new Error(checked.diagnostics[0]?.code ?? "invalid_binding");
 	const validBinding = checked.binding;
-	if (!isPlainObject(compiled) || compiled.schemaVersion !== 1) throw new Error("unknown_version");
+	if (!isPlainObject(compiled) || compiled.schemaVersion !== 2) throw new Error("unknown_version");
 	// Tamper-evident: bound hashes must reproduce from the frozen snapshot.
 	if (computeMissionHash(compiled.capsule) !== compiled.missionHash) throw new Error("contract_hash_mismatch");
 	if (computePolicyHash(compiled.policy) !== compiled.policyHash) throw new Error("contract_hash_mismatch");
+	// The contract digest covers the authority too, so a tampered capability
+	// set cannot ride in behind matching mission and policy hashes.
+	const { contractDigest, ...body } = compiled;
+	if (computeLaunchContractDigest(body) !== contractDigest) throw new Error("contract_hash_mismatch");
 	if (!KNOWN_AGENT_ROLES.includes(compiled.policy.role) || !KNOWN_TOPOLOGIES.includes(compiled.policy.topology)) {
 		throw new Error("unknown_role");
 	}
@@ -1478,7 +1532,7 @@ export function bindLaunchContract(compiled: CompiledLaunchContract, binding: La
 		capsule: compiled.capsule,
 		envelope,
 		policy: compiled.policy,
-		contractVersion: compiled.contractVersion,
+		contractVersion: LAUNCH_CONTRACT_VERSION,
 		policySchemaVersion: 1 as const,
 		harnessSchemaVersion: 1 as const,
 	});

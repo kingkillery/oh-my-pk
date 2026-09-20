@@ -11,11 +11,27 @@ import {
 } from "../../src/task/launch-contract";
 import {
 	createTestArtifactRef,
+	createTestAuthorizationSnapshot,
 	createTestCapsule,
+	createTestGrantRecord,
 	createTestPolicy,
 	createTestSnapshotRef,
 	DUMMY_HASH_1,
 } from "../helpers/lifecycle-fixtures";
+
+/**
+ * Build an authorization snapshot whose issuer holds exactly `issuerGrantIds`
+ * (defaulting to the child's own grants, i.e. a fully-covering issuer).
+ * Passing a narrower set is how a test exercises parent narrowing.
+ */
+function authFor(
+	policy: ReturnType<typeof createTestPolicy>,
+	issuerGrantIds?: readonly string[],
+): ReturnType<typeof createTestAuthorizationSnapshot> {
+	return createTestAuthorizationSnapshot({
+		sourceGrants: (issuerGrantIds ?? policy.grantRefs).map(grantId => createTestGrantRecord({ grantId })),
+	});
+}
 
 describe("Launch Contract (A02)", () => {
 	it("compiles valid mission and policy into frozen immutable contract", () => {
@@ -24,14 +40,14 @@ describe("Launch Contract (A02)", () => {
 		const res = compileLaunchContract({
 			capsule,
 			policy,
-			parentPolicy: null,
+			authorization: authFor(policy),
 			requiredInputIds: ["art-1"],
 		});
 		expect(res.ok).toBe(true);
 		if (!res.ok) return;
 
-		expect(res.compiled.schemaVersion).toBe(1);
-		expect(res.compiled.contractVersion).toBe(1);
+		expect(res.compiled.schemaVersion).toBe(2);
+		expect(res.compiled.contractRevision).toBe(1);
 		expect(res.compiled.missionHash).toBe(computeMissionHash(res.compiled.capsule));
 		expect(res.compiled.policyHash).toBe(computePolicyHash(res.compiled.policy));
 		expect(Object.isFrozen(res.compiled)).toBe(true);
@@ -63,7 +79,7 @@ describe("Launch Contract (A02)", () => {
 		const res1 = compileLaunchContract({
 			capsule: capsuleBadWrite,
 			policy: createTestPolicy(),
-			parentPolicy: null,
+			authorization: authFor(createTestPolicy()),
 			requiredInputIds: [],
 		});
 		expect(res1.ok).toBe(false);
@@ -77,7 +93,7 @@ describe("Launch Contract (A02)", () => {
 		const res2 = compileLaunchContract({
 			capsule: capsuleDrive,
 			policy: createTestPolicy(),
-			parentPolicy: null,
+			authorization: authFor(createTestPolicy()),
 			requiredInputIds: [],
 		});
 		expect(res2.ok).toBe(false);
@@ -88,7 +104,7 @@ describe("Launch Contract (A02)", () => {
 		const res3 = compileLaunchContract({
 			capsule: capsuleUri,
 			policy: createTestPolicy(),
-			parentPolicy: null,
+			authorization: authFor(createTestPolicy()),
 			requiredInputIds: [],
 		});
 		expect(res3.ok).toBe(false);
@@ -105,7 +121,7 @@ describe("Launch Contract (A02)", () => {
 		const res = compileLaunchContract({
 			capsule,
 			policy,
-			parentPolicy: null,
+			authorization: authFor(policy),
 			requiredInputIds: ["art-1"],
 		});
 		expect(res.ok).toBe(false);
@@ -124,7 +140,7 @@ describe("Launch Contract (A02)", () => {
 		const res = compileLaunchContract({
 			capsule: createTestCapsule(),
 			policy: childPolicy,
-			parentPolicy,
+			authorization: authFor(childPolicy, parentPolicy.grantRefs),
 			requiredInputIds: [],
 		});
 		expect(res.ok).toBe(false);
@@ -137,7 +153,7 @@ describe("Launch Contract (A02)", () => {
 		const compiledRes = compileLaunchContract({
 			capsule: createTestCapsule(),
 			policy: createTestPolicy(),
-			parentPolicy: null,
+			authorization: authFor(createTestPolicy()),
 			requiredInputIds: [],
 		});
 		expect(compiledRes.ok).toBe(true);

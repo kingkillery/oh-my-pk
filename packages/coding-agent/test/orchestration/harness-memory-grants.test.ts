@@ -8,7 +8,12 @@ import { resolveHarnessManifest, verifyHarnessManifest } from "../../src/orchest
 import { getLifecycleRunView } from "../../src/orchestration/lifecycle-snapshot";
 import { compileLaunchContract } from "../../src/task/launch-contract";
 import { decideRecovery } from "../../src/task/recovery-capsule";
-import { createTestCapsule, createTestPolicy } from "../helpers/lifecycle-fixtures";
+import {
+	createTestAuthorizationSnapshot,
+	createTestCapsule,
+	createTestGrantRecord,
+	createTestPolicy,
+} from "../helpers/lifecycle-fixtures";
 
 describe("Recovery capsule fencing (C2)", () => {
 	it("continues only with live lease, unchanged contract, and retained workspace", () => {
@@ -131,7 +136,14 @@ describe("Operator lifecycle view (F0)", () => {
 				environmentRef: "env-test",
 				isolationLevel: "cooperative-worktree",
 			});
-			const compiled = compileLaunchContract({ capsule, policy, parentPolicy: null, requiredInputIds: [] });
+			const compiled = compileLaunchContract({
+				capsule,
+				policy,
+				authorization: createTestAuthorizationSnapshot({
+					sourceGrants: policy.grantRefs.map(grantId => createTestGrantRecord({ grantId })),
+				}),
+				requiredInputIds: [],
+			});
 			expect(compiled.ok).toBe(true);
 			if (!compiled.ok) return;
 			const created = store.createLifecycleRun("run-1", compiled.compiled, policy.limits, "key-1");

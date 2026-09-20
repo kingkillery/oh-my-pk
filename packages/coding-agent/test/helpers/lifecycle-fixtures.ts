@@ -13,6 +13,7 @@ import type {
 	AuthorityEnvelopeV1,
 	CommunicationAuthorityV1,
 	CompiledLaunchContract,
+	GrantRecordV1,
 	LaunchAuthorityV1,
 	LaunchAuthorizationSnapshotV1,
 	MissionCapsule,
@@ -173,13 +174,19 @@ export function createTestCapsule(overrides?: Partial<MissionCapsule>): MissionC
 export function createTestCompiledContract(
 	capsuleOverrides?: Partial<MissionCapsule>,
 	policyOverrides?: Partial<RuntimePolicySnapshotV1>,
+	authorizationOverrides?: Partial<LaunchAuthorizationSnapshotV1>,
 ): CompiledLaunchContract {
 	const capsule = createTestCapsule(capsuleOverrides);
 	const policy = createTestPolicy(policyOverrides);
 	const res = compileLaunchContract({
 		capsule,
 		policy,
-		parentPolicy: null,
+		// Source grants must cover the policy's grantRefs or the compiler
+		// correctly refuses to admit a grant the issuer does not hold.
+		authorization: createTestAuthorizationSnapshot({
+			sourceGrants: policy.grantRefs.map(grantId => createTestGrantRecord({ grantId })),
+			...authorizationOverrides,
+		}),
 		requiredInputIds: [],
 	});
 	if (!res.ok) {
@@ -408,6 +415,40 @@ export function createTestAuthorizationSnapshot(
 		agentMaximum: createTestEnvelope(),
 		workflowMaximum: createTestEnvelope(),
 		toolCatalogDigest: DUMMY_HASH_2,
+		...overrides,
+	});
+}
+
+export function createTestGrantRecord(overrides?: Partial<GrantRecordV1>): GrantRecordV1 {
+	return Object.freeze({
+		schemaVersion: 1 as const,
+		grantId: "grant-1",
+		recordDigest: DUMMY_HASH_1,
+		issuerPrincipalId: "principal-parent",
+		recipientPrincipalId: "principal-child",
+		recipientBindingId: "binding-1",
+		attemptId: "att-1",
+		contractRevision: 1,
+		policyEpoch: 1,
+		resource: Object.freeze({
+			kind: "workspace" as const,
+			resourceId: "repo:main",
+			versionDigest: null,
+			scope: Object.freeze({
+				roots: Object.freeze(["src/"]),
+				exactIds: Object.freeze([]),
+				maxBytes: null,
+				range: null,
+			}),
+		}),
+		operations: Object.freeze(["read" as const]),
+		delegableOperations: Object.freeze([]),
+		recipientConstraints: Object.freeze([]),
+		remainingDelegationDepth: 1,
+		domains: Object.freeze(["public-task" as const]),
+		sourceGrantIds: Object.freeze([]),
+		expiresAt: null,
+		purpose: "test grant",
 		...overrides,
 	});
 }
