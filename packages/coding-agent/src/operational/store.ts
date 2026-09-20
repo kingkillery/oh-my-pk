@@ -26,7 +26,10 @@ import {
 } from "../task/launch-contract";
 import type {
 	CaptureDimension,
+	ContextDeliveryRequest,
+	ContextDeliveryResult,
 	DeliveryDimension,
+	DeliveryRecordV1,
 	ExecutionDimension,
 	GrantIssueRequest,
 	GrantIssueResult,
@@ -2737,6 +2740,259 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 			.get(grantId) as { canonical_json: string; revoked_at: number | null } | undefined;
 		if (!row) throw new LifecycleReadError("launch_grant_not_found", `grant '${grantId}' not found`);
 		return parseGrantRecordV1(JSON.parse(row.canonical_json));
+	}
+
+	/**
+	 * The disclosure commit point (§14.5): atomic insertion into the
+	 * recipient's durable context inbox PLUS channel-budget consumption.
+	 *
+	 * Stable (binding, delivery) is unique — the same content replays with
+	 * zero extra budget; different content under the same id is a conflict.
+	 * Admission before a revocation commits stays a historical disclosure; a
+	 * revocation before commit denies.
+	 */
+	admitLaunchDelivery(input: {
+		guard: LaunchMutationGuard;
+		request: ContextDeliveryRequest;
+		senderPrincipalId: string;
+		bytes: number;
+	}): ContextDeliveryResult {
+		this.#assertOpen();
+		const { request } = input;
+		const now = Date.now();
+		try {
+			return this.#db
+				.transaction((): ContextDeliveryResult => {
+					const binding = this.#db
+						.prepare("SELECT policy_epoch, state, child_principal_id FROM launch_bindings WHERE binding_id = ?")
+						.get(request.recipientBindingId) as
+						| { policy_epoch: number; state: string; child_principal_id: string }
+						| undefined;
+					if (!binding) {
+						return this.#authorityFailure(
+							"launch_binding_not_found",
+							`binding '${request.recipientBindingId}' not found`,
+						);
+					}
+					if (binding.policy_epoch !== request.expectedPolicyEpoch) {
+						return this.#authorityFailure(
+							"stale_launch_authority",
+							`binding is at epoch ${binding.policy_epoch}, request expected ${request.expectedPolicyEpoch}`,
+						);
+					}
+					if (binding.state === "revoked" || binding.state === "superseded") {
+						// A revoked binding receives nothing further.
+						return this.#authorityFailure(
+							"launch_binding_revoked",
+							`binding '${request.recipientBindingId}' is ${binding.state}`,
+						);
+					}
+
+					// Deterministic digest over the delivery's identifying
+					// content, computed here rather than trusted from the
+					// caller: idempotency is decided by what was actually
+					// admitted.
+					const requestDigest = sha256Hex(
+						canonicalJson({
+							channelId: request.channelId,
+							attemptId: request.attemptId,
+							contractRevision: request.contractRevision,
+							contextGeneration: request.contextGeneration,
+							payloadRef: request.payloadRef,
+							resourceRefs: request.resourceRefs,
+							domains: request.domains,
+							kind: request.kind,
+						}),
+					);
+					const prior = this.#db
+						.prepare("SELECT request_digest FROM launch_deliveries WHERE binding_id = ? AND delivery_id = ?")
+						.get(request.recipientBindingId, request.deliveryId) as { request_digest: string } | undefined;
+					if (prior) {
+						if (prior.request_digest !== requestDigest) {
+							return this.#authorityFailure(
+								"delivery_conflict",
+								`delivery '${request.deliveryId}' already holds different content`,
+							);
+						}
+						// Idempotent replay: no second inbox row, no second
+						// budget debit.
+						const replayRecord = this.#deliveryRecord(
+							request,
+							input.senderPrincipalId,
+							binding.child_principal_id,
+							input.bytes,
+							requestDigest,
+						);
+						return { ok: true, delivery: replayRecord, replayed: true };
+					}
+
+					const channel = this.#db
+						.prepare(
+							"SELECT consumed_bytes, consumed_messages, revoked_at, canonical_json FROM launch_channels WHERE binding_id = ? AND channel_id = ?",
+						)
+						.get(request.recipientBindingId, request.channelId) as
+						| {
+								consumed_bytes: number;
+								consumed_messages: number;
+								revoked_at: number | null;
+								canonical_json: string;
+						  }
+						| undefined;
+					if (!channel) {
+						return this.#authorityFailure(
+							"launch_channel_not_found",
+							`channel '${request.channelId}' is not pinned for this binding`,
+						);
+					}
+					if (channel.revoked_at !== null) {
+						return this.#authorityFailure("launch_channel_revoked", `channel '${request.channelId}' is revoked`);
+					}
+					const limits = JSON.parse(channel.canonical_json) as {
+						maxMessageBytes: number;
+						maxTotalBytes: number;
+						maxMessages: number;
+					};
+					if (input.bytes > limits.maxMessageBytes) {
+						return this.#authorityFailure(
+							"delivery_too_large",
+							`${input.bytes} bytes exceeds the channel's ${limits.maxMessageBytes}-byte message bound`,
+						);
+					}
+					if (channel.consumed_messages + 1 > limits.maxMessages) {
+						return this.#authorityFailure(
+							"delivery_budget_exhausted",
+							`channel '${request.channelId}' has consumed ${channel.consumed_messages} of ${limits.maxMessages} messages`,
+						);
+					}
+					if (channel.consumed_bytes + input.bytes > limits.maxTotalBytes) {
+						return this.#authorityFailure(
+							"delivery_budget_exhausted",
+							`channel '${request.channelId}' would exceed its ${limits.maxTotalBytes}-byte total bound`,
+						);
+					}
+
+					const record = this.#deliveryRecord(
+						request,
+						input.senderPrincipalId,
+						binding.child_principal_id,
+						input.bytes,
+						requestDigest,
+					);
+					this.#db
+						.prepare(
+							`INSERT INTO launch_deliveries (binding_id, delivery_id, channel_id, sender_principal_id, recipient_principal_id, attempt_id, contract_revision, policy_epoch, context_generation, payload_json, bytes, request_digest, created_at)
+							 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						)
+						.run(
+							request.recipientBindingId,
+							request.deliveryId,
+							request.channelId,
+							input.senderPrincipalId,
+							record.recipientPrincipalId,
+							request.attemptId,
+							request.contractRevision,
+							request.expectedPolicyEpoch,
+							request.contextGeneration,
+							JSON.stringify(record),
+							input.bytes,
+							requestDigest,
+							now,
+						);
+					this.#db
+						.prepare(
+							"UPDATE launch_channels SET consumed_bytes = consumed_bytes + ?, consumed_messages = consumed_messages + 1, updated_at = ? WHERE binding_id = ? AND channel_id = ?",
+						)
+						.run(input.bytes, now, request.recipientBindingId, request.channelId);
+					this.#db
+						.prepare(
+							`INSERT INTO launch_delivery_events (event_id, binding_id, delivery_id, kind, occurred_at)
+							 VALUES (?, ?, ?, 'admitted', ?)`,
+						)
+						.run(
+							`event-${request.recipientBindingId}-${request.deliveryId}-admitted`,
+							request.recipientBindingId,
+							request.deliveryId,
+							now,
+						);
+					this.#db
+						.prepare(
+							`INSERT INTO launch_context_inbox (binding_id, context_generation, delivery_id, admission_order, content_ref, domains_json, admitted_epoch, admitted_at)
+							 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+						)
+						.run(
+							request.recipientBindingId,
+							request.contextGeneration,
+							request.deliveryId,
+							now,
+							request.payloadRef.uri,
+							JSON.stringify(request.domains),
+							request.expectedPolicyEpoch,
+							now,
+						);
+					return { ok: true, delivery: record, replayed: false };
+				})
+				.immediate();
+		} catch (error) {
+			return this.#authorityFailure(
+				"delivery_admission_failed",
+				error instanceof Error ? error.message : String(error),
+			);
+		}
+	}
+
+	#deliveryRecord(
+		request: ContextDeliveryRequest,
+		senderPrincipalId: string,
+		recipientPrincipalId: string,
+		bytes: number,
+		requestDigest: string,
+	): DeliveryRecordV1 {
+		return Object.freeze({
+			schemaVersion: 1 as const,
+			deliveryId: request.deliveryId,
+			channelId: request.channelId,
+			senderPrincipalId,
+			recipientPrincipalId,
+			recipientBindingId: request.recipientBindingId,
+			attemptId: request.attemptId,
+			contractRevision: request.contractRevision,
+			policyEpoch: request.expectedPolicyEpoch,
+			contextGeneration: request.contextGeneration,
+			payloadRef: request.payloadRef,
+			resourceRefs: request.resourceRefs,
+			domains: request.domains,
+			kind: request.kind,
+			bytes,
+			requestDigest,
+		});
+	}
+	/**
+	 * Records a durable provider outcome for an admitted delivery
+	 * (§14.5/LC23). `provider-unknown` after a timeout must NOT refund the
+	 * disclosure or imply exactly-once processing; it only records that the
+	 * outcome could not be observed.
+	 */
+	recordLaunchProviderOutcome(input: {
+		guard: LaunchMutationGuard;
+		bindingId: string;
+		deliveryId: string;
+		requestId: string;
+		outcome: "provider-known" | "provider-unknown";
+	}): void {
+		this.#assertOpen();
+		this.#db
+			.prepare(
+				`INSERT INTO launch_delivery_events (event_id, binding_id, delivery_id, kind, request_id, occurred_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				`event-${input.bindingId}-${input.deliveryId}-${input.outcome}-${input.requestId}`,
+				input.bindingId,
+				input.deliveryId,
+				input.outcome,
+				input.requestId,
+				Date.now(),
+			);
 	}
 
 	/**

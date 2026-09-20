@@ -735,6 +735,193 @@ describe("launch grant lifecycle (§14.5)", () => {
 	});
 });
 
+describe("launch delivery admission (§14.5)", () => {
+	const GUARD = { actor: {} as never, expectedPolicyEpoch: 1, idempotencyKey: "guard-1" };
+
+	function seedChannelFixture(label: string, maxMessageBytes = 2000, maxTotalBytes = 4000, maxMessages = 2) {
+		const store = OperationalStore.open({ dbPath: tempPath(label) });
+		const admitted = store.admitLaunchAuthority({
+			guard: GUARD,
+			compiled: createTestCompiledContract({ objective: `Delivery fixture ${label}` }),
+			reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
+			lifecycle: null,
+			restoresBindingId: null,
+		});
+		if (!admitted.ok) throw new Error(`fixture failed: ${admitted.code}`);
+		const bindingId = admitted.launch.envelope.attemptId;
+		return { store, bindingId, limits: { maxMessageBytes, maxTotalBytes, maxMessages } };
+	}
+
+	function deliveryRequest(bindingId: string, deliveryId: string, overrides: Record<string, unknown> = {}) {
+		return {
+			deliveryId,
+			channelId: "chan-1",
+			recipientBindingId: bindingId,
+			expectedPolicyEpoch: 1,
+			attemptId: "att-d",
+			contractRevision: 1,
+			contextGeneration: 0,
+			grantRefs: [],
+			payloadRef: createTestArtifactRef("artifact-payload"),
+			resourceRefs: [],
+			domains: ["public-task" as const],
+			kind: "assignment" as const,
+			...overrides,
+		};
+	}
+
+	function admitDelivery(
+		store: OperationalStore,
+		bindingId: string,
+		deliveryId: string,
+		bytes: number,
+		limits: { maxMessageBytes: number; maxTotalBytes: number; maxMessages: number },
+		overrides: Record<string, unknown> = {},
+	) {
+		// Seed the pinned channel row directly: channel pinning belongs to the
+		// compiler's initial-channel generation (W3); here we exercise the
+		// admission transaction against its recorded limits.
+		const channelId = (overrides.channelId as string | undefined) ?? "chan-1";
+		const db = new Database(store.dbPath);
+		db.run(
+			`INSERT OR IGNORE INTO launch_channels (binding_id, channel_id, canonical_json, policy_epoch, created_at, updated_at)
+			 VALUES (?, ?, ?, 1, 1, 1)`,
+			[bindingId, channelId, JSON.stringify(limits)],
+		);
+		db.close();
+		return store.admitLaunchDelivery({
+			guard: GUARD,
+			request: deliveryRequest(bindingId, deliveryId, { channelId, ...overrides }),
+			senderPrincipalId: "principal-parent",
+			bytes,
+		});
+	}
+
+	it("admits a delivery once and consumes channel budget exactly once", () => {
+		const { store, bindingId, limits } = seedChannelFixture("delivery-admit");
+		try {
+			const first = admitDelivery(store, bindingId, "d-1", 500, limits);
+			expect(first.ok).toBe(true);
+			if (!first.ok) return;
+			expect(first.replayed).toBe(false);
+			expect(first.delivery.recipientPrincipalId).toBeTruthy();
+
+			// Same content again: replay, NOT a second debit.
+			const replay = admitDelivery(store, bindingId, "d-1", 500, limits);
+			expect(replay.ok).toBe(true);
+			if (!replay.ok) return;
+			expect(replay.replayed).toBe(true);
+
+			const db = new Database(store.dbPath, { readonly: true });
+			const channel = db
+				.prepare("SELECT consumed_bytes, consumed_messages FROM launch_channels WHERE channel_id = 'chan-1'")
+				.get() as { consumed_bytes: number; consumed_messages: number };
+			const inbox = db.prepare("SELECT COUNT(*) AS n FROM launch_context_inbox WHERE delivery_id = 'd-1'").get() as {
+				n: number;
+			};
+			db.close();
+			expect(channel.consumed_bytes).toBe(500);
+			expect(channel.consumed_messages).toBe(1);
+			expect(inbox.n).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("rejects different content under the same delivery id", () => {
+		const { store, bindingId, limits } = seedChannelFixture("delivery-conflict");
+		try {
+			expect(admitDelivery(store, bindingId, "d-1", 500, limits).ok).toBe(true);
+			const conflict = admitDelivery(store, bindingId, "d-1", 500, limits, {
+				kind: "plan-excerpt",
+			});
+			expect(conflict.ok).toBe(false);
+			if (conflict.ok) return;
+			expect(conflict.code).toBe("delivery_conflict");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("enforces per-message and total byte bounds and the message count", () => {
+		const { store, bindingId, limits } = seedChannelFixture("delivery-budget");
+		try {
+			const tooLarge = admitDelivery(store, bindingId, "d-big", 5000, limits);
+			expect(tooLarge.ok).toBe(false);
+			if (!tooLarge.ok) expect(tooLarge.code).toBe("delivery_too_large");
+
+			// maxMessages = 2: two admissions fit, the third is refused.
+			expect(admitDelivery(store, bindingId, "d-1", 1000, limits).ok).toBe(true);
+			expect(admitDelivery(store, bindingId, "d-2", 1000, limits).ok).toBe(true);
+			const exhausted = admitDelivery(store, bindingId, "d-3", 100, limits);
+			expect(exhausted.ok).toBe(false);
+			if (!exhausted.ok) expect(exhausted.code).toBe("delivery_budget_exhausted");
+
+			// Total bytes: a SEPARATE channel (chan-2) with a 3000-byte
+			// message bound but only a 1000-byte total. The 2500-byte message
+			// fits per-message yet still exceeds the total. A second channel
+			// is needed because chan-1's limits are already pinned.
+			const totalRefused = admitDelivery(
+				store,
+				bindingId,
+				"d-wide",
+				2500,
+				{ maxMessageBytes: 3000, maxTotalBytes: 1000, maxMessages: 5 },
+				{ channelId: "chan-2" },
+			);
+			expect(totalRefused.ok).toBe(false);
+			if (!totalRefused.ok) expect(totalRefused.code).toBe("delivery_budget_exhausted");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refuses a delivery to a revoked or unknown binding", () => {
+		const { store, bindingId, limits } = seedChannelFixture("delivery-revoked");
+		try {
+			const unknown = admitDelivery(store, "binding-none", "d-1", 100, limits);
+			expect(unknown.ok).toBe(false);
+			if (!unknown.ok) expect(unknown.code).toBe("launch_binding_not_found");
+
+			const db = new Database(store.dbPath);
+			db.run("UPDATE launch_bindings SET state = 'revoked' WHERE binding_id = ?", [bindingId]);
+			db.close();
+			const revoked = admitDelivery(store, bindingId, "d-1", 100, limits);
+			expect(revoked.ok).toBe(false);
+			if (!revoked.ok) expect(revoked.code).toBe("launch_binding_revoked");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("records a provider-unknown outcome without refunding the channel", () => {
+		const { store, bindingId, limits } = seedChannelFixture("delivery-provider");
+		try {
+			expect(admitDelivery(store, bindingId, "d-1", 500, limits).ok).toBe(true);
+			// A provider timeout must not undo the admission or the debit.
+			store.recordLaunchProviderOutcome({
+				guard: GUARD,
+				bindingId,
+				deliveryId: "d-1",
+				requestId: "req-77",
+				outcome: "provider-unknown",
+			});
+			const db = new Database(store.dbPath, { readonly: true });
+			const events = db
+				.prepare("SELECT kind FROM launch_delivery_events WHERE delivery_id = 'd-1' ORDER BY occurred_at")
+				.all() as { kind: string }[];
+			const channel = db.prepare("SELECT consumed_bytes FROM launch_channels WHERE channel_id = 'chan-1'").get() as {
+				consumed_bytes: number;
+			};
+			db.close();
+			expect(events.map(e => e.kind)).toEqual(["admitted", "provider-unknown"]);
+			expect(channel.consumed_bytes).toBe(500);
+		} finally {
+			store.close();
+		}
+	});
+});
+
 describe("launch authority under cross-process contention (§14.5)", () => {
 	// The race runs in a STANDALONE runner rather than inside bun test:
 	// contender children spawned directly from the test process stalled
