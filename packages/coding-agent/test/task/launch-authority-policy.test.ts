@@ -9,11 +9,78 @@
 import { describe, expect, it } from "bun:test";
 import {
 	compareRuntimeGuarantees,
+	computeLaunchContractDigest,
+	type GrantRecordV1,
 	KNOWN_COMPATIBILITY_CLASSIFICATIONS,
 	KNOWN_LAUNCH_CLASSES,
 	KNOWN_RESOURCE_OPERATIONS,
+	type LaunchBinding,
+	parseGrantRecordV1,
+	parseResourceSelectorV1,
+	type ResourceSelectorV1,
 	type RuntimeGuaranteesV1,
+	validateLaunchBindingGuarantees,
 } from "../../src/task/launch-contract";
+
+const DIGEST_A = "a".repeat(64);
+
+const SELECTOR: ResourceSelectorV1 = Object.freeze({
+	kind: "workspace",
+	resourceId: "repo:main",
+	versionDigest: null,
+	scope: Object.freeze({
+		roots: Object.freeze(["src/"]),
+		exactIds: Object.freeze([]),
+		maxBytes: null,
+		range: null,
+	}),
+});
+
+const GRANT: GrantRecordV1 = Object.freeze({
+	schemaVersion: 1,
+	grantId: "grant-1",
+	recordDigest: DIGEST_A,
+	issuerPrincipalId: "principal-parent",
+	recipientPrincipalId: "principal-child",
+	recipientBindingId: "binding-1",
+	attemptId: "att-1",
+	contractRevision: 1,
+	policyEpoch: 1,
+	resource: SELECTOR,
+	operations: Object.freeze(["read", "write"] as const),
+	delegableOperations: Object.freeze(["read"] as const),
+	recipientConstraints: Object.freeze([]),
+	remainingDelegationDepth: 1,
+	domains: Object.freeze(["public-task"] as const),
+	sourceGrantIds: Object.freeze([]),
+	expiresAt: null,
+	purpose: "edit the worker's own source scope",
+});
+
+const BINDING_BASE: LaunchBinding = Object.freeze({
+	schemaVersion: 1,
+	bindingId: "binding-1",
+	contractId: "contract-1",
+	contractRevision: 1,
+	contractDigest: DIGEST_A,
+	rootPrincipalId: "principal-root",
+	parentPrincipalId: "principal-parent",
+	childPrincipalId: "principal-child",
+	attemptId: "att-1",
+	sessionId: null,
+	processRef: null,
+	policyEpoch: 1,
+	contextGeneration: 0,
+	state: "authorized",
+	grantBindings: Object.freeze([]),
+	serviceBindings: Object.freeze([]),
+	actualRuntimeGuarantees: null,
+	guaranteeEvidenceRefs: Object.freeze([]),
+	reservationId: null,
+	lifecycle: null,
+	expiresAt: null,
+	restoresBindingId: null,
+});
 
 /** Weakest legal position on every dimension. */
 const AMBIENT: RuntimeGuaranteesV1 = Object.freeze({
@@ -164,5 +231,104 @@ describe("Authority vocabularies (§14.2)", () => {
 		}
 		// Reading a transcript is not the same right as messaging a peer.
 		expect(KNOWN_RESOURCE_OPERATIONS as readonly string[]).not.toContain("peer");
+	});
+});
+
+describe("parseResourceSelectorV1 (§14.2)", () => {
+	it("round-trips a valid selector", () => {
+		expect(parseResourceSelectorV1(JSON.parse(JSON.stringify(SELECTOR)))).toEqual(SELECTOR);
+	});
+
+	it("rejects a selector that names nothing", () => {
+		// A grant with no root and no exact id reads as "authorized" while
+		// identifying nothing, which is what silently widens at the use seam.
+		const empty = { ...SELECTOR, scope: { roots: [], exactIds: [], maxBytes: null, range: null } };
+		expect(() => parseResourceSelectorV1(empty)).toThrow(/at least one root or exact id/);
+	});
+
+	it("rejects unknown kinds, unknown fields and bad digests", () => {
+		expect(() => parseResourceSelectorV1({ ...SELECTOR, kind: "quantum" })).toThrow(/known resource kind/);
+		expect(() => parseResourceSelectorV1({ ...SELECTOR, extra: 1 })).toThrow(/unknown_field/);
+		expect(() => parseResourceSelectorV1({ ...SELECTOR, versionDigest: "nope" })).toThrow(/versionDigest/);
+	});
+
+	it("rejects an inverted byte range", () => {
+		const inverted = { ...SELECTOR, scope: { ...SELECTOR.scope, range: { start: 10, end: 2 } } };
+		expect(() => parseResourceSelectorV1(inverted)).toThrow(/must not precede start/);
+	});
+});
+
+describe("parseGrantRecordV1 (§14.3)", () => {
+	it("round-trips a valid grant", () => {
+		expect(parseGrantRecordV1(JSON.parse(JSON.stringify(GRANT)))).toEqual(GRANT);
+	});
+
+	it("refuses to let a grant delegate an operation it does not hold", () => {
+		// Handing onward what you cannot use is the core escalation this
+		// record exists to prevent.
+		const overreach = { ...GRANT, operations: ["read"], delegableOperations: ["read", "write"] };
+		expect(() => parseGrantRecordV1(overreach)).toThrow(/delegable operation 'write' is not held/);
+	});
+
+	it("refuses delegable operations at delegation depth zero", () => {
+		const exhausted = { ...GRANT, remainingDelegationDepth: 0 };
+		expect(() => parseGrantRecordV1(exhausted)).toThrow(/depth 0 forbids delegable operations/);
+		// Depth zero with no delegable operations is legitimate.
+		expect(parseGrantRecordV1({ ...GRANT, remainingDelegationDepth: 0, delegableOperations: [] })).toBeDefined();
+	});
+
+	it("rejects unknown operations and unknown disclosure domains", () => {
+		expect(() => parseGrantRecordV1({ ...GRANT, operations: ["read", "sudo"] })).toThrow(
+			/not a known resource operation/,
+		);
+		expect(() => parseGrantRecordV1({ ...GRANT, domains: ["everyone"] })).toThrow(/not a known disclosure domain/);
+	});
+
+	it("accepts a structured artifact-scope domain", () => {
+		const scoped = { ...GRANT, domains: [{ kind: "artifact-scope", artifactId: "artifact-7" }] };
+		expect(parseGrantRecordV1(scoped).domains).toEqual([{ kind: "artifact-scope", artifactId: "artifact-7" }]);
+	});
+
+	it("rejects missing, extra and non-integral fields", () => {
+		const { purpose: _purpose, ...missing } = GRANT;
+		expect(() => parseGrantRecordV1(missing)).toThrow(/purpose/);
+		expect(() => parseGrantRecordV1({ ...GRANT, extra: 1 })).toThrow(/unknown_field/);
+		expect(() => parseGrantRecordV1({ ...GRANT, policyEpoch: 1.5 })).toThrow(/policyEpoch/);
+		expect(() => parseGrantRecordV1({ ...GRANT, recordDigest: "short" })).toThrow(/recordDigest/);
+	});
+});
+
+describe("validateLaunchBindingGuarantees (§14.2)", () => {
+	it("allows an authorized binding to have no measured guarantees yet", () => {
+		expect(() => validateLaunchBindingGuarantees(BINDING_BASE)).not.toThrow();
+	});
+
+	it("allows a terminal binding that was cancelled before probing", () => {
+		// Pre-probe cancellation must stay an honest audit row rather than
+		// being backfilled with guarantees nobody measured.
+		for (const state of ["failed", "revoked", "superseded", "terminal"] as const) {
+			expect(() => validateLaunchBindingGuarantees({ ...BINDING_BASE, state })).not.toThrow();
+		}
+	});
+
+	it("refuses a live binding that advertises unmeasured guarantees", () => {
+		for (const state of ["bound", "active", "suspended"] as const) {
+			expect(() => validateLaunchBindingGuarantees({ ...BINDING_BASE, state })).toThrow(
+				/requires measured runtime guarantees/,
+			);
+		}
+	});
+});
+
+describe("computeLaunchContractDigest (§14.2)", () => {
+	it("excludes the digest field so a contract can verify itself", () => {
+		const body = { contractId: "c-1", contractRevision: 1, missionHash: DIGEST_A };
+		const digest = computeLaunchContractDigest(body);
+		expect(computeLaunchContractDigest({ ...body, contractDigest: digest })).toBe(digest);
+	});
+
+	it("changes when any hashed field changes", () => {
+		const body = { contractId: "c-1", contractRevision: 1 };
+		expect(computeLaunchContractDigest({ ...body, contractRevision: 2 })).not.toBe(computeLaunchContractDigest(body));
 	});
 });

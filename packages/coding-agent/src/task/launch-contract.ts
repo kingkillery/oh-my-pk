@@ -2431,3 +2431,221 @@ export interface GrantEventV1 {
 	readonly recordDigest: string;
 	readonly occurredAt: number;
 }
+
+// --- Strict parsers for the authority records ------------------------------
+
+const RESOURCE_SELECTOR_KEYS = ["kind", "resourceId", "versionDigest", "scope"] as const;
+const RESOURCE_SCOPE_KEYS = ["roots", "exactIds", "maxBytes", "range"] as const;
+const GRANT_RECORD_KEYS = [
+	"schemaVersion",
+	"grantId",
+	"recordDigest",
+	"issuerPrincipalId",
+	"recipientPrincipalId",
+	"recipientBindingId",
+	"attemptId",
+	"contractRevision",
+	"policyEpoch",
+	"resource",
+	"operations",
+	"delegableOperations",
+	"recipientConstraints",
+	"remainingDelegationDepth",
+	"domains",
+	"sourceGrantIds",
+	"expiresAt",
+	"purpose",
+] as const;
+
+function authorityRecord(value: unknown, label: string, allowed: readonly string[]): Record<string, unknown> {
+	if (!isPlainObject(value)) throw new Error(`invalid_${label}: expected object`);
+	for (const key of Object.keys(value)) {
+		if (!allowed.includes(key)) throw new Error(`unknown_field: ${label}.${key}`);
+	}
+	return value;
+}
+
+function authorityStrings(value: unknown, label: string, field: string): readonly string[] {
+	if (!Array.isArray(value)) throw new Error(`invalid_${label}: ${field} must be an array`);
+	return Object.freeze(
+		value.map((entry, index) => {
+			if (!isNonEmptyString(entry)) {
+				throw new Error(`invalid_${label}: ${field}[${index}] must be a non-empty string`);
+			}
+			return entry;
+		}),
+	);
+}
+
+function authorityOperations(value: unknown, label: string, field: string): readonly ResourceOperation[] {
+	if (!Array.isArray(value)) throw new Error(`invalid_${label}: ${field} must be an array`);
+	return Object.freeze(
+		value.map((entry, index) => {
+			if (typeof entry !== "string" || !KNOWN_RESOURCE_OPERATIONS.includes(entry as ResourceOperation)) {
+				throw new Error(`invalid_${label}: ${field}[${index}] is not a known resource operation`);
+			}
+			return entry as ResourceOperation;
+		}),
+	);
+}
+
+function authorityDomains(value: unknown, label: string, field: string): readonly DisclosureDomain[] {
+	if (!Array.isArray(value)) throw new Error(`invalid_${label}: ${field} must be an array`);
+	return Object.freeze(
+		value.map((entry, index) => {
+			if (typeof entry === "string") {
+				if (!KNOWN_DISCLOSURE_DOMAIN_LITERALS.includes(entry)) {
+					throw new Error(`invalid_${label}: ${field}[${index}] is not a known disclosure domain`);
+				}
+				return entry as DisclosureDomain;
+			}
+			const scoped = authorityRecord(entry, `${label}.${field}[${index}]`, ["kind", "artifactId"]);
+			if (scoped.kind !== "artifact-scope" || !isNonEmptyString(scoped.artifactId)) {
+				throw new Error(`invalid_${label}: ${field}[${index}] must be an artifact-scope domain`);
+			}
+			return Object.freeze({ kind: "artifact-scope" as const, artifactId: scoped.artifactId });
+		}),
+	);
+}
+
+/**
+ * Strict parse of a resource selector.
+ *
+ * An empty selector is rejected: a grant naming no root and no exact id
+ * would read as "authorized" while identifying nothing, which is exactly the
+ * shape that silently widens at the use seam.
+ */
+export function parseResourceSelectorV1(value: unknown, label = "ResourceSelectorV1"): ResourceSelectorV1 {
+	const selector = authorityRecord(value, label, RESOURCE_SELECTOR_KEYS);
+	if (typeof selector.kind !== "string" || !KNOWN_RESOURCE_KINDS.includes(selector.kind as ResourceKind)) {
+		throw new Error(`invalid_${label}: kind is not a known resource kind`);
+	}
+	if (!isNonEmptyString(selector.resourceId)) {
+		throw new Error(`invalid_${label}: resourceId must be a non-empty string`);
+	}
+	if (selector.versionDigest !== null && !isHex64(selector.versionDigest)) {
+		throw new Error(`invalid_${label}: versionDigest must be a 64-hex digest or null`);
+	}
+	const scope = authorityRecord(selector.scope, `${label}.scope`, RESOURCE_SCOPE_KEYS);
+	const roots = authorityStrings(scope.roots, label, "scope.roots");
+	const exactIds = authorityStrings(scope.exactIds, label, "scope.exactIds");
+	if (roots.length === 0 && exactIds.length === 0) {
+		throw new Error(`invalid_${label}: scope must name at least one root or exact id`);
+	}
+	if (scope.maxBytes !== null && !isSafeNonNegativeInt(scope.maxBytes)) {
+		throw new Error(`invalid_${label}: scope.maxBytes must be a safe non-negative integer or null`);
+	}
+	let range: { readonly start: number; readonly end: number } | null = null;
+	if (scope.range !== null) {
+		const rawRange = authorityRecord(scope.range, `${label}.scope.range`, ["start", "end"]);
+		if (!isSafeNonNegativeInt(rawRange.start) || !isSafeNonNegativeInt(rawRange.end)) {
+			throw new Error(`invalid_${label}: scope.range bounds must be safe non-negative integers`);
+		}
+		if (rawRange.end < rawRange.start) {
+			throw new Error(`invalid_${label}: scope.range.end must not precede start`);
+		}
+		range = Object.freeze({ start: rawRange.start, end: rawRange.end });
+	}
+	return Object.freeze({
+		kind: selector.kind as ResourceKind,
+		resourceId: selector.resourceId,
+		versionDigest: (selector.versionDigest ?? null) as string | null,
+		scope: Object.freeze({ roots, exactIds, maxBytes: (scope.maxBytes ?? null) as number | null, range }),
+	});
+}
+
+/**
+ * Strict parse of an issued grant.
+ *
+ * Enforces the two invariants a lenient parser would lose: delegable
+ * operations must be a subset of the operations actually held (you cannot
+ * hand onward what you cannot use), and a grant at delegation depth zero
+ * must not claim any delegable operations.
+ */
+export function parseGrantRecordV1(value: unknown): GrantRecordV1 {
+	const grant = authorityRecord(value, "GrantRecordV1", GRANT_RECORD_KEYS);
+	if (grant.schemaVersion !== 1) throw new Error("invalid_GrantRecordV1: schemaVersion must be 1");
+	for (const field of [
+		"grantId",
+		"issuerPrincipalId",
+		"recipientPrincipalId",
+		"recipientBindingId",
+		"attemptId",
+		"purpose",
+	] as const) {
+		if (!isNonEmptyString(grant[field])) {
+			throw new Error(`invalid_GrantRecordV1: ${field} must be a non-empty string`);
+		}
+	}
+	if (!isHex64(grant.recordDigest)) {
+		throw new Error("invalid_GrantRecordV1: recordDigest must be a 64-hex digest");
+	}
+	for (const field of ["contractRevision", "policyEpoch", "remainingDelegationDepth"] as const) {
+		if (!isSafeNonNegativeInt(grant[field])) {
+			throw new Error(`invalid_GrantRecordV1: ${field} must be a safe non-negative integer`);
+		}
+	}
+	if (grant.expiresAt !== null && !isSafeNonNegativeInt(grant.expiresAt)) {
+		throw new Error("invalid_GrantRecordV1: expiresAt must be a safe non-negative integer or null");
+	}
+	const operations = authorityOperations(grant.operations, "GrantRecordV1", "operations");
+	const delegableOperations = authorityOperations(grant.delegableOperations, "GrantRecordV1", "delegableOperations");
+	for (const operation of delegableOperations) {
+		if (!operations.includes(operation)) {
+			throw new Error(`invalid_GrantRecordV1: delegable operation '${operation}' is not held`);
+		}
+	}
+	const remainingDelegationDepth = grant.remainingDelegationDepth as number;
+	if (remainingDelegationDepth === 0 && delegableOperations.length > 0) {
+		throw new Error("invalid_GrantRecordV1: delegation depth 0 forbids delegable operations");
+	}
+	return Object.freeze({
+		schemaVersion: 1 as const,
+		grantId: grant.grantId as string,
+		recordDigest: grant.recordDigest as string,
+		issuerPrincipalId: grant.issuerPrincipalId as string,
+		recipientPrincipalId: grant.recipientPrincipalId as string,
+		recipientBindingId: grant.recipientBindingId as string,
+		attemptId: grant.attemptId as string,
+		contractRevision: grant.contractRevision as number,
+		policyEpoch: grant.policyEpoch as number,
+		resource: parseResourceSelectorV1(grant.resource, "GrantRecordV1.resource"),
+		operations,
+		delegableOperations,
+		recipientConstraints: authorityStrings(grant.recipientConstraints, "GrantRecordV1", "recipientConstraints"),
+		remainingDelegationDepth,
+		domains: authorityDomains(grant.domains, "GrantRecordV1", "domains"),
+		sourceGrantIds: authorityStrings(grant.sourceGrantIds, "GrantRecordV1", "sourceGrantIds"),
+		expiresAt: (grant.expiresAt ?? null) as number | null,
+		purpose: grant.purpose as string,
+	});
+}
+
+/** States whose bindings must carry measured runtime guarantees. */
+const STATES_REQUIRING_MEASURED_GUARANTEES: readonly LaunchBindingState[] = ["bound", "active", "suspended"];
+
+/**
+ * Validates the binding state to guarantee-evidence invariant.
+ *
+ * A `bound`, `active` or `suspended` binding without measured guarantees
+ * would advertise protections nobody probed for. `authorized` legitimately
+ * has none yet, and a terminal state may have been reached before probing.
+ */
+export function validateLaunchBindingGuarantees(binding: LaunchBinding): void {
+	const requiresMeasurement = STATES_REQUIRING_MEASURED_GUARANTEES.includes(binding.state);
+	if (requiresMeasurement && binding.actualRuntimeGuarantees === null) {
+		throw new Error(`invalid_LaunchBinding: state '${binding.state}' requires measured runtime guarantees`);
+	}
+	if (requiresMeasurement && binding.guaranteeEvidenceRefs.length === 0) {
+		throw new Error(`invalid_LaunchBinding: state '${binding.state}' requires guarantee evidence`);
+	}
+}
+
+/**
+ * Canonical digest over every contract field except the digest itself.
+ * Recomputing must be cheap so callers verify rather than trust.
+ */
+export function computeLaunchContractDigest(contract: Record<string, unknown>): string {
+	const { contractDigest: _omitted, ...rest } = contract;
+	return sha256Hex(canonicalJson(rest));
+}
