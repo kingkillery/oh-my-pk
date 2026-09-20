@@ -21,12 +21,37 @@ Branch `revamp/lifecycle-w1` (base `dadcd517`). Committed, NOT merged, NOT relea
 | W1 extension: authority dictionary | Done | §14.2 record vocabulary + per-dimension `compareRuntimeGuarantees` |
 | W1 extension: envelope/binding/operation records | Done | §14.2/§14.5 persisted records and operation inputs; precursor `LaunchBinding` renamed `LaunchBindingInput` |
 | W1 extension: authority parsers | Done | `parseResourceSelectorV1`, `parseGrantRecordV1`, `validateLaunchBindingGuarantees`, `computeLaunchContractDigest`; `test/task/launch-authority-policy.test.ts` 27 pass |
-| W1 extension: v2 `CompiledLaunchContract` cutover | **Not started** | §14.2 contractId/revision/digest/principals/authority + `LaunchCompileInput.authorization`; ripples into compiler, store, fixtures and all consumers |
-| W1 extension: authority round-trip fixtures in freeze manifest | **Not started** | New authority shapes are not yet listed in `FROZEN_SHAPES` |
+| W1 extension: authority compilation | Done | `compileLaunchAuthority` §14.3 intersections, spawn/budget/fork/result coherence; 41 pass in `launch-authority-policy.test.ts` |
+| W1 extension: v2 `CompiledLaunchContract` cutover | Done | schemaVersion 2 with contractId/revision/digest/principals/authority/provenance; `LaunchCompileInput.authorization`; `bindLaunchContract` verifies the contract digest |
+| W1 extension: authority shapes in freeze manifest | Partial | `ResourceSelectorV1` and `GrantRecordV1` frozen (23 shapes); 16 declared authority shapes listed in `pendingShapes`, manifest reports `complete:false` |
 
-All W1 extension evidence is pure-data and typecheck scope. Rejecting a forged
-serialized grant, enforcing subset ceilings at a live seam, and every LC01–LC24
-row remain W2/W3 work and are NOT claimed.
+## W2 — durable authority (2026-09-20)
+
+| Item | Status | Evidence |
+|---|---|---|
+| v4 migration with authority tables | Done | 13 `launch_*` tables added additively; v1–v3 rows untouched |
+| Schema-enforced invariants | Done | contract digest UNIQUE, one binding per attempt, CHECK on state/event kind, non-negative channel budgets, inbox keyed by context generation, revision/release idempotency |
+| Admission + activation protocol | Done | `admitLaunchAuthority` commits `authorized` (not live); `activateLaunchBinding` walks authorized→bound→active with CAS on state and epoch |
+| Guarantee enforcement at activation | Done | Activation refuses when measured guarantees fall short on any dimension, reporting every shortfall; makes `compareRuntimeGuarantees` load-bearing |
+| Real-store tests | Done | `test/operational/launch-authority-store.test.ts` 20 pass, real temp SQLite |
+| Cross-process contention | Done | 4 independent Bun processes, barrier-released; caught a real bug — deferred transactions ignore `busy_timeout` on write-lock upgrade, fixed with `.immediate()` |
+| Grant issuance / revocation / lineage methods | **Not started** | Tables exist; `appendLaunchGrant`, `revokeLaunchGrant`, `getLaunchGrant` not implemented |
+| Channel + delivery admission methods | **Not started** | Tables exist; `admitLaunchDelivery`, `advanceLaunchDisclosurePhase`, inclusion/provider-outcome recording not implemented |
+
+## W3 — runtime enforcement (2026-09-20)
+
+| Item | Status | Evidence |
+|---|---|---|
+| Opaque runtime-registered context | Done | Branded handle + host-private WeakMap; forged literal, revoked context and missing identity all denied `missing_lifecycle_binding` |
+| Authorizer repair | Done | Legacy blanket allow removed; source-qualified alias-resolved tool check, read/write root separation, traversal denial, external-write gating; 11 pass |
+| Adapter cutover per §14.6 caller matrix | **Not started** | The guard is correct but is NOT yet the choke point: `task/index.ts`, `task/executor.ts`, `sdk.ts`, `tools/index.ts` do not call it yet |
+| Scoped services and provider projection | **Not started** | — |
+| LC01–LC24 live suite | **Not started** | No live provider-wire or entry-point coverage exists |
+
+All W1–W3 evidence above is unit, schema and cross-process scope. No live
+provider-wire test, no entry-point enforcement and no LC row is claimed.
+Because the adapter cutover has not happened, the authority system does not
+yet constrain any production dispatch path.
 
 ## Phase 0 gates B01–B06
 
