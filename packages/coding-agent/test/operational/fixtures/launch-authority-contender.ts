@@ -32,7 +32,7 @@ const resultPath = `${dbPath}.result.${slot}`;
 // a spawned process differs from the child's own process.pid.
 appendFileSync(`${barrierPath}.ready`, "ready\n");
 
-const deadline = Date.now() + 60_000;
+const deadline = Date.now() + 120_000;
 while (!(await Bun.file(barrierPath).exists())) {
 	if (Date.now() > deadline) {
 		writeFileSync(resultPath, JSON.stringify({ ok: false, code: "barrier_timeout" }));

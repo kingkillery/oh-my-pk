@@ -40,6 +40,7 @@ import {
 	resolveCollaborationPolicy,
 	serializeCollaborationPolicy,
 } from "../orchestration/collaboration-policy";
+import type { LifecycleExecutionContext } from "../orchestration/lifecycle-authority";
 import type { SubagentModelRoutingDecision } from "../orchestration/subagent-model-routing";
 import { snapshotFromAssignmentFields } from "../orchestration/task-contract";
 import assignmentContractPromptTemplate from "../prompts/system/assignment-contract.md" with { type: "text" };
@@ -385,6 +386,15 @@ export interface ExecutorOptions {
 	assignment?: string;
 	/** Shared background from the task call (`task.batch`), rendered into the subagent's system prompt. */
 	context?: string;
+	/**
+	 * W3 (§14.6): host-minted lifecycle authority context for the CHILD
+	 * session this run creates. Opaque handle — minted only via
+	 * registerLifecycleExecutionContext/deriveChildLifecycleContext, never
+	 * constructible from data. When present, the child session's tool
+	 * dispatch runs through authorizeLifecycleAction, bounding recursion and
+	 * capability use. Absent = legacy run, unchanged.
+	 */
+	lifecycle?: LifecycleExecutionContext;
 	/**
 	 * The session's active overall plan, handed off so subagents spawned during
 	 * plan execution share the same plan context as the main agent. Omitted when
@@ -2596,6 +2606,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				cwd: worktree ?? cwd,
 				delegatedIo: options.delegatedIo,
 				authStorage,
+				lifecycleExecutionContext: options.lifecycle,
 				modelRegistry,
 				settings: subagentSettings,
 				model: fork && !options.modelOverride ? (fork.model ?? model) : model,

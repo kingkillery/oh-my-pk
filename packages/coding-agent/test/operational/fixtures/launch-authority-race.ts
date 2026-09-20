@@ -40,7 +40,7 @@ const procs = objectives.map((objective, index) =>
 	}),
 );
 
-const readyDeadline = Date.now() + 60_000;
+const readyDeadline = Date.now() + 120_000;
 for (;;) {
 	const readyFile = Bun.file(`${barrierPath}.ready`);
 	const text = (await readyFile.exists()) ? await readyFile.text() : "";

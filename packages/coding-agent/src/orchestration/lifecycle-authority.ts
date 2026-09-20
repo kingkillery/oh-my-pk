@@ -236,3 +236,44 @@ function checkTargetContainment(repoRoot: string, target: string, roots: readonl
 	}
 	return { allowed: true };
 }
+
+/**
+ * Host-only: mint a CHILD context derived from a registered parent.
+ *
+ * The child inherits the parent's roots and epoch but takes the child's own
+ * role and (optionally narrowed) capabilities. Spawning a worker from a
+ * planner mints a `worker` context, and a worker's own spawns then fail
+ * leaf_delegation_denied — which is what bounds recursion end to end. The
+ * parent's registration is never mutated: each context is an independent
+ * WeakMap entry, and revoking the parent does not revoke children (W5
+ * replaces this derivation with store-backed binding activation, where
+ * revocation propagates through recorded lineage).
+ */
+export function deriveChildLifecycleContext(
+	parent: LifecycleExecutionContext,
+	child: {
+		role: AgentRole;
+		nodeId: string;
+		attemptId: string;
+		usableCapabilities?: readonly ToolCapability[];
+		repoRoot?: string;
+		readableRoots?: readonly string[];
+		writableRoots?: readonly string[];
+	},
+): LifecycleExecutionContext | undefined {
+	const parentRegistration = REGISTRY.get(parent);
+	if (!parentRegistration) return undefined;
+	return registerLifecycleExecutionContext({
+		mode: parentRegistration.mode,
+		role: child.role,
+		runId: parentRegistration.runId,
+		nodeId: child.nodeId,
+		attemptId: child.attemptId,
+		policyEpoch: parentRegistration.policyEpoch,
+		usableCapabilities: child.usableCapabilities ?? parentRegistration.usableCapabilities,
+		repoRoot: child.repoRoot ?? parentRegistration.repoRoot,
+		readableRoots: child.readableRoots ?? parentRegistration.readableRoots,
+		writableRoots: child.writableRoots ?? parentRegistration.writableRoots,
+		allowExternalWrite: false,
+	});
+}

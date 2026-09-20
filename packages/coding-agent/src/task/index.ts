@@ -47,7 +47,7 @@ import {
 import { shouldRejectDuplicateBlockedSpawn } from "../orchestration/approach-registry";
 import { type CollaborationPolicy, clampCollaborationPolicyForContext } from "../orchestration/collaboration-policy";
 import { compileLanePolicy, resolveWorkerMode } from "../orchestration/context-policy";
-import { authorizeLifecycleAction } from "../orchestration/lifecycle-authority";
+import { authorizeLifecycleAction, deriveChildLifecycleContext } from "../orchestration/lifecycle-authority";
 import {
 	recordApproachUpdateTelemetry,
 	recordBlockerTelemetry,
@@ -2156,6 +2156,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			});
 
 			let generatedReceipt: CodeWriteReceipt | undefined;
+			const lifecycleParent = this.session.getLifecycleExecutionContext?.();
 			const sharedRunOptions = {
 				cwd: spawnCwd,
 				agent: effectiveAgent,
@@ -2238,6 +2239,18 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				parentTelemetry: this.session.getTelemetry?.(),
 				parentEvalSessionId,
 				parentAgentId: this.session.getAgentId?.() ?? MAIN_AGENT_ID,
+				// W3 (§14.6): when the PARENT session holds registered
+				// lifecycle authority, mint the child's context now — a worker
+				// child, so the child's own spawns fail leaf_delegation_denied
+				// and recursion is bounded end to end. Absent parent context =
+				// legacy path, child context omitted.
+				lifecycle: lifecycleParent
+					? deriveChildLifecycleContext(lifecycleParent, {
+							role: "worker",
+							nodeId: `node-${agentId || "spawn"}`,
+							attemptId: `attempt-${agentId || "spawn"}`,
+						})
+					: undefined,
 			};
 
 			const runTask = async (): Promise<SingleResult> => {

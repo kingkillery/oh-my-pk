@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { AsyncJobManager } from "@pk-nerdsaver-ai/pi-coding-agent/async/job-manager";
 import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import {
+	deriveChildLifecycleContext,
 	type LifecycleExecutionContext,
 	registerLifecycleExecutionContext,
 } from "@pk-nerdsaver-ai/pi-coding-agent/orchestration/lifecycle-authority";
@@ -196,5 +197,63 @@ describe("LC20: TaskTool spawn seam under a registered lifecycle context", () =>
 		// Legacy behavior is byte-identical: completes, no authority involved.
 		expect(text).toContain("All done.");
 		expect(runSpy).toHaveBeenCalled();
+	});
+
+	it("derives a worker context for the child, bounding recursion end to end", async () => {
+		let capturedChildContext: LifecycleExecutionContext | undefined;
+		const runSpy = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			// Capture the child context the executor receives; this is what
+			// the child session's ToolSession will expose.
+			capturedChildContext = options.lifecycle;
+			return makeResult(options.id ?? "?");
+		});
+
+		const planner = registerLifecycleExecutionContext({
+			mode: "hierarchical-v1",
+			role: "root-planner",
+			runId: "run-1",
+			nodeId: "node-root",
+			attemptId: "att-root",
+			policyEpoch: 1,
+			usableCapabilities: [{ source: "builtin", name: "task" }],
+			repoRoot: "/tmp",
+			readableRoots: ["src"],
+			writableRoots: ["src"],
+			allowExternalWrite: false,
+		});
+		const tool = await TaskTool.create(createSession(() => planner));
+		const result = await tool.execute("tc-derive", {
+			agent: "task",
+			id: "Child",
+			description: "planner spawns a worker",
+			assignment: "Do the thing.",
+		} as TaskParams);
+
+		const text = (result.content.find(part => part.type === "text") as { text?: string } | undefined)?.text ?? "";
+		// The parent's spawn succeeded...
+		expect(text).toContain("All done.");
+		expect(runSpy).toHaveBeenCalled();
+
+		// ...and the child received a REGISTERED context whose role is worker.
+		expect(capturedChildContext).toBeDefined();
+		const grandchildContext = deriveChildLifecycleContext(capturedChildContext as LifecycleExecutionContext, {
+			role: "worker",
+			nodeId: "node-grandchild",
+			attemptId: "attempt-grandchild",
+		});
+		expect(grandchildContext).toBeDefined();
+
+		// The child, holding that worker context, cannot spawn: recursion is
+		// bounded end to end, not just at the top seam.
+		const childTool = await TaskTool.create(createSession(() => capturedChildContext as LifecycleExecutionContext));
+		const denied = await childTool.execute("tc-grandchild", {
+			agent: "task",
+			id: "Denied2",
+			description: "worker tries to spawn again",
+			assignment: "Do the thing.",
+		} as TaskParams);
+		const deniedText =
+			(denied.content.find(part => part.type === "text") as { text?: string } | undefined)?.text ?? "";
+		expect(deniedText).toContain("leaf_delegation_denied");
 	});
 });

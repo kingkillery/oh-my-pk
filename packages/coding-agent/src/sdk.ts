@@ -66,6 +66,7 @@ import {
 import { CursorExecHandlers } from "./cursor";
 import type { AgentExecutionProfile } from "./orchestration/agent-execution-profile";
 import type { CollaborationPolicy } from "./orchestration/collaboration-policy";
+import type { LifecycleExecutionContext } from "./orchestration/lifecycle-authority";
 import { FastStreamRouter } from "./routing";
 import { TRUNCATE_LENGTHS } from "./tools/render-utils";
 import type { ResolvedToolProfile, ToolSource } from "./tools/tool-profiles";
@@ -507,6 +508,15 @@ export interface CreateAgentSessionOptions {
 	spawns?: string;
 	/** External client bridge installed before this session can execute tools. */
 	clientBridge?: ClientBridge;
+
+	/**
+	 * W3 (§14.6): host-minted lifecycle authority context for this session.
+	 * Opaque handle minted by the host (never model/extension-settable); when
+	 * present, the session's ToolSession exposes it via
+	 * getLifecycleExecutionContext and guarded dispatch paths run through
+	 * authorizeLifecycleAction. Absent = legacy session.
+	 */
+	lifecycleExecutionContext?: LifecycleExecutionContext;
 
 	/** Auth storage for credentials. Default: discoverAuthStorage(agentDir) */
 	authStorage?: AuthStorage;
@@ -1727,6 +1737,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						}
 					: undefined,
 			getToolByName: name => session?.getToolByName(name),
+			// W3: host-minted, never model-settable. Guarded dispatch paths
+			// (TaskTool spawn, eval agent(), further §14.6 rows) read this.
+			getLifecycleExecutionContext: () => options.lifecycleExecutionContext,
 			agentRegistry,
 			ircIpc,
 			ircEnabled: () => ircIpc.enabled,
