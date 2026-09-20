@@ -13,7 +13,15 @@ const [crossPlatform, crossArch] = crossTarget ? crossTarget.split("-") : [null,
 // x64 uses the baseline bun runtime so it runs under Rosetta / pre-AVX2 CPUs
 // (the modern bun-linux-x64 target SIGILLs under Apple-Silicon Rosetta).
 const bunTarget = crossTarget ? (crossTarget === "linux-x64" ? "bun-linux-x64-baseline" : `bun-${crossTarget}`) : null;
-const outName = crossTarget ? `oh-my-pk-${crossTarget}` : "oh-my-pk";
+// A named candidate leaves distribution aliases and installed/running binaries untouched.
+const candidateName = Bun.env.OMPK_BUILD_CANDIDATE_NAME?.trim();
+if (candidateName && !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(candidateName)) {
+	throw new Error("OMPK_BUILD_CANDIDATE_NAME must be a simple filename without an extension or path.");
+}
+if (candidateName && ["oh-my-pk", "omp", "ompk"].includes(candidateName.toLowerCase())) {
+	throw new Error("OMPK_BUILD_CANDIDATE_NAME must not overwrite a distribution executable.");
+}
+const outName = candidateName ?? (crossTarget ? `oh-my-pk-${crossTarget}` : "oh-my-pk");
 const outputPath = path.join(packageDir, "dist", outName);
 
 // Transformers.js is an optional, native-heavy dependency that is never bundled
@@ -132,7 +140,7 @@ async function main(): Promise<void> {
 			// Best-effort: on Windows the in-use `omp.exe` is often locked (EPERM),
 			// which must not fail the build now that `oh-my-pk` is the real output.
 			const exeSuffix = process.platform === "win32" ? ".exe" : "";
-			for (const aliasName of ["omp", "ompk"] as const) {
+			for (const aliasName of candidateName ? [] : (["omp", "ompk"] as const)) {
 				const aliasPath = path.join(packageDir, "dist", `${aliasName}${exeSuffix}`);
 				try {
 					fs.copyFileSync(`${outputPath}${exeSuffix}`, aliasPath);

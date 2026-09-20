@@ -357,7 +357,7 @@ describe("/colab-model command", () => {
 	beforeEach(() => {
 		const fetchSpy = vi
 			.spyOn(globalThis, "fetch")
-			.mockImplementation(async () => Response.json({ data: [{ id: launchResult().modelId }] }));
+			.mockResolvedValue(Response.json({ data: [{ id: launchResult().modelId }] }));
 		restoreFetch = () => fetchSpy.mockRestore();
 	});
 	afterEach(() => restoreFetch());
@@ -448,7 +448,7 @@ describe("/colab-model command", () => {
 		const result = launchResult({ modelId: "stale-model.gguf", modelName: "stale-model" });
 		const liveId = "Qwen3.8-live-Q6_K.gguf";
 		const fetchMock = globalThis.fetch as unknown as {
-			mockResolvedValueOnce: (response: Promise<Response>) => void;
+			mockResolvedValueOnce: (response: Response) => void;
 		};
 		fetchMock.mockResolvedValueOnce(Response.json({ data: [{ id: liveId }, { id: "unused-second-alias" }] }));
 		try {
@@ -495,7 +495,7 @@ describe("/colab-model command", () => {
 		["invalid model id", () => Response.json({ data: [{ id: 42 }] })],
 	])("does not register a stale id after a live model probe %s", async (_label, response) => {
 		const fetchMock = globalThis.fetch as unknown as {
-			mockResolvedValueOnce: (response: Promise<Response>) => void;
+			mockResolvedValueOnce: (response: Response) => void;
 		};
 		fetchMock.mockResolvedValueOnce(response());
 		const registerProvider = vi.fn();
