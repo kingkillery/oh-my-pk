@@ -3,13 +3,22 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-interface BinaryTarget {
+interface BaseTarget {
 	id: string;
 	platform: string;
 	arch: string;
 	target: string;
 	outfile: string;
 }
+
+/** Rust build plan for the `ompk-collector` helper shipped per target. */
+interface CollectorSpec {
+	triple: string;
+	zigbuild: boolean;
+	outfile: string;
+}
+
+type BinaryTarget = BaseTarget & { collector: CollectorSpec };
 
 const repoRoot = path.join(import.meta.dir, "..");
 const codingAgentDir = path.join(repoRoot, "packages", "coding-agent");
@@ -24,7 +33,7 @@ const entrypoint = "./packages/coding-agent/src/cli.ts";
 // virtual namespace (`legacy-pi-compat.ts`), reached via the main module
 // graph, so no extra `--compile` entrypoints are required (issue #3423).
 const isDryRun = process.argv.includes("--dry-run");
-const targets: BinaryTarget[] = [
+const baseTargets: BaseTarget[] = [
 	{
 		id: "darwin-arm64",
 		platform: "darwin",
@@ -61,6 +70,35 @@ const targets: BinaryTarget[] = [
 		outfile: "packages/coding-agent/binaries/omp-windows-x64.exe",
 	},
 ];
+
+/**
+ * Runner↔triple assumptions (must stay in sync with the `release_binary`
+ * matrix in .github/workflows/ci.yml):
+ *   darwin-arm64 → macos-15 (native arm64)        plain cargo
+ *   darwin-x64   → macos-15-intel (native x64)    plain cargo
+ *   linux-x64    → ubuntu-22.04 (native x64)      zigbuild @ glibc floor
+ *   linux-arm64  → ubuntu-24.04-arm (native)      zigbuild @ glibc floor
+ *   win32-x64    → ubuntu-22.04 (cross, mingw)    plain cargo --target gnu
+ *
+ * win32 is a GNU-triple cross build because the MSVC toolchain can't run on
+ * the Linux runner; linux uses cargo-zigbuild against GLIBC_FLOOR when
+ * available so the helper keeps the native addons' glibc floor.
+ */
+function collectorSpec(target: BaseTarget): CollectorSpec {
+	const triple =
+		target.platform === "darwin"
+			? (target.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin")
+			: target.platform === "linux"
+				? (target.arch === "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu")
+				: "x86_64-pc-windows-gnu";
+	return {
+		triple,
+		zigbuild: target.platform === "linux",
+		outfile: `packages/coding-agent/binaries/ompk-collector-${target.platform}-${target.arch}${target.platform === "win32" ? ".exe" : ""}`,
+	};
+}
+
+const targets: BinaryTarget[] = baseTargets.map(target => ({ ...target, collector: collectorSpec(target) }));
 
 function parseRequestedTargets(): Set<string> | null {
 	const flagIndex = process.argv.indexOf("--targets");
@@ -153,6 +191,61 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 	}
 }
 
+async function commandExists(command: string): Promise<boolean> {
+	const proc = Bun.spawn(["which", command], { stdout: "ignore", stderr: "ignore" });
+	return (await proc.exited) === 0;
+}
+
+/**
+ * Build the `ompk-collector` Rust helper for this target and copy it next to
+ * the main binary.
+ *
+ * Toolchain matrix:
+ *   - CI darwin/linux runners: native cargo for the matching triple.
+ *   - CI win32 (Linux runner): mingw-w64 gnu cross via plain cargo.
+ *   - Linux glibc floor: cargo zigbuild against GLIBC_FLOOR when installed;
+ *     plain cargo otherwise (floor rises to the runner's glibc).
+ *   - Local Windows host: host MSVC build (no --target), since the gnu
+ *     cross toolchain is a CI provision.
+ */
+async function buildCollector(target: BinaryTarget): Promise<void> {
+	const collector = target.collector;
+	console.log(`Building ${collector.outfile} (${collector.triple})...`);
+	if (isDryRun) {
+		console.log(`DRY RUN cargo build --release --target ${collector.triple} (crates/ompk-collector) + copy`);
+		return;
+	}
+	const crateDir = path.join(repoRoot, "crates", "ompk-collector");
+	// Host-native win32 build: on a Windows host the MSVC host target is the
+	// right binary; the gnu triple is only for Linux-runner cross builds.
+	const hostNativeWin32 = target.platform === "win32" && process.platform === "win32";
+	const zigbuild = !hostNativeWin32 && collector.zigbuild && (await commandExists("cargo-zigbuild"));
+	const glibcFloor = Bun.env.GLIBC_FLOOR ? `.${Bun.env.GLIBC_FLOOR}` : "";
+	const rustTarget = hostNativeWin32 ? null : zigbuild ? `${collector.triple}${glibcFloor}` : collector.triple;
+	const command = zigbuild ? "zigbuild" : "build";
+	const buildArgs = rustTarget
+		? ["cargo", command, "--release", "--target", rustTarget]
+		: ["cargo", "build", "--release"];
+	await runCommand(buildArgs, crateDir);
+	// ompk-collector is a workspace member, so cargo places artifacts in the
+	// workspace-root target dir even when the build runs from the crate dir.
+	const builtPath = path.join(
+		repoRoot,
+		"target",
+		...(rustTarget ? [collector.triple] : []),
+		"release",
+		target.platform === "win32" ? "ompk-collector.exe" : "ompk-collector",
+	);
+	const outPath = path.join(repoRoot, collector.outfile);
+	await fs.copyFile(builtPath, outPath);
+	// Ad-hoc sign darwin builds so they execute out of the box, matching the
+	// main binary's treatment (Developer-ID signing stays a workflow-level
+	// step for the omp binary).
+	if (target.platform === "darwin" && process.platform === "darwin") {
+		await runCommand(["codesign", "--force", "--sign", "-", outPath], repoRoot);
+	}
+}
+
 async function generateBundle(): Promise<void> {
 	if (isDryRun) {
 		console.log("DRY RUN bun run gen:stats");
@@ -203,6 +296,7 @@ async function main(): Promise<void> {
 		await generateBundle();
 		for (const target of selectedTargets) {
 			await buildBinary(target);
+			await buildCollector(target);
 		}
 	} finally {
 		await resetArtifacts();

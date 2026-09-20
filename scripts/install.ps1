@@ -299,6 +299,28 @@ function Install-Binary {
     Write-Host ""
     Write-Host "[OK] Installed oh-my-pk to $OutPath (aliases: omp.exe, ompk.exe)" -ForegroundColor Green
 
+    # Optional helper: the tool-issue collector (powers local collector mode).
+    # Best-effort — older tags predate it, and the collector is off by default.
+    # Downloads to a temp sibling and moves only on success so a transient
+    # network failure or an older tag never destroys an existing helper.
+    $CollectorName = "ompk-collector-win32-x64.exe"
+    $CollectorDest = Join-Path $InstallDir "ompk-collector.exe"
+    $CollectorTmp = Join-Path $InstallDir "ompk-collector.exe.tmp"
+    $CollectorUrl = "$DistBase/bin/$Latest/$CollectorName"
+    Write-Host "Downloading $CollectorName..."
+    try {
+        Invoke-WebRequest -Uri $CollectorUrl -OutFile $CollectorTmp
+        Move-Item -Path $CollectorTmp -Destination $CollectorDest -Force
+        Write-Host "[OK] Installed the issue collector helper ($CollectorDest)" -ForegroundColor Green
+    } catch {
+        if (Test-Path $CollectorTmp) { Remove-Item $CollectorTmp -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $CollectorDest) {
+            Write-Host "[info] Issue collector helper download failed for $Latest; keeping the existing $CollectorDest." -ForegroundColor Yellow
+        } else {
+            Write-Host "[info] Issue collector helper not published for $Latest; local collector mode stays unavailable." -ForegroundColor Yellow
+        }
+    }
+
     # Add to PATH if not already there
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $needsRestart = $UserPath -notlike "*$InstallDir*"

@@ -56,13 +56,22 @@ function hasFlag(flag: string): boolean {
 	return process.argv.includes(flag);
 }
 
-/** Every platform binary the install endpoint must serve for a tag to be complete. */
+export interface RequestedBinaryTarget {
+	id: string;
+	files: [string, ...string[]];
+}
+/** Every platform binary pair (omp + helper) the install endpoint must serve for a tag to be complete. */
 const REQUIRED_BINARIES = [
 	"omp-darwin-arm64",
 	"omp-darwin-x64",
 	"omp-linux-arm64",
 	"omp-linux-x64",
 	"omp-windows-x64.exe",
+	"ompk-collector-darwin-arm64",
+	"ompk-collector-darwin-x64",
+	"ompk-collector-linux-arm64",
+	"ompk-collector-linux-x64",
+	"ompk-collector-win32-x64.exe",
 ] as const;
 
 /** Binaries already present under `<tag>/` in the HF repo (basenames); empty on any API error. */
@@ -115,12 +124,12 @@ function hostTargetId(): string {
 }
 
 /** Build-target id -> the binary filename it produces (matches ci-release-build-binaries.ts outfiles). */
-const TARGET_FILE: Record<string, string> = {
-	"darwin-arm64": "omp-darwin-arm64",
-	"darwin-x64": "omp-darwin-x64",
-	"linux-arm64": "omp-linux-arm64",
-	"linux-x64": "omp-linux-x64",
-	"win32-x64": "omp-windows-x64.exe",
+const TARGET_FILES: Record<string, [string, ...string[]]> = {
+	"darwin-arm64": ["omp-darwin-arm64", "ompk-collector-darwin-arm64"],
+	"darwin-x64": ["omp-darwin-x64", "ompk-collector-darwin-x64"],
+	"linux-arm64": ["omp-linux-arm64", "ompk-collector-linux-arm64"],
+	"linux-x64": ["omp-linux-x64", "ompk-collector-linux-x64"],
+	"win32-x64": ["omp-windows-x64.exe", "ompk-collector-win32-x64.exe"],
 };
 
 export function parseRequestedBinaryTargets(targets: string): RequestedBinaryTarget[] {
@@ -129,9 +138,9 @@ export function parseRequestedBinaryTargets(targets: string): RequestedBinaryTar
 		.map(t => t.trim())
 		.filter(Boolean)
 		.map(id => {
-			const file = TARGET_FILE[id];
-			if (!file) throw new Error(`Unknown target "${id}". Known: ${Object.keys(TARGET_FILE).join(", ")}`);
-			return { id, file };
+			const files = TARGET_FILES[id];
+			if (!files) throw new Error(`Unknown target "${id}". Known: ${Object.keys(TARGET_FILES).join(", ")}`);
+			return { id, files };
 		});
 }
 
@@ -141,9 +150,11 @@ export function planBinaryPublish(
 	forceBuild: boolean,
 ): BinaryPublishPlan {
 	const requested = parseRequestedBinaryTargets(targets);
-	const toBuild = forceBuild ? requested : requested.filter(target => !existingFiles.has(target.file));
-	const skippedExisting = forceBuild ? [] : requested.filter(target => existingFiles.has(target.file));
-	const presentAfterBuild = new Set<string>([...existingFiles, ...toBuild.map(target => target.file)]);
+	// A target is complete only when every file it ships (omp + helper) exists.
+	const complete = (target: RequestedBinaryTarget) => target.files.every(file => existingFiles.has(file));
+	const toBuild = forceBuild ? requested : requested.filter(target => !complete(target));
+	const skippedExisting = forceBuild ? [] : requested.filter(complete);
+	const presentAfterBuild = new Set<string>([...existingFiles, ...toBuild.flatMap(target => target.files)]);
 	return {
 		requested,
 		toBuild,
@@ -180,7 +191,7 @@ async function main(): Promise<void> {
 	const plan = planBinaryPublish(targets, existingBeforeBuild, forceBuild);
 	if (plan.skippedExisting.length > 0) {
 		console.log(`Already present on ${hfRepo} under ${tag}/; skipping build/upload:`);
-		for (const target of plan.skippedExisting) console.log(`  ${target.id} (${target.file})`);
+		for (const target of plan.skippedExisting) console.log(`  ${target.id} (${target.files.join(", ")})`);
 		console.log();
 	}
 
@@ -207,9 +218,11 @@ async function main(): Promise<void> {
 	// under the new tag.
 	const built: string[] = [];
 	for (const target of plan.toBuild) {
-		if (await Bun.file(path.join(binariesDir, target.file)).exists()) built.push(target.file);
-		else if (isDryRun) built.push(target.file);
-		else throw new Error(`Expected ${target.file} after building "${target.id}", but it was not produced.`);
+		for (const file of target.files) {
+			if (await Bun.file(path.join(binariesDir, file)).exists()) built.push(file);
+			else if (isDryRun) built.push(file);
+			else throw new Error(`Expected ${file} after building "${target.id}", but it was not produced.`);
+		}
 	}
 	console.log(`\nBuilt: ${built.join(", ") || "(none)"}`);
 

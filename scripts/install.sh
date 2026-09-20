@@ -260,6 +260,32 @@ install_binary() {
         echo "✓ Created symlinks in /usr/local/bin (oh-my-pk, omp, ompk)"
     fi
 
+    # Optional helper: the tool-issue collector (powers local collector mode).
+    # Best-effort — older tags predate it, the collector is off by default, and
+    # nothing here may fail the install. Downloads to a temp sibling and renames
+    # only on success so a transient network failure or an older tag never
+    # destroys an existing helper.
+    COLLECTOR="ompk-collector-${PLATFORM}-${ARCH}"
+    COLLECTOR_TMP="${INSTALL_DIR}/.ompk-collector.tmp.$$"
+    COLLECTOR_DEST="${INSTALL_DIR}/ompk-collector"
+    COLLECTOR_OK=false
+    if curl -fsSL "${DIST_BASE}/bin/${LATEST}/${COLLECTOR}" -o "$COLLECTOR_TMP" 2>/dev/null \
+        || curl -fsSL "https://github.com/${REPO}/releases/download/${LATEST}/${COLLECTOR}" -o "$COLLECTOR_TMP" 2>/dev/null; then
+        if chmod +x "$COLLECTOR_TMP" 2>/dev/null && mv -f "$COLLECTOR_TMP" "$COLLECTOR_DEST" 2>/dev/null; then
+            COLLECTOR_OK=true
+        fi
+    fi
+    if [ "$COLLECTOR_OK" = true ]; then
+        echo "✓ Installed the issue collector helper (${COLLECTOR_DEST})"
+    else
+        rm -f "$COLLECTOR_TMP" 2>/dev/null
+        if [ -x "$COLLECTOR_DEST" ]; then
+            echo "ℹ Issue collector helper download failed for ${LATEST}; keeping the existing ${COLLECTOR_DEST}."
+        else
+            echo "ℹ Issue collector helper not published for ${LATEST}; local collector mode stays unavailable."
+        fi
+    fi
+
     # Clean up stale/broken npm/bun global wrappers if present so the standalone binary is invoked
     if [ -d "$HOME/.bun/bin" ]; then
         rm -f "$HOME/.bun/bin/oh-my-pk" "$HOME/.bun/bin/omp" "$HOME/.bun/bin/ompk" 2>/dev/null || true

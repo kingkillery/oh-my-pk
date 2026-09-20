@@ -579,6 +579,7 @@ jobs:
                     arch: x64,
                     target_id: linux-x64,
                     binary_path: packages/coding-agent/binaries/omp-linux-x64,
+                    collector_path: packages/coding-agent/binaries/ompk-collector-linux-x64,
                  }
                - {
                     os: ubuntu-24.04-arm,
@@ -586,6 +587,7 @@ jobs:
                     arch: arm64,
                     target_id: linux-arm64,
                     binary_path: packages/coding-agent/binaries/omp-linux-arm64,
+                    collector_path: packages/coding-agent/binaries/ompk-collector-linux-arm64,
                  }
                - {
                     os: macos-15-intel,
@@ -593,6 +595,7 @@ jobs:
                     arch: x64,
                     target_id: darwin-x64,
                     binary_path: packages/coding-agent/binaries/omp-darwin-x64,
+                    collector_path: packages/coding-agent/binaries/ompk-collector-darwin-x64,
                  }
                - {
                     os: macos-15,
@@ -600,6 +603,7 @@ jobs:
                     arch: arm64,
                     target_id: darwin-arm64,
                     binary_path: packages/coding-agent/binaries/omp-darwin-arm64,
+                    collector_path: packages/coding-agent/binaries/ompk-collector-darwin-arm64,
                  }
                - {
                     os: ubuntu-22.04,
@@ -607,6 +611,7 @@ jobs:
                     arch: x64,
                     target_id: win32-x64,
                     binary_path: packages/coding-agent/binaries/omp-windows-x64.exe,
+                    collector_path: packages/coding-agent/binaries/ompk-collector-win32-x64.exe,
                  }
       runs-on: ${{ matrix.os }}
       permissions:
@@ -626,6 +631,19 @@ jobs:
            with:
               path: ~/.bun/install/cache
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+         # Rust toolchains for the ompk-collector helper build (see
+         # ci-release-build-binaries.ts buildCollector): mingw-w64 for the
+         # win32 gnu cross build, cargo-zigbuild + zig for the linux glibc floor.
+         - name: Install collector cross toolchain
+           if: matrix.platform == 'linux' || matrix.platform == 'win32'
+           run: |
+              if [ "${{ matrix.platform }}" = "win32" ]; then
+                sudo apt-get update -qq && sudo apt-get install -y -qq mingw-w64
+                rustup target add x86_64-pc-windows-gnu
+              else
+                cargo install cargo-zigbuild --locked
+                pip3 install --quiet ziglang
+              fi
          - run: bun install --frozen-lockfile
          - name: Download native addon(s)
            uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -660,11 +678,16 @@ jobs:
               runtime_dir="$(mktemp -d)"
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --version
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --smoke-test
+         - name: Smoke collector binary
+           if: matrix.platform != 'win32'
+           run: "${{ matrix.collector_path }} --version"
          - name: Upload release binary artifact
            uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
            with:
               name: omp-binary-${{ matrix.target_id }}
-              path: ${{ matrix.binary_path }}
+              path: |
+                 ${{ matrix.binary_path }}
+                 ${{ matrix.collector_path }}
 
    release_github:
       name: Publish GitHub release
@@ -700,6 +723,7 @@ jobs:
               tag_name: ${{ needs.release_metadata.outputs.release-tag }}
               files: |
                  packages/coding-agent/binaries/omp-*
+                 packages/coding-agent/binaries/ompk-collector-*
               body_path: release-notes.md
               generate_release_notes: true
 
@@ -715,10 +739,12 @@ jobs:
       env:
          MACOS_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' && secrets.APPLE_API_KEY != '' }}
       steps:
-         - name: Download published macOS arm64 binary
+         - name: Download published macOS arm64 binaries
            run: |
               curl -fsSL -o omp-darwin-arm64 "https://github.com/${{ github.repository }}/releases/download/${{ needs.release_metadata.outputs.release-tag }}/omp-darwin-arm64"
               chmod +x omp-darwin-arm64
+              curl -fsSL -o ompk-collector-darwin-arm64 "https://github.com/${{ github.repository }}/releases/download/${{ needs.release_metadata.outputs.release-tag }}/ompk-collector-darwin-arm64"
+              chmod +x ompk-collector-darwin-arm64
          - name: Verify published macOS arm64 binary
            run: |
               codesign -dvvv ./omp-darwin-arm64
@@ -726,6 +752,7 @@ jobs:
               runtime_dir="$(mktemp -d)"
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" ./omp-darwin-arm64 --version
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" ./omp-darwin-arm64 --smoke-test
+              ./ompk-collector-darwin-arm64 --version
          - name: Assert signed release is not ad-hoc
            if: env.MACOS_SIGNING == 'true'
            run: |
