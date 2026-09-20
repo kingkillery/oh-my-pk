@@ -129,7 +129,7 @@ interface LifecycleObligationRow {
 	readonly version: number;
 }
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const DEFAULT_LEASE_MS = 60_000;
 /**
  * Episode search prefers FTS5 (`episodes_fts`) when available.
@@ -855,6 +855,209 @@ CREATE TABLE IF NOT EXISTS lifecycle_idempotency (
 	attempt_id TEXT NOT NULL REFERENCES lifecycle_attempts(attempt_id) ON DELETE CASCADE,
 	digest TEXT NOT NULL,
 	created_at INTEGER NOT NULL
+);
+`);
+		}
+		if (fromVersion < 4) {
+			// v4 adds the universal launch-authority tables (§14.5) to the SAME
+			// database. v1-v3 rows are preserved untouched: this migration only
+			// adds tables, so existing lifecycle evidence cannot be lost by it.
+			//
+			// Authority records are append-only by construction. Contract and
+			// grant CONTENT is never UPDATEd; revocation and supersession are
+			// separate event rows, so history stays reconstructable after the
+			// fact rather than being overwritten in place.
+			this.#db.run(`
+CREATE TABLE IF NOT EXISTS launch_principals (
+	principal_id TEXT PRIMARY KEY,
+	root_principal_id TEXT REFERENCES launch_principals(principal_id),
+	parent_principal_id TEXT REFERENCES launch_principals(principal_id),
+	launch_class TEXT CHECK(launch_class IN ('strict-worker','privileged-helper','legacy-compatible-worker')),
+	authority_envelope_ref TEXT,
+	policy_epoch INTEGER NOT NULL DEFAULT 1,
+	status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','revoked','terminal')),
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS launch_contracts (
+	contract_id TEXT NOT NULL,
+	revision INTEGER NOT NULL,
+	digest TEXT NOT NULL UNIQUE,
+	prior_digest TEXT,
+	policy_version INTEGER NOT NULL,
+	root_principal_id TEXT NOT NULL,
+	parent_principal_id TEXT NOT NULL,
+	child_principal_id TEXT NOT NULL,
+	canonical_json TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (contract_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_launch_contracts_child ON launch_contracts(child_principal_id);
+
+CREATE TABLE IF NOT EXISTS launch_bindings (
+	binding_id TEXT PRIMARY KEY,
+	contract_id TEXT NOT NULL,
+	contract_revision INTEGER NOT NULL,
+	contract_digest TEXT NOT NULL REFERENCES launch_contracts(digest),
+	root_principal_id TEXT NOT NULL,
+	parent_principal_id TEXT NOT NULL,
+	child_principal_id TEXT NOT NULL,
+	attempt_id TEXT NOT NULL UNIQUE,
+	session_id TEXT,
+	process_ref TEXT,
+	policy_epoch INTEGER NOT NULL,
+	context_generation INTEGER NOT NULL DEFAULT 0,
+	state TEXT NOT NULL CHECK(state IN ('authorized','bound','active','suspended','revoked','superseded','failed','terminal')),
+	grant_bindings_json TEXT NOT NULL DEFAULT '[]',
+	service_bindings_json TEXT NOT NULL DEFAULT '[]',
+	actual_guarantees_json TEXT,
+	guarantee_evidence_json TEXT NOT NULL DEFAULT '[]',
+	reservation_id TEXT,
+	lifecycle_json TEXT,
+	expires_at INTEGER,
+	restores_binding_id TEXT REFERENCES launch_bindings(binding_id),
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	FOREIGN KEY (contract_id, contract_revision) REFERENCES launch_contracts(contract_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_launch_bindings_child ON launch_bindings(child_principal_id, state);
+
+CREATE TABLE IF NOT EXISTS launch_grants (
+	grant_id TEXT PRIMARY KEY,
+	record_digest TEXT NOT NULL,
+	recipient_binding_id TEXT NOT NULL REFERENCES launch_bindings(binding_id),
+	issuer_principal_id TEXT NOT NULL,
+	recipient_principal_id TEXT NOT NULL,
+	attempt_id TEXT NOT NULL,
+	contract_revision INTEGER NOT NULL,
+	policy_epoch INTEGER NOT NULL,
+	canonical_json TEXT NOT NULL,
+	expires_at INTEGER,
+	revoked_at INTEGER,
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_launch_grants_binding ON launch_grants(recipient_binding_id, revoked_at);
+
+CREATE TABLE IF NOT EXISTS launch_grant_events (
+	event_id TEXT PRIMARY KEY,
+	grant_id TEXT NOT NULL REFERENCES launch_grants(grant_id),
+	kind TEXT NOT NULL CHECK(kind IN ('issued','revoked','superseded')),
+	actor_principal_id TEXT NOT NULL,
+	policy_epoch INTEGER NOT NULL,
+	reason TEXT NOT NULL,
+	record_digest TEXT NOT NULL,
+	occurred_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_launch_grant_events_grant ON launch_grant_events(grant_id, occurred_at);
+
+-- Validated lineage. Revoking a source must be able to find every record
+-- derived from it, so derivation is stored as an explicit edge rather than
+-- being recomputed from grant content.
+CREATE TABLE IF NOT EXISTS launch_grant_edges (
+	source_grant_id TEXT NOT NULL REFERENCES launch_grants(grant_id),
+	derived_grant_id TEXT NOT NULL REFERENCES launch_grants(grant_id),
+	PRIMARY KEY (source_grant_id, derived_grant_id)
+);
+
+CREATE TABLE IF NOT EXISTS launch_channels (
+	binding_id TEXT NOT NULL REFERENCES launch_bindings(binding_id),
+	channel_id TEXT NOT NULL,
+	canonical_json TEXT NOT NULL,
+	reveal_state TEXT NOT NULL DEFAULT 'open' CHECK(reveal_state IN ('open','authorized-synthesis','revealed')),
+	policy_epoch INTEGER NOT NULL,
+	consumed_bytes INTEGER NOT NULL DEFAULT 0 CHECK(consumed_bytes >= 0),
+	consumed_messages INTEGER NOT NULL DEFAULT 0 CHECK(consumed_messages >= 0),
+	revoked_at INTEGER,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	PRIMARY KEY (binding_id, channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS launch_channel_events (
+	event_id TEXT PRIMARY KEY,
+	binding_id TEXT NOT NULL,
+	channel_id TEXT NOT NULL,
+	kind TEXT NOT NULL,
+	request_digest TEXT,
+	idempotency_key TEXT,
+	reason TEXT,
+	occurred_at INTEGER NOT NULL,
+	UNIQUE (binding_id, channel_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS launch_deliveries (
+	binding_id TEXT NOT NULL REFERENCES launch_bindings(binding_id),
+	delivery_id TEXT NOT NULL,
+	channel_id TEXT NOT NULL,
+	sender_principal_id TEXT NOT NULL,
+	recipient_principal_id TEXT NOT NULL,
+	attempt_id TEXT NOT NULL,
+	contract_revision INTEGER NOT NULL,
+	policy_epoch INTEGER NOT NULL,
+	context_generation INTEGER NOT NULL,
+	payload_json TEXT NOT NULL,
+	bytes INTEGER NOT NULL CHECK(bytes >= 0),
+	request_digest TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (binding_id, delivery_id)
+);
+
+CREATE TABLE IF NOT EXISTS launch_delivery_events (
+	event_id TEXT PRIMARY KEY,
+	binding_id TEXT NOT NULL,
+	delivery_id TEXT NOT NULL,
+	kind TEXT NOT NULL CHECK(kind IN ('requested','authorized','admitted','rejected','included','provider-known','provider-unknown')),
+	request_id TEXT,
+	code TEXT,
+	occurred_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_launch_delivery_events ON launch_delivery_events(binding_id, delivery_id, occurred_at);
+
+-- Admission into the recipient's durable context. One row per admitted
+-- delivery; marking it rendered does not erase the disclosure.
+CREATE TABLE IF NOT EXISTS launch_context_inbox (
+	binding_id TEXT NOT NULL REFERENCES launch_bindings(binding_id),
+	context_generation INTEGER NOT NULL,
+	delivery_id TEXT NOT NULL,
+	admission_order INTEGER NOT NULL,
+	content_ref TEXT NOT NULL,
+	domains_json TEXT NOT NULL,
+	admitted_epoch INTEGER NOT NULL,
+	consumed_for_rendering INTEGER NOT NULL DEFAULT 0,
+	admitted_at INTEGER NOT NULL,
+	PRIMARY KEY (binding_id, context_generation, delivery_id)
+);
+
+CREATE TABLE IF NOT EXISTS launch_revisions (
+	revision_event_id TEXT PRIMARY KEY,
+	binding_id TEXT NOT NULL,
+	prior_contract_digest TEXT NOT NULL,
+	new_contract_digest TEXT NOT NULL,
+	actor_principal_id TEXT NOT NULL,
+	delta_json TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	policy_epoch INTEGER NOT NULL,
+	old_binding_id TEXT,
+	new_binding_id TEXT,
+	idempotency_key TEXT NOT NULL,
+	input_digest TEXT NOT NULL,
+	occurred_at INTEGER NOT NULL,
+	UNIQUE (idempotency_key, input_digest)
+);
+
+CREATE TABLE IF NOT EXISTS launch_releases (
+	release_id TEXT PRIMARY KEY,
+	source_binding_id TEXT NOT NULL,
+	domains_json TEXT NOT NULL,
+	recipient_principal_ids_json TEXT NOT NULL,
+	resource_refs_json TEXT NOT NULL,
+	actor_principal_id TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	idempotency_key TEXT NOT NULL,
+	input_digest TEXT NOT NULL,
+	occurred_at INTEGER NOT NULL,
+	UNIQUE (idempotency_key, input_digest)
 );
 `);
 		}
