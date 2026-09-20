@@ -13,7 +13,12 @@ import { describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import { OperationalStore } from "../../src/operational/store";
-import { createTestCompiledContract, createTestRunLimits } from "../helpers/lifecycle-fixtures";
+import {
+	createTestArtifactRef,
+	createTestCompiledContract,
+	createTestRunLimits,
+	createTestRuntimeGuarantees,
+} from "../helpers/lifecycle-fixtures";
 
 function tempPath(label: string): string {
 	return path.join(os.tmpdir(), `${label}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -261,6 +266,219 @@ describe("v4 authority schema invariants", () => {
 			expect(count.n).toBe(2);
 		} finally {
 			db.close();
+		}
+	});
+});
+
+describe("launch authority commit protocol (§14.5)", () => {
+	function openStore(label: string): OperationalStore {
+		return OperationalStore.open({ dbPath: tempPath(label) });
+	}
+
+	const GUARD = { actor: {} as never, expectedPolicyEpoch: 1, idempotencyKey: "idem-1" };
+
+	function admit(store: OperationalStore, compiled = createTestCompiledContract()) {
+		return store.admitLaunchAuthority({
+			guard: GUARD,
+			compiled,
+			reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
+			lifecycle: null,
+			restoresBindingId: null,
+		});
+	}
+
+	it("commits authority as authorized, not live", () => {
+		const store = openStore("protocol-admit");
+		try {
+			const compiled = createTestCompiledContract();
+			const result = admit(store, compiled);
+			expect(result.ok).toBe(true);
+			if (!result.ok) return;
+			expect(result.replayed).toBe(false);
+
+			// Authorization commit must not produce a live child: the binding
+			// carries no measured guarantees until activation probes them.
+			const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-attempt-${compiled.contractId}-${compiled.contractRevision}`;
+			const binding = store.getLaunchBinding(bindingId);
+			expect(binding.state).toBe("authorized");
+			expect(binding.actualRuntimeGuarantees).toBeNull();
+			expect(binding.guaranteeEvidenceRefs).toEqual([]);
+
+			expect(store.getLaunchContract(compiled.contractDigest).contractDigest).toBe(compiled.contractDigest);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("replays an identical admission instead of allocating twice", () => {
+		const store = openStore("protocol-replay");
+		try {
+			const compiled = createTestCompiledContract();
+			expect(admit(store, compiled).ok).toBe(true);
+			const second = admit(store, compiled);
+			expect(second.ok).toBe(true);
+			if (!second.ok) return;
+			expect(second.replayed).toBe(true);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("rejects a different contract on an attempt that is already bound", () => {
+		const store = openStore("protocol-conflict");
+		try {
+			const first = createTestCompiledContract({ objective: "first mission" });
+			expect(admit(store, first).ok).toBe(true);
+
+			// Same derived attempt id, different contract bytes: a real
+			// conflict, never a silent rebind.
+			const second = createTestCompiledContract({ objective: "second mission" });
+			const result = admit(store, second);
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			expect(result.code).toBe("admission_conflict");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refuses activation when measured guarantees fall short of the contract", () => {
+		const store = openStore("protocol-shortfall");
+		try {
+			const compiled = createTestCompiledContract();
+			expect(admit(store, compiled).ok).toBe(true);
+			const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-attempt-${compiled.contractId}-${compiled.contractRevision}`;
+
+			const result = store.activateLaunchBinding({
+				guard: GUARD,
+				bindingId,
+				expectedState: "authorized",
+				sessionId: "session-1",
+				processRef: null,
+				serviceBindings: [],
+				// Ambient everywhere: cannot satisfy the strict requirements.
+				actualRuntimeGuarantees: {
+					initialContext: "legacy-inherited",
+					transcriptAccess: "ambient",
+					serviceAccess: "ambient",
+					artifactAccess: "ambient",
+					memoryAccess: "ambient",
+					evalState: "ambient",
+					filesystemRead: "ambient",
+					filesystemWrite: "ambient",
+					process: "ambient",
+					network: "ambient",
+					credentials: "ambient",
+				},
+				guaranteeEvidenceRefs: [createTestArtifactRef("artifact-probe")],
+			});
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			expect(result.code).toBe("required_isolation_unavailable");
+			expect(result.diagnostics.length).toBeGreaterThan(1);
+
+			// The binding must remain unactivated after a refused probe.
+			expect(store.getLaunchBinding(bindingId).state).toBe("authorized");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("activates when guarantees are met and evidence is supplied", () => {
+		const store = openStore("protocol-activate");
+		try {
+			const compiled = createTestCompiledContract();
+			expect(admit(store, compiled).ok).toBe(true);
+			const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-attempt-${compiled.contractId}-${compiled.contractRevision}`;
+			const activation = {
+				guard: GUARD,
+				bindingId,
+				expectedState: "authorized" as const,
+				sessionId: "session-1",
+				processRef: null,
+				serviceBindings: [],
+				actualRuntimeGuarantees: createTestRuntimeGuarantees(),
+				guaranteeEvidenceRefs: [createTestArtifactRef("artifact-probe")],
+			};
+			expect(store.activateLaunchBinding(activation).ok).toBe(true);
+			const bound = store.getLaunchBinding(bindingId);
+			expect(bound.state).toBe("bound");
+			expect(bound.actualRuntimeGuarantees).not.toBeNull();
+			expect(bound.sessionId).toBe("session-1");
+
+			// Re-running the same authorized->bound transition must now fail
+			// the state CAS rather than silently repeating.
+			const repeat = store.activateLaunchBinding(activation);
+			expect(repeat.ok).toBe(false);
+			if (repeat.ok) return;
+			expect(repeat.code).toBe("launch_binding_state_conflict");
+
+			expect(store.activateLaunchBinding({ ...activation, expectedState: "bound" }).ok).toBe(true);
+			expect(store.getLaunchBinding(bindingId).state).toBe("active");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refuses activation without guarantee evidence", () => {
+		const store = openStore("protocol-evidence");
+		try {
+			const compiled = createTestCompiledContract();
+			expect(admit(store, compiled).ok).toBe(true);
+			const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-attempt-${compiled.contractId}-${compiled.contractRevision}`;
+			const result = store.activateLaunchBinding({
+				guard: GUARD,
+				bindingId,
+				expectedState: "authorized",
+				sessionId: "session-1",
+				processRef: null,
+				serviceBindings: [],
+				actualRuntimeGuarantees: createTestRuntimeGuarantees(),
+				guaranteeEvidenceRefs: [],
+			});
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			expect(result.code).toBe("guarantee_evidence_required");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refuses activation under a stale policy epoch", () => {
+		const store = openStore("protocol-stale");
+		try {
+			const compiled = createTestCompiledContract();
+			expect(admit(store, compiled).ok).toBe(true);
+			const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-attempt-${compiled.contractId}-${compiled.contractRevision}`;
+			const result = store.activateLaunchBinding({
+				guard: { actor: {} as never, expectedPolicyEpoch: 99, idempotencyKey: "idem-1" },
+				bindingId,
+				expectedState: "authorized",
+				sessionId: "session-1",
+				processRef: null,
+				serviceBindings: [],
+				actualRuntimeGuarantees: createTestRuntimeGuarantees(),
+				guaranteeEvidenceRefs: [createTestArtifactRef("artifact-probe")],
+			});
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			expect(result.code).toBe("stale_launch_authority");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("throws typed read errors for unknown bindings and contracts", () => {
+		const store = openStore("protocol-missing");
+		try {
+			expect(() => store.getLaunchBinding("nope")).toThrowError(
+				expect.objectContaining({ code: "launch_binding_not_found" }),
+			);
+			expect(() => store.getLaunchContract("nope")).toThrowError(
+				expect.objectContaining({ code: "launch_contract_not_found" }),
+			);
+		} finally {
+			store.close();
 		}
 	});
 });

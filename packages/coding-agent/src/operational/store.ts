@@ -5,20 +5,31 @@ import * as path from "node:path";
 import { getAgentDir } from "@pk-nerdsaver-ai/pi-utils";
 import {
 	type AgentRole,
+	type ArtifactRefV1,
 	bindLaunchContract,
 	type CompiledLaunchContract,
+	canonicalJson,
+	compareRuntimeGuarantees,
 	LAUNCH_CONTRACT_VERSION,
+	type LaunchBinding,
+	type LaunchBindingInput,
 	type LifecycleHandoffV1,
 	type ObligationV1,
 	parseObligationV1,
 	parseReservationVector,
 	parseRunLimitsV1,
 	type RunLimitsV1,
+	type RuntimeGuaranteesV1,
 } from "../task/launch-contract";
 import type {
 	CaptureDimension,
 	DeliveryDimension,
 	ExecutionDimension,
+	LaunchAuthorityAdmissionInput,
+	LaunchAuthorityAdmissionResult,
+	LaunchAuthorityFailure,
+	LaunchBindingActivationInput,
+	LaunchBindingActivationResult,
 	LifecycleAdmissionInput,
 	LifecycleAdmissionResult,
 	LifecycleCancellationInput,
@@ -2361,6 +2372,289 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 				`${receipts.n} verification receipt(s) exist but the v3 schema records no run or attempt scope for them`,
 			);
 		}
+	}
+
+	// --- Launch authority commit protocol (§14.5) --------------------------
+	//
+	// Runtime-private. Every mutation runs in a short `.immediate()`
+	// transaction with no awaits inside, and commits authority BEFORE any
+	// runtime exposure: a binding is created `authorized`, not live.
+
+	/**
+	 * Step 2 of the launch protocol: atomically persist the compiled contract
+	 * and an `authorized` binding.
+	 *
+	 * This is the authorization commit, NOT live exposure. The child becomes
+	 * externally visible only after `activateLaunchBinding` records measured
+	 * guarantees, so a cancellation between the two leaves an honest audit
+	 * row rather than a running worker nobody authorized.
+	 */
+	admitLaunchAuthority(input: LaunchAuthorityAdmissionInput): LaunchAuthorityAdmissionResult {
+		this.#assertOpen();
+		const { compiled, guard } = input;
+		const now = Date.now();
+		const attemptId = input.lifecycle?.attemptId ?? `attempt-${compiled.contractId}-${compiled.contractRevision}`;
+
+		try {
+			return this.#db.transaction((): LaunchAuthorityAdmissionResult => {
+				const existing = this.#db
+					.prepare("SELECT binding_id, contract_digest FROM launch_bindings WHERE attempt_id = ?")
+					.get(attemptId) as { binding_id: string; contract_digest: string } | undefined;
+				if (existing) {
+					// Idempotent replay returns the recorded allocation; the
+					// same key with different content is a real conflict.
+					if (existing.contract_digest !== compiled.contractDigest) {
+						return {
+							ok: false,
+							code: "admission_conflict",
+							diagnostics: [
+								{
+									code: "admission_conflict",
+									message: `attempt '${attemptId}' is already bound to a different contract digest`,
+									path: "compiled.contractDigest",
+								},
+							],
+						};
+					}
+					return {
+						ok: true,
+						launch: bindLaunchContract(compiled, this.#bindingInputFor(existing.binding_id, input)),
+						replayed: true,
+					};
+				}
+
+				this.#db
+					.prepare(
+						`INSERT OR IGNORE INTO launch_contracts (contract_id, revision, digest, prior_digest, policy_version, root_principal_id, parent_principal_id, child_principal_id, canonical_json, created_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						compiled.contractId,
+						compiled.contractRevision,
+						compiled.contractDigest,
+						compiled.priorContractDigest,
+						compiled.policyVersion,
+						compiled.rootPrincipalId,
+						compiled.parentPrincipalId,
+						compiled.childPrincipalId,
+						canonicalJson(compiled),
+						now,
+					);
+
+				const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-${attemptId}`;
+				this.#db
+					.prepare(
+						`INSERT INTO launch_bindings (binding_id, contract_id, contract_revision, contract_digest, root_principal_id, parent_principal_id, child_principal_id, attempt_id, policy_epoch, context_generation, state, lifecycle_json, reservation_id, restores_binding_id, created_at, updated_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'authorized', ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						bindingId,
+						compiled.contractId,
+						compiled.contractRevision,
+						compiled.contractDigest,
+						compiled.rootPrincipalId,
+						compiled.parentPrincipalId,
+						compiled.childPrincipalId,
+						attemptId,
+						guard.expectedPolicyEpoch,
+						input.lifecycle ? JSON.stringify(input.lifecycle) : null,
+						input.lifecycle?.reservationId ?? null,
+						input.restoresBindingId,
+						now,
+						now,
+					);
+
+				return {
+					ok: true,
+					launch: bindLaunchContract(compiled, this.#bindingInputFor(bindingId, input)),
+					replayed: false,
+				};
+			})();
+		} catch (error) {
+			return {
+				ok: false,
+				code: "admission_failed",
+				diagnostics: [
+					{
+						code: "admission_failed",
+						message: error instanceof Error ? error.message : String(error),
+						path: "admitLaunchAuthority",
+					},
+				],
+			};
+		}
+	}
+
+	#bindingInputFor(bindingId: string, input: LaunchAuthorityAdmissionInput): LaunchBindingInput {
+		const lifecycle = input.lifecycle;
+		return {
+			runId: lifecycle?.runId ?? input.compiled.contractId,
+			nodeId: lifecycle?.nodeId ?? input.compiled.childPrincipalId,
+			ownerNodeId: lifecycle?.ownerNodeId ?? null,
+			attemptId: lifecycle?.attemptId ?? bindingId,
+			budgetReservationId: lifecycle?.reservationId ?? `reservation-${bindingId}`,
+			leaseEpoch: lifecycle?.leaseEpoch ?? 1,
+			cancellationGeneration: lifecycle?.cancellationGeneration ?? 0,
+		};
+	}
+
+	/**
+	 * Steps 3-4: record measured runtime guarantees, then make the binding
+	 * live.
+	 *
+	 * Activation REFUSES to proceed when the measured guarantees fall short
+	 * of the contract's requirements on any dimension. Recording them without
+	 * that check would let a binding advertise containment nobody probed for,
+	 * which is worse than advertising none.
+	 */
+	activateLaunchBinding(input: LaunchBindingActivationInput): LaunchBindingActivationResult {
+		this.#assertOpen();
+		const now = Date.now();
+		try {
+			return this.#db.transaction((): LaunchBindingActivationResult => {
+				const row = this.#db
+					.prepare(
+						"SELECT binding_id, contract_digest, state, policy_epoch FROM launch_bindings WHERE binding_id = ?",
+					)
+					.get(input.bindingId) as
+					| { binding_id: string; contract_digest: string; state: string; policy_epoch: number }
+					| undefined;
+				if (!row) {
+					return this.#authorityFailure("launch_binding_not_found", `binding '${input.bindingId}' not found`);
+				}
+				if (row.state !== input.expectedState) {
+					// CAS on state: a concurrent revoke or supersede must not
+					// be overwritten by a late activation.
+					return this.#authorityFailure(
+						"launch_binding_state_conflict",
+						`binding '${input.bindingId}' is '${row.state}', expected '${input.expectedState}'`,
+					);
+				}
+				if (row.policy_epoch !== input.guard.expectedPolicyEpoch) {
+					return this.#authorityFailure(
+						"stale_launch_authority",
+						`binding '${input.bindingId}' is at epoch ${row.policy_epoch}, guard expected ${input.guard.expectedPolicyEpoch}`,
+					);
+				}
+
+				const contractRow = this.#db
+					.prepare("SELECT canonical_json FROM launch_contracts WHERE digest = ?")
+					.get(row.contract_digest) as { canonical_json: string } | undefined;
+				if (!contractRow) {
+					return this.#authorityFailure(
+						"launch_contract_not_found",
+						`contract '${row.contract_digest}' referenced by the binding is missing`,
+					);
+				}
+				const contract = JSON.parse(contractRow.canonical_json) as CompiledLaunchContract;
+				const shortfalls = compareRuntimeGuarantees(
+					contract.authority.requiredRuntimeGuarantees,
+					input.actualRuntimeGuarantees,
+				);
+				if (shortfalls.length > 0) {
+					return {
+						ok: false,
+						code: "required_isolation_unavailable",
+						diagnostics: shortfalls.map(s => ({
+							code: "required_isolation_unavailable",
+							message: `${String(s.dimension)} requires '${s.required}' but the runtime provides '${s.actual}'`,
+							path: `actualRuntimeGuarantees.${String(s.dimension)}`,
+						})),
+					};
+				}
+				if (input.guaranteeEvidenceRefs.length === 0) {
+					return this.#authorityFailure(
+						"guarantee_evidence_required",
+						"activation requires evidence for the measured guarantees",
+					);
+				}
+
+				const nextState = input.expectedState === "authorized" ? "bound" : "active";
+				this.#db
+					.prepare(
+						`UPDATE launch_bindings SET state = ?, session_id = ?, process_ref = ?, service_bindings_json = ?, actual_guarantees_json = ?, guarantee_evidence_json = ?, updated_at = ?
+						 WHERE binding_id = ? AND state = ? AND policy_epoch = ?`,
+					)
+					.run(
+						nextState,
+						input.sessionId,
+						input.processRef,
+						JSON.stringify(input.serviceBindings),
+						JSON.stringify(input.actualRuntimeGuarantees),
+						JSON.stringify(input.guaranteeEvidenceRefs),
+						now,
+						input.bindingId,
+						input.expectedState,
+						input.guard.expectedPolicyEpoch,
+					);
+
+				return {
+					ok: true,
+					launch: bindLaunchContract(contract, {
+						runId: contract.contractId,
+						nodeId: contract.childPrincipalId,
+						ownerNodeId: null,
+						attemptId: input.bindingId,
+						budgetReservationId: `reservation-${input.bindingId}`,
+						leaseEpoch: 1,
+						cancellationGeneration: 0,
+					}),
+					replayed: false,
+				};
+			})();
+		} catch (error) {
+			return this.#authorityFailure("activation_failed", error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	#authorityFailure(code: string, message: string): LaunchAuthorityFailure {
+		return { ok: false, code, diagnostics: [{ code, message, path: "launchAuthority" }] };
+	}
+
+	/** Throws rather than returning null: a missing binding is never "no authority yet". */
+	getLaunchBinding(bindingId: string): LaunchBinding {
+		this.#assertOpen();
+		const row = this.#db.prepare("SELECT * FROM launch_bindings WHERE binding_id = ?").get(bindingId) as
+			| Record<string, unknown>
+			| undefined;
+		if (!row) throw new LifecycleReadError("launch_binding_not_found", `binding '${bindingId}' not found`);
+		return Object.freeze({
+			schemaVersion: 1 as const,
+			bindingId: row.binding_id as string,
+			contractId: row.contract_id as string,
+			contractRevision: row.contract_revision as number,
+			contractDigest: row.contract_digest as string,
+			rootPrincipalId: row.root_principal_id as string,
+			parentPrincipalId: row.parent_principal_id as string,
+			childPrincipalId: row.child_principal_id as string,
+			attemptId: row.attempt_id as string,
+			sessionId: (row.session_id ?? null) as string | null,
+			processRef: (row.process_ref ?? null) as string | null,
+			policyEpoch: row.policy_epoch as number,
+			contextGeneration: row.context_generation as number,
+			state: row.state as LaunchBinding["state"],
+			grantBindings: JSON.parse(row.grant_bindings_json as string) as LaunchBinding["grantBindings"],
+			serviceBindings: JSON.parse(row.service_bindings_json as string) as LaunchBinding["serviceBindings"],
+			actualRuntimeGuarantees: row.actual_guarantees_json
+				? (JSON.parse(row.actual_guarantees_json as string) as RuntimeGuaranteesV1)
+				: null,
+			guaranteeEvidenceRefs: JSON.parse(row.guarantee_evidence_json as string) as readonly ArtifactRefV1[],
+			reservationId: (row.reservation_id ?? null) as string | null,
+			lifecycle: row.lifecycle_json
+				? (JSON.parse(row.lifecycle_json as string) as LaunchBinding["lifecycle"])
+				: null,
+			expiresAt: (row.expires_at ?? null) as number | null,
+			restoresBindingId: (row.restores_binding_id ?? null) as string | null,
+		});
+	}
+
+	getLaunchContract(digest: string): CompiledLaunchContract {
+		this.#assertOpen();
+		const row = this.#db.prepare("SELECT canonical_json FROM launch_contracts WHERE digest = ?").get(digest) as
+			| { canonical_json: string }
+			| undefined;
+		if (!row) throw new LifecycleReadError("launch_contract_not_found", `contract '${digest}' not found`);
+		return JSON.parse(row.canonical_json) as CompiledLaunchContract;
 	}
 
 	listLifecycleNodes(
