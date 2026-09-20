@@ -14,7 +14,7 @@
 import { createHash } from "node:crypto";
 import type { AgentExecutionProfile } from "../orchestration/agent-execution-profile";
 import type { CollaborationPolicy } from "../orchestration/collaboration-policy";
-import type { ResolvedToolProfile, ToolSource } from "../tools/tool-profiles";
+import type { ResolvedToolProfile, ToolCapability, ToolSource } from "../tools/tool-profiles";
 import { TOOL_SOURCES } from "../tools/tool-profiles";
 
 export const LAUNCH_CONTRACT_VERSION = 1 as const;
@@ -1767,4 +1767,493 @@ export function parseObligationV1(value: unknown): ObligationV1 {
 		waiverAuthorizationRef: (waiver ?? null) as string | null,
 		version: value.version as number,
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Launch authority dictionary (§14.2) — frozen W1 extension surface.
+//
+// These records describe what a delegated child is authorized to do. They are
+// pure data: holding one confers nothing. Authority is conferred only when the
+// runtime authenticates an issuer and commits a binding (W2/W3). A serialized
+// grant is inert by construction.
+//
+// Every optional dimension is explicit. There is no "field absent means
+// inherit" rule anywhere in this dictionary: omission is a validation error,
+// because a silently inherited capability is exactly the escalation these
+// records exist to prevent.
+// ---------------------------------------------------------------------------
+
+/**
+ * Delegated launch classes. The interactive root is NOT a delegated class:
+ * it is authorized at host bootstrap, so representing it here would let a
+ * child request "root" as if it were a launch option.
+ */
+export type LaunchClass = "strict-worker" | "privileged-helper" | "legacy-compatible-worker";
+export const KNOWN_LAUNCH_CLASSES: readonly LaunchClass[] = [
+	"strict-worker",
+	"privileged-helper",
+	"legacy-compatible-worker",
+] as const;
+
+export type CompatibilityClassification =
+	| "preserved-safe"
+	| "privileged-explicit"
+	| "legacy-compatibility"
+	| "external-trust-boundary"
+	| "temporarily-unenforced"
+	| "deprecated"
+	| "invalid";
+export const KNOWN_COMPATIBILITY_CLASSIFICATIONS: readonly CompatibilityClassification[] = [
+	"preserved-safe",
+	"privileged-explicit",
+	"legacy-compatibility",
+	"external-trust-boundary",
+	"temporarily-unenforced",
+	"deprecated",
+	"invalid",
+] as const;
+
+/**
+ * A recorded gap between a guarantee a launch requires and what the runtime
+ * actually provides. Legacy inherited access is represented here as an
+ * exception rather than being written up as a strict grant it never was.
+ */
+export interface CompatibilityExceptionV1 {
+	readonly classification: CompatibilityClassification;
+	readonly code: string;
+	readonly resourceKind: string;
+	readonly requiredGuarantee: string | null;
+	readonly actualGuarantee: string;
+	readonly reason: string;
+	readonly authorityRef: string | null;
+}
+
+export type ContextIndependence = "none" | "parent-history-independent" | "independent-verifier" | "adversarial-review";
+export const KNOWN_CONTEXT_INDEPENDENCE: readonly ContextIndependence[] = [
+	"none",
+	"parent-history-independent",
+	"independent-verifier",
+	"adversarial-review",
+] as const;
+
+export type ContextStrategy = "shared" | "blind" | "staged";
+export const KNOWN_CONTEXT_STRATEGIES: readonly ContextStrategy[] = ["shared", "blind", "staged"] as const;
+
+/**
+ * How a child's starting context is constituted.
+ *
+ * `fresh` builds context from explicitly selected grants; `shared` selects
+ * grants, it does not imply inherited history. `privileged-fork` is a
+ * deliberately distinct mode carrying an authorized parent snapshot, and can
+ * never satisfy an independence requirement.
+ */
+export type ContextMode =
+	| { readonly kind: "fresh"; readonly strategy: ContextStrategy; readonly independence: ContextIndependence }
+	| {
+			readonly kind: "privileged-fork";
+			readonly parentSnapshotRef: ArtifactRefV1;
+			readonly parentSnapshotGrantIntentId: string;
+			readonly snapshotVersion: 1;
+			readonly reason: string;
+	  };
+
+export type BaseContextSegmentKind = "safety" | "runtime-convention" | "tool-protocol" | "runtime-boilerplate";
+export const KNOWN_BASE_SEGMENT_KINDS: readonly BaseContextSegmentKind[] = [
+	"safety",
+	"runtime-convention",
+	"tool-protocol",
+	"runtime-boilerplate",
+] as const;
+
+/**
+ * Static global baseline prompt content only. Repository rules, role
+ * templates, assignments, plans, workspace trees, skills and memory are NOT
+ * base context — each requires its own grant, so that "what did this agent
+ * start with" has exactly one answer.
+ */
+export interface BaseContextManifestV1 {
+	readonly schemaVersion: 1;
+	readonly manifestHash: string;
+	readonly segments: readonly {
+		readonly segmentId: string;
+		readonly kind: BaseContextSegmentKind;
+		readonly contentRef: ArtifactRefV1;
+	}[];
+}
+
+export type ResourceKind =
+	| "tool"
+	| "workspace"
+	| "artifact"
+	| "memory"
+	| "eval"
+	| "transcript"
+	| "registry"
+	| "network"
+	| "credential"
+	| "mcp"
+	| "extension"
+	| "custom"
+	| "client-bridge"
+	| "plan"
+	| "skill"
+	| "instructions";
+export const KNOWN_RESOURCE_KINDS: readonly ResourceKind[] = [
+	"tool",
+	"workspace",
+	"artifact",
+	"memory",
+	"eval",
+	"transcript",
+	"registry",
+	"network",
+	"credential",
+	"mcp",
+	"extension",
+	"custom",
+	"client-bridge",
+	"plan",
+	"skill",
+	"instructions",
+] as const;
+
+export type ResourceOperation =
+	| "read"
+	| "write"
+	| "list"
+	| "invoke"
+	| "disclose"
+	| "observe-status"
+	| "observe-transcript"
+	| "observe-artifacts"
+	| "send"
+	| "receive"
+	| "wake"
+	| "broadcast"
+	| "busy-reply"
+	| "control"
+	| "publish";
+export const KNOWN_RESOURCE_OPERATIONS: readonly ResourceOperation[] = [
+	"read",
+	"write",
+	"list",
+	"invoke",
+	"disclose",
+	"observe-status",
+	"observe-transcript",
+	"observe-artifacts",
+	"send",
+	"receive",
+	"wake",
+	"broadcast",
+	"busy-reply",
+	"control",
+	"publish",
+] as const;
+
+/**
+ * Identifies a resource precisely enough that possession of its name is not
+ * possession of access. Tool `resourceId` is canonical JSON of
+ * `{source,name}`; workspace roots are repository-relative; network entries
+ * are normalized origins; credentials use opaque service IDs and NEVER carry
+ * secret material.
+ */
+export interface ResourceSelectorV1 {
+	readonly kind: ResourceKind;
+	readonly resourceId: string;
+	readonly versionDigest: string | null;
+	readonly scope: {
+		readonly roots: readonly string[];
+		readonly exactIds: readonly string[];
+		readonly maxBytes: number | null;
+		readonly range: { readonly start: number; readonly end: number } | null;
+	};
+}
+
+export interface ResourceAuthorityV1 {
+	readonly resource: ResourceSelectorV1;
+	readonly mayUse: readonly ResourceOperation[];
+	/** Onward-issuance rights. `mayUse` never implies `mayIssue`. */
+	readonly mayIssue: readonly ResourceOperation[];
+	readonly recipientPrincipalIds: readonly string[];
+	readonly maxDelegationDepth: number;
+	readonly disclosureDomains: readonly DisclosureDomain[];
+	readonly sourceGrantIds: readonly string[];
+}
+
+/**
+ * Disclosure domains tag WHY material is restricted. `credential-sensitive`
+ * is a restriction, never permission to reveal a secret.
+ */
+export type DisclosureDomain =
+	| "public-task"
+	| "parent-private"
+	| "worker-family"
+	| "review-independent"
+	| "credential-sensitive"
+	| { readonly kind: "artifact-scope"; readonly artifactId: string };
+export const KNOWN_DISCLOSURE_DOMAIN_LITERALS: readonly string[] = [
+	"public-task",
+	"parent-private",
+	"worker-family",
+	"review-independent",
+	"credential-sensitive",
+] as const;
+
+export type DisclosureKind =
+	| "assignment"
+	| "workspace-instructions"
+	| "agent-template"
+	| "selected-context"
+	| "plan-excerpt"
+	| "artifact"
+	| "sibling-result"
+	| "human-message"
+	| "parent-message"
+	| "agent-message";
+export const KNOWN_DISCLOSURE_KINDS: readonly DisclosureKind[] = [
+	"assignment",
+	"workspace-instructions",
+	"agent-template",
+	"selected-context",
+	"plan-excerpt",
+	"artifact",
+	"sibling-result",
+	"human-message",
+	"parent-message",
+	"agent-message",
+] as const;
+
+/**
+ * A policy-level statement of intended disclosure.
+ *
+ * `intentId` is NOT a grant id. Each binding transaction issues its own
+ * runtime grant ids and records the intent to grant mapping, so recovery can
+ * reissue attempt-bound grants without mutating the contract.
+ */
+export interface DisclosureIntentV1 {
+	readonly intentId: string;
+	readonly issuerPrincipalId: string;
+	readonly recipientPrincipalId: string;
+	readonly resource: ResourceSelectorV1;
+	readonly contentRef: ArtifactRefV1;
+	readonly kind: DisclosureKind;
+	readonly domains: readonly DisclosureDomain[];
+	readonly purpose: string;
+	readonly sourceGrantIds: readonly string[];
+	readonly required: boolean;
+}
+
+export interface DeliveryChannelV1 {
+	readonly channelId: string;
+	readonly senderPrincipalIds: readonly string[];
+	readonly recipientPrincipalId: string;
+	readonly resourceSelectors: readonly ResourceSelectorV1[];
+	readonly domains: readonly DisclosureDomain[];
+	readonly messageKinds: readonly DisclosureKind[];
+	readonly revealCondition: "open" | "authorized-synthesis";
+	readonly maxMessageBytes: number;
+	readonly maxTotalBytes: number;
+	readonly maxMessages: number;
+	readonly expiresAt: number | null;
+	readonly onwardRecipientPrincipalIds: readonly string[];
+}
+
+/**
+ * Peer rights, split by verb. Existing collaboration clamping is an upper
+ * bound on these sets, never authorization to populate an omitted one.
+ */
+export interface CommunicationAuthorityV1 {
+	readonly policy: CollaborationPolicy;
+	readonly visiblePrincipalIds: readonly string[];
+	readonly sendPrincipalIds: readonly string[];
+	readonly receivePrincipalIds: readonly string[];
+	readonly wakePrincipalIds: readonly string[];
+	readonly broadcastPrincipalIds: readonly string[];
+	readonly busyReplyPrincipalIds: readonly string[];
+	readonly controlPrincipalIds: readonly string[];
+	readonly delegablePrincipalIds: readonly string[];
+	readonly channelIds: readonly string[];
+}
+
+export type ObservationRight = "status" | "progress" | "result" | "artifacts" | "transcript" | "telemetry";
+export const KNOWN_OBSERVATION_RIGHTS: readonly ObservationRight[] = [
+	"status",
+	"progress",
+	"result",
+	"artifacts",
+	"transcript",
+	"telemetry",
+] as const;
+
+/**
+ * Parent supervision rights. Deliberately one-way: these are never mirrored
+ * into the child's own read or peer rights.
+ */
+export interface ObservationAuthorityV1 {
+	readonly observers: readonly {
+		readonly principalId: string;
+		readonly rights: readonly ObservationRight[];
+	}[];
+}
+
+export interface SpawnAuthorityV1 {
+	readonly maySpawn: boolean;
+	readonly mayDelegateSpawn: boolean;
+	readonly allowedAgentTypes: readonly string[];
+	readonly allowedLaunchClasses: readonly LaunchClass[];
+	readonly maxDepth: number;
+	readonly maxChildren: number;
+	readonly delegableResourceGrantIds: readonly string[];
+}
+
+/**
+ * Strict unattended hierarchy requires `finite`. Only trusted compatibility
+ * or root policy may select `legacy`, where the historical `0 = unlimited`
+ * reading applies.
+ */
+export type LaunchBudgetV1 =
+	| { readonly kind: "finite"; readonly limits: RunLimitsV1; readonly reservation: ReservationVector }
+	| {
+			readonly kind: "legacy";
+			readonly limits: RunLimitsV1;
+			readonly reservation: ReservationVector;
+			readonly zeroMeansUnlimited: true;
+			readonly authorityRef: string;
+	  };
+
+export interface ResultAuthorityV1 {
+	readonly outputSchemaRef: string | null;
+	readonly maxOutputBytes: number;
+	readonly requiredCriterionIds: readonly string[];
+	readonly publicationRequired: boolean;
+	readonly mutation: MutationContractV1;
+	readonly publicationGrantIds: readonly string[];
+	readonly acceptedRecipientPrincipalIds: readonly string[];
+}
+
+export type InitialContextGuarantee = "explicit-grants-only" | "legacy-inherited";
+export type ScopedAccessGuarantee = "principal-scoped" | "ambient";
+export type EvalStateGuarantee = "child-owned" | "scoped-shared" | "ambient";
+export type FilesystemGuarantee = "mediated" | "contained" | "ambient";
+export type ProcessGuarantee = "contained" | "ambient";
+export type NetworkGuarantee = "contained" | "mediated" | "ambient";
+export type CredentialGuarantee = "brokered" | "ambient";
+
+/**
+ * What the runtime actually provides, per dimension.
+ *
+ * Compared per dimension, never as a total ranking: `contained` satisfies a
+ * `mediated` requirement, `ambient` satisfies neither, `scoped-shared` is not
+ * `child-owned`, and `explicit-grants-only` satisfies a `legacy-inherited`
+ * requirement but not the reverse.
+ */
+export interface RuntimeGuaranteesV1 {
+	readonly initialContext: InitialContextGuarantee;
+	readonly transcriptAccess: ScopedAccessGuarantee;
+	readonly serviceAccess: ScopedAccessGuarantee;
+	readonly artifactAccess: ScopedAccessGuarantee;
+	readonly memoryAccess: ScopedAccessGuarantee;
+	readonly evalState: EvalStateGuarantee;
+	readonly filesystemRead: FilesystemGuarantee;
+	readonly filesystemWrite: FilesystemGuarantee;
+	readonly process: ProcessGuarantee;
+	readonly network: NetworkGuarantee;
+	readonly credentials: CredentialGuarantee;
+}
+
+/** Values that satisfy each required value, per dimension. */
+const GUARANTEE_SATISFACTION: Record<string, Record<string, readonly string[]>> = {
+	initialContext: {
+		"explicit-grants-only": ["explicit-grants-only"],
+		"legacy-inherited": ["explicit-grants-only", "legacy-inherited"],
+	},
+	transcriptAccess: { "principal-scoped": ["principal-scoped"], ambient: ["principal-scoped", "ambient"] },
+	serviceAccess: { "principal-scoped": ["principal-scoped"], ambient: ["principal-scoped", "ambient"] },
+	artifactAccess: { "principal-scoped": ["principal-scoped"], ambient: ["principal-scoped", "ambient"] },
+	memoryAccess: { "principal-scoped": ["principal-scoped"], ambient: ["principal-scoped", "ambient"] },
+	evalState: {
+		"child-owned": ["child-owned"],
+		"scoped-shared": ["child-owned", "scoped-shared"],
+		ambient: ["child-owned", "scoped-shared", "ambient"],
+	},
+	filesystemRead: {
+		contained: ["contained"],
+		mediated: ["contained", "mediated"],
+		ambient: ["contained", "mediated", "ambient"],
+	},
+	filesystemWrite: {
+		contained: ["contained"],
+		mediated: ["contained", "mediated"],
+		ambient: ["contained", "mediated", "ambient"],
+	},
+	process: { contained: ["contained"], ambient: ["contained", "ambient"] },
+	network: {
+		contained: ["contained"],
+		mediated: ["contained", "mediated"],
+		ambient: ["contained", "mediated", "ambient"],
+	},
+	credentials: { brokered: ["brokered"], ambient: ["brokered", "ambient"] },
+};
+
+export interface GuaranteeShortfall {
+	readonly dimension: keyof RuntimeGuaranteesV1;
+	readonly required: string;
+	readonly actual: string;
+}
+
+/**
+ * Per-dimension comparison of actual runtime guarantees against required
+ * ones. Returns every shortfall rather than the first, so a caller reports
+ * the complete gap instead of fixing one dimension at a time.
+ */
+export function compareRuntimeGuarantees(
+	required: RuntimeGuaranteesV1,
+	actual: RuntimeGuaranteesV1,
+): readonly GuaranteeShortfall[] {
+	const shortfalls: GuaranteeShortfall[] = [];
+	for (const dimension of Object.keys(GUARANTEE_SATISFACTION) as (keyof RuntimeGuaranteesV1)[]) {
+		const requiredValue = required[dimension];
+		const actualValue = actual[dimension];
+		const accepted = GUARANTEE_SATISFACTION[dimension]?.[requiredValue];
+		if (!accepted?.includes(actualValue)) {
+			shortfalls.push({ dimension, required: requiredValue, actual: actualValue });
+		}
+	}
+	return Object.freeze(shortfalls);
+}
+
+export interface LaunchAuthorityV1 {
+	readonly schemaVersion: 1;
+	readonly launchClass: LaunchClass;
+	readonly contextMode: ContextMode;
+	readonly baseContextManifest: BaseContextManifestV1;
+	readonly workspaceInstructionRefs: readonly ArtifactRefV1[];
+	readonly agentTemplateRef: ArtifactRefV1;
+	readonly initialDisclosures: readonly DisclosureIntentV1[];
+	readonly deliveryChannels: readonly DeliveryChannelV1[];
+	readonly usableCapabilities: readonly ToolCapability[];
+	readonly delegableCapabilities: readonly ToolCapability[];
+	readonly resources: readonly ResourceAuthorityV1[];
+	readonly collaboration: CommunicationAuthorityV1;
+	readonly observation: ObservationAuthorityV1;
+	readonly spawn: SpawnAuthorityV1;
+	readonly budget: LaunchBudgetV1;
+	readonly result: ResultAuthorityV1;
+	readonly requiredRuntimeGuarantees: RuntimeGuaranteesV1;
+	readonly compatibility: readonly CompatibilityExceptionV1[];
+}
+
+/**
+ * Pinned reference to an authenticated binding. `principalId` ALWAYS means
+ * the child principal in child, native and receipt refs.
+ */
+export interface LaunchAuthorityRefV1 {
+	readonly bindingId: string;
+	readonly principalId: string;
+	readonly attemptId: string;
+	readonly contractId: string;
+	readonly contractRevision: number;
+	readonly contractDigest: string;
+	readonly policyEpoch: number;
 }
