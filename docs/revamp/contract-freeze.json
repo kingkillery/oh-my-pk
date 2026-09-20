@@ -2,7 +2,7 @@
 	"schemaVersion": 1,
 	"wave": "W1-checkpoint+extension",
 	"generatedBy": "scripts/revamp-contract-freeze.ts",
-	"candidateManifestDigest": "3c35d7628b8aae780db4b1c9aac9aac8f9676de10de9a5544c0692d3b1142854",
+	"candidateManifestDigest": "387b1cb922c11bf1c327ed3171f69317dc66538dcb7da94c5c665f45b12c547f",
 	"candidateManifestFileCount": 2523,
 	"shapes": [
 		{
