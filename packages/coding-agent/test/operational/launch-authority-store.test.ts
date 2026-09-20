@@ -482,3 +482,58 @@ describe("launch authority commit protocol (§14.5)", () => {
 		}
 	});
 });
+
+describe("launch authority under cross-process contention (§14.5)", () => {
+	const CONTENDER = path.join(import.meta.dir, "fixtures", "launch-authority-contender.ts");
+
+	async function race(objectives: readonly string[]): Promise<{ ok: boolean; replayed?: boolean; code?: string }[]> {
+		const dbPath = tempPath("authority-race");
+		// Create the schema once up front so contenders race the admission
+		// transaction rather than the migration.
+		OperationalStore.open({ dbPath }).close();
+
+		const barrierPath = `${dbPath}.barrier`;
+		const procs = objectives.map(objective =>
+			Bun.spawn(["bun", CONTENDER, dbPath, objective, barrierPath], { stdout: "pipe", stderr: "pipe" }),
+		);
+		// Release every contender at once.
+		await Bun.sleep(300);
+		await Bun.write(barrierPath, "go");
+
+		return Promise.all(
+			procs.map(async proc => {
+				const out = await new Response(proc.stdout).text();
+				await proc.exited;
+				const line = out.trim().split("\n").filter(Boolean).pop() ?? "{}";
+				return JSON.parse(line) as { ok: boolean; replayed?: boolean; code?: string };
+			}),
+		);
+	}
+
+	it("admits one authority exactly once when four processes race the same contract", async () => {
+		const results = await race(["same mission", "same mission", "same mission", "same mission"]);
+		expect(results).toHaveLength(4);
+
+		// Identical contracts: every process must succeed, but exactly one
+		// may have performed the allocation. The rest must observe a replay,
+		// never a second binding for the same attempt.
+		const succeeded = results.filter(r => r.ok);
+		expect(succeeded.length, `results: ${JSON.stringify(results)}`).toBe(4);
+		const allocations = succeeded.filter(r => r.replayed === false);
+		expect(allocations).toHaveLength(1);
+	}, 60_000);
+
+	it("lets exactly one of four conflicting contracts win the attempt", async () => {
+		const results = await race(["mission a", "mission b", "mission c", "mission d"]);
+		expect(results).toHaveLength(4);
+
+		// Distinct contracts derive the same attempt id, so exactly one may
+		// bind it and the others must be refused as conflicts rather than
+		// overwriting each other's authority.
+		const allocations = results.filter(r => r.ok && r.replayed === false);
+		expect(allocations).toHaveLength(1);
+		const conflicts = results.filter(r => !r.ok);
+		expect(conflicts).toHaveLength(3);
+		for (const conflict of conflicts) expect(conflict.code).toBe("admission_conflict");
+	}, 60_000);
+});
