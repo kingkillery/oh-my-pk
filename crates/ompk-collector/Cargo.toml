@@ -1,0 +1,28 @@
+[package]
+name = "ompk-collector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "OMPK tool-issue collector: ingest, deduplicate, rank, and file GitHub issues"
+
+[[bin]]
+name = "ompk-collector"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+clap = { workspace = true, features = ["env"] }
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+tiny_http = "0.12"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+sha2 = "0.10"
+rand = "0.8"
+
+[lints]
+workspace = true
