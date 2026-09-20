@@ -34,7 +34,7 @@ Branch `revamp/lifecycle-w1` (base `dadcd517`). Committed, NOT merged, NOT relea
 | Admission + activation protocol | Done | `admitLaunchAuthority` commits `authorized` (not live); `activateLaunchBinding` walks authorized→bound→active with CAS on state and epoch |
 | Guarantee enforcement at activation | Done | Activation refuses when measured guarantees fall short on any dimension, reporting every shortfall; makes `compareRuntimeGuarantees` load-bearing |
 | Real-store tests | Done | `test/operational/launch-authority-store.test.ts` 20 pass, real temp SQLite |
-| Cross-process contention | Done | 4 independent Bun processes, barrier-released; caught a real bug — deferred transactions ignore `busy_timeout` on write-lock upgrade, fixed with `.immediate()` |
+| Cross-process contention | Done | 4 independent Bun processes via a standalone readiness-barrier runner; caught TWO real bugs — deferred transactions ignore `busy_timeout` on write-lock upgrade (fixed with `.immediate()`), and 5s `busy_timeout` is too short under load (now 30s + bounded idempotent-safe retry). Host quirks documented: Windows spawn pid ≠ child pid; `Bun.write` ignores `{append:true}` |
 | Grant issuance / revocation / lineage methods | **Not started** | Tables exist; `appendLaunchGrant`, `revokeLaunchGrant`, `getLaunchGrant` not implemented |
 | Channel + delivery admission methods | **Not started** | Tables exist; `admitLaunchDelivery`, `advanceLaunchDisclosurePhase`, inclusion/provider-outcome recording not implemented |
 
