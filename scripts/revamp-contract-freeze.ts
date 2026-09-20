@@ -65,6 +65,35 @@ const FROZEN_SHAPES: readonly FrozenShape[] = [
 	{ typeName: "ProjectionManifest", module: "src/orchestration/context-projector.ts", parser: "parseProjectionManifest", keysConst: "PROJECTION_MANIFEST_KEYS", schemaVersion: 1 },
 	{ typeName: "HarnessManifestV1", module: "src/orchestration/harness-manifest.ts", parser: "parseHarnessManifestV1", keysConst: "HARNESS_MANIFEST_KEYS", schemaVersion: 1 },
 	{ typeName: "PublicationReceipt", module: "src/task/lifecycle-publisher.ts", parser: "parsePublicationReceipt", keysConst: "PUBLICATION_RECEIPT_KEYS", schemaVersion: 1 },
+
+	// Launch authority (§14.2/§14.3)
+	{ typeName: "ResourceSelectorV1", module: "src/task/launch-contract.ts", parser: "parseResourceSelectorV1", keysConst: "RESOURCE_SELECTOR_KEYS", schemaVersion: null },
+	{ typeName: "GrantRecordV1", module: "src/task/launch-contract.ts", parser: "parseGrantRecordV1", keysConst: "GRANT_RECORD_KEYS", schemaVersion: 1 },
+];
+
+/**
+ * Authority shapes that are DECLARED but do not yet have a strict parser with
+ * an accepted-field allowlist. They are named here so the freeze record
+ * reports them as pending rather than letting `complete: true` imply the
+ * whole authority surface is frozen.
+ */
+const PENDING_SHAPES: readonly string[] = [
+	"LaunchAuthorityV1",
+	"AuthorityEnvelopeV1",
+	"LaunchAuthorizationSnapshotV1",
+	"LaunchBinding",
+	"GrantEventV1",
+	"DeliveryRecordV1",
+	"DeliveryEventV1",
+	"BaseContextManifestV1",
+	"DisclosureIntentV1",
+	"DeliveryChannelV1",
+	"CompatibilityExceptionV1",
+	"CommunicationAuthorityV1",
+	"ObservationAuthorityV1",
+	"SpawnAuthorityV1",
+	"ResultAuthorityV1",
+	"RuntimeGuaranteesV1",
 ];
 
 /** Source globs contributing to the candidate manifest digest (§3.7). */
@@ -162,17 +191,23 @@ manifestEntries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 
 const record = {
 	schemaVersion: 1,
-	wave: "W1-checkpoint",
+	wave: "W1-checkpoint+extension",
 	generatedBy: "scripts/revamp-contract-freeze.ts",
 	candidateManifestDigest: sha256(canonicalJson(manifestEntries)),
 	candidateManifestFileCount: manifestEntries.length,
 	shapes,
 	unresolvedShapes: unresolved,
-	complete: unresolved.length === 0,
+	/** Declared authority shapes still awaiting a strict parser (W2 scope). */
+	pendingShapes: [...PENDING_SHAPES].sort(),
+	/** True only when every listed shape resolved AND nothing remains pending. */
+	complete: unresolved.length === 0 && PENDING_SHAPES.length === 0,
+	resolvedComplete: unresolved.length === 0,
 };
 
 await Bun.write(outPath, `${JSON.stringify(record, null, "\t")}\n`);
-console.log(`contract-freeze: ${shapes.length} shapes, ${unresolved.length} unresolved`);
+console.log(
+	`contract-freeze: ${shapes.length} frozen, ${unresolved.length} unresolved, ${PENDING_SHAPES.length} pending`,
+);
 console.log(`candidate manifest: ${manifestEntries.length} files, digest ${record.candidateManifestDigest}`);
 if (unresolved.length > 0) {
 	console.error(`unresolved allowlists: ${unresolved.join(", ")}`);

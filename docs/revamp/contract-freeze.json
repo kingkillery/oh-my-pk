@@ -1,8 +1,8 @@
 {
 	"schemaVersion": 1,
-	"wave": "W1-checkpoint",
+	"wave": "W1-checkpoint+extension",
 	"generatedBy": "scripts/revamp-contract-freeze.ts",
-	"candidateManifestDigest": "3e65c6a02b1bb0e90357984632ca8c95a6748940fc36493cc4b8b446a0acab82",
+	"candidateManifestDigest": "71fe6dacdfdf75378cfdde304e1f308cdeb10ba25422ded7bf013d3336f16624",
 	"candidateManifestFileCount": 2520,
 	"shapes": [
 		{
@@ -436,8 +436,69 @@
 			"parser": "parsePublicationReceipt",
 			"status": "frozen",
 			"descriptorDigest": "5caee733976f25b6fcc3eaea6b5d845c74b8c207b7f6b35e9b2368e08d034589"
+		},
+		{
+			"typeName": "ResourceSelectorV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": null,
+			"acceptedFields": [
+				"kind",
+				"resourceId",
+				"scope",
+				"versionDigest"
+			],
+			"parser": "parseResourceSelectorV1",
+			"status": "frozen",
+			"descriptorDigest": "1d60afb81e08fc70ae72fb0dab287d0c7e71960926649a1119733689a44bc34c"
+		},
+		{
+			"typeName": "GrantRecordV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": 1,
+			"acceptedFields": [
+				"attemptId",
+				"contractRevision",
+				"delegableOperations",
+				"domains",
+				"expiresAt",
+				"grantId",
+				"issuerPrincipalId",
+				"operations",
+				"policyEpoch",
+				"purpose",
+				"recipientBindingId",
+				"recipientConstraints",
+				"recipientPrincipalId",
+				"recordDigest",
+				"remainingDelegationDepth",
+				"resource",
+				"schemaVersion",
+				"sourceGrantIds"
+			],
+			"parser": "parseGrantRecordV1",
+			"status": "frozen",
+			"descriptorDigest": "6c715b382d798462ec23ab587f2dee5954e3c4b070e574ca054521e025912744"
 		}
 	],
 	"unresolvedShapes": [],
-	"complete": true
+	"pendingShapes": [
+		"AuthorityEnvelopeV1",
+		"BaseContextManifestV1",
+		"CommunicationAuthorityV1",
+		"CompatibilityExceptionV1",
+		"DeliveryChannelV1",
+		"DeliveryEventV1",
+		"DeliveryRecordV1",
+		"DisclosureIntentV1",
+		"GrantEventV1",
+		"LaunchAuthorityV1",
+		"LaunchAuthorizationSnapshotV1",
+		"LaunchBinding",
+		"ObservationAuthorityV1",
+		"ResultAuthorityV1",
+		"RuntimeGuaranteesV1",
+		"SpawnAuthorityV1"
+	],
+	"complete": false,
+	"resolvedComplete": true
 }
