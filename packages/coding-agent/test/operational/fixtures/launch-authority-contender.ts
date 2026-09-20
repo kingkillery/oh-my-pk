@@ -18,17 +18,24 @@ if (!dbPath || !objective || !barrierPath) {
 	process.exit(2);
 }
 
-// Spin on a barrier file so every contender reaches the transaction at
-// roughly the same moment; staggered starts would hide a race.
-const deadline = Date.now() + 10_000;
+// Announce readiness by appending one line to the SHARED ready file, then
+// spin on the release barrier. node:fs appendFileSync is used because
+// Bun.write in this version silently IGNORES {append:true} and overwrites,
+// which would keep the file at one line forever. Readiness is NOT keyed by
+// pid: on Windows the pid the parent observes for a spawned process differs
+// from the child's own process.pid.
+import { appendFileSync } from "node:fs";
+
+appendFileSync(`${barrierPath}.ready`, "ready\n");
+
+const deadline = Date.now() + 60_000;
 while (!(await Bun.file(barrierPath).exists())) {
 	if (Date.now() > deadline) {
 		console.log(JSON.stringify({ ok: false, code: "barrier_timeout" }));
 		process.exit(3);
 	}
-	await Bun.sleep(5);
+	await Bun.sleep(2);
 }
-
 const compiled = createTestCompiledContract({ objective });
 const store = OperationalStore.open({ dbPath });
 try {

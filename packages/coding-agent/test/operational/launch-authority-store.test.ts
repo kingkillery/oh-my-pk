@@ -484,56 +484,45 @@ describe("launch authority commit protocol (§14.5)", () => {
 });
 
 describe("launch authority under cross-process contention (§14.5)", () => {
-	const CONTENDER = path.join(import.meta.dir, "fixtures", "launch-authority-contender.ts");
+	// The race runs in a STANDALONE runner rather than inside bun test:
+	// contender children spawned directly from the test process stalled
+	// before signalling readiness on this host, while the identical spawn
+	// works standalone and as a grandchild of bun test. The runner performs
+	// the readiness barrier itself and asserts the full contract, so this
+	// suite asserts its summary rather than merely its exit code.
+	const RACE_RUNNER = path.join(import.meta.dir, "fixtures", "launch-authority-race.ts");
 
-	async function race(objectives: readonly string[]): Promise<{ ok: boolean; replayed?: boolean; code?: string }[]> {
-		const dbPath = tempPath("authority-race");
-		// Create the schema once up front so contenders race the admission
-		// transaction rather than the migration.
-		OperationalStore.open({ dbPath }).close();
-
-		const barrierPath = `${dbPath}.barrier`;
-		const procs = objectives.map(objective =>
-			Bun.spawn(["bun", CONTENDER, dbPath, objective, barrierPath], { stdout: "pipe", stderr: "pipe" }),
-		);
-		// Release every contender at once.
-		await Bun.sleep(300);
-		await Bun.write(barrierPath, "go");
-
-		return Promise.all(
-			procs.map(async proc => {
-				const out = await new Response(proc.stdout).text();
-				await proc.exited;
-				const line = out.trim().split("\n").filter(Boolean).pop() ?? "{}";
-				return JSON.parse(line) as { ok: boolean; replayed?: boolean; code?: string };
-			}),
-		);
+	async function runRace(kind: "same" | "clash") {
+		const proc = Bun.spawn(["bun", RACE_RUNNER, kind], { stdout: "pipe", stderr: "pipe" });
+		const out = (await new Response(proc.stdout).text()).trim();
+		const err = (await new Response(proc.stderr).text()).trim();
+		const code = await proc.exited;
+		if (code !== 0) throw new Error(`race runner exited ${code}: ${err}`);
+		return JSON.parse(out.split("\n").filter(Boolean).pop() ?? "{}") as {
+			kind: string;
+			ok: number;
+			allocations: number;
+			replays: number;
+			conflicts: number;
+		};
 	}
 
 	it("admits one authority exactly once when four processes race the same contract", async () => {
-		const results = await race(["same mission", "same mission", "same mission", "same mission"]);
-		expect(results).toHaveLength(4);
-
-		// Identical contracts: every process must succeed, but exactly one
-		// may have performed the allocation. The rest must observe a replay,
-		// never a second binding for the same attempt.
-		const succeeded = results.filter(r => r.ok);
-		expect(succeeded.length, `results: ${JSON.stringify(results)}`).toBe(4);
-		const allocations = succeeded.filter(r => r.replayed === false);
-		expect(allocations).toHaveLength(1);
-	}, 60_000);
+		const summary = await runRace("same");
+		// Identical contracts: all four succeed, exactly one performed the
+		// allocation, and the rest observed a replay — never a second binding
+		// for the same attempt.
+		expect(summary.ok).toBe(4);
+		expect(summary.allocations).toBe(1);
+		expect(summary.replays).toBe(3);
+	}, 90_000);
 
 	it("lets exactly one of four conflicting contracts win the attempt", async () => {
-		const results = await race(["mission a", "mission b", "mission c", "mission d"]);
-		expect(results).toHaveLength(4);
-
+		const summary = await runRace("clash");
 		// Distinct contracts derive the same attempt id, so exactly one may
-		// bind it and the others must be refused as conflicts rather than
-		// overwriting each other's authority.
-		const allocations = results.filter(r => r.ok && r.replayed === false);
-		expect(allocations).toHaveLength(1);
-		const conflicts = results.filter(r => !r.ok);
-		expect(conflicts).toHaveLength(3);
-		for (const conflict of conflicts) expect(conflict.code).toBe("admission_conflict");
-	}, 60_000);
+		// bind it and the others must be refused admission_conflict rather
+		// than overwriting each other's authority.
+		expect(summary.allocations).toBe(1);
+		expect(summary.conflicts).toBe(3);
+	}, 90_000);
 });

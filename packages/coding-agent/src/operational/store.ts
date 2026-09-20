@@ -388,7 +388,12 @@ export class OperationalStore {
 
 		fs.mkdirSync(path.dirname(this.#dbPath), { recursive: true });
 		this.#db = new Database(this.#dbPath);
-		this.#db.run("PRAGMA busy_timeout = 5000");
+		// 30s rather than 5s: all mutations use BEGIN IMMEDIATE, so writers
+		// queue on the write lock rather than deadlocking. Under concurrent
+		// load (independent processes plus long integration tests), a 5s wait
+		// was exceeded and admissions failed with SQLITE_BUSY despite the
+		// protocol being correct.
+		this.#db.run("PRAGMA busy_timeout = 30000");
 		this.#db.run("PRAGMA journal_mode = WAL");
 		this.#db.run(`PRAGMA synchronous = ${options.durability === "normal" ? "NORMAL" : "FULL"}`);
 		this.#db.run("PRAGMA foreign_keys = ON");
@@ -2395,99 +2400,114 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 		const now = Date.now();
 		const attemptId = input.lifecycle?.attemptId ?? `attempt-${compiled.contractId}-${compiled.contractRevision}`;
 
-		try {
-			return this.#db
-				.transaction((): LaunchAuthorityAdmissionResult => {
-					const existing = this.#db
-						.prepare("SELECT binding_id, contract_digest FROM launch_bindings WHERE attempt_id = ?")
-						.get(attemptId) as { binding_id: string; contract_digest: string } | undefined;
-					if (existing) {
-						// Idempotent replay returns the recorded allocation; the
-						// same key with different content is a real conflict.
-						if (existing.contract_digest !== compiled.contractDigest) {
+		// Bounded retry on lock contention. Retrying is safe here and ONLY
+		// because admission is idempotent: a transaction that failed with
+		// SQLITE_BUSY committed nothing, and re-running the same input returns
+		// the same recorded allocation. Never blind-retry where that is not
+		// true.
+		const maxAttempts = 4;
+		for (let attemptNo = 1; ; attemptNo++) {
+			try {
+				return this.#db
+					.transaction((): LaunchAuthorityAdmissionResult => {
+						const existing = this.#db
+							.prepare("SELECT binding_id, contract_digest FROM launch_bindings WHERE attempt_id = ?")
+							.get(attemptId) as { binding_id: string; contract_digest: string } | undefined;
+						if (existing) {
+							// Idempotent replay returns the recorded allocation; the
+							// same key with different content is a real conflict.
+							if (existing.contract_digest !== compiled.contractDigest) {
+								return {
+									ok: false,
+									code: "admission_conflict",
+									diagnostics: [
+										{
+											code: "admission_conflict",
+											message: `attempt '${attemptId}' is already bound to a different contract digest`,
+											path: "compiled.contractDigest",
+										},
+									],
+								};
+							}
 							return {
-								ok: false,
-								code: "admission_conflict",
-								diagnostics: [
-									{
-										code: "admission_conflict",
-										message: `attempt '${attemptId}' is already bound to a different contract digest`,
-										path: "compiled.contractDigest",
-									},
-								],
+								ok: true,
+								launch: bindLaunchContract(compiled, this.#bindingInputFor(existing.binding_id, input)),
+								replayed: true,
 							};
 						}
+
+						this.#db
+							.prepare(
+								`INSERT OR IGNORE INTO launch_contracts (contract_id, revision, digest, prior_digest, policy_version, root_principal_id, parent_principal_id, child_principal_id, canonical_json, created_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+							)
+							.run(
+								compiled.contractId,
+								compiled.contractRevision,
+								compiled.contractDigest,
+								compiled.priorContractDigest,
+								compiled.policyVersion,
+								compiled.rootPrincipalId,
+								compiled.parentPrincipalId,
+								compiled.childPrincipalId,
+								canonicalJson(compiled),
+								now,
+							);
+
+						const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-${attemptId}`;
+						this.#db
+							.prepare(
+								`INSERT INTO launch_bindings (binding_id, contract_id, contract_revision, contract_digest, root_principal_id, parent_principal_id, child_principal_id, attempt_id, policy_epoch, context_generation, state, lifecycle_json, reservation_id, restores_binding_id, created_at, updated_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'authorized', ?, ?, ?, ?, ?)`,
+							)
+							.run(
+								bindingId,
+								compiled.contractId,
+								compiled.contractRevision,
+								compiled.contractDigest,
+								compiled.rootPrincipalId,
+								compiled.parentPrincipalId,
+								compiled.childPrincipalId,
+								attemptId,
+								guard.expectedPolicyEpoch,
+								input.lifecycle ? JSON.stringify(input.lifecycle) : null,
+								input.lifecycle?.reservationId ?? null,
+								input.restoresBindingId,
+								now,
+								now,
+							);
+
 						return {
 							ok: true,
-							launch: bindLaunchContract(compiled, this.#bindingInputFor(existing.binding_id, input)),
-							replayed: true,
+							launch: bindLaunchContract(compiled, this.#bindingInputFor(bindingId, input)),
+							replayed: false,
 						};
-					}
-
-					this.#db
-						.prepare(
-							`INSERT OR IGNORE INTO launch_contracts (contract_id, revision, digest, prior_digest, policy_version, root_principal_id, parent_principal_id, child_principal_id, canonical_json, created_at)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-						)
-						.run(
-							compiled.contractId,
-							compiled.contractRevision,
-							compiled.contractDigest,
-							compiled.priorContractDigest,
-							compiled.policyVersion,
-							compiled.rootPrincipalId,
-							compiled.parentPrincipalId,
-							compiled.childPrincipalId,
-							canonicalJson(compiled),
-							now,
-						);
-
-					const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-${attemptId}`;
-					this.#db
-						.prepare(
-							`INSERT INTO launch_bindings (binding_id, contract_id, contract_revision, contract_digest, root_principal_id, parent_principal_id, child_principal_id, attempt_id, policy_epoch, context_generation, state, lifecycle_json, reservation_id, restores_binding_id, created_at, updated_at)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'authorized', ?, ?, ?, ?, ?)`,
-						)
-						.run(
-							bindingId,
-							compiled.contractId,
-							compiled.contractRevision,
-							compiled.contractDigest,
-							compiled.rootPrincipalId,
-							compiled.parentPrincipalId,
-							compiled.childPrincipalId,
-							attemptId,
-							guard.expectedPolicyEpoch,
-							input.lifecycle ? JSON.stringify(input.lifecycle) : null,
-							input.lifecycle?.reservationId ?? null,
-							input.restoresBindingId,
-							now,
-							now,
-						);
-
-					return {
-						ok: true,
-						launch: bindLaunchContract(compiled, this.#bindingInputFor(bindingId, input)),
-						replayed: false,
-					};
-					// BEGIN IMMEDIATE: SQLite does NOT honour busy_timeout when a
-					// deferred transaction has to upgrade to a write lock, so a
-					// deferred variant fails concurrent admissions outright with
-					// "database is locked" instead of serialising them.
-				})
-				.immediate();
-		} catch (error) {
-			return {
-				ok: false,
-				code: "admission_failed",
-				diagnostics: [
-					{
-						code: "admission_failed",
-						message: error instanceof Error ? error.message : String(error),
-						path: "admitLaunchAuthority",
-					},
-				],
-			};
+						// BEGIN IMMEDIATE: SQLite does NOT honour busy_timeout when a
+						// deferred transaction has to upgrade to a write lock, so a
+						// deferred variant fails concurrent admissions outright with
+						// "database is locked" instead of serialising them.
+					})
+					.immediate();
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (/locked|busy/i.test(message) && attemptNo < maxAttempts) {
+					// Jittered backoff so queued writers do not re-collide.
+					const backoff = 25 * 2 ** (attemptNo - 1) + Math.floor(Math.random() * 20);
+					Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, backoff);
+					continue;
+				}
+				return {
+					ok: false,
+					code: "admission_failed",
+					diagnostics: [
+						{
+							code: "admission_failed",
+							message,
+							path: "admitLaunchAuthority",
+						},
+					],
+				};
+			}
 		}
 	}
 
