@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "bun:test";
 import type { AgentTool, AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
 import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import { callSessionTool } from "@pk-nerdsaver-ai/pi-coding-agent/eval/js/tool-bridge";
+import { registerLifecycleExecutionContext } from "@pk-nerdsaver-ai/pi-coding-agent/orchestration/lifecycle-authority";
 import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
 import { INTENT_FIELD } from "@pk-nerdsaver-ai/pi-wire";
 import { type } from "arktype";
@@ -144,5 +145,61 @@ describe("callSessionTool", () => {
 		const session = createSession([]);
 
 		await expect(callSessionTool("missing", {}, { session })).rejects.toThrow("Unknown tool from js runtime");
+	});
+	it("denies a bridge tool call outside the registered capabilities", async () => {
+		const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] });
+		const worker = registerLifecycleExecutionContext({
+			mode: "hierarchical-v1",
+			role: "worker",
+			runId: "run-1",
+			nodeId: "node-worker",
+			attemptId: "att-1",
+			policyEpoch: 1,
+			usableCapabilities: [{ source: "builtin", name: "read" }],
+			repoRoot: "/tmp",
+			readableRoots: ["src"],
+			writableRoots: ["src"],
+			allowExternalWrite: false,
+		});
+		const session = {
+			...createSession([createTool("bash", execute)]),
+			getLifecycleExecutionContext: () => worker,
+		} as unknown as ToolSession;
+
+		// A worker holding `read` calling `bash` through the JS bridge must be
+		// denied BEFORE the tool executes — otherwise the bridge is a bypass
+		// around the capability ceiling.
+		await expect(callSessionTool("bash", { command: "ls" }, { session })).rejects.toThrow(/capability_not_granted/);
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("permits a bridge tool call within the registered capabilities and stays silent without a context", async () => {
+		const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] });
+		const worker = registerLifecycleExecutionContext({
+			mode: "hierarchical-v1",
+			role: "worker",
+			runId: "run-1",
+			nodeId: "node-worker",
+			attemptId: "att-2",
+			policyEpoch: 1,
+			usableCapabilities: [{ source: "builtin", name: "read" }],
+			repoRoot: "/tmp",
+			readableRoots: ["src"],
+			writableRoots: ["src"],
+			allowExternalWrite: false,
+		});
+		const authorizedSession = {
+			...createSession([createTool("read", execute)]),
+			getLifecycleExecutionContext: () => worker,
+		} as unknown as ToolSession;
+		await expect(callSessionTool("read", { path: "src/a.ts" }, { session: authorizedSession })).resolves.toBe("ok");
+		expect(execute).toHaveBeenCalledTimes(1);
+
+		// Legacy: no accessor, unchanged behavior.
+		execute.mockClear();
+		await expect(
+			callSessionTool("read", { path: "src/a.ts" }, { session: createSession([createTool("read", execute)]) }),
+		).resolves.toBe("ok");
+		expect(execute).toHaveBeenCalledTimes(1);
 	});
 });

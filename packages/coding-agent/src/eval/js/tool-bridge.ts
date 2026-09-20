@@ -1,5 +1,6 @@
 import type { AgentTool, AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
 import { INTENT_FIELD } from "@pk-nerdsaver-ai/pi-wire";
+import { authorizeLifecycleAction } from "../../orchestration/lifecycle-authority";
 import type { ToolSession } from "../../tools";
 import { ToolError } from "../../tools/tool-errors";
 import { EVAL_AGENT_BRIDGE_NAME, runEvalAgent } from "../agent-bridge";
@@ -119,6 +120,30 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 	}
 	if (name === EVAL_CONCURRENCY_BRIDGE_NAME) {
 		return runEvalConcurrency(args, options);
+	}
+
+	// W3 (§14.6 bridges row): when the session carries registered lifecycle
+	// authority, a tool invoked THROUGH THE BRIDGE is the same dispatch as a
+	// direct call and must pass the same guard before execution. Without
+	// this, a child could bypass its capability ceiling simply by calling a
+	// tool from JS. Absent context = legacy path, unchanged.
+	//
+	// KNOWN LIMITATION (LC07 row): AgentTool exposes no source, so this
+	// checks NAME-level membership. Source-qualified identity — an mcp tool
+	// not satisfying a builtin grant of the same name — is enforced at the
+	// registry in the LC07 row, where the source is known.
+	const lifecycleContext = options.session.getLifecycleExecutionContext?.();
+	if (lifecycleContext) {
+		const decision = authorizeLifecycleAction(lifecycleContext, {
+			tool: { source: "builtin", name },
+			action: "invoke_tool",
+			targets: [],
+			effect: "control",
+			invocationId: `js-${name}-${crypto.randomUUID()}`,
+		});
+		if (!decision.allowed) {
+			throw new ToolError(`Tool '${name}' denied by lifecycle authority (${decision.code}): ${decision.reason}`);
+		}
 	}
 	const tool = getTool(options.session, name);
 	const normalizedArgs = normalizeArgs(args);
