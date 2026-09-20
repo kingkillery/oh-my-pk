@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [16.4.26] - 2026-09-20
+
 ### Fixed
 
 - Bounded `astMatch`/`astGrep` retained result payloads to the requested page plus a truncation sentinel instead of retaining every structural match before pagination, added an opt-in `astMatch.maxMatches` traversal cap for existence checks, and reject in-memory sources or source files above 2 MiB before native parsing. Automatic TTSR checks use a stricter 1 MB UTF-8 ceiling and stop after their first match, preventing large, repetitive edit/write snapshots from amplifying native parser memory pressure.

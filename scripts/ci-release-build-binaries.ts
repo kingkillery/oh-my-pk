@@ -87,9 +87,13 @@ const baseTargets: BaseTarget[] = [
 function collectorSpec(target: BaseTarget): CollectorSpec {
 	const triple =
 		target.platform === "darwin"
-			? (target.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin")
+			? target.arch === "arm64"
+				? "aarch64-apple-darwin"
+				: "x86_64-apple-darwin"
 			: target.platform === "linux"
-				? (target.arch === "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu")
+				? target.arch === "arm64"
+					? "aarch64-unknown-linux-gnu"
+					: "x86_64-unknown-linux-gnu"
 				: "x86_64-pc-windows-gnu";
 	return {
 		triple,

@@ -30,9 +30,7 @@ describe("planBinaryPublish", () => {
 
 		const plan = planBinaryPublish("win32-x64,linux-x64", existing, false);
 
-		expect(plan.skippedExisting).toEqual([
-			{ id: "linux-x64", files: ["omp-linux-x64", "ompk-collector-linux-x64"] },
-		]);
+		expect(plan.skippedExisting).toEqual([{ id: "linux-x64", files: ["omp-linux-x64", "ompk-collector-linux-x64"] }]);
 		expect(plan.toBuild).toEqual([
 			{ id: "win32-x64", files: ["omp-windows-x64.exe", "ompk-collector-win32-x64.exe"] },
 		]);
