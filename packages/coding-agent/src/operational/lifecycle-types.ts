@@ -538,6 +538,9 @@ export interface LaunchMutationGuard {
 
 export interface GrantIssueRequest {
 	readonly idempotencyKey: string;
+	/** Authenticated issuer identity, supplied by the runtime preflight. */
+	readonly issuerPrincipalId: string;
+	readonly recipientPrincipalId: string;
 	readonly recipientBindingId: string;
 	readonly resource: ResourceSelectorV1;
 	readonly operations: readonly ResourceOperation[];

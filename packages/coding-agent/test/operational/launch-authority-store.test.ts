@@ -483,6 +483,258 @@ describe("launch authority commit protocol (§14.5)", () => {
 	});
 });
 
+describe("launch grant lifecycle (§14.5)", () => {
+	const GUARD = { actor: {} as never, expectedPolicyEpoch: 1, idempotencyKey: "guard-1" };
+
+	/** A grant must attach to a real binding; the schema enforces this. */
+	function admitBinding(store: OperationalStore, objective: string): string {
+		const admitted = store.admitLaunchAuthority({
+			guard: GUARD,
+			compiled: createTestCompiledContract({ objective }),
+			reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
+			lifecycle: null,
+			restoresBindingId: null,
+		});
+		if (!admitted.ok) throw new Error(`binding fixture failed: ${admitted.code}`);
+		// In the authority-only path the envelope's attempt id carries the
+		// binding identity.
+		return admitted.launch.envelope.attemptId;
+	}
+
+	function grantRequest(overrides: Partial<Parameters<OperationalStore["appendLaunchGrant"]>[0]["request"]> = {}) {
+		return {
+			idempotencyKey: "grant-key-1",
+			issuerPrincipalId: "principal-parent",
+			recipientPrincipalId: "principal-child",
+			recipientBindingId: "binding-1",
+			resource: {
+				kind: "workspace" as const,
+				resourceId: "repo:main",
+				versionDigest: null,
+				scope: { roots: ["src/"], exactIds: [], maxBytes: null, range: null },
+			},
+			operations: ["read" as const],
+			delegableOperations: ["read" as const],
+			recipientConstraints: [],
+			remainingDelegationDepth: 2,
+			domains: ["public-task" as const],
+			sourceGrantIds: [],
+			contractRevision: 1,
+			attemptId: "att-1",
+			expiresAt: null,
+			purpose: "read the worker's own source scope",
+			...overrides,
+		};
+	}
+
+	it("issues a grant and reads it back through the strict parser", () => {
+		const store = OperationalStore.open({ dbPath: tempPath("grant-issue") });
+		try {
+			const bindingId = admitBinding(store, "Grant issue fixture");
+			const issued = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({ recipientBindingId: bindingId }),
+			});
+			expect(issued.ok).toBe(true);
+			if (!issued.ok) return;
+
+			// The persisted canonical JSON must satisfy parseGrantRecordV1;
+			// an issuer/recipient stub or malformed field would throw here.
+			const read = store.getLaunchGrant(issued.grant.grantId);
+			expect(read.issuerPrincipalId).toBe("principal-parent");
+			expect(read.recipientPrincipalId).toBe("principal-child");
+			expect(read.remainingDelegationDepth).toBe(2);
+			expect(read.recordDigest).toBe(issued.grant.recordDigest);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("replays identical content and refuses different content under the same key", () => {
+		const store = OperationalStore.open({ dbPath: tempPath("grant-idem") });
+		try {
+			const bindingId = admitBinding(store, "Grant idempotency fixture");
+			const first = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({ recipientBindingId: bindingId }),
+			});
+			expect(first.ok).toBe(true);
+
+			const replay = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({ recipientBindingId: bindingId }),
+			});
+			expect(replay.ok).toBe(true);
+			if (!replay.ok || !first.ok) return;
+			expect(replay.grant.grantId).toBe(first.grant.grantId);
+			expect(replay.grant.recordDigest).toBe(first.grant.recordDigest);
+			const conflict = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({
+					recipientBindingId: bindingId,
+					purpose: "different purpose, same key",
+				}),
+			});
+			expect(conflict.ok).toBe(false);
+			if (conflict.ok) return;
+			expect(conflict.code).toBe("grant_issue_failed");
+			expect(conflict.diagnostics[0]?.message).toMatch(/grant_conflict/);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refuses to derive from a nonexistent or revoked source grant", () => {
+		const store = OperationalStore.open({ dbPath: tempPath("grant-source") });
+		try {
+			const bindingId = admitBinding(store, "Grant source fixture");
+			const missing = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({ recipientBindingId: bindingId, sourceGrantIds: ["grant-nonexistent"] }),
+			});
+			expect(missing.ok).toBe(false);
+			if (!missing.ok) expect(missing.diagnostics[0]?.message).toMatch(/grant_source_not_found/);
+
+			const root = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({ recipientBindingId: bindingId, idempotencyKey: "root-key" }),
+			});
+			expect(root.ok).toBe(true);
+			if (!root.ok) return;
+			store.revokeLaunchGrant({ guard: GUARD, grantId: root.grant.grantId, reason: "operator revoked" });
+
+			const derived = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({
+					recipientBindingId: bindingId,
+					idempotencyKey: "derived-key",
+					sourceGrantIds: [root.grant.grantId],
+				}),
+			});
+			expect(derived.ok).toBe(false);
+			if (!derived.ok) expect(derived.diagnostics[0]?.message).toMatch(/grant_source_revoked/);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("narrows delegation depth at each derivation and refuses non-narrowing requests", () => {
+		const store = OperationalStore.open({ dbPath: tempPath("grant-depth") });
+		try {
+			const bindingId = admitBinding(store, "Grant depth fixture");
+			const root = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({
+					recipientBindingId: bindingId,
+					idempotencyKey: "root-2",
+					remainingDelegationDepth: 2,
+				}),
+			});
+			expect(root.ok).toBe(true);
+			if (!root.ok) return;
+
+			const child = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({
+					recipientBindingId: bindingId,
+					idempotencyKey: "child-1",
+					sourceGrantIds: [root.grant.grantId],
+					remainingDelegationDepth: 1,
+				}),
+			});
+			expect(child.ok).toBe(true);
+
+			// Requesting the SAME depth as the source would let a chain hold
+			// its parent's depth forever.
+			const notNarrower = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({
+					recipientBindingId: bindingId,
+					idempotencyKey: "child-2",
+					sourceGrantIds: [root.grant.grantId],
+					remainingDelegationDepth: 2,
+				}),
+			});
+			expect(notNarrower.ok).toBe(false);
+			if (!notNarrower.ok) {
+				expect(notNarrower.diagnostics[0]?.message).toMatch(/delegation_depth_exceeded/);
+			}
+		} finally {
+			store.close();
+		}
+	});
+
+	it("revokes derived grants transitively in one transaction", () => {
+		const store = OperationalStore.open({ dbPath: tempPath("grant-revoke") });
+		try {
+			const bindingId = admitBinding(store, "Grant revoke fixture");
+			const root = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({
+					recipientBindingId: bindingId,
+					idempotencyKey: "rev-root",
+					remainingDelegationDepth: 3,
+				}),
+			});
+			const mid = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({
+					recipientBindingId: bindingId,
+					idempotencyKey: "rev-mid",
+					sourceGrantIds: [root.ok ? root.grant.grantId : "unreachable"],
+					remainingDelegationDepth: 2,
+				}),
+			});
+			const leaf = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({
+					recipientBindingId: bindingId,
+					idempotencyKey: "rev-leaf",
+					sourceGrantIds: [mid.ok ? mid.grant.grantId : "unreachable"],
+					remainingDelegationDepth: 1,
+					delegableOperations: [],
+				}),
+			});
+			expect([root.ok, mid.ok, leaf.ok]).toEqual([true, true, true]);
+			if (!root.ok || !mid.ok) return;
+
+			store.revokeLaunchGrant({ guard: GUARD, grantId: root.grant.grantId, reason: "root revoked" });
+
+			// Revoking the ROOT must close the whole chain: a revoked source
+			// must not keep authorising through its children.
+			const deriveAfterRevoke = store.appendLaunchGrant({
+				guard: GUARD,
+				request: grantRequest({
+					recipientBindingId: bindingId,
+					idempotencyKey: "after-revoke",
+					sourceGrantIds: [mid.grant.grantId],
+					remainingDelegationDepth: 1,
+				}),
+			});
+			expect(deriveAfterRevoke.ok).toBe(false);
+			if (!deriveAfterRevoke.ok) {
+				expect(deriveAfterRevoke.diagnostics[0]?.message).toMatch(/grant_source_revoked/);
+			}
+
+			// Double revocation is a no-op, not an error.
+			store.revokeLaunchGrant({ guard: GUARD, grantId: root.grant.grantId, reason: "again" });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("throws a typed read error for an unknown grant", () => {
+		const store = OperationalStore.open({ dbPath: tempPath("grant-missing") });
+		try {
+			expect(() => store.getLaunchGrant("nope")).toThrowError(
+				expect.objectContaining({ code: "launch_grant_not_found" }),
+			);
+		} finally {
+			store.close();
+		}
+	});
+});
+
 describe("launch authority under cross-process contention (§14.5)", () => {
 	// The race runs in a STANDALONE runner rather than inside bun test:
 	// contender children spawned directly from the test process stalled

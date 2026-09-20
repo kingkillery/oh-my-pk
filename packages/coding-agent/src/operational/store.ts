@@ -10,26 +10,32 @@ import {
 	type CompiledLaunchContract,
 	canonicalJson,
 	compareRuntimeGuarantees,
+	type GrantRecordV1,
 	LAUNCH_CONTRACT_VERSION,
 	type LaunchBinding,
 	type LaunchBindingInput,
 	type LifecycleHandoffV1,
 	type ObligationV1,
+	parseGrantRecordV1,
 	parseObligationV1,
 	parseReservationVector,
 	parseRunLimitsV1,
 	type RunLimitsV1,
 	type RuntimeGuaranteesV1,
+	sha256Hex,
 } from "../task/launch-contract";
 import type {
 	CaptureDimension,
 	DeliveryDimension,
 	ExecutionDimension,
+	GrantIssueRequest,
+	GrantIssueResult,
 	LaunchAuthorityAdmissionInput,
 	LaunchAuthorityAdmissionResult,
 	LaunchAuthorityFailure,
 	LaunchBindingActivationInput,
 	LaunchBindingActivationResult,
+	LaunchMutationGuard,
 	LifecycleAdmissionInput,
 	LifecycleAdmissionResult,
 	LifecycleCancellationInput,
@@ -2522,6 +2528,215 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 			leaseEpoch: lifecycle?.leaseEpoch ?? 1,
 			cancellationGeneration: lifecycle?.cancellationGeneration ?? 0,
 		};
+	}
+
+	/**
+	 * Deterministically derives the grant identity and digest a request
+	 * would produce, without writing anything. Used for idempotency
+	 * comparison so a replay is decided by content, not by trusting a prior
+	 * row's self-consistency.
+	 */
+	#candidateGrant(input: { guard: LaunchMutationGuard; request: GrantIssueRequest }): GrantRecordV1 {
+		const { request, guard } = input;
+		const body = {
+			schemaVersion: 1 as const,
+			grantId: `grant-${request.idempotencyKey}`,
+			issuerPrincipalId: request.issuerPrincipalId,
+			recipientPrincipalId: request.recipientPrincipalId,
+			recipientBindingId: request.recipientBindingId,
+			attemptId: request.attemptId,
+			contractRevision: request.contractRevision,
+			policyEpoch: guard.expectedPolicyEpoch,
+			resource: request.resource,
+			operations: request.operations,
+			delegableOperations: request.delegableOperations,
+			recipientConstraints: request.recipientConstraints,
+			remainingDelegationDepth: request.remainingDelegationDepth,
+			domains: request.domains,
+			sourceGrantIds: request.sourceGrantIds,
+			expiresAt: request.expiresAt,
+			purpose: request.purpose,
+		};
+		return Object.freeze({ ...body, recordDigest: sha256Hex(canonicalJson(body)) });
+	}
+
+	/**
+	 * Issue a grant (§14.5). Validates every source grant's existence,
+	 * liveness and depth before writing, records lineage edges for each
+	 * source, and appends an immutable `issued` event. Grant content is
+	 * never updated afterwards.
+	 */
+	appendLaunchGrant(input: { guard: LaunchMutationGuard; request: GrantIssueRequest }): GrantIssueResult {
+		this.#assertOpen();
+		const { request } = input;
+		const now = Date.now();
+		try {
+			return this.#db
+				.transaction((): GrantIssueResult => {
+					// Idempotency: the same request content under the same
+					// idempotency key returns the recorded grant rather than
+					// issuing a second one. Different content under the same
+					// key is a conflict the caller must resolve.
+					const candidate = this.#candidateGrant(input);
+					const existing = this.#db
+						.prepare("SELECT record_digest FROM launch_grants WHERE grant_id = ?")
+						.get(candidate.grantId) as { record_digest: string } | undefined;
+					if (existing) {
+						if (existing.record_digest !== candidate.recordDigest) {
+							throw new Error(
+								`grant_conflict: idempotency key '${request.idempotencyKey}' already holds different content`,
+							);
+						}
+						return { ok: true, grant: { grantId: candidate.grantId, recordDigest: candidate.recordDigest } };
+					}
+
+					let sourceDepth = Number.POSITIVE_INFINITY;
+					for (const sourceId of request.sourceGrantIds) {
+						const source = this.#db
+							.prepare("SELECT record_digest, revoked_at FROM launch_grants WHERE grant_id = ?")
+							.get(sourceId) as { record_digest: string; revoked_at: number | null } | undefined;
+						if (!source) {
+							throw new Error(`grant_source_not_found: source grant '${sourceId}' does not exist`);
+						}
+						if (source.revoked_at !== null) {
+							// A revoked source must not authorize new
+							// derivations, even if its content looks valid.
+							throw new Error(`grant_source_revoked: source grant '${sourceId}' is revoked`);
+						}
+						const sourceRecord = JSON.parse(
+							(
+								this.#db
+									.prepare("SELECT canonical_json FROM launch_grants WHERE grant_id = ?")
+									.get(sourceId) as { canonical_json: string }
+							).canonical_json,
+						) as GrantRecordV1;
+						sourceDepth = Math.min(sourceDepth, sourceRecord.remainingDelegationDepth - 1);
+					}
+					if (request.sourceGrantIds.length > 0 && request.remainingDelegationDepth > sourceDepth) {
+						throw new Error(
+							`delegation_depth_exceeded: requested depth ${request.remainingDelegationDepth} exceeds the narrowed source depth ${sourceDepth}`,
+						);
+					}
+
+					const withDigest = candidate;
+
+					this.#db
+						.prepare(
+							`INSERT INTO launch_grants (grant_id, record_digest, recipient_binding_id, issuer_principal_id, recipient_principal_id, attempt_id, contract_revision, policy_epoch, canonical_json, expires_at, created_at)
+							 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						)
+						.run(
+							withDigest.grantId,
+							withDigest.recordDigest,
+							request.recipientBindingId,
+							request.issuerPrincipalId,
+							request.recipientPrincipalId,
+							request.attemptId,
+							request.contractRevision,
+							input.guard.expectedPolicyEpoch,
+							canonicalJson(withDigest),
+							request.expiresAt,
+							now,
+						);
+					this.#db
+						.prepare(
+							`INSERT INTO launch_grant_events (event_id, grant_id, kind, actor_principal_id, policy_epoch, reason, record_digest, occurred_at)
+							 VALUES (?, ?, 'issued', ?, ?, ?, ?, ?)`,
+						)
+						.run(
+							`event-${withDigest.grantId}-issued`,
+							withDigest.grantId,
+							request.issuerPrincipalId,
+							input.guard.expectedPolicyEpoch,
+							request.purpose,
+							withDigest.recordDigest,
+							now,
+						);
+					for (const sourceId of request.sourceGrantIds) {
+						this.#db
+							.prepare(
+								"INSERT OR IGNORE INTO launch_grant_edges (source_grant_id, derived_grant_id) VALUES (?, ?)",
+							)
+							.run(sourceId, withDigest.grantId);
+					}
+					return { ok: true, grant: { grantId: withDigest.grantId, recordDigest: withDigest.recordDigest } };
+				})
+				.immediate();
+		} catch (error) {
+			return {
+				ok: false,
+				code: "grant_issue_failed",
+				diagnostics: [
+					{
+						code: "grant_issue_failed",
+						message: error instanceof Error ? error.message : String(error),
+						path: "appendLaunchGrant",
+					},
+				],
+			};
+		}
+	}
+
+	/**
+	 * Revoke a grant. Content stays untouched; the revocation is an event,
+	 * and every grant derived from this one is transitively revoked too — a
+	 * revoked source must not keep authorising through its children.
+	 */
+	revokeLaunchGrant(input: { guard: LaunchMutationGuard; grantId: string; reason: string }): void {
+		this.#assertOpen();
+		const now = Date.now();
+		this.#db
+			.transaction(() => {
+				const target = this.#db
+					.prepare("SELECT revoked_at FROM launch_grants WHERE grant_id = ?")
+					.get(input.grantId) as { revoked_at: number | null } | undefined;
+				if (!target) {
+					throw new LifecycleReadError("launch_grant_not_found", `grant '${input.grantId}' not found`);
+				}
+				if (target.revoked_at !== null) return;
+
+				// BFS over lineage edges so derived grants fall with their
+				// source, in the same transaction.
+				const queue = [input.grantId];
+				const revoked = new Set<string>();
+				while (queue.length > 0) {
+					const current = queue.shift() as string;
+					if (revoked.has(current)) continue;
+					revoked.add(current);
+					this.#db
+						.prepare("UPDATE launch_grants SET revoked_at = ? WHERE grant_id = ? AND revoked_at IS NULL")
+						.run(now, current);
+					this.#db
+						.prepare(
+							`INSERT INTO launch_grant_events (event_id, grant_id, kind, actor_principal_id, policy_epoch, reason, record_digest, occurred_at)
+							 VALUES (?, ?, 'revoked', ?, ?, ?, '', ?)`,
+						)
+						.run(
+							`event-${current}-revoked-${now}`,
+							current,
+							"",
+							input.guard.expectedPolicyEpoch,
+							input.reason,
+							now,
+						);
+					const children = (
+						this.#db
+							.prepare("SELECT derived_grant_id FROM launch_grant_edges WHERE source_grant_id = ?")
+							.all(current) as { derived_grant_id: string }[]
+					).map(row => row.derived_grant_id);
+					queue.push(...children);
+				}
+			})
+			.immediate();
+	}
+
+	getLaunchGrant(grantId: string): GrantRecordV1 {
+		this.#assertOpen();
+		const row = this.#db
+			.prepare("SELECT canonical_json, revoked_at FROM launch_grants WHERE grant_id = ?")
+			.get(grantId) as { canonical_json: string; revoked_at: number | null } | undefined;
+		if (!row) throw new LifecycleReadError("launch_grant_not_found", `grant '${grantId}' not found`);
+		return parseGrantRecordV1(JSON.parse(row.canonical_json));
 	}
 
 	/**
