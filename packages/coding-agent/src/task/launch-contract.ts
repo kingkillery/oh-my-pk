@@ -196,7 +196,14 @@ export type LaunchCompileResult =
 	| { readonly ok: true; readonly compiled: CompiledLaunchContract }
 	| { readonly ok: false; readonly diagnostics: readonly LaunchContractDiagnostic[] };
 
-export interface LaunchBinding {
+/**
+ * Store-admitted runtime identities handed to `bindLaunchContract`.
+ *
+ * This is the bind INPUT, not the persisted authority record: the durable
+ * record is `LaunchBinding` (§14.2), which carries these fields in its
+ * `lifecycle` block alongside principal, grant and guarantee state.
+ */
+export interface LaunchBindingInput {
 	readonly runId: string;
 	readonly nodeId: string;
 	readonly ownerNodeId: string | null;
@@ -1383,7 +1390,10 @@ export function compileLaunchContract(input: LaunchCompileInput): LaunchCompileR
 	return { ok: true, compiled };
 }
 
-function validateBinding(value: unknown): { diagnostics: LaunchContractDiagnostic[]; binding: LaunchBinding | null } {
+function validateBinding(value: unknown): {
+	diagnostics: LaunchContractDiagnostic[];
+	binding: LaunchBindingInput | null;
+} {
 	const diagnostics: LaunchContractDiagnostic[] = [];
 	if (!isPlainObject(value)) {
 		return { diagnostics: [diag("invalid_binding", "Binding must be an object.", "binding")], binding: null };
@@ -1435,7 +1445,7 @@ function validateBinding(value: unknown): { diagnostics: LaunchContractDiagnosti
 	};
 }
 
-export function bindLaunchContract(compiled: CompiledLaunchContract, binding: LaunchBinding): LaunchContract {
+export function bindLaunchContract(compiled: CompiledLaunchContract, binding: LaunchBindingInput): LaunchContract {
 	const checked = validateBinding(binding);
 	if (!checked.binding) throw new Error(checked.diagnostics[0]?.code ?? "invalid_binding");
 	const validBinding = checked.binding;
@@ -2256,4 +2266,168 @@ export interface LaunchAuthorityRefV1 {
 	readonly contractRevision: number;
 	readonly contractDigest: string;
 	readonly policyEpoch: number;
+}
+
+/**
+ * The authority a principal may exercise and hand onward, without any
+ * delegated-launch framing. The root has an envelope but no launch class or
+ * context mode, so root authority is never described as if it were a
+ * delegated child's.
+ */
+export interface AuthorityEnvelopeV1 {
+	readonly schemaVersion: 1;
+	readonly usableCapabilities: readonly ToolCapability[];
+	readonly delegableCapabilities: readonly ToolCapability[];
+	readonly resources: readonly ResourceAuthorityV1[];
+	readonly collaboration: CommunicationAuthorityV1;
+	readonly spawn: SpawnAuthorityV1;
+	readonly budget: LaunchBudgetV1;
+	readonly result: ResultAuthorityV1;
+}
+
+/**
+ * Everything the compiler needs to decide a launch, assembled by the runtime
+ * preflight.
+ *
+ * This is created by the host, never accepted from model, extension or
+ * remote JSON. The compiler validates structure and subset relationships and
+ * stays pure; authenticating the issuer and checking currentness belong to
+ * the authorizer and the commit transaction.
+ */
+export interface LaunchAuthorizationSnapshotV1 {
+	readonly schemaVersion: 1;
+	readonly authorizationRef: string;
+	readonly issuerPrincipalId: string;
+	readonly rootPrincipalId: string;
+	readonly parentPrincipalId: string;
+	readonly childPrincipalId: string;
+	readonly contractId: string;
+	readonly contractRevision: number;
+	readonly priorContractDigest: string | null;
+	readonly issuerPolicyEpoch: number;
+	/** Host-registered route key (§14.6). An unknown entry point denies. */
+	readonly entryPoint: string;
+	readonly reason: string;
+	readonly requestedAuthority: LaunchAuthorityV1;
+	readonly sourceGrants: readonly GrantRecordV1[];
+	readonly parentDelegable: AuthorityEnvelopeV1;
+	readonly hostMaximum: AuthorityEnvelopeV1;
+	readonly agentMaximum: AuthorityEnvelopeV1;
+	readonly workflowMaximum: AuthorityEnvelopeV1;
+	readonly toolCatalogDigest: string;
+}
+
+export type LaunchBindingState =
+	| "authorized"
+	| "bound"
+	| "active"
+	| "suspended"
+	| "revoked"
+	| "superseded"
+	| "failed"
+	| "terminal";
+export const KNOWN_LAUNCH_BINDING_STATES: readonly LaunchBindingState[] = [
+	"authorized",
+	"bound",
+	"active",
+	"suspended",
+	"revoked",
+	"superseded",
+	"failed",
+	"terminal",
+] as const;
+
+/**
+ * The persisted link between a compiled contract and one running child.
+ *
+ * `actualRuntimeGuarantees` may be null while `authorized`, or if the binding
+ * reached a terminal state BEFORE its probes ran; `bound`, `active` and
+ * `suspended` always require measured guarantees with evidence. That keeps a
+ * pre-probe cancellation an honest audit row instead of a record carrying
+ * guarantees nobody measured.
+ *
+ * Graph and lease data is mandatory only for hierarchical jobs, so a
+ * legacy-compatible child can hold a binding without a scheduler job.
+ *
+ * JSON is inert: executable handles live only in a host-private registry.
+ */
+export interface LaunchBinding {
+	readonly schemaVersion: 1;
+	readonly bindingId: string;
+	readonly contractId: string;
+	readonly contractRevision: number;
+	readonly contractDigest: string;
+	readonly rootPrincipalId: string;
+	readonly parentPrincipalId: string;
+	readonly childPrincipalId: string;
+	readonly attemptId: string;
+	readonly sessionId: string | null;
+	readonly processRef: string | null;
+	readonly policyEpoch: number;
+	readonly contextGeneration: number;
+	readonly state: LaunchBindingState;
+	/** Maps each policy-level disclosure intent to its issued runtime grant. */
+	readonly grantBindings: readonly {
+		readonly intentId: string;
+		readonly grantId: string;
+		readonly recordDigest: string;
+	}[];
+	readonly serviceBindings: readonly {
+		readonly kind: ResourceKind;
+		readonly adapterId: string;
+		readonly namespace: string;
+		readonly guarantee: string;
+	}[];
+	readonly actualRuntimeGuarantees: RuntimeGuaranteesV1 | null;
+	readonly guaranteeEvidenceRefs: readonly ArtifactRefV1[];
+	readonly reservationId: string | null;
+	readonly lifecycle: {
+		readonly runId: string;
+		readonly nodeId: string;
+		readonly ownerNodeId: string | null;
+		readonly jobId: string;
+		readonly leaseEpoch: number;
+		readonly cancellationGeneration: number;
+	} | null;
+	readonly expiresAt: number | null;
+	readonly restoresBindingId: string | null;
+}
+
+/**
+ * An issued, immutable authority record.
+ *
+ * `remainingDelegationDepth` decrements at every derivation; zero forbids
+ * onward issuance. Content is immutable — revocation and supersession are
+ * recorded as separate events rather than by editing the grant.
+ */
+export interface GrantRecordV1 {
+	readonly schemaVersion: 1;
+	readonly grantId: string;
+	readonly recordDigest: string;
+	readonly issuerPrincipalId: string;
+	readonly recipientPrincipalId: string;
+	readonly recipientBindingId: string;
+	readonly attemptId: string;
+	readonly contractRevision: number;
+	readonly policyEpoch: number;
+	readonly resource: ResourceSelectorV1;
+	readonly operations: readonly ResourceOperation[];
+	readonly delegableOperations: readonly ResourceOperation[];
+	readonly recipientConstraints: readonly string[];
+	readonly remainingDelegationDepth: number;
+	readonly domains: readonly DisclosureDomain[];
+	readonly sourceGrantIds: readonly string[];
+	readonly expiresAt: number | null;
+	readonly purpose: string;
+}
+
+export interface GrantEventV1 {
+	readonly eventId: string;
+	readonly grantId: string;
+	readonly kind: "issued" | "revoked" | "superseded";
+	readonly actorPrincipalId: string;
+	readonly policyEpoch: number;
+	readonly reason: string;
+	readonly recordDigest: string;
+	readonly occurredAt: number;
 }

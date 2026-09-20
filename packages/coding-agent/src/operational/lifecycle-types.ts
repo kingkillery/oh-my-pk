@@ -3,18 +3,26 @@
  * — frozen W1 contract surface.
  */
 
+import type { LifecycleExecutionContext } from "../orchestration/lifecycle-authority";
 import type { VerificationReceiptV1 } from "../orchestration/snapshot-completion";
 import { parseVerificationReceiptV1 } from "../orchestration/snapshot-completion";
 import type {
 	AgentRole,
 	ArtifactRefV1,
 	CompiledLaunchContract,
+	DisclosureDomain,
+	DisclosureKind,
+	LaunchBinding,
 	LaunchContract,
+	LaunchContractDiagnostic,
 	LifecycleFence,
 	LifecycleHandoffV1,
 	ObligationV1,
 	ReservationVector,
+	ResourceOperation,
+	ResourceSelectorV1,
 	RunLimitsV1,
+	RuntimeGuaranteesV1,
 	SnapshotRefV1,
 } from "../task/launch-contract";
 import {
@@ -505,4 +513,195 @@ export function parseLifecycleRunSnapshot(value: unknown): LifecycleRunSnapshot 
 		pendingInboxEventIds: stringArray(snapshot, "pendingInboxEventIds", "LifecycleRunSnapshot"),
 		projectionManifestRefs: stringArray(snapshot, "projectionManifestRefs", "LifecycleRunSnapshot"),
 	});
+}
+
+// ---------------------------------------------------------------------------
+// Launch authority operations (§14.5) — persisted records and their inputs.
+//
+// Every mutation is runtime-private and carries a LaunchMutationGuard holding
+// an authenticated actor. A serialized guard cannot authenticate, so these
+// shapes are never reachable from tool arguments or SDK surface.
+// ---------------------------------------------------------------------------
+
+/**
+ * Authenticates a mutation.
+ *
+ * `expectedPolicyEpoch` refers to the binding named by the operation. The
+ * issuer's own currentness is checked separately through actor registration,
+ * so a stale issuer cannot ride in on a fresh recipient epoch.
+ */
+export interface LaunchMutationGuard {
+	readonly actor: LifecycleExecutionContext;
+	readonly expectedPolicyEpoch: number;
+	readonly idempotencyKey: string;
+}
+
+export interface GrantIssueRequest {
+	readonly idempotencyKey: string;
+	readonly recipientBindingId: string;
+	readonly resource: ResourceSelectorV1;
+	readonly operations: readonly ResourceOperation[];
+	readonly delegableOperations: readonly ResourceOperation[];
+	readonly recipientConstraints: readonly string[];
+	/** Each derivation decrements every source bound; zero forbids onward issuance. */
+	readonly remainingDelegationDepth: number;
+	readonly domains: readonly DisclosureDomain[];
+	readonly sourceGrantIds: readonly string[];
+	readonly contractRevision: number;
+	readonly attemptId: string;
+	readonly expiresAt: number | null;
+	readonly purpose: string;
+}
+
+/** Grant handle. Serialization alone is inert; use requires host registration. */
+export interface RuntimeGrantRef {
+	readonly grantId: string;
+	readonly recordDigest: string;
+}
+
+/** Shared failure shape for every authority operation. */
+export interface LaunchAuthorityFailure {
+	readonly ok: false;
+	readonly code: string;
+	readonly diagnostics: readonly LaunchContractDiagnostic[];
+}
+
+export type GrantIssueResult = { readonly ok: true; readonly grant: RuntimeGrantRef } | LaunchAuthorityFailure;
+
+export interface ContextDeliveryRequest {
+	readonly deliveryId: string;
+	readonly channelId: string;
+	readonly recipientBindingId: string;
+	readonly expectedPolicyEpoch: number;
+	readonly attemptId: string;
+	readonly contractRevision: number;
+	readonly contextGeneration: number;
+	readonly grantRefs: readonly { readonly grantId: string; readonly recordDigest: string }[];
+	readonly payloadRef: ArtifactRefV1;
+	readonly resourceRefs: readonly ResourceSelectorV1[];
+	readonly domains: readonly DisclosureDomain[];
+	readonly kind: DisclosureKind;
+}
+
+/**
+ * One admitted disclosure. Admission is the commit point: an atomic
+ * insertion into the recipient's durable context inbox plus channel-budget
+ * consumption.
+ */
+export interface DeliveryRecordV1 {
+	readonly schemaVersion: 1;
+	readonly deliveryId: string;
+	readonly channelId: string;
+	readonly senderPrincipalId: string;
+	readonly recipientPrincipalId: string;
+	readonly recipientBindingId: string;
+	readonly attemptId: string;
+	readonly contractRevision: number;
+	readonly policyEpoch: number;
+	readonly contextGeneration: number;
+	readonly payloadRef: ArtifactRefV1;
+	readonly resourceRefs: readonly ResourceSelectorV1[];
+	readonly domains: readonly DisclosureDomain[];
+	readonly kind: DisclosureKind;
+	readonly bytes: number;
+	readonly requestDigest: string;
+}
+
+/**
+ * Delivery audit states.
+ *
+ * `included` and the two provider outcomes are separate from `admitted`
+ * because a provider timeout leaves the outcome genuinely unknown: it must
+ * not refund the disclosure or imply exactly-once processing. Distinct model
+ * requests may include the same admitted delivery without debiting the
+ * channel twice.
+ */
+export type DeliveryEventKind =
+	| "requested"
+	| "authorized"
+	| "admitted"
+	| "rejected"
+	| "included"
+	| "provider-known"
+	| "provider-unknown";
+
+export interface DeliveryEventV1 {
+	readonly eventId: string;
+	readonly deliveryId: string;
+	readonly kind: DeliveryEventKind;
+	readonly requestId: string | null;
+	readonly code: string | null;
+	readonly occurredAt: number;
+}
+
+export type ContextDeliveryResult =
+	| { readonly ok: true; readonly delivery: DeliveryRecordV1; readonly replayed: boolean }
+	| LaunchAuthorityFailure;
+
+export type DisclosurePhaseResult =
+	| {
+			readonly ok: true;
+			readonly bindingId: string;
+			readonly channelId: string;
+			readonly policyEpoch: number;
+			readonly replayed: boolean;
+	  }
+	| LaunchAuthorityFailure;
+
+export type ReleaseResult =
+	| { readonly ok: true; readonly releaseId: string; readonly replayed: boolean }
+	| LaunchAuthorityFailure;
+
+export interface LaunchAuthorityAdmissionInput {
+	readonly guard: LaunchMutationGuard;
+	readonly compiled: CompiledLaunchContract;
+	readonly reservation: ReservationVector;
+	/** Null for authority-only (legacy or helper) execution with no scheduler job. */
+	readonly lifecycle: {
+		readonly runId: string;
+		readonly nodeId: string;
+		readonly ownerNodeId: string | null;
+		readonly jobId: string;
+		readonly attemptId: string;
+		readonly leaseEpoch: number;
+		readonly cancellationGeneration: number;
+		readonly reservationId: string;
+	} | null;
+	readonly restoresBindingId: string | null;
+}
+
+export type LaunchAuthorityAdmissionResult =
+	| { readonly ok: true; readonly launch: LaunchContract; readonly replayed: boolean }
+	| LaunchAuthorityFailure;
+
+/**
+ * authorized to bound stores probe results; bound to active revalidates
+ * identity, epoch and evidence before the child becomes externally visible.
+ */
+export interface LaunchBindingActivationInput {
+	readonly guard: LaunchMutationGuard;
+	readonly bindingId: string;
+	readonly expectedState: "authorized" | "bound";
+	readonly sessionId: string;
+	readonly processRef: string | null;
+	readonly serviceBindings: LaunchBinding["serviceBindings"];
+	readonly actualRuntimeGuarantees: RuntimeGuaranteesV1;
+	readonly guaranteeEvidenceRefs: readonly ArtifactRefV1[];
+}
+
+export type LaunchBindingActivationResult = LaunchAuthorityAdmissionResult;
+
+/**
+ * Every authority change creates an immutable revision plus a new
+ * attempt/binding. The delta is computed from the old and new canonical
+ * records, never taken from the caller.
+ */
+export interface LaunchRevisionRequest {
+	readonly bindingId: string;
+	readonly expectedContractDigest: string;
+	readonly expectedRevision: number;
+	readonly expectedPolicyEpoch: number;
+	readonly compiled: CompiledLaunchContract;
+	readonly reason: string;
+	readonly idempotencyKey: string;
 }
