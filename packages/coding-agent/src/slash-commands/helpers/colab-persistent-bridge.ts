@@ -14,7 +14,17 @@ export interface PersistentColabBridgeOptions {
 	localPort?: number;
 }
 
-async function verifyBridge(apiBaseUrl: string, modelId: string): Promise<boolean> {
+/**
+ * Outcome of probing one candidate host.
+ *
+ * `rejected` is a definitive answer from a real listener: that port belongs to
+ * someone else, so it must never be replaced or raced, on any host. Only
+ * `unreachable` (connect refused, or a dead WSL relay that accepts without
+ * serving) may fall through to the next candidate.
+ */
+type BridgeProbe = { kind: "match" } | { kind: "rejected"; reason: string } | { kind: "unreachable" };
+
+async function probeBridge(apiBaseUrl: string, modelId: string): Promise<BridgeProbe> {
 	// Observed on this machine: a freshly bound WSL listener can be refused from
 	// Windows for a short window before localhost forwarding reflects it. Retry
 	// connect failures only; HTTP responses are definitive and never retried.
@@ -22,28 +32,41 @@ async function verifyBridge(apiBaseUrl: string, modelId: string): Promise<boolea
 	for (let attempt = 0; attempt < 8 && !health; attempt++) {
 		try {
 			health = await fetch(new URL("/health", apiBaseUrl), { signal: AbortSignal.timeout(5_000) });
-		} catch (error) {
-			if (attempt === 7) throw error;
+		} catch {
+			if (attempt === 7) return { kind: "unreachable" };
 			await Bun.sleep(1_500);
 		}
 	}
-	if (!health) throw new Error("Colab bridge health probe did not complete.");
+	if (!health) return { kind: "unreachable" };
 	await health.arrayBuffer();
-	if (!health.ok) throw new Error(`Existing Colab bridge is not ready (HTTP ${health.status}); it was not replaced.`);
-	const response = await fetch(`${apiBaseUrl}/models`, { signal: AbortSignal.timeout(5_000) });
-	const payload: unknown = await response.json();
-	if (
-		!response.ok ||
-		!payload ||
-		typeof payload !== "object" ||
-		!("data" in payload) ||
-		!Array.isArray(payload.data)
-	) {
-		throw new Error("Existing listener did not provide an OpenAI model list; it was not replaced.");
+	if (!health.ok)
+		return {
+			kind: "rejected",
+			reason: `Existing Colab bridge is not ready (HTTP ${health.status}); it was not replaced.`,
+		};
+	let payload: unknown;
+	try {
+		const response = await fetch(`${apiBaseUrl}/models`, { signal: AbortSignal.timeout(5_000) });
+		if (!response.ok)
+			return {
+				kind: "rejected",
+				reason: `Existing Colab bridge is not ready (HTTP ${response.status}); it was not replaced.`,
+			};
+		payload = await response.json();
+	} catch {
+		return { kind: "unreachable" };
 	}
-	return payload.data.some(
+	if (!payload || typeof payload !== "object" || !("data" in payload) || !Array.isArray(payload.data))
+		return {
+			kind: "rejected",
+			reason: "Existing listener did not provide an OpenAI model list; it was not replaced.",
+		};
+	const serves = payload.data.some(
 		(entry: unknown) => entry !== null && typeof entry === "object" && "id" in entry && entry.id === modelId,
 	);
+	return serves
+		? { kind: "match" }
+		: { kind: "rejected", reason: "Existing bridge serves a different model; it was not replaced." };
 }
 
 /**
@@ -108,8 +131,10 @@ export async function startPersistentColabBridge(
 	for (const hostname of hosts) {
 		if (!(await hasListener(hostname, localPort))) continue;
 		const candidate = `http://${hostname}:${localPort}/v1`;
-		if (!(await verifyBridge(candidate, options.modelId).catch(() => false))) continue;
-		return { apiBaseUrl: candidate, reused: true, async stop() {} };
+		const probe = await probeBridge(candidate, options.modelId);
+		// Never take over a port that answered us: fail instead of racing it.
+		if (probe.kind === "rejected") throw new Error(probe.reason);
+		if (probe.kind === "match") return { apiBaseUrl: candidate, reused: true, async stop() {} };
 	}
 	const python =
 		Bun.env.OMPK_COLAB_PYTHON?.trim() || (process.platform === "win32" ? "/opt/colab-cli/bin/python" : "python3");
@@ -186,16 +211,21 @@ export async function startPersistentColabBridge(
 			}
 		})().catch(() => {});
 		let apiBaseUrl = "";
+		let rejection = "";
 		for (const hostname of hosts) {
-			const candidate = `http://${hostname}:${localPort}/v1`;
 			if (!(await hasListener(hostname, localPort))) continue;
-			if (!(await verifyBridge(candidate, options.modelId).catch(() => false))) continue;
-			apiBaseUrl = candidate;
-			break;
+			const candidate = `http://${hostname}:${localPort}/v1`;
+			const probe = await probeBridge(candidate, options.modelId);
+			if (probe.kind === "match") {
+				apiBaseUrl = candidate;
+				break;
+			}
+			if (probe.kind === "rejected" && !rejection) rejection = probe.reason;
 		}
 		if (!apiBaseUrl)
 			throw new Error(
-				`Colab bridge is not reachable on ${hosts.join(", ")}:${localPort} (WSL localhost forwarding may be down).`,
+				rejection ||
+					`Colab bridge is not reachable on ${hosts.join(", ")}:${localPort} (WSL localhost forwarding may be down).`,
 			);
 		return { apiBaseUrl, reused: false, stop };
 	} catch (error) {
