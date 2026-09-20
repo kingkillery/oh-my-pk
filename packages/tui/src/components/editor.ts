@@ -1213,7 +1213,10 @@ export class Editor implements Component, Focusable {
 
 						result.onApplied?.();
 
-						if (shouldChainSlashCommandAutocomplete && this.#isCompletedSlashCommandAtCursor()) {
+						if (
+							(shouldChainSlashCommandAutocomplete && this.#isCompletedSlashCommandAtCursor()) ||
+							this.#isUrlDirectoryAtCursor()
+						) {
 							void this.#tryTriggerAutocomplete();
 						}
 					}
@@ -1275,6 +1278,7 @@ export class Editor implements Component, Focusable {
 						}
 
 						result.onApplied?.();
+						if (this.#isUrlDirectoryAtCursor()) void this.#tryTriggerAutocomplete();
 					}
 					return;
 				}
@@ -2928,6 +2932,11 @@ export class Editor implements Component, Focusable {
 	 */
 	#textTriggersUrlAutocomplete(textBeforeCursor: string): boolean {
 		return /(?:^|[\s"'`(<=])[a-z][a-z0-9+.-]*:\/{1,2}[^\s"'`()<>]*$/i.test(textBeforeCursor);
+	}
+
+	#isUrlDirectoryAtCursor(): boolean {
+		const beforeCursor = (this.#state.lines[this.#state.cursorLine] ?? "").slice(0, this.#state.cursorCol);
+		return beforeCursor.endsWith("/") && this.#textTriggersUrlAutocomplete(beforeCursor);
 	}
 
 	async #tryTriggerAutocomplete(explicitTab: boolean = false): Promise<void> {

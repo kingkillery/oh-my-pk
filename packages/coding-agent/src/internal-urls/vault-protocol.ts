@@ -1,11 +1,19 @@
 import * as fs from "node:fs";
+import { homedir } from "node:os";
 import * as path from "node:path";
 import { $which, isEnoent } from "@pk-nerdsaver-ai/pi-utils";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { getDefault } from "../config/settings-schema";
 import { parseInternalUrl } from "./parse";
 import { validateRelativePath } from "./skill-protocol";
-import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext, WriteContext } from "./types";
+import type {
+	InternalResource,
+	InternalUrl,
+	ProtocolHandler,
+	ResolveContext,
+	UrlCompletion,
+	WriteContext,
+} from "./types";
 
 const DARWIN_OBSIDIAN_BINARY = "/Applications/Obsidian.app/Contents/MacOS/obsidian";
 const DEFAULT_OBSIDIAN_TIMEOUT_MS = 30_000;
@@ -89,6 +97,8 @@ export interface ObsidianSpawnResult {
 export interface VaultProtocolHandlerOptions {
 	spawnObsidian?: typeof spawnObsidian;
 	resolveObsidianBinary?: () => string | null;
+	/** Local Obsidian registry override for embedded hosts and tests. */
+	obsidianConfigPath?: string;
 }
 
 interface CliInvocation {
@@ -127,14 +137,17 @@ function ensureWithinRoot(targetPath: string, rootPath: string): void {
 }
 
 function encodePathComponent(component: string): string {
-	return encodeURIComponent(component).replaceAll("%2F", "/");
+	return encodeURIComponent(component).replace(
+		/[!'()*]/g,
+		char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+	);
 }
 
 function encodeRelativePath(relativePath: string): string {
 	return relativePath
 		.split("/")
 		.filter(segment => segment.length > 0)
-		.map(encodeURIComponent)
+		.map(encodePathComponent)
 		.join("/");
 }
 
@@ -653,16 +666,30 @@ export function buildObsidianCliInvocation(
 	}
 }
 
+function obsidianConfigPath(): string {
+	const home = homedir();
+	const configRoot =
+		process.platform === "win32"
+			? (process.env.APPDATA ?? path.join(home, "AppData", "Roaming"))
+			: process.platform === "darwin"
+				? path.join(home, "Library", "Application Support")
+				: (process.env.XDG_CONFIG_HOME ?? path.join(home, ".config"));
+	return path.join(configRoot, "obsidian", "obsidian.json");
+}
+
 export class VaultProtocolHandler implements ProtocolHandler {
 	readonly scheme = "vault";
 	readonly immutable = false;
 
 	readonly #spawnObsidian: typeof spawnObsidian;
 	readonly #resolveObsidianBinary: () => string | null;
+	readonly #obsidianConfigPath: string;
+	#localVaultDirectory: Promise<Map<string, string>> | undefined;
 
 	constructor(options: VaultProtocolHandlerOptions = {}) {
 		this.#spawnObsidian = options.spawnObsidian ?? spawnObsidian;
 		this.#resolveObsidianBinary = options.resolveObsidianBinary ?? resolveObsidianBinary;
+		this.#obsidianConfigPath = options.obsidianConfigPath ?? obsidianConfigPath();
 	}
 
 	static resetForTests(): void {
@@ -696,6 +723,77 @@ export class VaultProtocolHandler implements ProtocolHandler {
 
 	static setActiveVaultPathForTests(vaultPath: string | undefined): void {
 		cachedActiveVaultPath = vaultPath;
+	}
+
+	/** Discover desktop vaults locally; never launch the Obsidian CLI while typing. */
+	async #loadCompletionVaults(): Promise<Map<string, string>> {
+		if (cachedVaultDirectory) return cachedVaultDirectory;
+		this.#localVaultDirectory ??= (async () => {
+			const registry: unknown = await Bun.file(this.#obsidianConfigPath).json();
+			const vaults = new Map<string, string>();
+			if (!registry || typeof registry !== "object" || !("vaults" in registry)) return vaults;
+			const entries = registry.vaults;
+			if (!entries || typeof entries !== "object") return vaults;
+			for (const entry of Object.values(entries)) {
+				if (!entry || typeof entry !== "object" || !("path" in entry) || typeof entry.path !== "string") continue;
+				if (!path.isAbsolute(entry.path)) continue;
+				const root = path.resolve(entry.path);
+				const name = path.basename(root);
+				// Ambiguous names cannot be addressed safely by vault://<name>.
+				if (vaults.has(name)) throw new Error("Duplicate Obsidian vault names");
+				vaults.set(name, root);
+			}
+			cachedVaultDirectory = vaults;
+			return vaults;
+		})().finally(() => {
+			this.#localVaultDirectory = undefined;
+		});
+		return this.#localVaultDirectory;
+	}
+
+	async complete(query = "", context?: ResolveContext): Promise<UrlCompletion[]> {
+		if (!isVaultEnabled() || context?.signal?.aborted || /[?#]/.test(query)) return [];
+		try {
+			const vaults = await this.#loadCompletionVaults();
+			const slash = query.indexOf("/");
+			if (slash < 0) {
+				return Array.from(vaults.keys())
+					.sort((a, b) => a.localeCompare(b))
+					.map(name => ({
+						value: `${encodePathComponent(name)}/`,
+						label: `${name}/`,
+						description: "Obsidian vault",
+					}));
+			}
+			const host = decodeURIComponent(query.slice(0, slash));
+			const root = host === "_" ? cachedActiveVaultPath : vaults.get(host);
+			if (!root) return [];
+			const relativeQuery = decodeURIComponent(query.slice(slash + 1));
+			validateRelativePath(relativeQuery);
+			const lastSlash = relativeQuery.lastIndexOf("/");
+			const directory = lastSlash < 0 ? "" : relativeQuery.slice(0, lastSlash + 1);
+			const realRoot = await fs.promises.realpath(root);
+			const target = path.resolve(realRoot, directory);
+			ensureWithinRoot(target, realRoot);
+			const realTarget = await fs.promises.realpath(target);
+			ensureWithinRoot(realTarget, realRoot);
+			const entries = await fs.promises.readdir(realTarget, { withFileTypes: true });
+			return entries
+				.filter(entry => !entry.name.startsWith(".") && (entry.isDirectory() || entry.isFile()))
+				.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
+				.map(entry => {
+					const suffix = entry.isDirectory() ? "/" : "";
+					return {
+						value: `${encodePathComponent(host)}/${encodeRelativePath(directory + entry.name)}${suffix}`,
+						label: `${entry.name}${suffix}`,
+						description: entry.isDirectory() ? "Folder" : "Vault file",
+					};
+				});
+		} catch {
+			// Missing registry, stale roots, incomplete encodings and unsafe paths are
+			// normal while editing. Explicit reads still report actionable errors.
+			return [];
+		}
 	}
 
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {

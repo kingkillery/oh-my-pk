@@ -81,7 +81,8 @@ export function extractInternalUrlContext(textBeforeCursor: string): InternalUrl
 	const token = tokenMatch[1]!;
 	const parts = SCHEME_SPLIT_RE.exec(token);
 	if (!parts) return null;
-	const scheme = parts[1]!.toLowerCase();
+	const typedScheme = parts[1]!.toLowerCase();
+	const scheme = typedScheme === "vaults" || typedScheme === "vauts" ? "vault" : typedScheme;
 	if (!InternalUrlRouter.instance().completionSchemes().includes(scheme)) return null;
 	return { scheme, query: parts[2] ?? "", token };
 }
@@ -104,7 +105,7 @@ export async function getInternalUrlSuggestions(
 	);
 	if (!candidates || candidates.length === 0) return null;
 
-	const query = ctx.query.toLowerCase();
+	const query = decodeUrlCompletionValue(ctx.query).toLowerCase();
 	const scored: Array<{ item: AutocompleteItem; score: number }> = [];
 	for (const candidate of candidates) {
 		const target = decodeUrlCompletionValue(candidate.value).toLowerCase();
@@ -133,9 +134,8 @@ export function isInternalUrlPrefix(prefix: string): boolean {
 }
 
 /**
- * Replace the internal-url token with the selected candidate, appending a
- * trailing space (matching `@` file-reference behavior) so the user can keep
- * typing.
+ * Replace the internal-url token with the selected candidate. Vault folders
+ * remain open for drilldown; leaf references append a space for continued prose.
  */
 export function applyInternalUrlCompletion(
 	lines: string[],
@@ -147,7 +147,8 @@ export function applyInternalUrlCompletion(
 	const currentLine = lines[cursorLine] || "";
 	const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
 	const afterCursor = currentLine.slice(cursorCol);
-	const insert = `${item.value} `;
+	const isVaultDirectory = item.value.startsWith("vault://") && item.value.endsWith("/");
+	const insert = isVaultDirectory ? item.value : `${item.value} `;
 	const newLines = [...lines];
 	newLines[cursorLine] = beforePrefix + insert + afterCursor;
 	return {

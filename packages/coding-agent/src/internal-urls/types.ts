@@ -179,8 +179,9 @@ export interface ProtocolHandler {
 	 * host/path portion of a `scheme://` URL while the user composes a prompt.
 	 *
 	 * Implementations **MUST** be fast and local — this runs on every keystroke.
-	 * Schemes backed by network or external CLIs (issue://, pr://, vault://,
-	 * mcp://) omit it. The caller fuzzy-filters the returned set against the
+	 * Schemes backed by network or external CLIs (issue://, pr://, mcp://) omit it.
+	 * Vault completion uses only the local desktop registry and filesystem.
+	 * The caller fuzzy-filters the returned set against the
 	 * partially typed `query`, so handlers return their full (bounded) candidate
 	 * list; `query` is provided only so handlers can scope expensive enumeration.
 	 * `context.cwd`/`context.localProtocolOptions` carry the caller's working dir

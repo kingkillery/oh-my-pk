@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Obsidian vault-link autocomplete: type `vault:/`, `vault://`, `vaults:/`, or `vauts://` to select a locally registered vault, drill into folders, and insert a readable `vault://` reference. Requires `vault.enabled`; discovery stays local and does not launch the Obsidian CLI while typing.
+
 ## [16.4.24] - 2026-09-20
 
 ### Fixed
