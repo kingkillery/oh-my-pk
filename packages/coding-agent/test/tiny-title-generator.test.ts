@@ -6,6 +6,7 @@ import { isSubcommand } from "@pk-nerdsaver-ai/pi-coding-agent/cli-commands";
 import { getDefault, getEnumValues, getUi } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings-schema";
 import { TinyTitleDownloadProgressComponent } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/tiny-title-download-progress";
 import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
+import type { RefCountedWorkerHandle } from "@pk-nerdsaver-ai/pi-coding-agent/subprocess/worker-client";
 import {
 	TINY_MODEL_DEVICE_DEFAULT,
 	TINY_MODEL_DEVICE_SETTING_OPTIONS,
@@ -21,7 +22,21 @@ import {
 	TINY_TITLE_MODEL_OPTIONS,
 	TINY_TITLE_MODEL_VALUES,
 } from "@pk-nerdsaver-ai/pi-coding-agent/tiny/models";
-import { createTinyTitleSubprocess, tinyTitleClient } from "@pk-nerdsaver-ai/pi-coding-agent/tiny/title-client";
+import {
+	boundCompletionPrompt,
+	boundTitleMessage,
+	MAX_TITLE_INPUT_CHARS,
+	truncateToTokenBudget,
+} from "@pk-nerdsaver-ai/pi-coding-agent/tiny/text";
+import {
+	createTinyTitleSubprocess,
+	TinyTitleClient,
+	tinyTitleClient,
+} from "@pk-nerdsaver-ai/pi-coding-agent/tiny/title-client";
+import type {
+	TinyTitleWorkerInbound,
+	TinyTitleWorkerOutbound,
+} from "@pk-nerdsaver-ai/pi-coding-agent/tiny/title-protocol";
 import { generateSessionTitle } from "@pk-nerdsaver-ai/pi-coding-agent/utils/title-generator";
 import type { Subprocess } from "bun";
 
@@ -266,5 +281,186 @@ describe("tiny title download progress UI", () => {
 describe("tiny-models CLI", () => {
 	it("registers tiny-models as a top-level subcommand", () => {
 		expect(isSubcommand("tiny-models")).toBe(true);
+	});
+});
+
+describe("tiny worker input bounding", () => {
+	const countChars = (text: string) => text.length;
+
+	it("truncateToTokenBudget keeps input that fits", () => {
+		expect(truncateToTokenBudget("short message", 20, countChars)).toBe("short message");
+	});
+
+	it("truncateToTokenBudget keeps the head and stays within budget", () => {
+		const input = "a".repeat(500);
+		const result = truncateToTokenBudget(input, 100, countChars);
+		expect(countChars(result)).toBeLessThanOrEqual(100);
+		expect(result.endsWith("…")).toBe(true);
+		expect(input.startsWith(result.slice(0, -1))).toBe(true);
+	});
+
+	it("truncateToTokenBudget keeps head and tail when a tail window is requested", () => {
+		const input = `${"h".repeat(300)}${"m".repeat(400)}${"t".repeat(300)}`;
+		const result = truncateToTokenBudget(input, 200, countChars, 80);
+		expect(result.startsWith("h".repeat(50))).toBe(true);
+		expect(result.endsWith("t".repeat(50))).toBe(true);
+		expect(result).toContain("[…]");
+		expect(result.length).toBeLessThan(input.length);
+	});
+
+	it("truncateToTokenBudget never splits a surrogate pair", () => {
+		const input = `ab${"😀".repeat(100)}`;
+		const result = truncateToTokenBudget(input, 5, countChars);
+		expect(result).toBe("ab😀…");
+		expect(result).not.toContain("\uFFFD");
+		expect(/[\uD800-\uDBFF]$/.test(result.slice(0, -1))).toBe(false);
+	});
+	it("truncateToTokenBudget degrades to a char bound when the counter throws", () => {
+		const input = "x".repeat(1000);
+		const result = truncateToTokenBudget(input, 10, () => {
+			throw new Error("tokenizer exploded");
+		});
+		expect(result.length).toBeLessThanOrEqual(41);
+		expect(result.endsWith("…")).toBe(true);
+	});
+
+	it("boundTitleMessage leaves normal messages untouched", () => {
+		expect(boundTitleMessage("Investigate the flaky test", countChars)).toBe("Investigate the flaky test");
+	});
+
+	it("boundTitleMessage bounds oversized input and keeps the substantive head", () => {
+		const input = `Refactor the tokenizer pipeline ${"z".repeat(50_000)}`;
+		const result = boundTitleMessage(input, countChars);
+		expect(result.length).toBeLessThanOrEqual(MAX_TITLE_INPUT_CHARS + 1);
+		expect(result.startsWith("Refactor the tokenizer pipeline")).toBe(true);
+	});
+
+	it("boundCompletionPrompt bounds oversized prompts and keeps head plus tail", () => {
+		const input = `HEAD-INSTRUCTIONS ${"y".repeat(50_000)} TAIL-CONTEXT`;
+		const result = boundCompletionPrompt(input, countChars);
+		expect(result.length).toBeLessThanOrEqual(8192 + 32);
+		expect(result.startsWith("HEAD-INSTRUCTIONS")).toBe(true);
+		expect(result.endsWith("TAIL-CONTEXT")).toBe(true);
+		expect(result).toContain("[…]");
+	});
+});
+
+describe("tiny client pre-IPC bounding", () => {
+	function createFakeWorker(
+		sent: TinyTitleWorkerInbound[],
+		respond?: (message: TinyTitleWorkerInbound, reply: (outbound: TinyTitleWorkerOutbound) => void) => void,
+	): RefCountedWorkerHandle<TinyTitleWorkerInbound, TinyTitleWorkerOutbound> {
+		let handler: ((message: TinyTitleWorkerOutbound) => void) | undefined;
+		return {
+			send(message) {
+				sent.push(message);
+				if (handler && respond) respond(message, outbound => handler?.(outbound));
+			},
+			onMessage(h) {
+				handler = h;
+				return () => {
+					handler = undefined;
+				};
+			},
+			onError() {
+				return () => undefined;
+			},
+			async terminate() {},
+		};
+	}
+
+	it("bounds an oversized title message before it reaches the worker", async () => {
+		const sent: TinyTitleWorkerInbound[] = [];
+		const client = new TinyTitleClient(() =>
+			createFakeWorker(sent, (message, reply) => {
+				if (message.type === "generate") reply({ type: "title", id: message.id, title: "Bounded Title" });
+			}),
+		);
+		try {
+			const input = `Summarize the migration plan ${"q".repeat(200_000)}`;
+			const title = await client.generate("lfm2-350m", input);
+			expect(title).toBe("Bounded Title");
+			expect(sent).toHaveLength(1);
+			const request = sent[0];
+			if (request?.type !== "generate") throw new Error("expected a generate request");
+			expect(request.message.length).toBeLessThanOrEqual(MAX_TITLE_INPUT_CHARS + 1);
+			expect(request.message.length).toBeLessThan(input.length);
+			expect(request.message.startsWith("Summarize the migration plan")).toBe(true);
+		} finally {
+			await client.terminate();
+		}
+	});
+
+	it("bounds an oversized completion prompt before it reaches the worker", async () => {
+		const sent: TinyTitleWorkerInbound[] = [];
+		const client = new TinyTitleClient(() =>
+			createFakeWorker(sent, (message, reply) => {
+				if (message.type === "complete") reply({ type: "completion", id: message.id, text: "done" });
+			}),
+		);
+		try {
+			const input = `HEAD-INSTRUCTIONS ${"y".repeat(200_000)} TAIL-CONTEXT`;
+			const text = await client.complete("lfm2-1.2b", input);
+			expect(text).toBe("done");
+			expect(sent).toHaveLength(1);
+			const request = sent[0];
+			if (request?.type !== "complete") throw new Error("expected a complete request");
+			expect(request.prompt.length).toBeLessThan(60_000);
+			expect(request.prompt.startsWith("HEAD-INSTRUCTIONS")).toBe(true);
+			expect(request.prompt.endsWith("TAIL-CONTEXT")).toBe(true);
+		} finally {
+			await client.terminate();
+		}
+	});
+
+	it("resolves null instead of throwing when the worker reports an error", async () => {
+		const sent: TinyTitleWorkerInbound[] = [];
+		const client = new TinyTitleClient(() =>
+			createFakeWorker(sent, (message, reply) => {
+				if (message.type === "generate") reply({ type: "error", id: message.id, error: "boom" });
+			}),
+		);
+		try {
+			const title = await client.generate("lfm2-350m", "Investigate the outage");
+			expect(title).toBeNull();
+		} finally {
+			await client.terminate();
+		}
+	});
+
+	it("resolves null instead of throwing when worker send fails", async () => {
+		const client = new TinyTitleClient(() => ({
+			send() {
+				throw new Error("worker gone");
+			},
+			onMessage() {
+				return () => undefined;
+			},
+			onError() {
+				return () => undefined;
+			},
+			async terminate() {},
+		}));
+		try {
+			const title = await client.generate("lfm2-350m", "Investigate the outage");
+			expect(title).toBeNull();
+		} finally {
+			await client.terminate();
+		}
+	});
+
+	it("handles empty and whitespace-only input without throwing", async () => {
+		const sent: TinyTitleWorkerInbound[] = [];
+		const client = new TinyTitleClient(() =>
+			createFakeWorker(sent, (message, reply) => {
+				if (message.type === "generate") reply({ type: "title", id: message.id, title: null });
+			}),
+		);
+		try {
+			expect(await client.generate("lfm2-350m", "")).toBeNull();
+			expect(await client.generate("lfm2-350m", "   \n\t  ")).toBeNull();
+		} finally {
+			await client.terminate();
+		}
 	});
 });

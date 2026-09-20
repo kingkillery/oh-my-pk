@@ -10,9 +10,13 @@ import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES } from "@pk-nerdsaver-ai/pi-coding
 import {
 	buildColabCommand,
 	buildRemoteSetupScript,
+	COLAB_MODEL_PROFILES,
 	type ColabModelLaunchResult,
 	type ColabPrebuiltRuntime,
+	calculateColabContextWindow,
 	getColabAcceleratorProfile,
+	getColabInferenceTimeoutSeconds,
+	getColabModelProfile,
 	type HuggingFaceTreeEntry,
 	handleColabModelSlashCommand,
 	parseColabModelCommandArgs,
@@ -49,6 +53,14 @@ const BONSAI_FILES: HuggingFaceTreeEntry[] = [
 	{ type: "file", path: "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf", size: 629_246_976 },
 ];
 
+const ORNITH_FILES: HuggingFaceTreeEntry[] = [
+	{
+		type: "file",
+		path: "Huihui-Ornith-1.5-9B-abliterated.Q4_K_M.gguf",
+		size: 5_700_000_000,
+	},
+];
+
 function launchResult(overrides: Partial<ColabModelLaunchResult> = {}): ColabModelLaunchResult {
 	return {
 		accelerator: "A100",
@@ -83,6 +95,16 @@ async function compilePythonScript(source: string): Promise<{ exitCode: number; 
 interface RemoteSetupConfig {
 	cmakeArchitecture: string;
 	primaryFile: string;
+	modelProfile: {
+		artifactFile: string;
+		cachePrompt: boolean;
+		chatTemplate: string;
+		id: string;
+		kvCacheType: string;
+		physicalMicrobatch: number;
+		qwenPreserveThinking: boolean;
+		reasoningDisableMode: string;
+	} | null;
 	runtime: {
 		id: string;
 		directory: string;
@@ -225,6 +247,25 @@ describe("GGUF accelerator selection", () => {
 		expect(getColabAcceleratorProfile("G4").defaultContextWindow).toBe(131_072);
 	});
 
+	test("uses the Ornith manifest for dynamic context and cache timing", () => {
+		const reference = {
+			repoId: "mradermacher/Huihui-Ornith-1.5-9B-abliterated-GGUF",
+			revision: "main",
+		};
+		const artifact = selectGgufArtifact(ORNITH_FILES, reference, "L4");
+		const profile = getColabModelProfile(reference, artifact);
+		expect(profile).toEqual(COLAB_MODEL_PROFILES[0]);
+		expect(profile?.artifactFile).toBe("Huihui-Ornith-1.5-9B-abliterated.Q4_K_M.gguf");
+		expect(profile?.nCtxTrain).toBe(262_144);
+		expect(profile?.defaultContextWindow).toBe(131_072);
+		const l4Context = calculateColabContextWindow("L4", artifact, profile!);
+		expect(l4Context).toBeGreaterThanOrEqual(profile!.defaultContextWindow);
+		expect(l4Context).toBeLessThanOrEqual(profile!.nCtxTrain);
+		expect(selectAutomaticColabAccelerators(ORNITH_FILES, reference)).toEqual(["L4", "A100"]);
+		expect(getColabInferenceTimeoutSeconds(131_072)).toBe(376);
+		expect(getColabInferenceTimeoutSeconds(262_144)).toBe(632);
+	});
+
 	test("keeps every shard and uses the first shard as the llama.cpp model path", () => {
 		const splitFiles: HuggingFaceTreeEntry[] = [
 			{ type: "file", path: "model-Q6_K-00002-of-00003.gguf", size: 9_000_000_000 },
@@ -310,6 +351,10 @@ describe("llama.cpp runtime selection", () => {
 			sha256: "658c391b6c93483960433b160975b938a727315311320dbf2ab24bae41488fb7",
 			url: "https://github.com/ggml-org/llama.cpp/releases/download/b11064/llama-b11064-bin-ubuntu-cuda-12.8-x64.tar.gz",
 		});
+		expect(selectColabPrebuiltRuntime(upstream, "L4")).toMatchObject({
+			archive: "llama-b11064-bin-ubuntu-cuda-12.8-x64.tar.gz",
+			cuda: "12.8",
+		});
 		expect(selectColabPrebuiltRuntime(upstream, "A100")).toBeUndefined();
 	});
 
@@ -353,6 +398,34 @@ describe("llama.cpp runtime selection", () => {
 		expect(qwenConfig.runtime.id).toBe("upstream");
 		expect(qwenConfig.runtime.pinnedCommit).toBe("a894dae939d426954ce54bb604824f1ae918a0c5");
 		expect(qwenConfig.runtime.directory).not.toBe(bonsaiConfig.runtime.directory);
+	});
+	test("serializes Ornith cache and microbatch tuning into remote setup", async () => {
+		const reference = {
+			repoId: "mradermacher/Huihui-Ornith-1.5-9B-abliterated-GGUF",
+			revision: "main",
+		};
+		const artifact = selectGgufArtifact(ORNITH_FILES, reference, "L4");
+		const profile = getColabModelProfile(reference, artifact);
+		const source = buildRemoteSetupScript({
+			accelerator: "L4",
+			artifact,
+			contextWindow: calculateColabContextWindow("L4", artifact, profile!),
+			modelProfile: profile,
+			reference,
+			remotePort: 8_081,
+		});
+		const [config, compilation] = await Promise.all([readSetupConfig(source), compilePythonScript(source)]);
+		expect(compilation.exitCode, compilation.stderr).toBe(0);
+		expect(config.modelProfile).toEqual({
+			artifactFile: "Huihui-Ornith-1.5-9B-abliterated.Q4_K_M.gguf",
+			cachePrompt: true,
+			chatTemplate: "qwen-chat-template",
+			id: "ornith-1.5-9b-abliterated",
+			kvCacheType: "q8_0",
+			physicalMicrobatch: 1024,
+			qwenPreserveThinking: true,
+			reasoningDisableMode: "qwen-template-false",
+		});
 	});
 });
 

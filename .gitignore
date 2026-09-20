@@ -83,6 +83,7 @@ python/fugu/harness_candidates_verifier/
 
 # Local native build scratch
 packages/natives/native/.build/
+packages/natives/native/*.node.running-*.old
 
 # Local, machine-specific boot perf baseline (see packages/coding-agent/scripts/bench-guard.ts)
 packages/coding-agent/bench/boot-baseline.json

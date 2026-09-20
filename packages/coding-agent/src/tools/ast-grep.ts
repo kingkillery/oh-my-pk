@@ -49,6 +49,41 @@ const astGrepSchema = type({
 	"skip?": type("number").describe("matches to skip"),
 });
 
+/**
+ * Native `astGrep` reports files over `MAX_AST_SOURCE_BYTES` (2 MiB,
+ * `crates/pi-natives/src/ast.rs`; mirrored in `packages/natives/native/index.js`)
+ * as parse errors shaped `"<path>: file exceeds the <N> MiB AST safety limit"`.
+ * The native side stats each candidate before reading it, so oversized files are
+ * never parsed — this partition exists purely so the tool surfaces them as
+ * skipped files instead of letting them masquerade as parse failures or a
+ * silent "no matches".
+ */
+const AST_OVERSIZED_FILE_RE = /^(.*): file exceeds the (\d+) MiB AST safety limit$/;
+
+function partitionSkippedOversizedFiles(parseErrors: string[] | undefined): {
+	skippedFiles: string[];
+	skippedFileLimitMiB?: number;
+	parseErrors: string[];
+} {
+	const skippedFiles: string[] = [];
+	const seen = new Set<string>();
+	const rest: string[] = [];
+	let skippedFileLimitMiB: number | undefined;
+	for (const error of parseErrors ?? []) {
+		const oversized = AST_OVERSIZED_FILE_RE.exec(error);
+		if (oversized) {
+			if (!seen.has(oversized[1])) {
+				seen.add(oversized[1]);
+				skippedFiles.push(oversized[1]);
+			}
+			skippedFileLimitMiB = Number(oversized[2]);
+		} else {
+			rest.push(error);
+		}
+	}
+	return { skippedFiles, skippedFileLimitMiB, parseErrors: rest };
+}
+
 async function runMultiTargetAstGrep(
 	targets: Array<{ basePath: string; glob?: string }>,
 	options: { patterns: string[]; commonBasePath: string; skip: number; limit: number; signal?: AbortSignal },
@@ -114,6 +149,12 @@ export interface AstGrepToolDetails {
 	parseErrors?: string[];
 	/** Total parse error count before {@link PARSE_ERRORS_LIMIT} capping. Omitted when no errors. */
 	parseErrorsTotal?: number;
+	/** Files skipped because they exceed the native AST source-size limit. Omitted when none. */
+	skippedFiles?: string[];
+	/** Total skipped oversized files before capping. Omitted when none. */
+	skippedFilesTotal?: number;
+	/** The native AST source-size limit in MiB, parsed from the native diagnostic. */
+	skippedFileLimitMiB?: number;
 	scopePath?: string;
 	files?: string[];
 	fileMatches?: Array<{ path: string; count: number }>;
@@ -212,11 +253,27 @@ export class AstGrepTool implements AgentTool<typeof astGrepSchema, AstGrepToolD
 						signal,
 					});
 
-			const normalizedParseErrors = (result.parseErrors ?? []).map(error => {
+			const {
+				skippedFiles,
+				skippedFileLimitMiB,
+				parseErrors: rawParseErrors,
+			} = partitionSkippedOversizedFiles(result.parseErrors);
+			const normalizedParseErrors = rawParseErrors.map(error => {
 				const parseError = error.match(/^.+: (.+: parse error \(syntax tree contains error nodes\))$/);
 				return parseError?.[1] ?? error;
 			});
 			const { errors: cappedParseErrors, total: parseErrorsTotal } = capParseErrors(normalizedParseErrors);
+			const { errors: cappedSkippedFiles, total: skippedFilesTotal } = capParseErrors(skippedFiles);
+			const skippedFilesNote =
+				cappedSkippedFiles.length > 0
+					? [
+							`Skipped oversized files (>${skippedFileLimitMiB ?? 2} MiB AST limit; split the file or search a narrower path):`,
+							...cappedSkippedFiles.map(file => `- ${file}`),
+							...(skippedFilesTotal > cappedSkippedFiles.length
+								? [`- … ${skippedFilesTotal - cappedSkippedFiles.length} more`]
+								: []),
+						]
+					: [];
 			const formatPath = (filePath: string): string =>
 				formatResultPath(filePath, isDirectory, resolvedSearchPath, this.session.cwd);
 
@@ -238,6 +295,13 @@ export class AstGrepTool implements AgentTool<typeof astGrepSchema, AstGrepToolD
 				filesSearched: result.filesSearched,
 				limitReached: result.limitReached,
 				...(cappedParseErrors.length > 0 ? { parseErrors: cappedParseErrors, parseErrorsTotal } : {}),
+				...(cappedSkippedFiles.length > 0
+					? {
+							skippedFiles: cappedSkippedFiles,
+							skippedFilesTotal,
+							...(skippedFileLimitMiB !== undefined ? { skippedFileLimitMiB } : {}),
+						}
+					: {}),
 				scopePath,
 				searchPath: resolvedSearchPath,
 				cwd: this.session.cwd,
@@ -252,9 +316,10 @@ export class AstGrepTool implements AgentTool<typeof astGrepSchema, AstGrepToolD
 				const parseMessage = cappedParseErrors.length
 					? `\n${formatParseErrors(cappedParseErrors, parseErrorsTotal).join("\n")}`
 					: "";
+				const skippedMessage = skippedFilesNote.length ? `\n${skippedFilesNote.join("\n")}` : "";
 				// Zero matches is useless even with parse issues: the follow-up
 				// call has already corrected course by the time compaction runs.
-				return toolResult(baseDetails).text(`${noMatchMessage}${parseMessage}`).useless().done();
+				return toolResult(baseDetails).text(`${noMatchMessage}${parseMessage}${skippedMessage}`).useless().done();
 			}
 
 			const useHashLines = resolveFileDisplayMode(this.session).hashLines;
@@ -352,6 +417,9 @@ export class AstGrepTool implements AgentTool<typeof astGrepSchema, AstGrepToolD
 			if (cappedParseErrors.length) {
 				outputLines.push("", ...formatParseErrors(cappedParseErrors, parseErrorsTotal));
 			}
+			if (skippedFilesNote.length) {
+				outputLines.push("", ...skippedFilesNote);
+			}
 
 			return toolResult(details).text(outputLines.join("\n")).done();
 		});
@@ -405,8 +473,17 @@ export const astGrepToolRenderer = {
 			const meta = ["0 matches"];
 			if (details?.scopePath) meta.push(`in ${details.scopePath}`);
 			if (filesSearched > 0) meta.push(`searched ${filesSearched}`);
+			if (details?.skippedFiles?.length) {
+				meta.push(`skipped ${details.skippedFilesTotal ?? details.skippedFiles.length} oversized`);
+			}
 			const header = renderStatusLine({ icon: "warning", title: "AST Grep", description, meta }, uiTheme);
 			const lines = [header, formatEmptyMessage("No matches found", uiTheme)];
+			if (details?.skippedFiles?.length) {
+				lines.push(
+					uiTheme.fg("warning", `Skipped oversized files (>${details.skippedFileLimitMiB ?? 2} MiB AST limit)`),
+				);
+				appendParseErrorsBulletList(lines, details.skippedFiles, uiTheme, details.skippedFilesTotal);
+			}
 			if (details?.parseErrors?.length) {
 				lines.push(uiTheme.fg("warning", "Query may be mis-scoped; narrow `paths` before concluding absence"));
 				appendParseErrorsBulletList(lines, details.parseErrors, uiTheme, details.parseErrorsTotal);
@@ -419,6 +496,9 @@ export const astGrepToolRenderer = {
 		if (details?.scopePath) meta.push(`in ${details.scopePath}`);
 		meta.push(`searched ${filesSearched}`);
 		if (limitReached) meta.push(uiTheme.fg("warning", "limit reached"));
+		if (details?.skippedFiles?.length) {
+			meta.push(`skipped ${details.skippedFilesTotal ?? details.skippedFiles.length} oversized`);
+		}
 		const description = args?.pat;
 		const header = renderStatusLine(
 			{
@@ -453,7 +533,11 @@ export const astGrepToolRenderer = {
 		const matchGroups = groupLineIndicesByBlank(allLines)
 			.filter(indices => {
 				const first = allLines[indices[0]!]!;
-				return !first.startsWith("Result limit reached") && !first.startsWith("Parse issues:");
+				return (
+					!first.startsWith("Result limit reached") &&
+					!first.startsWith("Parse issues:") &&
+					!first.startsWith("Skipped oversized files")
+				);
 			})
 			.map(indices => indices.map(index => styledLines[index]!));
 
@@ -464,6 +548,14 @@ export const astGrepToolRenderer = {
 		if (details?.parseErrors?.length) {
 			extraLines.push(
 				uiTheme.fg("warning", formatParseErrorsCountLabel(details.parseErrors, details.parseErrorsTotal)),
+			);
+		}
+		if (details?.skippedFiles?.length) {
+			extraLines.push(
+				uiTheme.fg(
+					"warning",
+					`skipped ${details.skippedFilesTotal ?? details.skippedFiles.length} oversized file(s) (>${details.skippedFileLimitMiB ?? 2} MiB AST limit)`,
+				),
 			);
 		}
 

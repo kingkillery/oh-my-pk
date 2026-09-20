@@ -828,7 +828,9 @@ export class ModelRegistry {
 	 */
 	async refreshSelectedModelMetadata(model: Model<Api>): Promise<Model<Api>> {
 		const isLlamaCppDiscovery = this.#discoverableProviders.some(
-			providerConfig => providerConfig.provider === model.provider && providerConfig.discovery.type === "llama.cpp",
+			providerConfig =>
+				providerConfig.provider === model.provider &&
+				(providerConfig.discovery.type === "llama.cpp" || providerConfig.discovery.type === "colab"),
 		);
 		if (!isLlamaCppDiscovery) {
 			return model;
@@ -1135,7 +1137,12 @@ export class ModelRegistry {
 				provider: providerConfig.provider,
 				status: "cached",
 				optional: providerConfig.optional ?? false,
-				stale: providerConfig.discovery.type === "llama.cpp" || !cache.fresh || !cache.authoritative || configStale,
+				stale:
+					providerConfig.discovery.type === "llama.cpp" ||
+					providerConfig.discovery.type === "colab" ||
+					!cache.fresh ||
+					!cache.authoritative ||
+					configStale,
 				fetchedAt: cache.updatedAt,
 				models: models.map(model => model.id),
 			});
@@ -1154,7 +1161,8 @@ export class ModelRegistry {
 		const withDecoderMetadata =
 			providerConfig.discovery.type === "ollama" ||
 			providerConfig.discovery.type === "llama.cpp" ||
-			providerConfig.discovery.type === "lm-studio"
+			providerConfig.discovery.type === "lm-studio" ||
+			providerConfig.discovery.type === "colab"
 				? models.map(model =>
 						buildModel({ ...model, imageInputDecoder: "stb", compat: model.compatConfig } as ModelSpec<Api>),
 					)
@@ -1245,6 +1253,21 @@ export class ModelRegistry {
 			if (isLocalHttpBaseUrl(baseUrl) && !this.authStorage.hasAuth("9router")) {
 				this.#keylessProviders.add("9router");
 			}
+		}
+		if (!configuredProviders.has("llama.cpp (colab)") && !disabledProviders.has("llama.cpp (colab)")) {
+			this.#discoverableProviders.push({
+				provider: "llama.cpp (colab)",
+				api: "openai-completions",
+				baseUrl: Bun.env.OMPK_COLAB_BASE_URL || "http://127.0.0.1:18082/v1",
+				discovery: { type: "colab" },
+				optional: true,
+				compat: {
+					thinkingFormat: "qwen-chat-template",
+					reasoningDisableMode: "qwen-template-false",
+					qwenPreserveThinking: true,
+				},
+			});
+			this.#keylessProviders.add("llama.cpp (colab)");
 		}
 	}
 
@@ -1385,7 +1408,20 @@ export class ModelRegistry {
 			this.#discoverBuiltInProviderModels(strategy, providerFilter),
 		]);
 		const discovered = [...configuredDiscovered, ...builtInDiscovery.models];
-		if (discovered.length === 0 && builtInDiscovery.authoritativeProviders.size === 0) {
+		const unavailableColabProviders = new Set(
+			selectedDiscoverableProviders
+				.filter(provider => {
+					if (strategy === "offline" || provider.discovery.type !== "colab") return false;
+					const status = this.#providerDiscoveryStates.get(provider.provider)?.status;
+					return status === "empty" || status === "unavailable" || status === "cached";
+				})
+				.map(provider => provider.provider),
+		);
+		if (
+			discovered.length === 0 &&
+			builtInDiscovery.authoritativeProviders.size === 0 &&
+			unavailableColabProviders.size === 0
+		) {
 			return;
 		}
 		const discoveredModels = this.#applyHardcodedModelPolicies(
@@ -1398,6 +1434,9 @@ export class ModelRegistry {
 			),
 		);
 		const authoritativeProviders = providersWithAuthoritativeProjectCatalog(discoveredModels);
+		for (const provider of unavailableColabProviders) {
+			authoritativeProviders.add(provider);
+		}
 		for (const provider of builtInDiscovery.authoritativeProviders) {
 			authoritativeProviders.add(provider);
 		}
@@ -1405,8 +1444,13 @@ export class ModelRegistry {
 			authoritativeProviders.size > 0 ? dropProviderModels(this.#models, authoritativeProviders) : this.#models;
 		const resolved = this.#mergeResolvedModels(baseModels, discoveredModels);
 		const withConfigModels = this.#mergeCustomModels(resolved, this.#customModelOverlays);
-		// Merge runtime extension models so they survive online discovery completion
-		const combined = this.#mergeCustomModels(withConfigModels, this.#runtimeModelOverlays);
+		// Keep runtime extension models through discovery, except a Colab model
+		// whose bridge just proved unavailable.
+		const runtimeModels =
+			unavailableColabProviders.size === 0
+				? this.#runtimeModelOverlays
+				: this.#runtimeModelOverlays.filter(overlay => !unavailableColabProviders.has(overlay.provider));
+		const combined = this.#mergeCustomModels(withConfigModels, runtimeModels);
 		const withModelOverrides = this.#applyModelOverrides(collapseBuiltModelVariants(combined), this.#modelOverrides);
 		this.#models = this.#applyRuntimeProviderOverrides(withModelOverrides);
 		this.#rebuildCanonicalIndex();
@@ -1434,7 +1478,11 @@ export class ModelRegistry {
 		const cacheProviderId = this.#configuredDiscoveryCacheProviderId(providerConfig);
 		const cached = readModelCache<Api>(cacheProviderId, 24 * 60 * 60 * 1000, Date.now, this.#cacheDbPath);
 		const cacheOlderThanConfig = cached !== null && this.#isDiscoveryCacheOlderThanModelsConfig(cached.updatedAt);
-		const bypassFreshCache = providerConfig.discovery.type === "llama.cpp" && strategy === "online-if-uncached";
+		const bypassFreshCache =
+			(providerConfig.discovery.type === "llama.cpp" ||
+				providerConfig.discovery.type === "colab" ||
+				providerConfig.provider === "llama.cpp (colab)") &&
+			strategy === "online-if-uncached";
 		const effectiveStrategy =
 			strategy === "online-if-uncached" && (cacheOlderThanConfig || bypassFreshCache) ? "online" : strategy;
 		const requiresAuth = !this.#keylessProviders.has(providerConfig.provider);
@@ -1460,6 +1508,41 @@ export class ModelRegistry {
 		}
 
 		const providerId = providerConfig.provider;
+		if (providerConfig.discovery.type === "colab" && strategy !== "offline") {
+			try {
+				const discovered = this.#applyProviderModelOverrides(
+					providerId,
+					await discoverModelsByProviderType(providerConfig, this.#discoveryContext()),
+				);
+				const models = this.#normalizeDiscoverableModels(
+					providerConfig,
+					this.#applyProviderCompat(providerConfig.compat, discovered),
+				);
+				this.#providerDiscoveryStates.set(providerId, {
+					provider: providerId,
+					status: models.length > 0 ? "ok" : "empty",
+					optional: providerConfig.optional ?? false,
+					stale: false,
+					fetchedAt: Date.now(),
+					models: models.map(model => model.id),
+				});
+				this.#lastDiscoveryWarnings.delete(providerId);
+				return models;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				this.#providerDiscoveryStates.set(providerId, {
+					provider: providerId,
+					status: "unavailable",
+					optional: providerConfig.optional ?? false,
+					stale: false,
+					fetchedAt: Date.now(),
+					models: [],
+					error: message,
+				});
+				this.#warnProviderDiscoveryFailure(providerConfig, message);
+				return [];
+			}
+		}
 		let discoveryError: string | undefined;
 		const fetchDynamicModels = async (): Promise<readonly ModelSpec<Api>[] | null> => {
 			try {

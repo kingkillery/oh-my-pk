@@ -4,7 +4,9 @@
  * parses, and that the provider sits at the lowest priority so any user/project
  * rule of the same name overrides a bundled default (first-wins dedup).
  */
+
 import { describe, expect, it } from "bun:test";
+import { Buffer } from "node:buffer";
 import { getCapability } from "@pk-nerdsaver-ai/pi-coding-agent/capability";
 import {
 	BUILTIN_DEFAULTS_PROVIDER_ID,
@@ -147,6 +149,25 @@ describe("builtin-defaults rule provider", () => {
 				source: "tool",
 				toolName: "edit",
 				filePaths: ["src/foo.js"],
+			}),
+		).toEqual([]);
+	});
+
+	it("treats oversized multibyte AST snapshots as nonmatching", async () => {
+		const rules = await loadBuiltinRules();
+		const rule = rules.find(r => r.name === "ts-no-inline-cast-access");
+		if (!rule) throw new Error("ts-no-inline-cast-access rule missing");
+
+		const manager = new TtsrManager();
+		expect(manager.addRule(rule)).toBe(true);
+		const oversized = `const a = (value as { content: unknown }).content;${"😀".repeat(250_001)}`;
+		expect(oversized.length).toBeLessThan(1_000_000);
+		expect(Buffer.byteLength(oversized, "utf8")).toBeGreaterThan(1_000_000);
+		expect(
+			await manager.checkAstSnapshot(oversized, {
+				source: "tool",
+				toolName: "edit",
+				filePaths: ["src/foo.ts"],
 			}),
 		).toEqual([]);
 	});

@@ -24,3 +24,11 @@ Keep stable harness instructions separate from dynamic project context so provid
 - Fusion is disabled by default. Any Fusion port must preserve that default, keep its dynamic system block terminal for prefix caching, and test session switching, singleflight creation, failure-epoch reset, and manual override behavior.
 - CoLab uses protocol v3 and trusted browser hosts. Preserve `/collab`, `/remote-control`, the `collab.json` bridge, `X-OMP-*` relay contracts, and the separation from extension-owned `/remote`.
 - A donor branch that needs a compile-clean overlay is not a merge candidate. The port itself must typecheck and test against current `main` source and dependencies.
+
+## Colab model lane
+
+- General Colab compute MUST remain model-agnostic; `/colab-model` establishes inference intent.
+- Fresh model work MUST inspect existing sessions before provisioning; reuse a compatible runtime when available.
+- A live session, served model, bridge, provider registration, and successful harness generation are separate checks.
+- Ornith launches use the persisted profile in `src/slash-commands/helpers/colab-model.ts`; preserve dynamic context sizing, Q8 K/V cache, prompt caching, and physical microbatch tuning.
+- NEVER claim `llama.cpp (colab)` availability from a saved registry entry without probing the live bridge.

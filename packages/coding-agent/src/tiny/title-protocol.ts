@@ -27,6 +27,11 @@ export interface TinyTitleProgressEvent {
 	model?: string;
 }
 
+/**
+ * Inbound requests. `message`/`prompt` payloads are token-bounded by the client
+ * before IPC and re-validated by the worker with the model's own tokenizer
+ * before inference (see `text.ts`); neither side trusts the other's bound.
+ */
 export type TinyTitleWorkerInbound =
 	| { type: "ping"; id: string }
 	| { type: "generate"; id: string; modelKey: TinyTitleLocalModelKey; message: string; systemPrompt?: string }

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import {
 	AstMatchStrictness,
 	astEdit,
+	astGrep,
 	astMatch,
 	blockRangeAt,
 	executeShell,
@@ -29,6 +30,12 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "../native/index.js";
+
+// `MAX_AST_SOURCE_BYTES` is a JS-only export (not in the generated .d.ts), so
+// pull it off the module namespace with a cast instead of a named import.
+const NATIVE_MAX_AST_SOURCE_BYTES = (
+	(await import("../native/index.js")) as unknown as { MAX_AST_SOURCE_BYTES: number }
+).MAX_AST_SOURCE_BYTES;
 
 let testDir: string;
 
@@ -822,6 +829,112 @@ describe("pi-natives", () => {
 
 		it("rejects an empty language", async () => {
 			await expect(astMatch({ source: "const a = 1;", lang: "  ", patterns: ["const $A = $B"] })).rejects.toThrow();
+		});
+
+		// The JS binding exports the same ceiling it enforces; assert against it
+		// so the test cannot drift from `MAX_AST_SOURCE_BYTES` in
+		// crates/pi-natives/src/ast.rs (mirrored by native/index.js).
+		const AST_SOURCE_LIMIT_BYTES = NATIVE_MAX_AST_SOURCE_BYTES;
+
+		it("bounds returned matches for a multi-megabyte source with limit: 1", async () => {
+			const line = "const item = { value: 1 };\n";
+			const lineCount = Math.ceil((1.5 * 1024 * 1024) / Buffer.byteLength(line));
+			const source = line.repeat(lineCount);
+			const result = await astMatch({
+				source,
+				lang: "ts",
+				patterns: ["const $NAME = $VALUE"],
+				limit: 1,
+			});
+			expect(result.matches.length).toBe(1);
+			expect(result.totalMatches).toBe(lineCount);
+			expect(result.limitReached).toBe(true);
+		});
+
+		it("does not report limitReached when exactly offset + limit matches exist", async () => {
+			const source = "const a = 1;\nconst b = 2;\nconst c = 3;\n";
+			const result = await astMatch({
+				source,
+				lang: "ts",
+				patterns: ["const $NAME = $VALUE"],
+				offset: 1,
+				limit: 2,
+			});
+			expect(result.totalMatches).toBe(3);
+			expect(result.matches.length).toBe(2);
+			expect(result.limitReached).toBe(false);
+		});
+
+		it("stops traversal early at maxMatches and reports totalMatches as a lower bound", async () => {
+			const line = "const item = { value: 1 };\n";
+			const lineCount = 200;
+			const source = line.repeat(lineCount);
+			const result = await astMatch({
+				source,
+				lang: "ts",
+				patterns: ["const $NAME = $VALUE"],
+				limit: 50,
+				maxMatches: 5,
+			});
+			expect(result.limitReached).toBe(true);
+			// Traversal stopped at the cap: totalMatches is a lower bound, not the
+			// full source-wide count (200).
+			expect(result.totalMatches).toBeGreaterThanOrEqual(5);
+			expect(result.totalMatches).toBeLessThan(lineCount);
+			expect(result.matches.length).toBeLessThanOrEqual(5);
+		});
+
+		it("rejects sources over the 2 MiB AST safety limit", async () => {
+			const oversized = "x".repeat(AST_SOURCE_LIMIT_BYTES + 1);
+			await expect(astMatch({ source: oversized, lang: "ts", patterns: ["$A"] })).rejects.toThrow(
+				/exceeds the 2 MiB AST safety limit/,
+			);
+		});
+		it("measures the source limit in UTF-8 bytes, not characters", async () => {
+			// 600k 4-byte emoji = 2.4 MiB of UTF-8: over the byte limit even though
+			// the string length is under 2M characters.
+			const oversized = "😀".repeat(600_000);
+			expect(oversized.length).toBeLessThan(AST_SOURCE_LIMIT_BYTES);
+			await expect(astMatch({ source: oversized, lang: "ts", patterns: ["$A"] })).rejects.toThrow(
+				/exceeds the 2 MiB AST safety limit/,
+			);
+		});
+
+		it("accepts a source exactly at the 2 MiB limit", async () => {
+			const source = "x".repeat(AST_SOURCE_LIMIT_BYTES);
+			const result = await astMatch({ source, lang: "ts", patterns: ["const $A = $B"] });
+			expect(result.totalMatches).toBe(0);
+			expect(result.limitReached).toBe(false);
+		});
+	});
+
+	describe("astGrep oversized files", () => {
+		it("skips files over the AST limit and reports them in parseErrors", async () => {
+			// Dedicated temp dir: the shared testDir is fs-cache poisoned by earlier
+			// tests, so a fresh root guarantees the new file is a live candidate.
+			const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ast-grep-oversized-"));
+			const oversizedPath = path.join(dir, "oversized.ts");
+			const smallPath = path.join(dir, "small-ast.ts");
+			await fs.writeFile(oversizedPath, `const x = 1;\n${"//".repeat(3 * 1024 * 1024)}`);
+			await fs.writeFile(smallPath, "const target = { value: 1 };\n");
+			try {
+				const result = await astGrep({
+					patterns: ["const $NAME = $VALUE"],
+					path: dir,
+					glob: "*.ts",
+				});
+				const skipped = (result.parseErrors ?? []).filter(error =>
+					error.includes("exceeds the 2 MiB AST safety limit"),
+				);
+				expect(skipped.length).toBe(1);
+				expect(skipped[0]).toContain("oversized.ts");
+				// The oversized file was skipped, not searched: its `const x = 1`
+				// never contributes a match, while the small file still matches.
+				expect(result.matches.some(match => match.path.includes("small-ast.ts"))).toBe(true);
+				expect(result.matches.some(match => match.path.includes("oversized.ts"))).toBe(false);
+			} finally {
+				await fs.rm(dir, { recursive: true, force: true });
+			}
 		});
 	});
 });

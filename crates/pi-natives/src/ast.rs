@@ -16,6 +16,63 @@ use pi_ast::{
 use crate::{fs_cache, glob_util, task};
 
 const DEFAULT_FIND_LIMIT: u32 = 50;
+const MAX_AST_SOURCE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Bound retained match payloads even when callers request a small page from a
+/// source that has many structural matches. The complete count is still
+/// reported, but only the requested page plus one truncation sentinel is kept.
+const MAX_RETAINED_FIND_MATCHES: usize = 10_000;
+
+fn validate_ast_source_size(byte_len: u64, subject: &str) -> Result<()> {
+	if byte_len <= MAX_AST_SOURCE_BYTES as u64 {
+		return Ok(());
+	}
+	Err(Error::from_reason(format!(
+		"{subject} exceeds the {} MiB AST safety limit",
+		MAX_AST_SOURCE_BYTES / (1024 * 1024)
+	)))
+}
+
+fn retained_match_capacity(limit: u32, offset: u32) -> Result<usize> {
+	let requested = offset
+		.checked_add(limit)
+		.and_then(|value| value.checked_add(1))
+		.ok_or_else(|| Error::from_reason("ast match offset and limit are too large".to_string()))?;
+	let requested = usize::try_from(requested)
+		.map_err(|_| Error::from_reason("ast match offset and limit are too large".to_string()))?;
+	if requested > MAX_RETAINED_FIND_MATCHES {
+		return Err(Error::from_reason(format!(
+			"ast match offset plus limit must not exceed {}",
+			MAX_RETAINED_FIND_MATCHES - 1
+		)));
+	}
+	Ok(requested)
+}
+
+fn compare_ast_find_matches(left: &AstFindMatch, right: &AstFindMatch) -> std::cmp::Ordering {
+	left
+		.path
+		.cmp(&right.path)
+		.then(left.start_line.cmp(&right.start_line))
+		.then(left.start_column.cmp(&right.start_column))
+		.then(left.end_line.cmp(&right.end_line))
+		.then(left.end_column.cmp(&right.end_column))
+		.then(left.byte_start.cmp(&right.byte_start))
+		.then(left.byte_end.cmp(&right.byte_end))
+}
+
+fn retain_sorted_match(matches: &mut Vec<AstFindMatch>, candidate: AstFindMatch, capacity: usize) {
+	let index = matches.partition_point(|existing| {
+		compare_ast_find_matches(existing, &candidate) != std::cmp::Ordering::Greater
+	});
+	if index >= capacity {
+		return;
+	}
+	matches.insert(index, candidate);
+	if matches.len() > capacity {
+		matches.pop();
+	}
+}
 
 /// ast-grep pattern strictness (controls how patterns match syntax).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,6 +203,9 @@ pub struct AstMatchOptions<'env> {
 	pub limit:        Option<u32>,
 	/// Number of leading matches to skip before applying `limit`.
 	pub offset:       Option<u32>,
+	/// Optional traversal cap for existence checks. When reached, matching stops
+	/// early, `limitReached` is true, and `totalMatches` is a lower bound.
+	pub max_matches:  Option<u32>,
 	/// When true, include meta-variable bindings per match.
 	pub include_meta: Option<bool>,
 	/// Optional cancellation handle (library-specific).
@@ -159,9 +219,10 @@ pub struct AstMatchOptions<'env> {
 pub struct AstMatchResult {
 	/// Page of matches after sort, offset, and limit.
 	pub matches:       Vec<AstFindMatch>,
-	/// Total matches found before paging (can exceed `matches.length`).
+	/// Total matches found before paging. When `maxMatches` stops traversal,
+	/// this is a lower bound rather than the complete source-wide count.
 	pub total_matches: u32,
-	/// True when results were truncated by `limit`.
+	/// True when paging or `maxMatches` truncated the traversal.
 	pub limit_reached: bool,
 	/// Non-fatal parse or pattern-compile errors collected during the run.
 	pub parse_errors:  Option<Vec<String>>,
@@ -598,6 +659,7 @@ pub fn ast_grep(options: AstFindOptions<'_>) -> task::Promise<AstFindResult> {
 		let patterns = normalize_pattern_list(patterns)?;
 		let strictness = resolve_strictness(strictness);
 		let include_meta = include_meta.unwrap_or(false);
+		let retained_capacity = retained_match_capacity(normalized_limit, normalized_offset)?;
 		let lang_str = lang.as_deref().map(str::trim).filter(|v| !v.is_empty());
 		let candidates: Vec<_> = collect_candidates(path, glob.as_deref(), &ct)?
 			.into_iter()
@@ -630,6 +692,19 @@ pub fn ast_grep(options: AstFindOptions<'_>) -> task::Promise<AstFindResult> {
 				continue;
 			};
 			let lang_key = language.canonical_name();
+			let metadata = match std::fs::metadata(&candidate.absolute_path) {
+				Ok(metadata) => metadata,
+				Err(err) => {
+					parse_errors.push(format!("{}: {err}", candidate.display_path));
+					continue;
+				},
+			};
+			if let Err(err) =
+				validate_ast_source_size(metadata.len(), &format!("{}: file", candidate.display_path))
+			{
+				parse_errors.push(err.to_string());
+				continue;
+			}
 			let source = match std::fs::read_to_string(&candidate.absolute_path) {
 				Ok(source) => source,
 				Err(err) => {
@@ -640,6 +715,13 @@ pub fn ast_grep(options: AstFindOptions<'_>) -> task::Promise<AstFindResult> {
 					continue;
 				},
 			};
+			if let Err(err) = validate_ast_source_size(
+				source.len() as u64,
+				&format!("{}: file", candidate.display_path),
+			) {
+				parse_errors.push(err.to_string());
+				continue;
+			}
 
 			let mut runnable_patterns: Vec<(&str, &Pattern)> = Vec::new();
 			for compiled in &compiled_patterns {
@@ -678,41 +760,30 @@ pub fn ast_grep(options: AstFindOptions<'_>) -> task::Promise<AstFindResult> {
 					} else {
 						None
 					};
-					all_matches.push(AstFindMatch {
-						path: candidate.display_path.clone(),
-						text: matched.text().into_owned(),
-						byte_start: to_u32(range.start),
-						byte_end: to_u32(range.end),
-						start_line: to_u32(start.line().saturating_add(1)),
-						start_column: to_u32(start.column(matched.get_node()).saturating_add(1)),
-						end_line: to_u32(end.line().saturating_add(1)),
-						end_column: to_u32(end.column(matched.get_node()).saturating_add(1)),
-						meta_variables,
-					});
+					retain_sorted_match(
+						&mut all_matches,
+						AstFindMatch {
+							path: candidate.display_path.clone(),
+							text: matched.text().into_owned(),
+							byte_start: to_u32(range.start),
+							byte_end: to_u32(range.end),
+							start_line: to_u32(start.line().saturating_add(1)),
+							start_column: to_u32(start.column(matched.get_node()).saturating_add(1)),
+							end_line: to_u32(end.line().saturating_add(1)),
+							end_column: to_u32(end.column(matched.get_node()).saturating_add(1)),
+							meta_variables,
+						},
+						retained_capacity,
+					);
 					files_with_matches.insert(candidate.display_path.clone());
 				}
 			}
 		}
 
-		all_matches.sort_by(|left, right| {
-			left
-				.path
-				.cmp(&right.path)
-				.then(left.start_line.cmp(&right.start_line))
-				.then(left.start_column.cmp(&right.start_column))
-				.then(left.end_line.cmp(&right.end_line))
-				.then(left.end_column.cmp(&right.end_column))
-				.then(left.byte_start.cmp(&right.byte_start))
-				.then(left.byte_end.cmp(&right.byte_end))
-		});
-
-		let visible_matches = all_matches
+		let limit_reached = total_matches > normalized_offset.saturating_add(normalized_limit);
+		let matches = all_matches
 			.into_iter()
 			.skip(normalized_offset as usize)
-			.collect::<Vec<_>>();
-		let limit_reached = visible_matches.len() > normalized_limit as usize;
-		let matches = visible_matches
-			.into_iter()
 			.take(normalized_limit as usize)
 			.collect::<Vec<_>>();
 
@@ -740,6 +811,7 @@ pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> 
 		source,
 		lang,
 		patterns,
+		max_matches,
 		selector,
 		strictness,
 		limit,
@@ -748,6 +820,7 @@ pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> 
 		signal,
 		timeout_ms,
 	} = options;
+	let normalized_max_matches = max_matches.map(|value| value.max(1));
 
 	let ct = task::CancelToken::new(timeout_ms, signal);
 	let normalized_limit = limit.unwrap_or(DEFAULT_FIND_LIMIT).max(1);
@@ -757,6 +830,8 @@ pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> 
 		let patterns = normalize_pattern_list(Some(patterns))?;
 		let strictness = resolve_strictness(strictness);
 		let include_meta = include_meta.unwrap_or(false);
+		let retained_capacity = retained_match_capacity(normalized_limit, normalized_offset)?;
+		validate_ast_source_size(source.len() as u64, "ast match source")?;
 		let lang_str = lang.trim();
 		if lang_str.is_empty() {
 			return Err(Error::from_reason("`lang` is required for ast_match".to_string()));
@@ -772,15 +847,15 @@ pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> 
 				Err(err) => parse_errors.push(format!("{pattern}: {err}")),
 			}
 		}
-
 		let mut all_matches = Vec::new();
 		let mut total_matches = 0u32;
+		let mut scan_limit_reached = false;
 		if !compiled_patterns.is_empty() {
 			let ast = language.ast_grep(&source);
 			if ast.root().dfs().any(|node| node.is_error()) {
 				parse_errors.push("parse error (syntax tree contains error nodes)".to_string());
 			}
-			for pattern in &compiled_patterns {
+			'search: for pattern in &compiled_patterns {
 				ct.heartbeat()?;
 				for matched in ast.root().find_all(pattern.clone()) {
 					ct.heartbeat()?;
@@ -793,39 +868,34 @@ pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> 
 					} else {
 						None
 					};
-					all_matches.push(AstFindMatch {
-						path: String::new(),
-						text: matched.text().into_owned(),
-						byte_start: to_u32(range.start),
-						byte_end: to_u32(range.end),
-						start_line: to_u32(start.line().saturating_add(1)),
-						start_column: to_u32(start.column(matched.get_node()).saturating_add(1)),
-						end_line: to_u32(end.line().saturating_add(1)),
-						end_column: to_u32(end.column(matched.get_node()).saturating_add(1)),
-						meta_variables,
-					});
+					retain_sorted_match(
+						&mut all_matches,
+						AstFindMatch {
+							path: String::new(),
+							text: matched.text().into_owned(),
+							byte_start: to_u32(range.start),
+							byte_end: to_u32(range.end),
+							start_line: to_u32(start.line().saturating_add(1)),
+							start_column: to_u32(start.column(matched.get_node()).saturating_add(1)),
+							end_line: to_u32(end.line().saturating_add(1)),
+							end_column: to_u32(end.column(matched.get_node()).saturating_add(1)),
+							meta_variables,
+						},
+						retained_capacity,
+					);
+					if normalized_max_matches.is_some_and(|maximum| total_matches >= maximum) {
+						scan_limit_reached = true;
+						break 'search;
+					}
 				}
 			}
 		}
 
-		all_matches.sort_by(|left, right| {
-			left
-				.start_line
-				.cmp(&right.start_line)
-				.then(left.start_column.cmp(&right.start_column))
-				.then(left.end_line.cmp(&right.end_line))
-				.then(left.end_column.cmp(&right.end_column))
-				.then(left.byte_start.cmp(&right.byte_start))
-				.then(left.byte_end.cmp(&right.byte_end))
-		});
-
-		let visible_matches = all_matches
+		let limit_reached =
+			scan_limit_reached || total_matches > normalized_offset.saturating_add(normalized_limit);
+		let matches = all_matches
 			.into_iter()
 			.skip(normalized_offset as usize)
-			.collect::<Vec<_>>();
-		let limit_reached = visible_matches.len() > normalized_limit as usize;
-		let matches = visible_matches
-			.into_iter()
 			.take(normalized_limit as usize)
 			.collect::<Vec<_>>();
 
@@ -1087,6 +1157,42 @@ mod tests {
 		fn drop(&mut self) {
 			let _ = fs::remove_dir_all(&self.root);
 		}
+	}
+
+	fn test_match(start_line: u32) -> AstFindMatch {
+		AstFindMatch {
+			path: String::new(),
+			text: format!("match-{start_line}"),
+			byte_start: start_line,
+			byte_end: start_line + 1,
+			start_line,
+			start_column: 1,
+			end_line: start_line,
+			end_column: 2,
+			meta_variables: None,
+		}
+	}
+
+	#[test]
+	fn retains_only_the_requested_match_window() {
+		let mut matches = Vec::new();
+		let capacity = retained_match_capacity(1, 0).expect("small page must be accepted");
+		retain_sorted_match(&mut matches, test_match(3), capacity);
+		retain_sorted_match(&mut matches, test_match(1), capacity);
+		retain_sorted_match(&mut matches, test_match(2), capacity);
+
+		assert_eq!(matches.len(), 2);
+		assert_eq!(matches[0].start_line, 1);
+		assert_eq!(matches[1].start_line, 2);
+		assert!(retained_match_capacity(MAX_RETAINED_FIND_MATCHES as u32, 0).is_err());
+	}
+
+	#[test]
+	fn rejects_sources_above_the_ast_safety_limit() {
+		assert!(validate_ast_source_size(MAX_AST_SOURCE_BYTES as u64, "source").is_ok());
+		let error = validate_ast_source_size(MAX_AST_SOURCE_BYTES as u64 + 1, "source")
+			.expect_err("oversized source must be rejected");
+		assert!(error.to_string().contains("2 MiB AST safety limit"));
 	}
 
 	fn make_temp_tree() -> TempTree {

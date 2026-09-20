@@ -248,4 +248,33 @@ describe("optional embeddings", () => {
 			},
 		);
 	});
+
+	it("batches local fastembed inputs and preserves input order", async () => {
+		await withEnv(
+			{
+				NODE_ENV: undefined,
+				BUN_ENV: undefined,
+				MNEMOPI_NO_EMBEDDINGS: undefined,
+				MNEMOPI_EMBEDDING_MODEL: "BAAI/bge-small-en-v1.5",
+				MNEMOPI_EMBEDDING_API_URL: undefined,
+				OPENROUTER_BASE_URL: undefined,
+				OPENROUTER_API_KEY: undefined,
+				OPENAI_API_KEY: undefined,
+			},
+			async () => {
+				let observedBatchSize: number | undefined;
+				setLocalModelInitializerForTests(async () => ({
+					embed: async function* (texts, batchSize) {
+						observedBatchSize = batchSize;
+						yield texts.map((_, index) => [index + 1]);
+					},
+				}));
+
+				const inputs = Array.from({ length: 17 }, (_, index) => `local input ${index}`);
+				const vectors = await embed(inputs);
+				expect(observedBatchSize).toBe(16);
+				expect(vectors).toEqual(inputs.map((_, index) => new Float32Array([index + 1])));
+			},
+		);
+	});
 });

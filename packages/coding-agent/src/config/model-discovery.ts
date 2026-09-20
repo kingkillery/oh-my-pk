@@ -38,6 +38,8 @@ export const DISCOVERY_DEFAULT_MAX_TOKENS = OPENAI_COMPAT_DISCOVERY_DEFAULT_MAX_
 const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const OLLAMA_HOST_DEFAULT_PORT = "11434";
 const DEFAULT_9ROUTER_BASE_URL = "http://127.0.0.1:20128/v1";
+/** Colab bridges often sit across WSL localhost forwarding; 300ms misses a live /v1/models. */
+const COLAB_MODELS_DISCOVERY_TIMEOUT_MS = 5_000;
 
 // `normalizeOllamaHostEnv` and `normalizeOllamaBaseUrl` (below) intentionally stay
 // separate: they handle inputs from different sources with different expectations.
@@ -243,6 +245,8 @@ export function discoverModelsByProviderType(
 			return discoverOllamaModels(providerConfig, ctx);
 		case "llama.cpp":
 			return discoverLlamaCppModels(providerConfig, ctx);
+		case "colab":
+			return discoverColabModels(providerConfig, ctx);
 		case "lm-studio":
 		case "openai-models-list":
 			return discoverOpenAIModelsList(providerConfig, ctx);
@@ -381,6 +385,9 @@ export async function discoverLlamaCppModels(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
 ): Promise<Model<Api>[]> {
+	if (providerConfig.provider === "llama.cpp (colab)") {
+		return discoverColabModels(providerConfig, ctx);
+	}
 	const baseUrl = normalizeLlamaCppBaseUrl(providerConfig.baseUrl);
 	const modelsUrl = `${baseUrl}/models`;
 
@@ -434,6 +441,135 @@ export async function discoverLlamaCppModels(
 		);
 	}
 	return discovered;
+}
+
+/**
+ * Resolve candidate base URLs for an active Colab bridge.
+ * Windows WSL localhost relay can drop connections while the WSL host address
+ * keeps working, so both are probed.
+ */
+export async function getColabBridgeCandidateBaseUrls(baseUrl?: string): Promise<string[]> {
+	const envBaseUrl = Bun.env.OMPK_COLAB_BASE_URL?.trim();
+	if (envBaseUrl) {
+		return [envBaseUrl.replace(/\/+$/, "")];
+	}
+	const candidates: string[] = [];
+	const explicit = baseUrl?.trim();
+	if (explicit) {
+		candidates.push(explicit.replace(/\/+$/, ""));
+	} else {
+		candidates.push("http://127.0.0.1:18082/v1");
+	}
+	if (process.platform === "win32") {
+		try {
+			const probe = Bun.spawn(["wsl.exe", "-d", "Ubuntu", "-e", "hostname", "-I"], {
+				stdout: "pipe",
+				stderr: "ignore",
+			});
+			const reported = await new Response(probe.stdout).text();
+			await probe.exited;
+			const address = reported
+				.trim()
+				.split(/\s+/)
+				.find(entry => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(entry));
+			if (address) {
+				let port = "18082";
+				if (explicit) {
+					try {
+						port = new URL(explicit).port || "18082";
+					} catch {
+						// keep default port
+					}
+				}
+				const wslUrl = `http://${address}:${port}/v1`;
+				if (!candidates.includes(wslUrl)) {
+					candidates.push(wslUrl);
+				}
+			}
+		} catch {
+			// Fall through to existing candidates
+		}
+	}
+	return candidates;
+}
+
+export async function discoverColabModels(
+	providerConfig: DiscoveryProviderConfig,
+	ctx: DiscoveryContext,
+): Promise<Model<Api>[]> {
+	const candidateBaseUrls = await getColabBridgeCandidateBaseUrls(providerConfig.baseUrl);
+	const baseHeaders: Record<string, string> = { ...(providerConfig.headers ?? {}) };
+	const apiKey = await ctx.getBearerApiKeyResolver(providerConfig.provider);
+
+	for (const candidateBaseUrl of candidateBaseUrls) {
+		const baseUrl = candidateBaseUrl.replace(/\/+$/, "");
+		const modelsUrl = `${baseUrl}/models`;
+
+		const attempt = async (h: Record<string, string>) => {
+			const [response, metadata] = await Promise.all([
+				ctx.fetch(modelsUrl, {
+					headers: h,
+					signal: AbortSignal.timeout(COLAB_MODELS_DISCOVERY_TIMEOUT_MS),
+				}),
+				discoverLlamaCppServerMetadata(ctx, baseUrl, h),
+			]);
+			if (!response.ok) {
+				return null;
+			}
+			return [response, metadata] as const;
+		};
+
+		try {
+			const result = apiKey
+				? await withAuth(apiKey, key => attempt({ ...baseHeaders, Authorization: `Bearer ${key}` }))
+				: await attempt(baseHeaders);
+			if (!result) continue;
+
+			const [response, serverMetadata] = result;
+			const payload = (await response.json()) as unknown;
+			const parsedModels = parseLlamaCppModelList(payload);
+			if (parsedModels.length === 0) continue;
+
+			const discovered: Model<Api>[] = [];
+			for (const item of parsedModels) {
+				const { id } = item;
+				if (!id) continue;
+				const contextWindow = item.contextWindow ?? serverMetadata?.contextWindow ?? 32_768;
+				discovered.push(
+					buildModel({
+						id,
+						name: `${id} (Colab)`,
+						api: providerConfig.api ?? "openai-completions",
+						provider: providerConfig.provider,
+						baseUrl,
+						reasoning: true,
+						input: serverMetadata?.input ?? ["text"],
+						imageInputDecoder: "stb",
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow,
+						maxTokens: Math.min(contextWindow, 8192),
+						supportsTools: true,
+						supportsThinking: true,
+						headers: providerConfig.headers,
+						compat: {
+							thinkingFormat: "qwen-chat-template",
+							reasoningDisableMode: "qwen-template-false",
+							qwenPreserveThinking: true,
+							supportsStore: false,
+							supportsDeveloperRole: false,
+							supportsReasoningEffort: false,
+						},
+					} as ModelSpec<Api>),
+				);
+			}
+			if (discovered.length > 0) {
+				return discovered;
+			}
+		} catch {
+			// Try next candidate
+		}
+	}
+	return [];
 }
 
 /**

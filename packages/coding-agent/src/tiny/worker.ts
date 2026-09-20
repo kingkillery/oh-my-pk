@@ -31,7 +31,7 @@ import {
 	type TinyTitleLocalModelKey,
 	type TinyTitleLocalModelSpec,
 } from "./models";
-import { formatTitleUserMessage, normalizeGeneratedTitle } from "./text";
+import { boundCompletionPrompt, boundTitleMessage, formatTitleUserMessage, normalizeGeneratedTitle } from "./text";
 import type { TinyTitleTransport, TinyTitleWorkerInbound } from "./title-protocol";
 
 const TITLE_PREFILL = "<title>";
@@ -302,7 +302,17 @@ async function generateTitle(
 	systemPrompt?: string,
 ): Promise<string | null> {
 	const generator = await loadPipeline(modelKey, transport, requestId);
-	const promptText = buildPrompt(generator, message, systemPrompt);
+	// Re-validate with the model's own tokenizer before inference — never trust
+	// the caller's bound. Truncation keeps the head (the substantive request).
+	const boundedMessage = boundTitleMessage(message, text => generator.tokenizer.encode(text).length);
+	if (boundedMessage !== message) {
+		sendLog(transport, "warn", "tiny-worker: bounded oversized title input", {
+			requestId,
+			inputChars: message.length,
+			boundedChars: boundedMessage.length,
+		});
+	}
+	const promptText = buildPrompt(generator, boundedMessage, systemPrompt);
 	const transformers = await loadTransformersRuntime(
 		transformersRuntime,
 		transport,
@@ -343,7 +353,18 @@ async function generateCompletion(
 	maxTokens: number | undefined,
 ): Promise<string | null> {
 	const generator = await loadPipeline(modelKey, transport, requestId);
-	const text = buildCompletionPrompt(generator, promptText);
+	// Worker-side bound independent of the client: memory/classifier prompts can
+	// carry whole session transcripts. Head + tail keeps instructions and the
+	// newest context; the tokenizer never sees unbounded input.
+	const boundedPrompt = boundCompletionPrompt(promptText, text => generator.tokenizer.encode(text).length);
+	if (boundedPrompt !== promptText) {
+		sendLog(transport, "warn", "tiny-worker: bounded oversized completion input", {
+			requestId,
+			inputChars: promptText.length,
+			boundedChars: boundedPrompt.length,
+		});
+	}
+	const text = buildCompletionPrompt(generator, boundedPrompt);
 	const requested = maxTokens ?? MEMORY_COMPLETION_DEFAULT_MAX_NEW_TOKENS;
 	const maxNewTokens = Math.min(Math.max(1, requested), COMPLETION_MAX_NEW_TOKENS);
 	const output = (await generator(text, {

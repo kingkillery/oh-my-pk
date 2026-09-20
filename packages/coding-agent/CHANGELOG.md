@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a persisted Huihui-Ornith 1.5 9B Q4_K_M Colab profile with dynamic VRAM-aware context sizing, Qwen thinking compatibility, Q8 K/V cache configuration, prompt caching, and 1024 physical microbatch prefill tuning.
+
+### Changed
+
+- Colab model launches now reuse a pinned CUDA 12.8 llama.cpp release cache on T4/L4 when host validation succeeds, fall back to the pinned source build when it does not, and scale bridge/readiness deadlines for large contexts.
+
+### Fixed
+
+- Colab provider entries in `models.yml` now accept `discovery.type: colab`, preventing the built-in `llama.cpp (colab)` configuration from being rejected by schema validation.
+- Automatic TTSR AST conditions now skip snapshots above 1 MB by UTF-8 size (logged with diagnostic reason `ast-source-too-large`) and stop native traversal after the first match, avoiding large edit/write snapshots becoming unbounded parser/match workloads.
+- `ast_grep` now reports files over the native 2 MiB AST source limit as explicitly skipped (`skippedFiles` in tool details plus a "Skipped oversized files" note) instead of surfacing them as parse errors or a silent no-match.
+- Tiny-model inference requests are now token-bounded twice — the client caps title messages at 1024 tokens and completion prompts at 8192 tokens (head + tail elision) before IPC, and the worker re-validates with the model's own tokenizer before inference — so oversized session context can no longer trigger multi-GB attention allocations in the ONNX worker.
+
 ## [16.4.25] - 2026-09-20
 
 ### Added

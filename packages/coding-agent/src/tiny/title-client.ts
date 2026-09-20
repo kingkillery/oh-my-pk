@@ -1,3 +1,4 @@
+import { countTokens } from "@pk-nerdsaver-ai/pi-agent-core";
 import { $env, logger } from "@pk-nerdsaver-ai/pi-utils";
 import { settings } from "../config/settings";
 import { createSharedWorkerHandle } from "../subprocess/shared-worker-client";
@@ -27,6 +28,7 @@ import {
 	type TinyMemoryLocalModelKey,
 	type TinyTitleLocalModelKey,
 } from "./models";
+import { boundCompletionPrompt, boundTitleMessage } from "./text";
 import type { TinyTitleProgressEvent, TinyTitleWorkerInbound, TinyTitleWorkerOutbound } from "./title-protocol";
 
 type PendingRequest =
@@ -249,9 +251,13 @@ export class TinyTitleClient {
 			};
 			options.signal?.addEventListener("abort", abort, { once: true });
 			try {
+				// Bound the payload before IPC: the worker re-validates with the model's
+				// own tokenizer, but an uncapped message should never cross the wire —
+				// attention memory grows superlinearly with sequence length.
+				const boundedMessage = boundTitleMessage(message, countTokens);
 				const request: TinyTitleWorkerInbound = options.systemPrompt
-					? { type: "generate", id, modelKey, message, systemPrompt: options.systemPrompt }
-					: { type: "generate", id, modelKey, message };
+					? { type: "generate", id, modelKey, message: boundedMessage, systemPrompt: options.systemPrompt }
+					: { type: "generate", id, modelKey, message: boundedMessage };
 				worker.send(request);
 				return await promise;
 			} finally {
@@ -288,7 +294,10 @@ export class TinyTitleClient {
 			};
 			options.signal?.addEventListener("abort", abort, { once: true });
 			try {
-				worker.send({ type: "complete", id, modelKey, prompt, maxTokens: options.maxTokens });
+				// Same pre-IPC bound as generate: memory/classifier prompts can carry
+				// whole session transcripts, so cap tokens (head + tail) before send.
+				const boundedPrompt = boundCompletionPrompt(prompt, countTokens);
+				worker.send({ type: "complete", id, modelKey, prompt: boundedPrompt, maxTokens: options.maxTokens });
 				return await promise;
 			} finally {
 				options.signal?.removeEventListener("abort", abort);

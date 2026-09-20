@@ -12,6 +12,8 @@ export interface PersistentColabBridgeOptions {
 	modelId: string;
 	remotePort: number;
 	localPort?: number;
+	/** Remote read deadline, scaled for cold prefill context. */
+	remoteTimeoutSeconds?: number;
 }
 
 /**
@@ -124,6 +126,9 @@ export async function startPersistentColabBridge(
 	const localPort = options.localPort ?? 18082;
 	if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65_535)
 		throw new Error("Invalid local bridge port");
+	const remoteTimeoutSeconds = options.remoteTimeoutSeconds ?? 300;
+	if (!Number.isInteger(remoteTimeoutSeconds) || remoteTimeoutSeconds < 300 || remoteTimeoutSeconds > 900)
+		throw new Error("Invalid remote bridge timeout; expected 300-900 seconds.");
 	// A dead WSL relay accepts connections without serving, so a reachable host
 	// is the one that both connects and answers as our model.
 	const hosts = await bridgeHostCandidates();
@@ -159,6 +164,8 @@ export async function startPersistentColabBridge(
 		...hosts.flatMap(hostname => ["--allow-host", hostname]),
 		"--remote-port",
 		String(options.remotePort),
+		"--remote-timeout",
+		String(remoteTimeoutSeconds),
 	];
 	const child = Bun.spawn(process.platform === "win32" ? ["wsl.exe", "-d", "Ubuntu", "-e", ...args] : args, {
 		stdin: "pipe",

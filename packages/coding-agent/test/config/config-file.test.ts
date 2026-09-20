@@ -159,4 +159,26 @@ describe("ConfigFile empty documents", () => {
 		expect(result.status).toBe("ok");
 		expect(result.value).toEqual({});
 	});
+
+	it("accepts the Colab discovery type used by the built-in provider", async () => {
+		const { ModelsConfigFile } = await import("../../src/config/models-config");
+		const file = ModelsConfigFile.relocate(join(directory, "models.yml"));
+		await Bun.write(
+			file.path(),
+			[
+				"providers:",
+				"  'llama.cpp (colab)':",
+				"    api: openai-completions",
+				"    baseUrl: http://127.0.0.1:18082/v1",
+				"    discovery:",
+				"      type: colab",
+			].join("\n"),
+		);
+
+		const result = file.tryLoad();
+		expect(result.status).toBe("ok");
+		if (result.status === "ok") {
+			expect(result.value.providers?.["llama.cpp (colab)"]?.discovery?.type).toBe("colab");
+		}
+	});
 });

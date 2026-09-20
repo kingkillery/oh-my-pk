@@ -19,6 +19,7 @@ describe("ModelRegistry runtime discovery", () => {
 	let originalOllamaBaseUrl: string | undefined;
 	let originalOllamaHost: string | undefined;
 	let originalOllamaContextLength: string | undefined;
+	let originalColabBaseUrl: string | undefined;
 
 	beforeEach(async () => {
 		resetSettingsForTest();
@@ -28,6 +29,8 @@ describe("ModelRegistry runtime discovery", () => {
 		delete Bun.env.OLLAMA_BASE_URL;
 		delete Bun.env.OLLAMA_HOST;
 		delete Bun.env.OLLAMA_CONTEXT_LENGTH;
+		originalColabBaseUrl = Bun.env.OMPK_COLAB_BASE_URL;
+		delete Bun.env.OMPK_COLAB_BASE_URL;
 		tempDir = path.join(os.tmpdir(), `pi-test-model-registry-${Snowflake.next()}`);
 		fs.mkdirSync(tempDir, { recursive: true });
 		modelsJsonPath = path.join(tempDir, "models.json");
@@ -54,6 +57,11 @@ describe("ModelRegistry runtime discovery", () => {
 			delete Bun.env.OLLAMA_CONTEXT_LENGTH;
 		} else {
 			Bun.env.OLLAMA_CONTEXT_LENGTH = originalOllamaContextLength;
+		}
+		if (originalColabBaseUrl === undefined) {
+			delete Bun.env.OMPK_COLAB_BASE_URL;
+		} else {
+			Bun.env.OMPK_COLAB_BASE_URL = originalColabBaseUrl;
 		}
 		authStorage.close();
 		if (tempDir && fs.existsSync(tempDir)) {
@@ -744,10 +752,15 @@ describe("ModelRegistry runtime discovery", () => {
 
 	test("llama.cpp selected model refresh does not resolve command api keys", async () => {
 		const commandLogPath = path.join(tempDir, "llama-cpp-key-command.log");
+		const commandScriptPath = path.join(tempDir, "llama-cpp-key-command.cjs");
+		fs.writeFileSync(
+			commandScriptPath,
+			`require("node:fs").appendFileSync(${JSON.stringify(commandLogPath)}, "x"); process.exit(1);`,
+		);
 		writeRawModelsJson({
 			"llama.cpp": {
 				baseUrl: "http://127.0.0.1:8080",
-				apiKey: `!"${process.execPath}" -e 'require("node:fs").appendFileSync(${JSON.stringify(commandLogPath)}, "x"); process.exit(1);'`,
+				apiKey: `!"${process.execPath}" "${commandScriptPath}"`,
 				api: "openai-responses",
 				discovery: { type: "llama.cpp" },
 				models: [{ id: "protected-model", reasoning: false, input: ["text"] }],
@@ -1128,5 +1141,98 @@ describe("ModelRegistry runtime discovery", () => {
 
 		expect(registry.find("litellm-test", "team-gpt")?.contextWindow).toBe(200_000);
 		expect(registry.find("litellm-test", "deployment-id")).toBeUndefined();
+	});
+	test("auto-discovers active Colab bridge under its distinct provider", async () => {
+		Bun.env.OMPK_COLAB_BASE_URL = "http://colab.test:18082/v1";
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "http://colab.test:18082/v1/models") {
+				return Response.json({ data: [{ id: "Qwen3-8B-Q4_K_M" }] });
+			}
+			if (url === "http://colab.test:18082/props") {
+				return Response.json({ default_generation_settings: { n_ctx: 32768 } });
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		await registry.refresh();
+
+		const model = registry.find("llama.cpp (colab)", "Qwen3-8B-Q4_K_M");
+		expect(model).toBeDefined();
+		expect(model?.baseUrl).toBe("http://colab.test:18082/v1");
+		expect(model?.contextWindow).toBe(32768);
+		expect(model?.supportsTools).toBe(true);
+		expect(model?.thinking?.mode).toBe("effort");
+		expect(await registry.getApiKey(model!)).toBe(kNoAuth);
+		expect(registry.getProviderDiscoveryState("llama.cpp (colab)")?.status).toBe("ok");
+	});
+
+	test("removes the implicit Colab model when its bridge is unavailable", async () => {
+		Bun.env.OMPK_COLAB_BASE_URL = "http://colab.test:18082/v1";
+		let online = true;
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (!online) {
+				throw new Error(`Connection refused: ${url}`);
+			}
+			if (url === "http://colab.test:18082/v1/models") {
+				return Response.json({ data: [{ id: "Qwen3-8B-Q4_K_M" }] });
+			}
+			if (url === "http://colab.test:18082/props") {
+				return Response.json({ default_generation_settings: { n_ctx: 32768 } });
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		await registry.refresh();
+		expect(registry.find("llama.cpp (colab)", "Qwen3-8B-Q4_K_M")).toBeDefined();
+		registry.registerProvider("llama.cpp (colab)", {
+			api: "openai-completions",
+			apiKey: kNoAuth,
+			baseUrl: "http://colab.test:18082/v1",
+			models: [
+				{
+					id: "Qwen3-8B-Q4_K_M",
+					name: "Qwen3-8B-Q4_K_M · Colab T4",
+					reasoning: true,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 32768,
+					maxTokens: 8192,
+				},
+			],
+		});
+		expect(registry.find("llama.cpp (colab)", "Qwen3-8B-Q4_K_M")?.name).toContain("Colab T4");
+
+		online = false;
+		await registry.refresh();
+		expect(registry.getProviderDiscoveryState("llama.cpp (colab)")?.status).toBe("empty");
+		expect(registry.find("llama.cpp (colab)", "Qwen3-8B-Q4_K_M")).toBeUndefined();
+	});
+
+	test("discovers a live Colab model when /v1/models takes longer than 300ms", async () => {
+		Bun.env.OMPK_COLAB_BASE_URL = "http://colab.test:18082/v1";
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "http://colab.test:18082/v1/models") {
+				await Bun.sleep(400);
+				return Response.json({
+					data: [{ id: "Huihui-Ornith-1.5-9B-abliterated", meta: { n_ctx: 131072 } }],
+				});
+			}
+			if (url === "http://colab.test:18082/props") {
+				return Response.json({ default_generation_settings: { n_ctx: 131072 } });
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		await registry.refresh();
+
+		const model = registry.find("llama.cpp (colab)", "Huihui-Ornith-1.5-9B-abliterated");
+		expect(model).toBeDefined();
+		expect(model?.baseUrl).toBe("http://colab.test:18082/v1");
+		expect(model?.contextWindow).toBe(131072);
+		expect(model?.supportsTools).toBe(true);
+		expect(registry.getProviderDiscoveryState("llama.cpp (colab)")?.status).toBe("ok");
 	});
 });

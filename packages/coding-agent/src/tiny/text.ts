@@ -1,3 +1,150 @@
+/**
+ * Hard input bounds for the tiny-model inference worker. Attention memory grows
+ * superlinearly with sequence length — an uncapped conversation once attempted a
+ * ~6 GB attention allocation — so every request is bounded twice: the client
+ * caps the payload before IPC (`title-client.ts`) and the worker re-validates
+ * with the model's own tokenizer before inference (`worker.ts`). Neither side
+ * trusts the other.
+ *
+ * Title inputs keep the head: the first substantive user request leads the
+ * message and the title algorithm does not benefit from a recent-context tail.
+ * Completion prompts keep head + tail with an elision marker so a truncated
+ * memory/classifier prompt retains both its instructions and its newest
+ * context. All cuts snap to UTF-16 code-point boundaries so a surrogate pair
+ * is never split.
+ */
+export const MAX_TITLE_INPUT_TOKENS = 1024;
+export const MAX_COMPLETION_INPUT_TOKENS = 8192;
+
+/**
+ * Cheap prefilter applied before any tokenizer sees the text. Generous enough
+ * that it only rejects absurd payloads; the token bound below is the real cap.
+ */
+const MAX_WORKER_INPUT_CHARS = 256 * 1024;
+/** Marker inserted between the retained head and tail of an elided prompt. */
+const ELISION_MARKER = "\n[…]\n";
+/** Token budget reserved for {@link ELISION_MARKER} when splitting head/tail. */
+const ELISION_MARKER_TOKENS = 8;
+
+function isHighSurrogate(code: number): boolean {
+	return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number): boolean {
+	return code >= 0xdc00 && code <= 0xdfff;
+}
+
+/** Longest prefix of `text` not ending inside a surrogate pair. */
+export function safePrefix(text: string, end: number): string {
+	const bounded = Math.max(0, Math.min(end, text.length));
+	if (bounded > 0 && isHighSurrogate(text.charCodeAt(bounded - 1)) && isLowSurrogate(text.charCodeAt(bounded))) {
+		return text.slice(0, bounded - 1);
+	}
+	return text.slice(0, bounded);
+}
+
+/** Shortest suffix of `text` not starting inside a surrogate pair. */
+export function safeSuffix(text: string, start: number): string {
+	const bounded = Math.max(0, Math.min(start, text.length));
+	if (
+		bounded < text.length &&
+		isLowSurrogate(text.charCodeAt(bounded)) &&
+		isHighSurrogate(text.charCodeAt(bounded - 1))
+	) {
+		return text.slice(bounded + 1);
+	}
+	return text.slice(bounded);
+}
+
+/**
+ * Longest prefix whose token count fits `budget`, found by bisection over
+ * `count`. Token counts are not strictly monotone (BPE merges at the cut can
+ * shrink the count), so the result is a verified-fitting prefix, not provably
+ * the maximal one — deterministic either way.
+ */
+function bisectPrefix(text: string, budget: number, count: (text: string) => number): string {
+	let lo = 0;
+	let hi = text.length;
+	while (lo < hi) {
+		const mid = (lo + hi + 1) >> 1;
+		if (count(safePrefix(text, mid)) <= budget) lo = mid;
+		else hi = mid - 1;
+	}
+	return safePrefix(text, lo);
+}
+
+/** Shortest suffix whose token count fits `budget`; mirror of {@link bisectPrefix}. */
+function bisectSuffix(text: string, budget: number, count: (text: string) => number): string {
+	let lo = 0;
+	let hi = text.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >> 1;
+		if (count(safeSuffix(text, mid)) <= budget) hi = mid;
+		else lo = mid + 1;
+	}
+	return safeSuffix(text, lo);
+}
+
+/**
+ * Deterministically bound `text` to `maxTokens` under `count`. Head-only by
+ * default (title inputs); pass `tailTokens` to keep a trailing window joined
+ * by an elision marker (completion prompts). When the token counter itself
+ * fails, degrades to a surrogate-safe character bound instead of throwing.
+ */
+export function truncateToTokenBudget(
+	text: string,
+	maxTokens: number,
+	count: (text: string) => number,
+	tailTokens = 0,
+): string {
+	try {
+		if (count(text) <= maxTokens) return text;
+		if (tailTokens > 0) {
+			const head = bisectPrefix(text, Math.max(1, maxTokens - tailTokens - ELISION_MARKER_TOKENS), count);
+			const tail = bisectSuffix(text, tailTokens, count);
+			if (head.length + tail.length >= text.length) return `${head}${ELISION_MARKER}`;
+			return `${head}${ELISION_MARKER}${tail}`;
+		}
+		return `${bisectPrefix(text, Math.max(1, maxTokens - 1), count)}…`;
+	} catch {
+		return truncateToCharBudget(text, maxTokens * 4, tailTokens * 4);
+	}
+}
+
+/** Character-budget fallback mirroring {@link truncateToTokenBudget}'s shape. */
+function truncateToCharBudget(text: string, maxChars: number, tailChars = 0): string {
+	if (text.length <= maxChars) return text;
+	if (tailChars > 0) {
+		const head = safePrefix(text, Math.max(1, maxChars - tailChars - ELISION_MARKER.length));
+		const tail = safeSuffix(text, text.length - tailChars);
+		if (head.length + tail.length >= text.length) return `${head}${ELISION_MARKER}`;
+		return `${head}${ELISION_MARKER}${tail}`;
+	}
+	return `${safePrefix(text, Math.max(1, maxChars - 1))}…`;
+}
+
+/**
+ * Bound a title message for the worker: strip code blocks, apply the character
+ * cap, then the token cap. Idempotent — the worker re-runs the same bound on
+ * whatever the client sent.
+ */
+export function boundTitleMessage(message: string, count: (text: string) => number): string {
+	return truncateToTokenBudget(prepareTitleInput(message), MAX_TITLE_INPUT_TOKENS, count);
+}
+
+/**
+ * Bound a generic completion prompt for the worker. A character prefilter keeps
+ * pathological payloads away from the tokenizer; the token bound keeps head +
+ * tail so instructions and the newest context both survive truncation.
+ */
+export function boundCompletionPrompt(promptText: string, count: (text: string) => number): string {
+	const prefiltered =
+		promptText.length > MAX_WORKER_INPUT_CHARS
+			? truncateToCharBudget(promptText, MAX_WORKER_INPUT_CHARS, MAX_WORKER_INPUT_CHARS / 2)
+			: promptText;
+	return truncateToTokenBudget(prefiltered, MAX_COMPLETION_INPUT_TOKENS, count, MAX_COMPLETION_INPUT_TOKENS / 2);
+}
+
 export const MAX_TITLE_INPUT_CHARS = 2000;
 
 /**

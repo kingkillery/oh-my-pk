@@ -286,6 +286,11 @@ export interface AstMatchOptions {
   limit?: number
   /** Number of leading matches to skip before applying `limit`. */
   offset?: number
+  /**
+   * Optional traversal cap for existence checks. When reached, matching stops
+   * early, `limitReached` is true, and `totalMatches` is a lower bound.
+   */
+  maxMatches?: number
   /** When true, include meta-variable bindings per match. */
   includeMeta?: boolean
   /** Optional cancellation handle (library-specific). */
@@ -298,9 +303,12 @@ export interface AstMatchOptions {
 export interface AstMatchResult {
   /** Page of matches after sort, offset, and limit. */
   matches: Array<AstFindMatch>
-  /** Total matches found before paging (can exceed `matches.length`). */
+  /**
+   * Total matches found before paging. When `maxMatches` stops traversal,
+   * this is a lower bound rather than the complete source-wide count.
+   */
   totalMatches: number
-  /** True when results were truncated by `limit`. */
+  /** True when paging or `maxMatches` truncated the traversal. */
   limitReached: boolean
   /** Non-fatal parse or pattern-compile errors collected during the run. */
   parseErrors?: Array<string>

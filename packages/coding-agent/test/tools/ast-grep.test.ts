@@ -176,4 +176,48 @@ describe("ast_grep parse errors", () => {
 			await removeWithRetries(tempDir);
 		}
 	});
+
+	it("reports oversized files as skipped, not as a clean no-match", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ast-grep-oversized-"));
+		try {
+			// 3 MiB file exceeds the native 2 MiB AST source limit.
+			await Bun.write(path.join(tempDir, "huge.ts"), `const x = 1;\n${"//".repeat(3 * 1024 * 1024)}`);
+			await Bun.write(path.join(tempDir, "small.ts"), "const target = { value: 1 };\n");
+
+			const tools = await createTools(createTestSession(tempDir));
+			const tool = tools.find(entry => entry.name === "ast_grep");
+			expect(tool).toBeDefined();
+
+			const result = await tool!.execute("ast-grep-oversized", {
+				pat: "const $NAME = $VALUE",
+				paths: [tempDir],
+			});
+			const text = result.content.find(content => content.type === "text")?.text ?? "";
+			const details = result.details as
+				| { skippedFiles?: string[]; matchCount?: number; parseErrors?: string[] }
+				| undefined;
+
+			expect(details?.matchCount).toBe(1);
+			expect(details?.skippedFiles?.some(file => file.includes("huge.ts"))).toBe(true);
+			expect(details?.parseErrors ?? []).not.toContainEqual(expect.stringContaining("huge.ts"));
+			expect(text).toContain("Skipped oversized files");
+			expect(text).toContain("huge.ts");
+			expect(text).not.toContain("No matches found");
+
+			// Oversized-only scope: the skip note must accompany "No matches found"
+			// so the caller cannot confuse "skipped" with "searched, absent".
+			const onlyHuge = await tool!.execute("ast-grep-oversized-only", {
+				pat: "const $NAME = $VALUE",
+				paths: [path.join(tempDir, "huge.ts")],
+			});
+			const onlyText = onlyHuge.content.find(content => content.type === "text")?.text ?? "";
+			const onlyDetails = onlyHuge.details as { skippedFiles?: string[] } | undefined;
+			expect(onlyText).toContain("No matches found");
+			expect(onlyText).toContain("Skipped oversized files");
+			expect(onlyText).toContain("huge.ts");
+			expect(onlyDetails?.skippedFiles?.length).toBe(1);
+		} finally {
+			await removeWithRetries(tempDir);
+		}
+	});
 });

@@ -23,6 +23,8 @@ export interface ColabAcceleratorProfile {
 	defaultContextWindow: number;
 	modelSizeBudget: number;
 	preferredQuantizations: readonly string[];
+	/** Total accelerator memory used by model-aware context sizing. */
+	vramBytes: number;
 }
 
 const ACCELERATOR_PROFILES: Record<ColabAccelerator, ColabAcceleratorProfile> = {
@@ -31,37 +33,107 @@ const ACCELERATOR_PROFILES: Record<ColabAccelerator, ColabAcceleratorProfile> = 
 		defaultContextWindow: 32_768,
 		modelSizeBudget: 12_000_000_000,
 		preferredQuantizations: ["Q3_K_M", "Q3_K_S", "IQ4_XS", "Q4_K_S", "Q4_K_M"],
+		vramBytes: 16 * 1024 ** 3,
 	},
 	L4: {
 		cmakeArchitecture: "89-real",
 		defaultContextWindow: 65_536,
 		modelSizeBudget: 18_000_000_000,
 		preferredQuantizations: ["Q4_K_M", "Q4_K_S", "IQ4_XS", "Q3_K_M", "Q3_K_S", "Q5_K_M"],
+		vramBytes: 24 * 1024 ** 3,
 	},
 	A100: {
 		cmakeArchitecture: "80-real",
 		defaultContextWindow: 65_536,
 		modelSizeBudget: 28_000_000_000,
 		preferredQuantizations: ["Q6_K", "Q5_K_M", "Q5_K_S", "Q4_K_M", "Q4_K_S", "Q8_0"],
+		vramBytes: 40 * 1024 ** 3,
 	},
 	H100: {
 		cmakeArchitecture: "90-real",
 		defaultContextWindow: 131_072,
 		modelSizeBudget: 60_000_000_000,
 		preferredQuantizations: ["Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q4_K_M"],
+		vramBytes: 80 * 1024 ** 3,
 	},
 	G4: {
 		cmakeArchitecture: "120-real",
 		defaultContextWindow: 131_072,
 		modelSizeBudget: 72_000_000_000,
 		preferredQuantizations: ["Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q4_K_M"],
+		vramBytes: 96 * 1024 ** 3,
 	},
 };
+
+export interface ColabModelProfile {
+	id: string;
+	repoId: string;
+	artifactFile: string;
+	/** Maximum context supported by the model training configuration. */
+	nCtxTrain: number;
+	defaultContextWindow: number;
+	/** Q8 KV bytes per token for both K and V, from the model architecture. */
+	kvBytesPerToken: number;
+	chatTemplate: "qwen-chat-template";
+	reasoningDisableMode: "qwen-template-false";
+	qwenPreserveThinking: boolean;
+	kvCacheType: "q8_0";
+	physicalMicrobatch: 1024 | 2048;
+	cachePrompt: boolean;
+}
+
+/** Persisted launch manifest for models with validated serving parameters. */
+export const COLAB_MODEL_PROFILES: readonly ColabModelProfile[] = [
+	{
+		id: "ornith-1.5-9b-abliterated",
+		repoId: "mradermacher/Huihui-Ornith-1.5-9B-abliterated-GGUF",
+		artifactFile: "Huihui-Ornith-1.5-9B-abliterated.Q4_K_M.gguf",
+		nCtxTrain: 262_144,
+		defaultContextWindow: 131_072,
+		// Ornith-1.5-9B: 36 layers × 8 KV heads × 128 head dimension × 2 (K/V).
+		kvBytesPerToken: 73_728,
+		chatTemplate: "qwen-chat-template",
+		reasoningDisableMode: "qwen-template-false",
+		qwenPreserveThinking: true,
+		kvCacheType: "q8_0",
+		physicalMicrobatch: 1024,
+		cachePrompt: true,
+	},
+];
 
 const AUTOMATIC_ACCELERATORS: readonly ColabAccelerator[] = ["T4", "L4", "A100"];
 
 export function getColabAcceleratorProfile(accelerator: ColabAccelerator): ColabAcceleratorProfile {
 	return ACCELERATOR_PROFILES[accelerator];
+}
+
+export function getColabModelProfile(
+	reference: Pick<HuggingFaceModelReference, "repoId">,
+	artifact: Pick<GgufArtifact, "primaryFile">,
+): ColabModelProfile | undefined {
+	const repoId = reference.repoId.toLowerCase();
+	const artifactFile = artifact.primaryFile.split("/").pop()?.toLowerCase();
+	return COLAB_MODEL_PROFILES.find(
+		profile => profile.repoId.toLowerCase() === repoId && profile.artifactFile.toLowerCase() === artifactFile,
+	);
+}
+
+export function calculateColabContextWindow(
+	accelerator: ColabAccelerator,
+	artifact: Pick<GgufArtifact, "totalSize">,
+	profile: ColabModelProfile,
+): number {
+	const availableBytes = getColabAcceleratorProfile(accelerator).vramBytes * 0.85 - artifact.totalSize;
+	const calculated = Math.floor(availableBytes / profile.kvBytesPerToken);
+	if (calculated < 1_024) {
+		throw new Error(`The ${accelerator} does not have enough reserved VRAM for ${profile.id} context.`);
+	}
+	return Math.min(profile.nCtxTrain, calculated);
+}
+
+export function getColabInferenceTimeoutSeconds(contextWindow: number): number {
+	if (!Number.isInteger(contextWindow) || contextWindow < 1) throw new Error("Context window must be positive.");
+	return Math.min(900, Math.max(300, 120 + Math.ceil(contextWindow / 512)));
 }
 
 export interface HuggingFaceModelReference {
@@ -159,11 +231,11 @@ function upstreamReleaseArchive(cuda: string, sha256: string): ColabPrebuiltRunt
  * setup script only adopts a prebuilt whose `--version` commit prefixes
  * `pinnedCommit`.
  *
- * The CUDA 12.8 archive is pinned for T4 because Colab's T4 VM image ships
- * CUDA 12.8 (`libcudart.so.12.8.90`), so every bundled library resolves under
- * `ldd` (verified 2026-09-20 on Tesla T4, driver 580.82.07: restore in ~5 s
- * against a ~45 min source compile). Accelerators without an entry keep
- * compiling the pinned commit for their own CUDA architecture.
+ * The CUDA 12.8 archive is pinned for T4 and L4: Colab's T4 image ships
+ * CUDA 12.8 (`libcudart.so.12.8.90`), and the release contains native 89-real
+ * kernels for L4. The setup validates checksum, `--version`, `ldd`, health,
+ * generation, and tool readiness before returning the provider endpoint. Any
+ * host incompatibility falls back to the pinned source build.
  */
 const UPSTREAM_RUNTIME: ColabRuntimeProfile = {
 	id: "upstream",
@@ -174,6 +246,7 @@ const UPSTREAM_RUNTIME: ColabRuntimeProfile = {
 	pinnedTag: UPSTREAM_TAG,
 	prebuilt: {
 		T4: upstreamReleaseArchive("12.8", "658c391b6c93483960433b160975b938a727315311320dbf2ab24bae41488fb7"),
+		L4: upstreamReleaseArchive("12.8", "658c391b6c93483960433b160975b938a727315311320dbf2ab24bae41488fb7"),
 	},
 	requiredQuantizations: [],
 	reasoning: false,
@@ -237,6 +310,9 @@ export interface ColabModelLaunchResult {
 	accelerator: ColabAccelerator;
 	apiBaseUrl: string;
 	contextWindow: number;
+	chatTemplate?: "qwen-chat-template";
+	reasoningDisableMode?: "qwen-template-false";
+	qwenPreserveThinking?: boolean;
 	maxTokens: number;
 	modelId: string;
 	modelName: string;
@@ -550,7 +626,10 @@ export function selectAutomaticColabAccelerators(
 ): ColabAccelerator[] {
 	return AUTOMATIC_ACCELERATORS.filter(accelerator => {
 		try {
-			selectGgufArtifact(entries, reference, accelerator);
+			const artifact = selectGgufArtifact(entries, reference, accelerator);
+			const profile = getColabModelProfile(reference, artifact);
+			if (profile && calculateColabContextWindow(accelerator, artifact, profile) < profile.defaultContextWindow)
+				return false;
 			return true;
 		} catch {
 			return false;
@@ -700,9 +779,7 @@ async function ensureColabSession(
 		const launch = await runCommand(["new", "--session", sessionName, "--gpu", accelerator], {
 			timeoutMs: 5 * 60_000,
 		});
-		if (launch.exitCode === 0) {
-			return parseAccelerator(`${launch.stdout}\n${launch.stderr}`) ?? accelerator;
-		}
+		if (launch.exitCode === 0) return parseAccelerator(`${launch.stdout}\n${launch.stderr}`) ?? accelerator;
 		lastFailure = launch.stderr || launch.stdout;
 		const recoveredStatus = await runCommand(["status", "--session", sessionName], { timeoutMs: 60_000 });
 		const recoveredAccelerator =
@@ -734,9 +811,11 @@ export function buildRemoteSetupScript(config: {
 	reference: HuggingFaceModelReference;
 	remotePort: number;
 	runtime?: ColabRuntimeProfile;
+	modelProfile?: ColabModelProfile;
 }): string {
 	const runtime = config.runtime ?? selectColabRuntimeProfile(config.reference, config.artifact);
 	const prebuilt = selectColabPrebuiltRuntime(runtime, config.accelerator);
+	const modelProfile = config.modelProfile ?? getColabModelProfile(config.reference, config.artifact);
 	const payload = {
 		accelerator: config.accelerator,
 		cmakeArchitecture: getColabAcceleratorProfile(config.accelerator).cmakeArchitecture,
@@ -747,6 +826,18 @@ export function buildRemoteSetupScript(config: {
 		remotePort: config.remotePort,
 		repoId: config.reference.repoId,
 		revision: config.reference.revision,
+		modelProfile: modelProfile
+			? {
+					artifactFile: modelProfile.artifactFile,
+					cachePrompt: modelProfile.cachePrompt,
+					chatTemplate: modelProfile.chatTemplate,
+					id: modelProfile.id,
+					kvCacheType: modelProfile.kvCacheType,
+					physicalMicrobatch: modelProfile.physicalMicrobatch,
+					qwenPreserveThinking: modelProfile.qwenPreserveThinking,
+					reasoningDisableMode: modelProfile.reasoningDisableMode,
+				}
+			: null,
 		runtime: {
 			id: runtime.id,
 			directory: runtime.directory,
@@ -785,6 +876,7 @@ CONFIG = json.loads(${pythonJson(payload)})
 PROGRESS_PREFIX = ${JSON.stringify(PROGRESS_PREFIX)}
 READY_PREFIX = ${JSON.stringify(READY_PREFIX)}
 RUNTIME = CONFIG["runtime"]
+MODEL_PROFILE = CONFIG.get("modelProfile") or {}
 PREBUILT = RUNTIME["prebuilt"]
 LLAMA_DIR = Path(RUNTIME["directory"])
 MODEL_ROOT = Path("/content/ompk-models")
@@ -792,6 +884,10 @@ PID_FILE = Path("/content/ompk-colab-model.pid")
 LOG_FILE = Path("/content/ompk-colab-model.log")
 HEX_DIGITS = frozenset("0123456789abcdef")
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+def inference_timeout_seconds():
+    # Scale cold-prefill probes with context while retaining bounded requests.
+    return min(900, max(300, 120 + int(CONFIG["contextWindow"] / 512)))
 
 # A llama-server whose provenance is verified for this launch: restored release archive or pinned source build.
 RuntimeTarget = namedtuple("RuntimeTarget", ["source", "server", "commit"])
@@ -1223,7 +1319,7 @@ def announce_ready(model_id, primary_name, base_url, target):
         "max_tokens": 16,
         "seed": 0,
         "chat_template_kwargs": {"enable_thinking": False},
-    }, timeout=300)
+    }, timeout=inference_timeout_seconds())
     if not isinstance(warmup.get("choices"), list) or not warmup["choices"]:
         raise RuntimeError("Warmup request returned no completion choices")
 
@@ -1259,7 +1355,7 @@ def announce_ready(model_id, primary_name, base_url, target):
         "max_tokens": 32,
         "seed": 0,
         "chat_template_kwargs": {"enable_thinking": False},
-    }, timeout=300)
+    }, timeout=inference_timeout_seconds())
     choices = tool_probe.get("choices")
     if not isinstance(choices, list) or len(choices) != 1:
         raise RuntimeError("Tool-call readiness probe returned an invalid choices payload")
@@ -1393,12 +1489,19 @@ def start_server(target, model_path, primary_name, base_url):
     alias = Path(primary_name).stem
     progress(f"loading {alias} on the GPU with {target.source} {runtime_label()}")
     log_handle = LOG_FILE.open("w", buffering=1)
-    server_process = subprocess.Popen([
+    server_args = [
         str(target.server), "--model", str(model_path), "--alias", alias,
         "--host", "127.0.0.1", "--port", str(CONFIG["remotePort"]),
         "--ctx-size", str(CONFIG["contextWindow"]), "--n-gpu-layers", "99",
         "--flash-attn", "on", "--jinja", "--parallel", "1", "--metrics",
-    ], env=library_env(target.server), stdout=log_handle, stderr=subprocess.STDOUT, start_new_session=True)
+    ]
+    if MODEL_PROFILE.get("kvCacheType"):
+        server_args.extend(["--cache-type-k", MODEL_PROFILE["kvCacheType"], "--cache-type-v", MODEL_PROFILE["kvCacheType"]])
+    if MODEL_PROFILE.get("physicalMicrobatch"):
+        server_args.extend(["--ubatch-size", str(MODEL_PROFILE["physicalMicrobatch"])])
+    if MODEL_PROFILE.get("cachePrompt"):
+        server_args.append("--cache-prompt")
+    server_process = subprocess.Popen(server_args, env=library_env(target.server), stdout=log_handle, stderr=subprocess.STDOUT, start_new_session=True)
     PID_FILE.write_text(str(server_process.pid))
     for attempt in range(180):
         if server_process.poll() is not None:
@@ -1683,16 +1786,26 @@ export async function launchColabModel(
 	}
 	const accelerator = await ensureColabSession(sessionName, acquisitionCandidates, options.accelerator, emit);
 	const artifact = selectGgufArtifact(entries, reference, accelerator);
+	const modelProfile = getColabModelProfile(reference, artifact);
+	const contextWindow = modelProfile
+		? calculateColabContextWindow(accelerator, artifact, modelProfile)
+		: getColabAcceleratorProfile(accelerator).defaultContextWindow;
 	const runtime = selectColabRuntimeProfile(reference, artifact);
 	const prebuilt = selectColabPrebuiltRuntime(runtime, accelerator);
 	await emit(
 		`Colab: selected ${artifact.quantization} (${artifact.totalSize > 0 ? `${(artifact.totalSize / 1_000_000_000).toFixed(1)} GB` : "size unknown"}) for ${accelerator} on ${runtime.id} llama.cpp${runtime.pinnedTag ? ` ${runtime.pinnedTag}` : ""}${prebuilt ? ` (prebuilt CUDA ${prebuilt.cuda} release, source fallback)` : ""}.`,
 	);
+	if (modelProfile) {
+		await emit(
+			`Colab: ${modelProfile.id} context budget ${contextWindow.toLocaleString()} tokens; Q8 KV cache, ubatch ${modelProfile.physicalMicrobatch}.`,
+		);
+	}
 	const setup = await runCommand(["exec", "--session", sessionName, "--timeout", "3600"], {
 		input: buildRemoteSetupScript({
 			accelerator,
 			artifact,
-			contextWindow: getColabAcceleratorProfile(accelerator).defaultContextWindow,
+			contextWindow,
+			modelProfile,
 			reference,
 			remotePort: DEFAULT_REMOTE_PORT,
 			runtime,
@@ -1722,6 +1835,7 @@ export async function launchColabModel(
 		remotePort: ready.port,
 		modelId: ready.modelId,
 		localPort,
+		remoteTimeoutSeconds: getColabInferenceTimeoutSeconds(contextWindow),
 	});
 	const apiBaseUrl = bridge.apiBaseUrl;
 	let modelId = ready.modelId;
@@ -1732,15 +1846,16 @@ export async function launchColabModel(
 			`Colab warning: could not confirm the live model alias; keeping ${ready.modelId}: ${errorMessage(error)}`,
 		);
 	}
+	const effectiveContextWindow = ready.contextWindow || contextWindow;
 	return {
 		accelerator,
 		toolCallReady: ready.toolCallReady,
 		apiBaseUrl,
-		contextWindow: ready.contextWindow || getColabAcceleratorProfile(accelerator).defaultContextWindow,
-		maxTokens: Math.min(
-			DEFAULT_MAX_TOKENS,
-			ready.contextWindow || getColabAcceleratorProfile(accelerator).defaultContextWindow,
-		),
+		contextWindow: effectiveContextWindow,
+		chatTemplate: modelProfile?.chatTemplate,
+		reasoningDisableMode: modelProfile?.reasoningDisableMode,
+		qwenPreserveThinking: modelProfile?.qwenPreserveThinking,
+		maxTokens: Math.min(DEFAULT_MAX_TOKENS, effectiveContextWindow),
 		modelId,
 		modelName: modelId === ready.modelId ? ready.modelName : liveColabModelName(modelId),
 		quantization: artifact.quantization,
@@ -1781,9 +1896,9 @@ export async function handleColabModelSlashCommand(
 				apiKey: kNoAuth,
 				api: "openai-completions",
 				compat: {
-					thinkingFormat: "qwen-chat-template",
-					reasoningDisableMode: "qwen-template-false",
-					qwenPreserveThinking: true,
+					thinkingFormat: result.chatTemplate ?? "qwen-chat-template",
+					reasoningDisableMode: result.reasoningDisableMode ?? "qwen-template-false",
+					qwenPreserveThinking: result.qwenPreserveThinking ?? true,
 				},
 				models: [
 					{

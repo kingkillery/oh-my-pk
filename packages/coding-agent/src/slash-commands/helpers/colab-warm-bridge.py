@@ -25,13 +25,10 @@ def abort_marker_path(port: int) -> str:
     return f"/content/.ompk-native-abort-{port}"
 
 
-# Bounded remote read deadline: covers a near-limit prefill on L4 (~155 s at
-# ~777 tok/s for 120K tokens) with margin, while keeping a hard cap so a hung
-# remote read cannot hold the single slot forever. The kernel-exec timeout is
-# set slightly higher so this inner deadline fires first and reports 504.
-REMOTE_READ_TIMEOUT_S = 300
+# Bounded remote read deadline. The launcher scales this for large cold-prefill contexts.
+DEFAULT_REMOTE_READ_TIMEOUT_S = 300
 
-def remote_code(method: str, path: str, body: bytes, port: int, rid: str, marker: str, timeout: int = REMOTE_READ_TIMEOUT_S) -> str:
+def remote_code(method: str, path: str, body: bytes, port: int, rid: str, marker: str, timeout: int = DEFAULT_REMOTE_READ_TIMEOUT_S) -> str:
     if path not in ALLOWED or method not in {"GET", "POST"}:
         raise ValueError("Unsupported route")
     config = json.dumps({"method": method, "path": path, "body": base64.b64encode(body).decode(),
@@ -137,12 +134,13 @@ class StreamRelay:
 
 
 class WarmBridge:
-    def __init__(self, runtime, remote_port, abort_uploader=None):
+    def __init__(self, runtime, remote_port, abort_uploader=None, remote_timeout=DEFAULT_REMOTE_READ_TIMEOUT_S):
         self.runtime = runtime
         self.remote_port = remote_port
         self.lock = threading.Lock()
         self.failed = False
         self._abort_uploader = abort_uploader
+        self.remote_timeout = remote_timeout
 
     def request_abort(self, rid):
         if self._abort_uploader is not None:
@@ -158,10 +156,10 @@ class WarmBridge:
             if kind == "stream" and content.get("name") == "stdout":
                 relay.feed(content.get("text", ""))
         reply = self.runtime.kernel_client.execute_interactive(
-            remote_code(method, path, body, self.remote_port, rid, abort_marker_path(self.remote_port)),
-            # Backstop only: the inner read deadline (REMOTE_READ_TIMEOUT_S)
-            # fires first and reports 504; this outer bound catches a hung exec.
-            output_hook=output, timeout=REMOTE_READ_TIMEOUT_S + 60, allow_stdin=False,
+            remote_code(method, path, body, self.remote_port, rid, abort_marker_path(self.remote_port), self.remote_timeout),
+            # Backstop only: the inner read deadline fires first and reports 504.
+            # this outer bound catches a hung exec.
+            output_hook=output, timeout=self.remote_timeout + 60, allow_stdin=False,
         )
         if reply.get("content", {}).get("status", reply.get("status")) != "ok" or not relay.started:
             raise RuntimeError("Remote response did not complete")
@@ -327,6 +325,7 @@ def main():
     # dial so the guard stays an explicit allowlist instead of "any host".
     parser.add_argument("--allow-host", action="append", default=[])
     parser.add_argument("--remote-port", type=int, default=8081)
+    parser.add_argument("--remote-timeout", type=int, default=DEFAULT_REMOTE_READ_TIMEOUT_S)
     args = parser.parse_args()
     from colab_cli.common import state
     from colab_cli.runtime import ColabRuntime
@@ -345,7 +344,7 @@ def main():
             raise RuntimeError("No stored kernel ID for this session; reconnect the existing session explicitly. The bridge never creates a kernel.")
         runtime = ColabRuntime(session.url, session.token, kernel_id=kernel_id, session_id=str(uuid.uuid4()))
         runtime.kernel_client
-        bridge = WarmBridge(runtime, args.remote_port, make_abort_uploader(session, abort_marker_path(args.remote_port)))
+        bridge = WarmBridge(runtime, args.remote_port, make_abort_uploader(session, abort_marker_path(args.remote_port)), args.remote_timeout)
         allowed_hosts = frozenset({"127.0.0.1", "localhost", *args.allow_host})
         server.RequestHandlerClass = make_handler(bridge, allowed_hosts=allowed_hosts)
         print(json.dumps({"event": "ready", "port": args.port}), flush=True)

@@ -47,6 +47,7 @@ export type LocalModelInitOptions = {
 export type LocalModelInitializer = (options: LocalModelInitOptions) => Promise<LocalEmbeddingModel>;
 
 const QUERY_CACHE_MAX = 512;
+const LOCAL_EMBEDDING_BATCH_SIZE = 16;
 
 let providerOverride: EmbeddingProvider | null = null;
 let localModelPromise: Promise<LocalEmbeddingModel> | null = null;
@@ -513,7 +514,7 @@ export async function embed(texts: readonly string[]): Promise<EmbeddingMatrix |
 		return null;
 	}
 	try {
-		const vectors = await collectMatrix(model.embed([...texts]));
+		const vectors = await collectMatrix(model.embed([...texts], LOCAL_EMBEDDING_BATCH_SIZE));
 		if (vectors.length === 1) {
 			const vector = vectors[0];
 			if (vector !== undefined) {

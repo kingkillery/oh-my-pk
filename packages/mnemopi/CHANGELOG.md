@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Capped local fastembed inference batches at 16 inputs to prevent large retention jobs from producing multi-gigabyte ONNX attention tensors under host memory pressure.
+
 ## [16.3.0] - 2026-07-23
 
 ### Fixed

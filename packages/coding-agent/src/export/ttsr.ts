@@ -5,11 +5,20 @@
  * the agent's output. When a match occurs, the stream is aborted, the rule is
  * injected as a system reminder, and the request is retried.
  */
+import { Buffer } from "node:buffer";
 import * as path from "node:path";
 import { AstMatchStrictness, astMatch } from "@pk-nerdsaver-ai/pi-natives";
 import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { Rule } from "../capability/rule";
 import type { TtsrSettings } from "../config/settings";
+
+/**
+ * TTSR's own snapshot ceiling for AST evaluation — deliberately stricter than
+ * the native `MAX_AST_SOURCE_BYTES` ceiling (2 MiB, `crates/pi-natives/src/ast.rs`,
+ * mirrored in JS by `packages/natives/native/index.js`) so mid-stream checks stay
+ * cheap. Must never exceed the native ceiling: above it `astMatch` rejects.
+ */
+const MAX_TTSR_AST_SNAPSHOT_BYTES = 1_000_000;
 
 export type TtsrMatchSource = "text" | "thinking" | "tool";
 
@@ -416,6 +425,20 @@ export class TtsrManager {
 			return [];
 		}
 
+		const snapshotBytes = Buffer.byteLength(snapshot, "utf8");
+		if (snapshotBytes > MAX_TTSR_AST_SNAPSHOT_BYTES) {
+			// Skip only the AST conditions; regex/literal conditions are evaluated
+			// separately by `checkSnapshot`/`checkDelta` and still run.
+			logger.debug("TTSR ast match skipped oversized snapshot", {
+				reason: "ast-source-too-large",
+				bytes: snapshotBytes,
+				maximum: MAX_TTSR_AST_SNAPSHOT_BYTES,
+				toolName: context.toolName,
+				filePaths: context.filePaths,
+			});
+			return [];
+		}
+
 		// Throttle: skip re-running the matcher when the source content is unchanged.
 		const bufferKey = this.#bufferKey(context);
 		if (this.#lastAstSnapshots.get(bufferKey) === snapshot) {
@@ -446,6 +469,7 @@ export class TtsrManager {
 				lang,
 				strictness: AstMatchStrictness.Smart,
 				limit: 1,
+				maxMatches: 1,
 			});
 			if (result.parseErrors && result.parseErrors.length > 0) {
 				logger.debug("TTSR ast match reported parse errors", { parseErrors: result.parseErrors });

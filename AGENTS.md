@@ -10,6 +10,10 @@
 - Deeper `AGENTS.md` files contain package-specific rules; read them before editing those directories.
 - Before editing `packages/coding-agent/` or `packages/catalog/`, read that package's `AGENTS.md`.
 
+- Colab is general compute by default; `/colab-model` or explicit inference establishes model intent.
+- Fresh agents MUST inspect existing sessions first, offer connection when compatible, and provision only when requested.
+- Treat runtime, served model, bridge, provider registration, and harness generation as separate evidence gates.
+
 ## PR 45 convergence policy
 
 - Treat `main` as the production baseline. PR 45 and `codex/pr45-minimal-reconciliation` are donor branches, not merge bases.

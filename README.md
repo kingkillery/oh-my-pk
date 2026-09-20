@@ -99,6 +99,12 @@ eval "$(oh-my-pk completions bash)"
 oh-my-pk completions fish > ~/.config/fish/completions/oh-my-pk.fish
 ```
 
+## Colab runtime lanes
+
+Colab is general compute by default. A fresh agent MUST list existing sessions first: if a compatible runtime exists, report it and offer to connect; if none exists, offer a new one. A runtime, served model, bridge, `llama.cpp (colab)` provider entry, and successful harness generation are separate readiness checks.
+
+Use the desktop/SSH lane for scripting, browser, cloud, or general VM work. Use `/colab-model` or an explicit inference request for model serving; it may reuse a compatible session but MUST NOT load a model implicitly for general compute. The OMPK Ornith profile lives in `packages/coding-agent/src/slash-commands/helpers/colab-model.ts` and dynamically sizes context against VRAM, weights, KV bytes/token, and the model ceiling while enabling Q8 K/V cache, prompt caching, and physical microbatch tuning.
+
 ## Every tool, _benchmaxxed_.
 
 Edits that land on the first attempt. Reads that summarize files instead of dumping their content. Searches that return instantly. Pick any model — omp will get it right.
