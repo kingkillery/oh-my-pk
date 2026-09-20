@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "workPackage": "A01",
+  "repository": "kingkillery/oh-my-pk",
+  "baseline": "dadcd517e52d957e52282697550e309b62145c5a",
+  "previousPlanBaseline": "e219e0810d9f84ba8097b52121f059e759b137a4",
+  "workspace": ".worktrees/revamp-v16.4.24",
+  "initialWorkingTree": "clean detached HEAD; original dirty checkout and release clone not used",
+  "environment": {
+    "os": "Windows 11 x64",
+    "bun": "1.3.14",
+    "git": "2.55.0.windows.3",
+    "dependencyInstall": "bun install --frozen-lockfile",
+    "dependencyInstallResult": "passed; 487 packages; lockfile unchanged",
+    "native": {
+      "sourceRun": 35486664824,
+      "artifactId": 10598435341,
+      "artifactName": "pi-natives-win32-x64-baseline-h5aa8bcc6f20f68ee",
+      "filename": "pi_natives.win32-x64-baseline.node",
+      "bytes": 124453376,
+      "sha256": "f6d6d8c880b67eea8c5b6211280984a0282872e3b53d3c9c480d0c9a3b6dae95",
+      "sentinel": "__piNativesV16_4_24",
+      "sentinelInvokedSuccessfully": true,
+      "scope": "win32-x64 baseline only; not a local rebuild or proof for other platforms"
+    }
+  },
+  "executedChecks": [
+    {
+      "cwd": ".",
+      "command": "bun test scripts/release-query.test.ts",
+      "result": "3 pass, 0 fail, 11 assertions",
+      "evidence": "artifact://195",
+      "protects": ["bounded transport recovery", "exhaustion preserves original error", "listed auth and command failures do not retry"]
+    },
+    {
+      "cwd": "packages/coding-agent",
+      "command": "bun test test/operational/",
+      "result": "99 pass, 0 fail, 812 assertions across 8 files, 93.20s",
+      "evidence": "artifact://198",
+      "scope": "existing operational contracts; does not prove proposed graph-wide admission, budgets or outbox atomicity"
+    },
+    {
+      "cwd": ".",
+      "command": "bun packages/coding-agent/src/cli.ts --smoke-test",
+      "result": "smoke-test: ok; exit 0",
+      "scope": "source CLI worker startup smoke, not fresh/upgrade installation"
+    },
+    {
+      "cwd": "packages/coding-agent",
+      "command": "bun run check",
+      "result": "passed, including scoped Biome and package typecheck",
+      "evidence": "artifact://205"
+    },
+    {
+      "cwd": ".",
+      "command": "bun .verify/native-version.ts",
+      "result": "correct 16.4.24 sentinel loaded and invoked; exit 0"
+    },
+    {
+      "cwd": ".",
+      "command": "bun test ./.verify/native-mismatch.test.ts",
+      "result": "1 pass, 0 fail, 3 assertions",
+      "evidence": "artifact://202",
+      "scope": "actual installed-package loader in isolated temporary node_modules, actual CI addon, mismatched package version 999.0.0, explicit diagnostic asserted",
+      "limitations": "workspace loads intentionally skip validation; legacy __piNativesV16_4_1 fallback not exercised"
+    }
+  ],
+  "invocationFailures": [
+    {
+      "command": "bun test .verify/native-mismatch.test.ts",
+      "result": "no tests matched; exit 1",
+      "resolution": "reran with explicit ./ path; not a product failure"
+    }
+  ],
+  "packetIntegrity": "All eight manifest-listed files matched both byte size and SHA-256",
+  "baselineProductionChanges": [],
+  "releaseOwnership": "PatchRelease owns publication and install verification; architecture lane does not retag or republish",
+  "unknowns": [
+    "provider-backed model context, token cost and latency measurements",
+    "complete coverage of all supported entry, restart and cancellation routes",
+    "all original architecture acceptance cases pending call-path ledger synthesis",
+    "full revamp implementation and default rollout not complete"
+  ]
+}

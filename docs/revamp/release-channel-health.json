@@ -1,0 +1,160 @@
+{
+  "date": "2026-09-20",
+  "target": "dadcd517e52d957e52282697550e309b62145c5a (main / v16.4.24)",
+  "b06": {
+    "status": "partial; npm/bun fresh+upgrade smoke passed, binary integrity repaired 2026-09-20T14:59:39Z, remaining installed-path matrix unverified — Gate A blocked",
+    "priorStatusPreserved": "partial; npm Windows smoke passed, cross-channel integrity failed",
+    "reconciledAt": "2026-09-20T20:00:00Z",
+    "reconciliation": "binaryIntegrity receipt 14:59:39Z supersedes prior cross-channel integrity failure for 16.4.24 published bytes; hostedWindowsBinary.historicalHangReproduced=false supersedes prior capture-hang claim for hosted binary; B06 installed-product acceptance still blocked on unverified matrix below, not certified by channel health alone",
+    "platform": "Windows x64, Bun 1.3.14",
+    "prefixRoot": "C:/Users/prest/AppData/Local/Temp/ompk-b06-gwikzt",
+    "capture": "stdin ignored, stdout/stderr piped, 20000ms timeout",
+    "npmFresh": {
+      "version": "16.4.24",
+      "versionExit": 0,
+      "smokeExit": 0,
+      "smokeMs": 19763
+    },
+    "bunFresh": {
+      "version": "16.4.24",
+      "versionExit": 0,
+      "smokeExit": 0,
+      "smokeMs": 10999,
+      "ompSmokeExit": 0,
+      "ompkVersionExit": 0
+    },
+    "bunUpgrade": {
+      "before": "16.2.6",
+      "after": "16.4.24",
+      "versionExit": 0,
+      "smokeExit": 0,
+      "smokeMs": 15529
+    },
+    "hostedWindowsBinary": {
+      "version": "16.4.24",
+      "versionExit": 0,
+      "versionMs": 11094,
+      "historicalHangReproduced": false
+    },
+    "caveats": [
+      "Bun shims required the actual bun.exe directory on PATH; bun.cmd alone was insufficient",
+      "Package managers blocked or warned about dependency postinstall scripts; no global script allowlist was changed",
+      "Temp install prefixes were used, but a separate agent profile was not explicitly configured"
+    ],
+    "unverified": [
+      "npm-to-npm upgrade",
+      "real updater rollback",
+      "full installer script with profile handling",
+      "fresh PTY comparison",
+      "binary smoke and upgrade",
+      "macOS/Linux execution"
+    ],
+    "commitDecision": "Do not commit revamp as complete; published release smoke does not certify dirty revamp implementation"
+  },
+  "binaryIntegrity": {
+    "status": "REPAIRED AND VERIFIED \u2014 all 5 domain endpoints serve exact canonical GitHub assets",
+    "hfSecretUpdated": true,
+    "verifiedAt": "2026-09-20T14:59:39.850457+00:00",
+    "binaries": [
+      {
+        "name": "omp-darwin-arm64",
+        "sha256": "06b39ffb34a8215e855e4d889095d90db409f39ba5fb423b2d5566824137df2b",
+        "bytes": 122329552,
+        "matchesGitHub": true
+      },
+      {
+        "name": "omp-darwin-x64",
+        "sha256": "1a7d84dc5ed7dccfce096c7ad126b4c61b4fdcd5dd7ac49c133424cef72ddc19",
+        "bytes": 127806272,
+        "matchesGitHub": true
+      },
+      {
+        "name": "omp-linux-arm64",
+        "sha256": "106f3e53fc9eee365443cdec3b44e038ecdbd6fc62fa5d94f2ede2653d9f5cec",
+        "bytes": 143960208,
+        "matchesGitHub": true
+      },
+      {
+        "name": "omp-linux-x64",
+        "sha256": "0215ee4c413a3b98bf069698d2f1edf587b96271693c318036317edfa2b1bb5c",
+        "bytes": 168319104,
+        "matchesGitHub": true
+      },
+      {
+        "name": "omp-windows-x64.exe",
+        "sha256": "216fc0400b13a1553005a1d5b2aadff112d2c8b529aa43bcfcd088b4d2caa292",
+        "bytes": 153469440,
+        "matchesGitHub": true
+      }
+    ]
+  },
+  "channels": {
+    "github": {
+      "release": "v16.4.24",
+      "assets": 5,
+      "ciRun": "35487868418",
+      "attempt": 2,
+      "conclusion": "success",
+      "url": "https://github.com/kingkillery/oh-my-pk/actions/runs/35487868418"
+    },
+    "domain": {
+      "version": "v16.4.24",
+      "binaries": {
+        "omp-darwin-arm64": 200,
+        "omp-darwin-x64": 200,
+        "omp-linux-arm64": 200,
+        "omp-linux-x64": 200,
+        "omp-windows-x64.exe": 200
+      },
+      "status": "HEALTHY \u2014 all 5 binaries match GitHub release 16.4.24 bit-for-bit",
+      "verifiedAt": "2026-09-20T14:59:39.850457+00:00"
+    },
+    "npm": {
+      "account": "pk-nerdsaver-ai",
+      "trustedPublisher": {
+        "repo": "kingkillery/oh-my-pk",
+        "workflow": "ci.yml",
+        "configured": 18
+      },
+      "bootstrap": {
+        "package": "@pk-nerdsaver-ai/pi-deep-research",
+        "version": "0.0.0",
+        "tag": "bootstrap",
+        "latest": "16.4.24"
+      },
+      "ciRerun": {
+        "command": "gh run rerun 35487868418 --repo kingkillery/oh-my-pk --failed",
+        "attempt": 2,
+        "npmNativeLeaves": "all 5 success",
+        "npmCore": "success (OIDC + provenance)"
+      },
+      "all18Latest": "16.4.24",
+      "packages": [
+        "@pk-nerdsaver-ai/pi-natives",
+        "@pk-nerdsaver-ai/pi-natives-linux-x64",
+        "@pk-nerdsaver-ai/pi-natives-linux-arm64",
+        "@pk-nerdsaver-ai/pi-natives-darwin-x64",
+        "@pk-nerdsaver-ai/pi-natives-darwin-arm64",
+        "@pk-nerdsaver-ai/pi-natives-win32-x64",
+        "@pk-nerdsaver-ai/pi-utils",
+        "@pk-nerdsaver-ai/pi-wire",
+        "@pk-nerdsaver-ai/pi-catalog",
+        "@pk-nerdsaver-ai/pi-ai",
+        "@pk-nerdsaver-ai/pi-tui",
+        "@pk-nerdsaver-ai/hashline",
+        "@pk-nerdsaver-ai/pi-mnemopi",
+        "@pk-nerdsaver-ai/snapcompact",
+        "@pk-nerdsaver-ai/omp-stats",
+        "@pk-nerdsaver-ai/pi-agent-core",
+        "@pk-nerdsaver-ai/pi-deep-research",
+        "@pk-nerdsaver-ai/pi-coding-agent"
+      ],
+      "notInPublishSet": [
+        "@pk-nerdsaver-ai/pi-llm-router-agent"
+      ],
+      "installCheck": {
+        "@pk-nerdsaver-ai/pi-utils@16.4.24": "npm pack --dry-run ok, shasum b9ebae1c99f233d2222e8772d8589d5ce39fcd3b"
+      }
+    }
+  }
+}
