@@ -5416,6 +5416,178 @@ export const SETTINGS_SCHEMA = {
 		default: "unset" as const,
 	},
 
+	/**
+	 * When true and the session cwd resolves to a GitHub remote, grievances
+	 * pushed to the collector carry `targetRepo` so the collector files a
+	 * deduplicated issue against that repo automatically. When false, the
+	 * per-report prompt (gated by `dev.autoqa.autoFilePrompt`) offers to
+	 * enable it.
+	 */
+	"dev.autoqa.autoFile": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			group: "Developer",
+			label: "Auto QA Auto-File Issues",
+			description:
+				"Automatically file deduplicated GitHub issues for reported tool problems when the session is inside a GitHub repo",
+		},
+	},
+
+	/**
+	 * Master switch for the "file this report?" prompt shown after a
+	 * grievance is recorded. Set false to suppress the prompt permanently;
+	 * set back to true to reset the "don't show this again" choice.
+	 */
+	"dev.autoqa.autoFilePrompt": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Developer",
+			label: "Auto QA Filing Prompt",
+			description:
+				"Ask whether to auto-file reported tool issues to GitHub or a vault (set false to suppress, true to re-enable the prompt)",
+		},
+	},
+
+	/**
+	 * Visibility reminders: a one-line notice at session launch while
+	 * collection is on, and again after every 5th recorded report per repo.
+	 * Each reminder offers an inline off-switch; set this back to true to
+	 * re-enable them.
+	 */
+	"dev.autoqa.reminders": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Developer",
+			label: "Auto QA Reminders",
+			description:
+				"Show a one-line reminder at launch and after every 5th collected report while auto-QA collection is on",
+		},
+	},
+
+	/**
+	 * Optional vault/wiki root. When set, each distinct reported issue writes
+	 * or updates a markdown note under `<vault>/<project>/issues/` so project
+	 * knowledge bases accumulate tool-issue history locally.
+	 */
+	"dev.autoqa.vaultPath": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			group: "Developer",
+			label: "Auto QA Vault Path",
+			description:
+				"Optional vault/wiki root — reported tool issues are mirrored as markdown notes under <vault>/<project>/issues/",
+		},
+	},
+
+	// ── Issue collector ─────────────────────────────────────────────────────
+	// Reports are ALWAYS recorded locally (autoqa.db). The collector is the
+	// optional service that ingests, deduplicates, ranks, and files GitHub
+	// issues. Default `off` costs nothing; `local` runs the `ompk-collector`
+	// binary as an OMPK extension; `remote` points at a helper you installed
+	// on a machine you control (one collector, many OMPK instances).
+
+	"dev.autoqa.collector.mode": {
+		type: "enum",
+		values: ["off", "local", "remote"] as const,
+		default: "off" as const,
+		ui: {
+			tab: "tools",
+			group: "Developer",
+			label: "Issue Collector",
+			description:
+				"off: record locally only · local: run the collector inside OMPK · remote: send to a collector you host (pair with `omp collector pair <url> <token>`)",
+			options: [
+				{ value: "off", label: "Off (record locally only)" },
+				{ value: "local", label: "Local (run inside OMPK)" },
+				{ value: "remote", label: "Remote (collector you host)" },
+			],
+		},
+	},
+
+	/** Remote collector ingest URL, e.g. http://100.x.y.z:8791/v1/grievances */
+	"dev.autoqa.collector.remoteUrl": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			group: "Developer",
+			label: "Remote Collector URL",
+			description: "Ingest URL printed by `ompk-collector serve` on the host machine",
+		},
+	},
+
+	/** Bearer token printed by `ompk-collector serve` / `ompk-collector token`. */
+	"dev.autoqa.collector.remoteToken": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			group: "Developer",
+			label: "Remote Collector Token",
+			description: "Bearer token printed by the collector helper on the host machine",
+		},
+	},
+
+	/** Loopback port for the local collector extension. */
+	"dev.autoqa.collector.localPort": {
+		type: "number",
+		default: 8791,
+		ui: {
+			tab: "tools",
+			group: "Developer",
+			label: "Local Collector Port",
+			description: "Loopback port the local collector listens on",
+		},
+	},
+
+	/** Optional explicit path to the `ompk-collector` binary (else PATH / sibling of omp). */
+	"dev.autoqa.collector.binaryPath": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			group: "Developer",
+			label: "Collector Binary Path",
+			description: "Explicit path to ompk-collector; leave empty to use PATH or the omp install directory",
+		},
+	},
+
+	/**
+	 * When the collector is off and this many reports have accumulated
+	 * locally, show a one-time notice that the collector can be enabled
+	 * (with an inline "don't show again"). 0 disables the notice.
+	 */
+	"dev.autoqa.collector.enableNoticeThreshold": {
+		type: "number",
+		default: 20,
+		ui: {
+			tab: "tools",
+			group: "Developer",
+			label: "Collector Enable Notice After",
+			description: "Show 'you can turn the collector on' after this many locally recorded reports (0 = never)",
+		},
+	},
+
+	/** "Don't show again" for the enable notice. Set true to re-enable. */
+	"dev.autoqa.collector.enableNotice": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Developer",
+			label: "Collector Enable Notice",
+			description: "Offer to turn on the collector once reports accumulate (false = don't show again)",
+		},
+	},
+
 	"thinkingBudgets.minimal": { type: "number", default: 1024 },
 
 	"thinkingBudgets.low": { type: "number", default: 2048 },

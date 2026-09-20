@@ -25,6 +25,7 @@ import type { FetchImpl } from "@pk-nerdsaver-ai/pi-ai";
 import { $env, $flag, getAutoQaDbDir, getInstallId, logger, VERSION } from "@pk-nerdsaver-ai/pi-utils";
 import { type } from "arktype";
 import type { Settings } from "..";
+import { countUnpushedReports, resolveCollectorMode, resolveCollectorTarget } from "../autoqa/collector-control";
 import type { ToolSession } from "./index";
 
 function buildReportToolIssueParams(activeBuiltinNames: readonly string[]) {
@@ -183,6 +184,389 @@ export async function resolveAutoQaConsent(settings: Settings | undefined): Prom
 	return consentInFlight;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Filing prompt + user notifications
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Result of the "file this report?" prompt. All fields optional — the tool
+ * persists whichever the host provides:
+ *   - `autoFile`   → `dev.autoqa.autoFile`
+ *   - `vaultPath`  → `dev.autoqa.vaultPath`
+ *   - `suppress`   → `dev.autoqa.autoFilePrompt = false` ("don't show again")
+ */
+export interface AutoQaFilePromptResult {
+	autoFile?: boolean;
+	vaultPath?: string;
+	suppress?: boolean;
+}
+
+export interface AutoQaFilePromptContext {
+	/** GitHub repo slug (owner/name) when the session cwd has a GitHub remote. */
+	repoSlug: string | null;
+	/** Whether a vault path is already configured. */
+	vaultConfigured: boolean;
+}
+
+export type AutoQaFilePromptHandler = (ctx: AutoQaFilePromptContext) => Promise<AutoQaFilePromptResult | null>;
+
+/**
+ * User-facing reminder with an inline off-switch. The host shows one line
+ * plus choices; the returned action is applied to settings by the tool:
+ *   - `"off-auto-file"` → `dev.autoqa.autoFile = false`
+ *   - `"off-reminders"` → `dev.autoqa.reminders = false`
+ *   - `"off-all"`       → `dev.autoqa = false` (stop collecting entirely)
+ *   - `null`            → dismissed / keep everything as-is
+ */
+export type AutoQaReminderAction = "off-auto-file" | "off-reminders" | "off-all" | null;
+
+export interface AutoQaReminderContext {
+	/** Why the reminder fired: session launch or every-5th collection. */
+	kind: "launch" | "collection";
+	/** Reports collected for this cwd this session (0 at launch). */
+	count: number;
+	/** Project label derived from the repo/cwd. */
+	project: string;
+	/** Whether auto-filing to GitHub is currently on. */
+	autoFile: boolean;
+}
+
+export type AutoQaReminderHandler = (ctx: AutoQaReminderContext) => Promise<AutoQaReminderAction>;
+
+let filePromptHandler: AutoQaFilePromptHandler | null = null;
+let reminderHandler: AutoQaReminderHandler | null = null;
+let filePromptInFlight: Promise<void> | null = null;
+let reminderInFlight = false;
+
+/** Register the filing-prompt handler (InteractiveMode). Null clears it. */
+export function setAutoQaFilePromptHandler(handler: AutoQaFilePromptHandler | null): void {
+	filePromptHandler = handler;
+}
+
+/** Register the reminder handler (InteractiveMode). Null clears it. */
+export function setAutoQaReminderHandler(handler: AutoQaReminderHandler | null): void {
+	reminderHandler = handler;
+}
+
+/**
+ * Show a reminder and apply the user's inline choice to settings.
+ * Single-flight: a second reminder while one is open is dropped.
+ */
+async function runAutoQaReminder(ctx: AutoQaReminderContext, settings: Settings | undefined): Promise<void> {
+	if (!reminderHandler || reminderInFlight) return;
+	if (settings?.get("dev.autoqa.reminders") === false) return;
+	reminderInFlight = true;
+	try {
+		const action = await reminderHandler(ctx);
+		if (!action) return;
+		for (const target of [settings, persistentConsentSettings]) {
+			if (!target) continue;
+			try {
+				if (action === "off-auto-file") target.set("dev.autoqa.autoFile", false);
+				if (action === "off-reminders") target.set("dev.autoqa.reminders", false);
+				if (action === "off-all") target.set("dev.autoqa", false);
+			} catch (error) {
+				logger.debug("autoqa reminder persist failed", { error: String(error) });
+			}
+		}
+	} catch (error) {
+		logger.debug("autoqa reminder failed", { error: String(error) });
+	} finally {
+		reminderInFlight = false;
+	}
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Collector enable notice
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Inline choice for the "you can turn the collector on" notice:
+ *   - `"enable-local"`  → `dev.autoqa.collector.mode = local`
+ *   - `"enable-remote"` → open the remote-pairing flow (host returns nothing)
+ *   - `"later"`         → dismissed; the notice may fire again
+ *   - `"never"`         → `dev.autoqa.collector.enableNotice = false`
+ */
+export type AutoQaCollectorNoticeAction = "enable-local" | "enable-remote" | "later" | "never" | null;
+
+export interface AutoQaCollectorNoticeContext {
+	/** Locally recorded reports still awaiting a collector. */
+	pending: number;
+	/** Whether a remote collector URL is already configured. */
+	remoteConfigured: boolean;
+}
+
+export type AutoQaCollectorNoticeHandler = (ctx: AutoQaCollectorNoticeContext) => Promise<AutoQaCollectorNoticeAction>;
+
+let collectorNoticeHandler: AutoQaCollectorNoticeHandler | null = null;
+let collectorNoticeInFlight = false;
+let collectorNoticeShown = false;
+
+/** Register the collector enable-notice handler (InteractiveMode). */
+export function setAutoQaCollectorNoticeHandler(handler: AutoQaCollectorNoticeHandler | null): void {
+	collectorNoticeHandler = handler;
+}
+
+/**
+ * Offer the collector once the local backlog crosses
+ * `dev.autoqa.collector.enableNoticeThreshold`. Fires at most once per
+ * process, only while the mode is `off`, and honours the don't-show flag.
+ */
+async function maybeOfferCollectorEnable(settings: Settings | undefined): Promise<void> {
+	if (!collectorNoticeHandler || collectorNoticeInFlight || collectorNoticeShown) return;
+	if (settings?.get("dev.autoqa.collector.enableNotice") === false) return;
+	if (resolveCollectorMode(settings) !== "off") return;
+	const threshold = settings?.get("dev.autoqa.collector.enableNoticeThreshold") ?? 20;
+	if (threshold <= 0) return;
+	const pending = countUnpushedReports();
+	if (pending < threshold) return;
+	collectorNoticeInFlight = true;
+	try {
+		const action = await collectorNoticeHandler({
+			pending,
+			remoteConfigured: !!settings?.get("dev.autoqa.collector.remoteUrl")?.trim(),
+		});
+		collectorNoticeShown = true; // even on dismiss — at most once per process
+		if (!action || action === "later") return;
+		for (const target of [settings, persistentConsentSettings]) {
+			if (!target) continue;
+			try {
+				if (action === "enable-local") target.set("dev.autoqa.collector.mode", "local");
+				if (action === "never") target.set("dev.autoqa.collector.enableNotice", false);
+			} catch (error) {
+				logger.debug("autoqa collector notice persist failed", { error: String(error) });
+			}
+		}
+	} catch (error) {
+		logger.debug("autoqa collector notice failed", { error: String(error) });
+	} finally {
+		collectorNoticeInFlight = false;
+	}
+}
+
+/** Test-only: clear prompt/notify handlers and caches. */
+export function __resetAutoQaFilingForTests(): void {
+	filePromptHandler = null;
+	reminderHandler = null;
+	collectorNoticeHandler = null;
+	collectorNoticeInFlight = false;
+	collectorNoticeShown = false;
+	filePromptInFlight = null;
+	reminderInFlight = false;
+	repoSlugCache.clear();
+	collectionCounts.clear();
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// GitHub remote detection + vault notes
+// ───────────────────────────────────────────────────────────────────────────
+
+/** cwd → GitHub slug cache; git probing never repeats within a process. */
+const repoSlugCache = new Map<string, string | null>();
+/** Per-repo collection counter for the every-5th reminder. */
+const collectionCounts = new Map<string, number>();
+
+/** Parse a git remote URL into an `owner/name` GitHub slug, or null. */
+export function parseGitHubSlug(remoteUrl: string): string | null {
+	const url = remoteUrl.trim();
+	// git@github.com:owner/repo.git  or  ssh://git@github.com/owner/repo.git
+	const ssh = url.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/i);
+	if (ssh) return `${ssh[1]}/${ssh[2]}`;
+	// https://github.com/owner/repo(.git)
+	const https = url.match(/https?:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/?#]+?)(?:\.git)?(?:[/?#].*)?$/i);
+	if (https) return `${https[1]}/${https[2]}`;
+	return null;
+}
+
+/**
+ * Resolve the session cwd's GitHub repo slug (`owner/name`), or null when the
+ * cwd isn't a git repo, has no remote, or the remote isn't GitHub. Result is
+ * cached per cwd for the process lifetime — one `git remote` probe per repo.
+ */
+export async function resolveGitHubRepoSlug(cwd: string): Promise<string | null> {
+	const key = cwd || ".";
+	if (repoSlugCache.has(key)) return repoSlugCache.get(key) ?? null;
+	let slug: string | null = null;
+	try {
+		const proc = Bun.spawn(["git", "-C", key, "remote", "get-url", "origin"], {
+			stdout: "pipe",
+			stderr: "ignore",
+		});
+		const out = await new Response(proc.stdout).text();
+		await proc.exited;
+		if (proc.exitCode === 0 && out.trim()) {
+			slug = parseGitHubSlug(out);
+		}
+	} catch {
+		slug = null;
+	}
+	repoSlugCache.set(key, slug);
+	return slug;
+}
+
+/** Filesystem-safe project folder name from the repo slug or cwd basename. */
+export function deriveProjectName(cwd: string, repoSlug: string | null): string {
+	const raw = repoSlug?.split("/")[1] ?? cwd.split(/[\\/]/).filter(Boolean).pop() ?? "unknown-project";
+	return raw.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "unknown-project";
+}
+
+function slugify(text: string, maxWords = 6, max = 40): string {
+	const words = text
+		.toLowerCase()
+		.replace(/[^a-z0-9\s]/g, " ")
+		.split(/\s+/)
+		.filter(w => w.length > 2)
+		.slice(0, maxWords)
+		.join("-");
+	return (words || "issue").slice(0, max);
+}
+
+/**
+ * Write or update a markdown note for a reported issue under
+ * `<vault>/<project>/issues/`. Idempotent per (tool, normalized report):
+ * repeats bump `occurrences`/`last_seen` and append the variant text once.
+ * Never throws — vault mirroring is best-effort.
+ */
+export async function writeVaultIssueNote(
+	vaultRoot: string,
+	project: string,
+	tool: string,
+	report: string,
+	model: string,
+	version: string,
+): Promise<string | null> {
+	try {
+		// Filename keys on tool + a 3-word slug so near-duplicate wording lands
+		// in the same note as a Variant section instead of proliferating files.
+		const dir = `${vaultRoot.replace(/[\\/]+$/, "")}/${project}/issues`;
+		const file = `${dir}/${tool}-${slugify(report, 3)}.md`;
+		const now = new Date().toISOString();
+		const existing = Bun.file(file);
+		if (await existing.exists()) {
+			const text = await existing.text();
+			const count = Number(text.match(/occurrences:\s*(\d+)/)?.[1] ?? 1) + 1;
+			const updated = text
+				.replace(/occurrences:\s*\d+/, `occurrences: ${count}`)
+				.replace(/last_seen:\s*[^\n]+/, `last_seen: ${now}`);
+			// Append only genuinely new wording as a variant.
+			const variant = report.trim();
+			const withVariant = text.includes(variant.slice(0, 60))
+				? updated
+				: `${updated.trimEnd()}\n\n## Variant (${now})\n\n${variant}\n`;
+			await Bun.write(file, withVariant);
+		} else {
+			const note = [
+				"---",
+				`tool: ${tool}`,
+				`project: ${project}`,
+				`first_seen: ${now}`,
+				`last_seen: ${now}`,
+				"occurrences: 1",
+				`model: ${model}`,
+				`version: ${version}`,
+				"---",
+				"",
+				`# ${tool}: ${slugify(report).replace(/-/g, " ")}`,
+				"",
+				report.trim(),
+				"",
+			].join("\n");
+			await Bun.write(file, note);
+		}
+		return file;
+	} catch (error) {
+		logger.debug("autoqa vault note failed", { error: String(error) });
+		return null;
+	}
+}
+
+/**
+ * Post-record pipeline: vault mirror, filing prompt, and the every-5th
+ * reminder. Runs detached from tool execution — never blocks the model.
+ */
+async function runAutoQaFilingPipeline(
+	session: ToolSession,
+	tool: string,
+	report: string,
+	model: string,
+): Promise<string | null> {
+	const settings = session.settings;
+	const cwd = session.cwd ?? ".";
+	const repoSlug = await resolveGitHubRepoSlug(cwd);
+	const project = deriveProjectName(cwd, repoSlug);
+
+	// Vault mirror — local markdown write, independent of push consent.
+	const vaultPath = settings?.get("dev.autoqa.vaultPath");
+	if (vaultPath) {
+		await writeVaultIssueNote(vaultPath, project, tool, report, model, VERSION);
+	}
+
+	// Every-5th-collection reminder so the feature never runs silently —
+	// always with an inline off-switch.
+	const count = (collectionCounts.get(cwd) ?? 0) + 1;
+	collectionCounts.set(cwd, count);
+	if (count % 5 === 0) {
+		await runAutoQaReminder(
+			{ kind: "collection", count, project, autoFile: settings?.get("dev.autoqa.autoFile") === true },
+			settings,
+		);
+	}
+	// Collector enable notice — while the collector is OFF, offer it once the
+	// local backlog crosses the threshold. Inline off-switch (don't show
+	// again) writes `dev.autoqa.collector.enableNotice = false`, resettable in
+	// settings. Reports (the number) are unaffected by this notice.
+	await maybeOfferCollectorEnable(session.settings);
+
+	// Filing prompt — shown while enabled and something is still undecided.
+	// Gated on push consent: offering "auto-file to GitHub" when the user
+	// denied sharing would be misleading, so the prompt only surfaces the
+	// GitHub option once consent is granted (vault mirroring is local and
+	// consent-independent).
+
+	// Prompt gating inputs are read once here: consent decides whether the
+	// GitHub option is even offerable, and the mode decides if shipping is
+	// possible at all.
+	const promptEnabled = settings?.get("dev.autoqa.autoFilePrompt") !== false;
+	const autoFile = settings?.get("dev.autoqa.autoFile") === true;
+	const consentGranted = settings?.get("dev.autoqa.consent") === "granted";
+	if (promptEnabled && filePromptHandler && (!autoFile || !vaultPath)) {
+		if (!filePromptInFlight) {
+			const handler = filePromptHandler;
+			filePromptInFlight = (async () => {
+				try {
+					const result = await handler({
+						repoSlug: consentGranted ? repoSlug : null,
+						vaultConfigured: !!vaultPath,
+					});
+					if (!result) return; // dismissed — re-prompt next time
+					for (const target of [settings, persistentConsentSettings]) {
+						if (!target) continue;
+						try {
+							if (result.autoFile !== undefined) target.set("dev.autoqa.autoFile", result.autoFile);
+							if (result.vaultPath) target.set("dev.autoqa.vaultPath", result.vaultPath);
+							if (result.suppress) target.set("dev.autoqa.autoFilePrompt", false);
+						} catch (error) {
+							logger.debug("autoqa filing persist failed", { error: String(error) });
+						}
+					}
+					if (result.vaultPath) {
+						await writeVaultIssueNote(result.vaultPath, project, tool, report, model, VERSION);
+					}
+				} catch (error) {
+					logger.warn("autoqa filing prompt failed", { error: String(error) });
+				} finally {
+					filePromptInFlight = null;
+				}
+			})();
+		}
+		await filePromptInFlight;
+	}
+
+	// Auto-file target for the collector: only when toggled on, consent is
+	// granted, AND a GitHub remote exists. The collector dedups per (repo, group).
+	return autoFile && consentGranted ? repoSlug : null;
+}
+
 let cachedDb: Database | null = null;
 
 /**
@@ -273,6 +657,13 @@ export interface FlushOptions {
 	 * `onStart` to advance their bar.
 	 */
 	onProgress?: (pushedSoFar: number) => void;
+	/**
+	 * GitHub repo slug (`owner/name`) the collector should file a deduplicated
+	 * issue against for these reports. Attached to the push envelope as
+	 * `targetRepo`; omitted when auto-filing is off or the session cwd has no
+	 * GitHub remote.
+	 */
+	targetRepo?: string;
 }
 
 interface PushConfig {
@@ -308,23 +699,29 @@ function envOverrideString(name: string): string | undefined {
 	return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function resolvePushConfig(settings: Settings | undefined, bypassConsent: boolean): PushConfig | null {
+async function resolvePushConfig(settings: Settings | undefined, bypassConsent: boolean): Promise<PushConfig | null> {
 	if (!isAutoQaEnabled(settings)) return null;
 
 	// Consent IS the push opt-in for the auto-flush path. `bypassConsent`
 	// covers explicit user-driven pushes (`omp grievances push`) where the
 	// user clearly intends to ship regardless of dialog state. The
 	// `PI_AUTO_QA_PUSH` env flag stays as a CI/headless override too.
-	if (!bypassConsent) {
-		const consented = settings?.get("dev.autoqa.consent") === "granted";
-		if (!consented && !$flag("PI_AUTO_QA_PUSH")) return null;
+	const consentBypassed = bypassConsent || $flag("PI_AUTO_QA_PUSH");
+	if (!consentBypassed && settings?.get("dev.autoqa.consent") !== "granted") return null;
+
+	// Legacy explicit endpoint wins when set — it predates the collector mode
+	// tree and is what `PI_AUTO_QA_PUSH_URL` / `dev.autoqaPush.endpoint` users
+	// configured. Otherwise the collector mode decides: `off` records locally
+	// and ships nothing.
+	const endpoint = envOverrideString("PI_AUTO_QA_PUSH_URL") ?? settings?.get("dev.autoqaPush.endpoint");
+	if (endpoint && endpoint.trim().length > 0) {
+		const token = envOverrideString("PI_AUTO_QA_PUSH_TOKEN") ?? settings?.get("dev.autoqaPush.token");
+		return { endpoint: endpoint.trim(), token: token && token.length > 0 ? token : undefined };
 	}
 
-	const endpoint = envOverrideString("PI_AUTO_QA_PUSH_URL") ?? settings?.get("dev.autoqaPush.endpoint");
-	if (!endpoint || endpoint.trim().length === 0) return null;
-
-	const token = envOverrideString("PI_AUTO_QA_PUSH_TOKEN") ?? settings?.get("dev.autoqaPush.token");
-	return { endpoint: endpoint.trim(), token: token && token.length > 0 ? token : undefined };
+	const target = await resolveCollectorTarget(settings);
+	if (!target) return null;
+	return { endpoint: target.url, token: target.token };
 }
 
 interface GrievanceRow {
@@ -351,7 +748,6 @@ async function performFlush(db: Database, config: PushConfig, options: FlushOpti
 	for (;;) {
 		const rows = selectStmt.all(FLUSH_BATCH_SIZE) as GrievanceRow[];
 		if (rows.length === 0) return { pushed: totalPushed, ok: true };
-
 		const body = JSON.stringify({
 			agent: { name: "omp", version: VERSION },
 			installId: getInstallId(),
@@ -361,6 +757,10 @@ async function performFlush(db: Database, config: PushConfig, options: FlushOpti
 			// `os.hostname()` verbatim, which trivially deanonymises users).
 			platform: process.platform,
 			arch: process.arch,
+			// Present only when the user enabled auto-filing and the session
+			// cwd resolves to a GitHub remote — the collector files a
+			// deduplicated issue against this repo for the report's group.
+			...(options.targetRepo ? { targetRepo: options.targetRepo } : {}),
 			entries: rows,
 		});
 		const headers: Record<string, string> = { "content-type": "application/json" };
@@ -423,7 +823,7 @@ export async function flushGrievances(
 	settings?: Settings,
 	options: FlushOptions = {},
 ): Promise<FlushResult> {
-	const config = resolvePushConfig(settings, options.bypassConsent === true);
+	const config = await resolvePushConfig(settings, options.bypassConsent === true);
 	if (!config) return { pushed: 0, ok: false, skipped: true };
 
 	// `bypassConsent` is the user's explicit "ship NOW" intent — skip the
@@ -505,15 +905,27 @@ export function createReportToolIssueTool(session: ToolSession, activeBuiltinNam
 					//   1. Trigger the consent popup if it hasn't been answered
 					//      (single-flight inside `resolveAutoQaConsent`; subagents
 					//      share the same module-level state).
-					//   2. Attempt a flush — `resolvePushConfig` no-ops when consent
+					//   2. Filing pipeline — vault mirror, the "file this report?"
+					//      prompt (with its don't-show-again toggle), the every-5th
+					//      reminder, and the GitHub auto-file target resolution.
+					//   3. Attempt a flush — `resolvePushConfig` no-ops when consent
 					//      isn't granted, so a "no" leaves the row local for later
-					//      `omp grievances push` or a future consent change.
+					//      `omp grievances push` or a future consent change. When
+					//      auto-filing is on and the cwd has a GitHub remote, the
+					//      envelope carries `targetRepo` so the collector files a
+					//      deduplicated issue against that repo.
 					// Tool execution returns immediately; the model never waits
 					// on the dialog.
 					void (async () => {
 						try {
 							await resolveAutoQaConsent(session.settings);
-							await flushGrievances(db, session.settings);
+							const targetRepo = await runAutoQaFilingPipeline(
+								session,
+								canonicalTool,
+								params.report,
+								getModel(),
+							);
+							await flushGrievances(db, session.settings, targetRepo ? { targetRepo } : {});
 						} catch (error) {
 							logger.debug("autoqa post-insert pipeline failed", { error: String(error) });
 						}

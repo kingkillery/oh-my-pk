@@ -34,6 +34,7 @@ export const commands: CommandEntry[] = [
 	{ name: "bench", load: () => import("./commands/bench").then(m => m.default) },
 	{ name: "commit", load: () => import("./commands/commit").then(m => m.default) },
 	{ name: "completions", load: () => import("./commands/completions").then(m => m.default) },
+	{ name: "collector", load: () => import("./commands/collector").then(m => m.default) },
 	{ name: "__complete", load: () => import("./commands/complete").then(m => m.default) },
 	{ name: "config", load: () => import("./commands/config").then(m => m.default) },
 	{ name: "dry-balance", load: () => import("./commands/dry-balance").then(m => m.default) },

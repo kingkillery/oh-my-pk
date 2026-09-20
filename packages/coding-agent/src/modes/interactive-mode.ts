@@ -50,6 +50,7 @@ import {
 	setProjectDir,
 } from "@pk-nerdsaver-ai/pi-utils";
 import chalk from "chalk";
+import { ensureLocalCollector, probeRemoteCollector, stopLocalCollector } from "../autoqa/collector-control";
 import { reset as resetCapabilities } from "../capability";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
@@ -104,7 +105,19 @@ import type { LspStartupServerInfo } from "../tools";
 import { isImageProviderPreference, setPreferredImageProvider } from "../tools/image-gen";
 import { normalizeLocalScheme } from "../tools/path-utils";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
-import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
+import {
+	type AutoQaCollectorNoticeAction,
+	type AutoQaCollectorNoticeContext,
+	type AutoQaFilePromptContext,
+	type AutoQaFilePromptResult,
+	type AutoQaReminderAction,
+	type AutoQaReminderContext,
+	resolveGitHubRepoSlug,
+	setAutoQaCollectorNoticeHandler,
+	setAutoQaConsentHandler,
+	setAutoQaFilePromptHandler,
+	setAutoQaReminderHandler,
+} from "../tools/report-tool-issue";
 import { type ResolveToolDetails, runResolveInvocation } from "../tools/resolve";
 import { formatPhaseDisplayName, selectStickyTodoWindow, todoMatchesAnyDescription } from "../tools/todo";
 import { ToolError } from "../tools/tool-errors";
@@ -793,6 +806,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		// guarantees the decision persists even when the prompt is triggered
 		// from a subagent whose own `Settings` is an in-memory snapshot.
 		setAutoQaConsentHandler(() => this.#promptAutoQaConsent(), Settings.instance);
+		// Same pattern for the filing prompt (auto-file / vault / don't-ask)
+		// and the launch + every-5th-collection reminders — both resolve
+		// through process-global handlers so subagent reports reach the TUI.
+		setAutoQaFilePromptHandler(ctx => this.#promptAutoQaFileTarget(ctx));
+		setAutoQaReminderHandler(ctx => this.#promptAutoQaReminder(ctx));
+		setAutoQaCollectorNoticeHandler(ctx => this.#promptAutoQaCollectorNotice(ctx));
+		// Start the local collector extension when the user opted into it, so
+		// the first report doesn't pay a cold-start penalty mid-pipeline.
+		void ensureLocalCollector(Settings.instance).catch(() => false);
+		this.#maybeShowAutoQaLaunchReminder();
 
 		await logger.time(
 			"InteractiveMode.init:slashCommands",
@@ -3500,6 +3523,126 @@ export class InteractiveMode implements InteractiveModeContext {
 		return choice === "Yes";
 	}
 
+	/**
+	 * "File this report?" prompt — offered after a grievance is recorded while
+	 * `dev.autoqa.autoFilePrompt` is on and something is still undecided.
+	 * Options adapt to context: GitHub auto-file only when the session cwd has
+	 * a GitHub remote; vault only when none is configured yet. "Don't show"
+	 * maps to `suppress` → `dev.autoqa.autoFilePrompt = false` (resettable in
+	 * settings). Returns null on dismiss so the next report re-prompts.
+	 */
+	async #promptAutoQaFileTarget(ctx: AutoQaFilePromptContext): Promise<AutoQaFilePromptResult | null> {
+		const options: string[] = [];
+		if (ctx.repoSlug) options.push(`Always auto-file issues to ${ctx.repoSlug}`);
+		if (!ctx.vaultConfigured) options.push("Save reports to a vault/wiki folder…");
+		if (ctx.repoSlug && !ctx.vaultConfigured) options.push("Both");
+		options.push("Not now", "Don't show this again");
+		const choice = await this.showHookSelector(
+			"An agent just reported a tool issue. Want these auto-filed?",
+			options,
+		);
+		if (!choice || choice === "Not now") return null;
+		if (choice === "Don't show this again") return { suppress: true };
+		const result: AutoQaFilePromptResult = {};
+		if (choice.startsWith("Always auto-file") || choice === "Both") result.autoFile = true;
+		if (choice.startsWith("Save reports") || choice === "Both") {
+			const path = await this.showHookInput(
+				"Vault/wiki root for issue notes (e.g. C:\\dev\\Vaults\\Design-and-Building)",
+				"Absolute path to vault root",
+			);
+			if (path?.trim()) result.vaultPath = path.trim();
+		}
+		return result;
+	}
+
+	/**
+	 * One-line visibility reminder with an inline off-switch — shown at
+	 * session launch while collection is on, and after every 5th collected
+	 * report per repo. Every choice that disables something is offered right
+	 * here; nothing requires hunting through settings.
+	 */
+	async #promptAutoQaReminder(ctx: AutoQaReminderContext): Promise<AutoQaReminderAction> {
+		const line =
+			ctx.kind === "launch"
+				? `Auto-QA tool-issue collection is on${ctx.autoFile ? " (auto-filing to GitHub enabled)" : ""}.`
+				: `Auto-QA: ${ctx.count} tool-issue reports collected for ${ctx.project} this session.`;
+		const options = ["Keep as-is"];
+		if (ctx.autoFile) options.push("Turn off auto-filing");
+		options.push("Stop these reminders", "Stop collecting reports entirely");
+		const choice = await this.showHookSelector(line, options);
+		if (choice === "Turn off auto-filing") return "off-auto-file";
+		if (choice === "Stop these reminders") return "off-reminders";
+		if (choice === "Stop collecting reports entirely") return "off-all";
+		return null;
+	}
+
+	/**
+	 * "You can turn the collector on" notice — offered once when the local
+	 * backlog crosses `dev.autoqa.collector.enableNoticeThreshold` and the mode
+	 * is still `off`. Every choice is inline; "Don't show again" writes
+	 * `dev.autoqa.collector.enableNotice = false`, re-enabled in settings.
+	 */
+	async #promptAutoQaCollectorNotice(ctx: AutoQaCollectorNoticeContext): Promise<AutoQaCollectorNoticeAction> {
+		const options = ["Turn on local collector", "Set up a remote collector…"];
+		if (ctx.remoteConfigured) options.push("Use my configured remote collector");
+		options.push("Not now", "Don't show this again");
+		const choice = await this.showHookSelector(
+			`${ctx.pending} tool-issue reports are stored locally. Turn on the collector to deduplicate and file them?`,
+			options,
+		);
+		if (choice === "Turn on local collector") return "enable-local";
+		if (choice === "Don't show this again") return "never";
+		if (choice?.startsWith("Set up a remote collector") || choice === "Use my configured remote collector") {
+			// Remote pairing needs a URL + token from the helper's pairing block;
+			// walk the user through it and persist only on a successful probe.
+			const url = await this.showHookInput(
+				"Paste the collector URL printed by `ompk-collector serve`",
+				"http://100.x.y.z:8791/v1/grievances",
+			);
+			if (!url?.trim()) return "later";
+			const token = await this.showHookInput("Paste the collector token", "bearer token");
+			if (!token?.trim()) return "later";
+			const probe = await probeRemoteCollector(url.trim(), token.trim());
+			if (!probe.ok) {
+				this.showWarning(`Collector unreachable: ${probe.error}`);
+				return "later";
+			}
+			const instance = Settings.instance;
+			instance.set("dev.autoqa.collector.remoteUrl", url.trim());
+			instance.set("dev.autoqa.collector.remoteToken", token.trim());
+			instance.set("dev.autoqa.collector.mode", "remote");
+			this.showStatus(`Collector paired — ${probe.reports} reports, ${probe.groups} groups on the host.`);
+			return null;
+		}
+		return "later";
+	}
+	/**
+	 * Launch reminder — fires once per InteractiveMode start when collection
+	 * is enabled, so the feature never runs unnoticed. Detached: init never
+	 * blocks on the dialog.
+	 */
+	#maybeShowAutoQaLaunchReminder(): void {
+		const settings = Settings.instance;
+		if (!settings.get("dev.autoqa") || settings.get("dev.autoqa.reminders") === false) return;
+		void (async () => {
+			try {
+				const cwd = this.sessionManager?.getCwd() ?? ".";
+				const repoSlug = await resolveGitHubRepoSlug(cwd);
+				const action = await this.#promptAutoQaReminder({
+					kind: "launch",
+					count: 0,
+					project: repoSlug?.split("/")[1] ?? cwd.split(/[\\/]/).filter(Boolean).pop() ?? "project",
+					autoFile: settings.get("dev.autoqa.autoFile") === true,
+				});
+				if (action === "off-auto-file") settings.set("dev.autoqa.autoFile", false);
+				if (action === "off-reminders") settings.set("dev.autoqa.reminders", false);
+				if (action === "off-all") settings.set("dev.autoqa", false);
+			} catch (error) {
+				logger.debug("autoqa launch reminder failed", { error: String(error) });
+			}
+		})();
+	}
+
 	stop(): void {
 		if (this.loadingAnimation) {
 			this.#stopLoadingAnimation(false);
@@ -3533,6 +3676,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Clear the process-global consent handler so it doesn't outlive this
 		// InteractiveMode instance (e.g. test harnesses, headless re-init).
 		setAutoQaConsentHandler(null, null);
+		setAutoQaFilePromptHandler(null);
+		setAutoQaReminderHandler(null);
+		setAutoQaCollectorNoticeHandler(null);
+		stopLocalCollector();
 		if (this.isInitialized) {
 			this.ui.stop();
 			this.isInitialized = false;

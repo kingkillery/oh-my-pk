@@ -643,6 +643,15 @@ export function getDocsRsCacheDir(): string {
 export function getAutoQaDbDir(): string {
 	return dirs.rootSubdir("autoqa.db", "data");
 }
+
+/**
+ * Get the local auto-QA collector data directory (~/.ompk/autoqa-collector).
+ * Holds the collector's SQLite store, bearer token, and published-issue map
+ * when `dev.autoqa.collector.mode = local`.
+ */
+export function getAutoQaCollectorDir(): string {
+	return dirs.rootSubdir("autoqa-collector", "data");
+}
 /**
  * Stable 7-character hex digest of an absolute filesystem path.
  *

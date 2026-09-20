@@ -3,7 +3,8 @@
 ## [Unreleased]
 
 ### Added
-
+- Tool-issue reporting now ships an optional issue collector with three modes (`dev.autoqa.collector.mode`, default `off`): `local` runs the new `ompk-collector` Rust helper as an in-process OMPK extension on loopback, `remote` pairs with a collector you host via `omp collector pair <url> <token>`, and `off` keeps the previous record-locally-only behavior with a one-time enable notice after 20 accumulated reports. The collector deduplicates reports into symptom groups, ranks them by impact, and files sanitized GitHub issues (per-repo when auto-filing is enabled and the session cwd has a GitHub remote).
+- Auto-QA filing prompts and reminders: a per-report "file this report?" selector (GitHub auto-file / vault mirroring / both, with don't-show-again), launch and every-5th-collection reminders with inline off-switches, and `dev.autoqa.vaultPath` mirroring reported issues as markdown notes under `<vault>/<project>/issues/`.
 - Added a persisted Huihui-Ornith 1.5 9B Q4_K_M Colab profile with dynamic VRAM-aware context sizing, Qwen thinking compatibility, Q8 K/V cache configuration, prompt caching, and 1024 physical microbatch prefill tuning.
 - Binary builds can set `OMPK_BUILD_LABEL` to display testing/nightly metadata in CLI and startup versions without changing package versions or stable-update comparisons.
 
