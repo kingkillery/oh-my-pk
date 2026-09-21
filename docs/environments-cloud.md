@@ -49,5 +49,4 @@ Spawn the argv returned by `resolveMeshHandoff` — do not invent a parallel clo
 ## Related
 
 - Package README: `packages/remote-workspace/README.md`
-- Wiki: `.wiki/concepts/environments-cloud-routing.md`
 - Skills discovery: `docs/skills.md`

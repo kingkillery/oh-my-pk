@@ -7,6 +7,8 @@ tool reference, integration surfaces, and architecture notes. The product host
 links here for the full Markdown set; the same documents are also embedded in
 the CLI for `omp://docs` and `/help <question>`.
 
+The `docs/` tree is the versioned, distributable product documentation. Personal working notes, private project history, and design research are intentionally kept outside this repository and are not part of the packaged documentation set.
+
 ## Start here
 
 - [Install identity](install-id.md)

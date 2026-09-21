@@ -30,7 +30,7 @@ import {
 } from "@pk-nerdsaver-ai/pi-remote-workspace";
 ```
 
-Coding-agent auto-includes `{root}/.agents/skills` when present. See `docs/environments-cloud.md` and `.wiki/concepts/environments-cloud-routing.md`.
+Coding-agent auto-includes `{root}/.agents/skills` when present. See `docs/environments-cloud.md`.
 
 ## Requirements
 

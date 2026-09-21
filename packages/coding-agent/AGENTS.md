@@ -18,7 +18,7 @@ Keep stable harness instructions separate from dynamic project context so provid
 ## Selective PR 45 adoption
 
 - Build on current `main`; use PR 45 only as evidence and as a source of bounded hunks.
-- Follow the explicit pull-over inventory in [`.wiki/concepts/pr45-convergence.md`](../../.wiki/concepts/pr45-convergence.md); do not replay behavior that the inventory marks as already present in `main`.
+- Follow the explicit pull-over inventory maintained in the Design-and-Building project record; do not replay behavior that the inventory marks as already present in `main`.
 - The remaining coding-agent lanes are: terminal placement of dynamic Fusion prompt content, Fusion singleflight/CAS lifecycle hardening, failure-epoch gating/reset, and the missing CoLab bridge regression contract. Keep them independent from broad provider, task, MCP, SDK, identity, or release rewrites.
 - Cache-affinity changes must preserve provider wire contracts and breakpoint ceilings. Verify direct API, OAuth, OpenRouter, rolling-message, opt-out, and caller-override behavior where applicable.
 - Fusion is disabled by default. Any Fusion port must preserve that default, keep its dynamic system block terminal for prefix caching, and test session switching, singleflight creation, failure-epoch reset, and manual override behavior.
