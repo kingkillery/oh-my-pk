@@ -815,7 +815,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Start the local collector extension when the user opted into it, so
 		// the first report doesn't pay a cold-start penalty mid-pipeline.
 		void ensureLocalCollector(Settings.instance).catch(() => false);
-		this.#maybeShowAutoQaLaunchReminder();
+		// The launch reminder is deferred to the end of init() — see the call
+		// site below. Presenting it here raced the editor-slot mount/focus: a
+		// fast `resolveGitHubRepoSlug` let `showHookSelector` claim focus, then
+		// the unconditional `setFocus(this.editor)` below stole it back, leaving
+		// the visible popup unreachable (arrows/Esc routed to the editor).
 
 		await logger.time(
 			"InteractiveMode.init:slashCommands",
@@ -894,7 +898,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.addChild(this.hookWidgetContainerAbove);
 		this.ui.addChild(this.editorContainer);
 		this.ui.addChild(this.hookWidgetContainerBelow);
-		this.ui.setFocus(this.editor);
+		// Focus whatever occupies the editor slot — normally the editor, but a
+		// hook dialog that presented during init owns it instead (#3349 pattern).
+		this.#selectorController.focusActiveEditorArea();
 
 		this.#inputController.setupKeyHandlers();
 		this.#inputController.setupEditorSubmitHandler();
@@ -1029,6 +1035,11 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Initial top border update
 		this.updateEditorTopBorder();
+
+		// Launch reminder last: the editor slot is mounted and focused, so the
+		// dialog surface exists and nothing later in startup re-focuses the
+		// editor out from under it. Still detached — init never blocks on it.
+		this.#maybeShowAutoQaLaunchReminder();
 	}
 
 	/** Reload the title-generation system prompt override for the provided working directory. */

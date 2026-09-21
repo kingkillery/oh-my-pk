@@ -1387,13 +1387,6 @@ export class TUI extends Container {
 	setFocus(component: Component | null): void {
 		const topVisibleOverlay = this.#getTopmostVisibleOverlay();
 		if (topVisibleOverlay && !isOverlayFocusTarget(topVisibleOverlay.component, component)) {
-			console.error(
-				"[DEBUG-a4f2] setFocus REDIRECT requested=" +
-					(component?.constructor?.name ?? String(component)) +
-					" topOverlay=" +
-					(topVisibleOverlay.component?.constructor?.name ?? "none") +
-					" (editor focus swallowed by still-visible overlay)",
-			);
 			const currentFocus = this.#focusedComponent;
 			component = isOverlayFocusTarget(topVisibleOverlay.component, currentFocus)
 				? currentFocus
