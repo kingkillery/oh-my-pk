@@ -8,6 +8,24 @@ const nativeDir = path.join(import.meta.dir, "../native");
 const archivePrefix = "embedded-addons.";
 const archiveSuffix = ".tar.gz";
 
+/**
+ * Host-platform executable name for the `ompk-collector` sidecar that
+ * `scripts/build-native.ts` installs into `native/`. `null` on platforms with
+ * no collector build lane, which keeps the sidecar out of the archive rather
+ * than failing the release.
+ */
+const collectorExecutable = (() => {
+	switch (process.platform) {
+		case "win32":
+			return "ompk-collector.exe";
+		case "darwin":
+		case "linux":
+			return "ompk-collector";
+		default:
+			return null;
+	}
+})();
+
 const embeddedAddonTypedefs = `/** @typedef {"modern" | "baseline" | "default"} EmbeddedAddonVariant */
 
 /**
@@ -26,11 +44,22 @@ const embeddedAddonTypedefs = `/** @typedef {"modern" | "baseline" | "default"} 
  */
 
 /**
+ * A non-addon payload shipped inside the same archive — today the
+ * ompk-collector sidecar. Extracted next to the addon on first launch so
+ * findCollectorBinary() finds it as a sibling of the running omp binary.
+ *
+ * @typedef {Object} EmbeddedSidecar
+ * @property {string} filename
+ * @property {number} size
+ */
+
+/**
  * @typedef {Object} EmbeddedAddon
  * @property {string} platformTag
  * @property {string} version
  * @property {EmbeddedAddonFile[]} files
  * @property {EmbeddedAddonArchive=} archive
+ * @property {EmbeddedSidecar[]=} sidecars
  */`;
 
 const stubContent = `
@@ -117,6 +146,33 @@ for (const addon of available) {
 	}
 	archiveEntries[addon.filename] = content;
 }
+
+// Sidecars ride in the same archive so one extraction call stages both the
+// addon and the `ompk-collector` executable into the per-version native dir.
+// Missing sidecars are tolerated: a build that skipped the collector
+// (`OMPK_COLLECTOR_SKIP=1`) still produces a usable addon-only bundle.
+interface AvailableSidecar {
+	filename: string;
+	path: string;
+	size: number;
+}
+const sidecars: AvailableSidecar[] = [];
+if (collectorExecutable) {
+	const sidecarPath = path.join(nativeDir, collectorExecutable);
+	try {
+		const stat = await fs.stat(sidecarPath);
+		sidecars.push({ filename: collectorExecutable, path: sidecarPath, size: stat.size });
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		console.warn(
+			`No ${collectorExecutable} sidecar in native/ for ${platformTag} — the bundle ships without a local collector.`,
+		);
+	}
+}
+for (const sidecar of sidecars) {
+	archiveEntries[sidecar.filename] = new Uint8Array(await fs.readFile(sidecar.path));
+}
+
 await Bun.write(archivePath, await new Bun.Archive(archiveEntries, { compress: "gzip", level: 9 }).bytes());
 
 const files = available
@@ -124,6 +180,9 @@ const files = available
 		addon =>
 			`\t\t{ variant: ${JSON.stringify(addon.variant)}, filename: ${JSON.stringify(addon.filename)}, size: ${addon.size} },`,
 	)
+	.join("\n");
+const sidecarEntries = sidecars
+	.map(sidecar => `\t\t{ filename: ${JSON.stringify(sidecar.filename)}, size: ${sidecar.size} },`)
 	.join("\n");
 
 const content = `
@@ -142,9 +201,12 @@ export const embeddedAddon = {
 \t\tfilename: ${JSON.stringify(archiveFilename)},
 \t\tfilePath: archivePath,
 \t},
-\tfiles: [
+	files: [
 ${files}
-\t],
+	],
+	sidecars: [
+${sidecarEntries}
+	],
 };
 `;
 

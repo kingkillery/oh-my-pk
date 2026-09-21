@@ -6,6 +6,10 @@
 
 - Hook and reminder selectors now support single-digit quick-select (`1`–`9`), `Ctrl+P`/`Ctrl+N` cursor navigation, raw carriage return (`\r`), and explicit cancel keys (`Esc`/`Ctrl+C`/`Ctrl+G`), preventing degraded or dumb terminals from deadlocking prompt interaction.
 
+### Added
+
+- Wired `findCollectorBinary()` to discover the bundled `ompk-collector` sidecar unpacked by `pi-natives` into the per-version native cache, enabling standalone single-binary distributions to run the local collector without PATH or sibling executable dependencies.
+
 ## [16.4.26] - 2026-09-20
 
 ### Added

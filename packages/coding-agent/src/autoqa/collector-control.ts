@@ -18,6 +18,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { resolveBundledCollectorPath as resolveNativeBundledCollectorPath } from "@pk-nerdsaver-ai/pi-natives/native/loader-state.js";
 import { getAutoQaCollectorDir, getAutoQaDbDir, logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { Settings } from "../config/settings";
 
@@ -46,6 +47,13 @@ export function resolveCollectorMode(settings: Settings | undefined): CollectorM
  * Returns null when this install has no bundled sidecar.
  */
 export function resolveBundledCollectorPath(): string | null {
+	try {
+		const nativeBundled = resolveNativeBundledCollectorPath();
+		if (nativeBundled && existsSync(nativeBundled)) return nativeBundled;
+	} catch {
+		// Fall through to monorepo candidate
+	}
+
 	// packages/coding-agent/src/autoqa → packages/natives/native
 	const candidate = join(import.meta.dirname, "..", "..", "..", "..", "natives", "native", COLLECTOR_EXE);
 	try {

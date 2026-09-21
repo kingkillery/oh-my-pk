@@ -429,6 +429,13 @@ function writeEmbeddedAddonFile(targetPath, content) {
 	}
 }
 
+/**
+ * Extract archive entries into `targetDir`, writing only files whose size
+ * differs from the entry already on disk. Addon and sidecar payloads share
+ * this walk; `wanted` decides which entries are staged.
+ *
+ * @param {{ archivePath: string; files: Array<{ filename: string; size?: number }>; targetDir: string }} input
+ */
 export function extractEmbeddedAddonArchive({ archivePath, files, targetDir }) {
 	const pending = new Map();
 	for (const file of files) {
@@ -484,6 +491,32 @@ export function extractEmbeddedAddonArchive({ archivePath, files, targetDir }) {
 	}
 
 	return writtenPaths;
+}
+
+/**
+ * Extract the non-addon payloads (today the `ompk-collector` sidecar) that
+ * rode in the embedded addon archive. Best-effort: `omp collector` degrades to
+ * "binary not found" when this fails, which must never break agent startup.
+ *
+ * @param {{ versionedDir: string; isCompiledBinary: boolean; platformTag: string; packageVersion: string }} ctx
+ */
+function maybeExtractEmbeddedSidecars(ctx) {
+	if (!ctx.isCompiledBinary || !embeddedAddon) return;
+	const sidecars = embeddedAddon.sidecars;
+	if (!Array.isArray(sidecars) || sidecars.length === 0 || !embeddedAddon.archive) return;
+	if (embeddedAddon.platformTag !== ctx.platformTag || embeddedAddon.version !== ctx.packageVersion) return;
+
+	startupMarker("native:extractEmbeddedSidecars:start");
+	try {
+		fs.mkdirSync(ctx.versionedDir, { recursive: true });
+		extractEmbeddedAddonArchive({
+			archivePath: embeddedAddon.archive.filePath,
+			files: sidecars,
+			targetDir: ctx.versionedDir,
+		});
+	} catch (err) {
+		startupMarker(`native:extractEmbeddedSidecars:failed:${err instanceof Error ? err.message : String(err)}`);
+	}
 }
 
 function maybeExtractEmbeddedAddon(ctx, errors) {
@@ -722,6 +755,49 @@ function initLoaderContext() {
 	};
 }
 
+/** Executable name of the bundled collector sidecar for the running platform. */
+const COLLECTOR_SIDECAR_NAME = process.platform === "win32" ? "ompk-collector.exe" : "ompk-collector";
+
+/**
+ * Absolute path of the `ompk-collector` executable shipped with this build, or
+ * `null` when none is available.
+ *
+ * Resolution order mirrors the addon loader: the per-version native cache a
+ * compiled binary extracts into, then the leaf platform package / `native/`
+ * directory in an npm or workspace install (where the sidecar sits as a plain
+ * file rather than inside the archive).
+ *
+ * Consumers (`findCollectorBinary()` in coding-agent) treat `null` as "local
+ * collector unavailable" and fall through to PATH.
+ */
+export function resolveBundledCollectorPath() {
+	const platformTag = `${process.platform}-${process.arch}`;
+	if (!SUPPORTED_PLATFORMS.includes(platformTag)) return null;
+
+	const candidates = [];
+	try {
+		candidates.push(
+			path.join(getNativesDir(), packageJson.version, COLLECTOR_SIDECAR_NAME),
+		);
+	} catch {
+		// Unresolvable home dir — fall through to in-package locations.
+	}
+
+	const nativeDir = path.join(import.meta.dir, "..", "native");
+	const leafPackageDir = resolveLeafPackageDir(platformTag);
+	if (leafPackageDir) candidates.push(path.join(leafPackageDir, COLLECTOR_SIDECAR_NAME));
+	candidates.push(path.join(nativeDir, COLLECTOR_SIDECAR_NAME));
+
+	for (const candidate of candidates) {
+		try {
+			if (fs.statSync(candidate).isFile()) return candidate;
+		} catch {
+			// Keep probing.
+		}
+	}
+	return null;
+}
+
 export function loadNative() {
 	startupMarker("native:loadNative:start");
 	const ctx = initLoaderContext();
@@ -729,6 +805,9 @@ export function loadNative() {
 
 	const errors = [];
 	const embeddedCandidate = maybeExtractEmbeddedAddon(ctx, errors);
+	// Stage sidecars regardless of which addon candidate wins — `omp collector`
+	// must work even when the addon loads from `node_modules` or a staged path.
+	maybeExtractEmbeddedSidecars(ctx);
 	const stagedCandidate = embeddedCandidate ? null : maybeStageNodeModulesAddon(ctx, errors);
 	const prepended = [embeddedCandidate, stagedCandidate].filter(c => typeof c === "string");
 	const runtimeCandidates = prepended.length > 0 ? [...prepended, ...ctx.candidates] : ctx.candidates;

@@ -20,11 +20,22 @@
  */
 
 /**
+ * A non-addon payload shipped inside the same archive — today the
+ * ompk-collector sidecar. Extracted next to the addon on first launch so
+ * findCollectorBinary() finds it as a sibling of the running omp binary.
+ *
+ * @typedef {Object} EmbeddedSidecar
+ * @property {string} filename
+ * @property {number} size
+ */
+
+/**
  * @typedef {Object} EmbeddedAddon
  * @property {string} platformTag
  * @property {string} version
  * @property {EmbeddedAddonFile[]} files
  * @property {EmbeddedAddonArchive=} archive
+ * @property {EmbeddedSidecar[]=} sidecars
  */
 
 /** @type {EmbeddedAddon|null} */

@@ -11,11 +11,18 @@ export interface EmbeddedAddonArchive {
 	filePath: string;
 }
 
+/** Non-addon payload shipped inside the embedded archive (the collector sidecar). */
+export interface EmbeddedSidecar {
+	filename: string;
+	size?: number;
+}
+
 export interface EmbeddedAddon {
 	platformTag: string;
 	version: string;
 	files: EmbeddedAddonFile[];
 	archive?: EmbeddedAddonArchive;
+	sidecars?: EmbeddedSidecar[];
 }
 
 export interface DetectCompiledBinaryInput {
@@ -64,7 +71,7 @@ export function cleanupStaleNativeVersions(input: CleanupStaleNativeVersionsInpu
 
 export interface ExtractEmbeddedAddonArchiveInput {
 	archivePath: string;
-	files: EmbeddedAddonFile[];
+	files: Array<EmbeddedAddonFile | EmbeddedSidecar>;
 	targetDir: string;
 }
 
@@ -87,3 +94,9 @@ export interface SelectCpuVariantResult {
 export function selectCpuVariant(input: SelectCpuVariantInput): SelectCpuVariantResult;
 
 export function loadNative(): Record<string, unknown>;
+
+/**
+ * Absolute path of the `ompk-collector` executable bundled with this build, or
+ * `null` when this install/extraction ships none.
+ */
+export function resolveBundledCollectorPath(): string | null;

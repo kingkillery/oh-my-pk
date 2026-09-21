@@ -96,7 +96,10 @@ function bindingForSubpath(identifier: string, subpath: string): string {
 		.filter(Boolean)
 		.map(segment =>
 			segment
-				.split(/[-_]/)
+				// Split on every separator a subpath may carry, including the file
+				// extension dot of explicitly exported files (`native/loader-state.js`),
+				// so the binding stays a valid ES identifier.
+				.split(/[^A-Za-z0-9]+/)
 				.filter(Boolean)
 				.map(part => part.charAt(0).toUpperCase() + part.slice(1))
 				.join(""),

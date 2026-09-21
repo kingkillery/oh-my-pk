@@ -5,15 +5,91 @@ import { detectHostAvx2Support } from "../../../scripts/host-detect";
 import { generateEnumExports } from "./gen-enums";
 
 const repoRoot = path.join(import.meta.dir, "../../..");
-const rustDir = path.join(repoRoot, "crates/pi-natives");
+const nativesRustDir = path.join(repoRoot, "crates/pi-natives");
+const rustDir = nativesRustDir;
 const nativeDir = path.join(import.meta.dir, "../native");
 const packageJsonPath = path.join(import.meta.dir, "../package.json");
+const collectorDir = path.join(repoRoot, "crates/ompk-collector");
+const collectorManifest = path.join(collectorDir, "Cargo.toml");
 
 const crossTarget = Bun.env.CROSS_TARGET;
 const targetPlatform = Bun.env.TARGET_PLATFORM || process.platform;
 const targetArch = Bun.env.TARGET_ARCH || process.arch;
 const configuredVariantRaw = Bun.env.TARGET_VARIANT;
 const isCrossCompile = Boolean(crossTarget) || targetPlatform !== process.platform || targetArch !== process.arch;
+
+/// `OMPK_COLLECTOR_SKIP=1` skips the collector sidecar build (used when only the
+/// N-API addon is wanted, e.g. incremental local iteration on pi-natives).
+const skipCollector = Boolean(Bun.env.OMPK_COLLECTOR_SKIP);
+
+const collectorExeName = targetPlatform === "win32" ? "ompk-collector.exe" : "ompk-collector";
+const collectorInstallPath = path.join(nativeDir, collectorExeName);
+
+/**
+ * Rust target triple for the requested platform/arch. Mirrors the N-API
+ * addon's target so the collector sidecar lands in the same layout.
+ */
+function rustTripleFor(platform: string, arch: string): string {
+	if (platform === "win32") return `${arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`;
+	if (platform === "darwin") return `${arch === "arm64" ? "aarch64" : "x86_64"}-apple-darwin`;
+	if (platform === "linux") return `${arch === "arm64" ? "aarch64" : "x86_64"}-unknown-linux-gnu`;
+	throw new Error(`No Rust target triple for ${platform}-${arch}.`);
+}
+
+/**
+ * Build the `ompk-collector` sidecar and install it next to the embedded
+ * N-API addon.
+ *
+ * The collector is the optional issue-ingest service (`omp collector`), and
+ * `findCollectorBinary()` in coding-agent resolves it as a sibling of the
+ * running `omp` executable — which is exactly where `embed-native.ts` drops
+ * `native/` entries for a compiled binary. Building it here means the release
+ * artifact ships a working local collector without a separate Rust toolchain
+ * install on the user's machine.
+ *
+ * Cross-compilation is not supported: the collector links a bundled SQLite and
+ * TLS stack, so the crate is built for the host triple only. A cross build
+ * skips the sidecar rather than shipping a host-arch binary under a foreign
+ * name.
+ */
+async function buildCollectorSidecar(): Promise<void> {
+	if (skipCollector) {
+		console.log("Skipping ompk-collector sidecar (OMPK_COLLECTOR_SKIP is set).");
+		return;
+	}
+	if (isCrossCompile) {
+		console.log(
+			`Skipping ompk-collector sidecar for cross target ${crossTarget ?? `${targetPlatform}-${targetArch}`}; ` +
+				"the collector is built for the host platform only.",
+		);
+		return;
+	}
+
+	const triple = rustTripleFor(targetPlatform, targetArch);
+	// Match the addon's profile split so a local build stays fast and a CI
+	// build stays reproducible (same `ci`/`local` profiles as pi-natives).
+	const collectorProfile = profileLabel;
+	console.log(`Building ompk-collector for ${targetPlatform}-${targetArch} (${collectorProfile})…`);
+
+	const cargoArgs = ["build", "--manifest-path", collectorManifest, "--target", triple, "--profile", collectorProfile];
+	const result = await $`cargo ${cargoArgs}`.cwd(repoRoot).nothrow().quiet();
+	if (result.exitCode !== 0) {
+		// Surface the compiler output — a silent sidecar failure would ship a
+		// release whose `omp collector` cannot start.
+		console.error(result.stderr.toString());
+		console.error(result.stdout.toString());
+		throw new Error(`cargo build failed for ompk-collector (exit ${result.exitCode})`);
+	}
+
+	const builtPath = path.join(repoRoot, "target", triple, collectorProfile, collectorExeName);
+	try {
+		await fs.access(builtPath);
+	} catch {
+		throw new Error(`ompk-collector build succeeded but emitted no binary at ${builtPath}`);
+	}
+	await installBinary(builtPath, collectorInstallPath);
+	console.log(`Installed collector sidecar: native/${collectorExeName}`);
+}
 
 type X64Variant = "modern" | "baseline";
 
@@ -429,6 +505,10 @@ try {
 	}
 
 	await installGeneratedBindings(buildOutputDir);
+
+	// Sidecar: shipped next to the addon so `findCollectorBinary()` resolves it
+	// as a sibling of the running `omp` binary.
+	await buildCollectorSidecar();
 
 	await generateEnumExports();
 

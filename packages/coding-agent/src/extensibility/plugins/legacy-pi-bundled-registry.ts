@@ -268,6 +268,7 @@ import * as bundledPiCodingAgentCommandsAuthBroker from "@pk-nerdsaver-ai/pi-cod
 import * as bundledPiCodingAgentCommandsAuthGateway from "@pk-nerdsaver-ai/pi-coding-agent/commands/auth-gateway";
 import * as bundledPiCodingAgentCommandsBench from "@pk-nerdsaver-ai/pi-coding-agent/commands/bench";
 import * as bundledPiCodingAgentCommandsBg from "@pk-nerdsaver-ai/pi-coding-agent/commands/bg";
+import * as bundledPiCodingAgentCommandsCollector from "@pk-nerdsaver-ai/pi-coding-agent/commands/collector";
 import * as bundledPiCodingAgentCommandsCommit from "@pk-nerdsaver-ai/pi-coding-agent/commands/commit";
 import * as bundledPiCodingAgentCommandsComplete from "@pk-nerdsaver-ai/pi-coding-agent/commands/complete";
 import * as bundledPiCodingAgentCommandsCompletions from "@pk-nerdsaver-ai/pi-coding-agent/commands/completions";
@@ -1089,6 +1090,7 @@ import * as bundledPiCodingAgentWorkspaceRedaction from "@pk-nerdsaver-ai/pi-cod
 import * as bundledPiCodingAgentWorkspaceSecrets from "@pk-nerdsaver-ai/pi-coding-agent/workspace/secrets";
 import * as bundledPiCodingAgentWorkspaceTypes from "@pk-nerdsaver-ai/pi-coding-agent/workspace/types";
 import * as bundledPiNatives from "@pk-nerdsaver-ai/pi-natives";
+import * as bundledPiNativesNativeLoaderStateJs from "@pk-nerdsaver-ai/pi-natives/native/loader-state.js";
 import * as bundledPiTui from "@pk-nerdsaver-ai/pi-tui";
 import * as bundledPiTuiComponentsBox from "@pk-nerdsaver-ai/pi-tui/components/box";
 import * as bundledPiTuiComponentsCancellableLoader from "@pk-nerdsaver-ai/pi-tui/components/cancellable-loader";
@@ -1849,6 +1851,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@pk-nerdsaver-ai/pi-coding-agent/commands/bg": bundledPiCodingAgentCommandsBg as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@pk-nerdsaver-ai/pi-coding-agent/commands/collector": bundledPiCodingAgentCommandsCollector as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@pk-nerdsaver-ai/pi-coding-agent/commands/commit": bundledPiCodingAgentCommandsCommit as unknown as Readonly<
@@ -3718,6 +3723,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@pk-nerdsaver-ai/pi-coding-agent/web/search/providers/zai":
 		bundledPiCodingAgentWebSearchProvidersZai as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-natives": bundledPiNatives as unknown as Readonly<Record<string, unknown>>,
+	"@pk-nerdsaver-ai/pi-natives/native/loader-state.js": bundledPiNativesNativeLoaderStateJs as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@pk-nerdsaver-ai/pi-tui": bundledPiTui as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-tui/components/box": bundledPiTuiComponentsBox as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-tui/components/cancellable-loader":
