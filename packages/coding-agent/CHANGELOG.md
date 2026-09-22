@@ -8,10 +8,12 @@
 ### Fixed
 
 - Hook and reminder selectors now support single-digit quick-select (`1`–`9`), `Ctrl+P`/`Ctrl+N` cursor navigation, raw carriage return (`\r`), and explicit cancel keys (`Esc`/`Ctrl+C`/`Ctrl+G`), preventing degraded or dumb terminals from deadlocking prompt interaction.
+- Shared inference daemons now use renewable client leases, request deadlines, six-hour rotation, a 4 GiB Windows private-commit ceiling, and a single-active-model pipeline cache with explicit disposal so phantom sockets or leaking native inference cannot exhaust machine commit; callers recover on the next request without replaying failed work.
 
 ### Added
 
 - Wired `findCollectorBinary()` to discover the bundled `ompk-collector` sidecar unpacked by `pi-natives` into the per-version native cache, enabling standalone single-binary distributions to run the local collector without PATH or sibling executable dependencies.
+- Added System 1 Watchdog: an out-of-band sentinel supervising System 2 worker subagents via TypeSafe Jev (direct, OpenRouter, or AI Gateway) evaluating compact external execution telemetry (~120-150 tokens) with zero output tokens and deterministic arbitration (silent pass, non-interrupting hint, or tripwire abort), with a fail-silent zero-breakage fallback when unconfigured.
 
 ## [16.4.26] - 2026-09-20
 

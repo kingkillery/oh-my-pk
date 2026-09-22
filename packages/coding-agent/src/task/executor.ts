@@ -69,6 +69,13 @@ import { ToolAbortError } from "../tools/tool-errors";
 import { filterAutoToolNames, type ResolvedToolProfile, resolveToolProfile } from "../tools/tool-profiles";
 import type { EventBus } from "../utils/event-bus";
 import { buildNamedToolChoice } from "../utils/tool-choice";
+import {
+	arbitrateHealth,
+	evaluateAgentTelemetry,
+	extractToolTarget,
+	TelemetryTap,
+	type WatchdogConfig,
+} from "../watchdog";
 import type { WorkspaceTree } from "../workspace-tree";
 import { type AssignmentContract, type AssignmentResult, parseAssignmentResult } from "./assignment-contract";
 import {
@@ -552,6 +559,11 @@ export interface ExecutorOptions {
 	 * passes its own `getAgentId()`).
 	 */
 	parentAgentId?: string;
+	/**
+	 * Optional System 1 watchdog configuration (TypeSafe Jev out-of-band supervision).
+	 * If unconfigured or no API key, runs silent with zero overhead and does not break existing functionality.
+	 */
+	watchdogConfig?: WatchdogConfig;
 }
 
 function parseStringifiedJson(value: unknown): unknown {
@@ -1018,10 +1030,10 @@ export async function finalizeSubagentLifecycle(options: FinalizeSubagentLifecyc
 	}
 }
 
-type AbortReason = "signal" | "terminate" | "timeout" | "budget";
+export type AbortReason = "signal" | "terminate" | "timeout" | "budget" | "watchdog";
 
 /** Inputs for the run monitor driving one subagent assignment. */
-interface RunMonitorArgs {
+export interface RunMonitorArgs {
 	index: number;
 	id: string;
 	agent: AgentDefinition;
@@ -1041,6 +1053,8 @@ interface RunMonitorArgs {
 	softRequestBudget: number;
 	/** Wall-clock cap in ms; 0 disables the timer. */
 	maxRuntimeMs: number;
+	/** Optional System 1 watchdog configuration. */
+	watchdogConfig?: WatchdogConfig;
 }
 
 /**
@@ -1048,7 +1062,7 @@ interface RunMonitorArgs {
  * processing, abort/budget machinery, usage accumulation, and output capture
  * for one assignment run.
  */
-interface SubagentRunMonitor {
+export interface SubagentRunMonitor {
 	readonly progress: AgentProgress;
 	/** Fires when the run was asked to stop (caller signal, timeout, budget, terminate). */
 	readonly abortSignal: AbortSignal;
@@ -1056,6 +1070,8 @@ interface SubagentRunMonitor {
 	hasUsage(): boolean;
 	yieldCalled(): boolean;
 	runtimeLimitExceeded(): boolean;
+	isWatchdogAborted(): boolean;
+	readonly telemetryTap: TelemetryTap;
 	/** True when the abort carries a precise external reason (signal / wall-clock / budget). */
 	hasExplicitAbortReason(): boolean;
 	/** Whether the (attempted) abort counts as a cancelled run rather than an internal failure. */
@@ -1078,7 +1094,7 @@ interface SubagentRunMonitor {
 	finish(): void;
 }
 
-function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
+export function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	const { index, id, agent, task, assignment, signal, onProgress, softRequestBudget, maxRuntimeMs } = args;
 	const startTime = Date.now();
 
@@ -1117,6 +1133,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	const abortSignal = abortController.signal;
 	let activeSession: AgentSession | null = null;
 	let yieldCalled = false;
+	const telemetryTap = new TelemetryTap(5);
+	let watchdogAborted = false;
+	let watchdogAbortReason: string | undefined;
+	let watchdogEvaluating = false;
 
 	// Accumulate usage incrementally from message_end events (no memory for streaming events)
 	const accumulatedUsage: Usage = {
@@ -1138,6 +1158,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		}
 		if (reason === "budget") {
 			budgetLimitExceeded = true;
+		}
+		if (reason === "watchdog") {
+			watchdogAborted = true;
 		}
 		if (abortSent) {
 			if (reason === "signal" && abortReason !== "signal" && abortReason !== "timeout") {
@@ -1195,6 +1218,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		return "Cancelled by caller";
 	};
 	const resolveAbortReasonText = (): string => {
+		if (watchdogAborted && watchdogAbortReason) {
+			return watchdogAbortReason;
+		}
 		if (runtimeLimitExceeded) {
 			return `Subagent runtime limit exceeded (task.maxRuntimeMs=${maxRuntimeMs})`;
 		}
@@ -1355,6 +1381,25 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			}
 
 			case "tool_execution_end": {
+				const completedTool = progress.currentTool || event.toolName;
+				const completedArgs = (event as { args?: Record<string, unknown> }).args ?? {};
+				const isErr = Boolean(event.isError);
+				const duration = progress.currentToolStartMs ? now - progress.currentToolStartMs : 0;
+				const target = extractToolTarget(completedTool, completedArgs);
+				const errorMessage = isErr
+					? typeof event.result === "string"
+						? event.result
+						: JSON.stringify(event.result)
+					: undefined;
+
+				telemetryTap.record({
+					tool: completedTool,
+					target,
+					status: isErr ? "error" : "success",
+					errorMessage,
+					durationMs: duration,
+				});
+
 				if (progress.currentTool) {
 					progress.recentTools.unshift({
 						tool: progress.currentTool,
@@ -1422,6 +1467,54 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					) {
 						requestAbort("terminate");
 					}
+				}
+				// System 1 Watchdog evaluation (out-of-band, non-blocking)
+				const watchdogCfg = args.watchdogConfig;
+				const shouldCheckWatchdog =
+					!watchdogEvaluating &&
+					!resolved &&
+					!abortSent &&
+					(telemetryTap.consecutiveErrors >= 2 ||
+						telemetryTap.consecutiveSameTarget >= 3 ||
+						(progress.toolCount > 0 && progress.toolCount % 4 === 0));
+
+				if (shouldCheckWatchdog) {
+					watchdogEvaluating = true;
+					void (async () => {
+						try {
+							const compactState = telemetryTap.toCompactState(agent.name, assignment ?? task);
+							const evalResult = await evaluateAgentTelemetry(compactState, watchdogCfg);
+							if (evalResult && !resolved && !abortSent) {
+								const decision = arbitrateHealth(evalResult, watchdogCfg, { tool: completedTool, target });
+								if (decision.action === "tripwire_abort") {
+									logger.warn(`[Watchdog] Subagent tripwire tripped: ${decision.reason}`, {
+										id,
+										agent: agent.name,
+										severity: decision.severity,
+										thrashing: decision.thrashing,
+									});
+									watchdogAborted = true;
+									watchdogAbortReason = decision.reason;
+									requestAbort("watchdog");
+								} else if (decision.action === "inject_hint") {
+									if (activeSession && !abortSent && !resolved) {
+										logger.debug(`[Watchdog] Injecting hint into subagent: ${decision.hint}`);
+										void activeSession.agent.steer({
+											role: "user",
+											content: decision.hint,
+											timestamp: Date.now(),
+										});
+									}
+								}
+							}
+						} catch (err) {
+							logger.debug(
+								`[Watchdog] Background evaluation ignored: ${err instanceof Error ? err.message : String(err)}`,
+							);
+						} finally {
+							watchdogEvaluating = false;
+						}
+					})();
 				}
 				flushProgress = true;
 				break;
@@ -1639,9 +1732,16 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		hasUsage: () => hasUsage,
 		yieldCalled: () => yieldCalled,
 		runtimeLimitExceeded: () => runtimeLimitExceeded,
-		hasExplicitAbortReason: () => abortReason === "signal" || runtimeLimitExceeded || budgetLimitExceeded,
+		isWatchdogAborted: () => watchdogAborted,
+		telemetryTap,
+		hasExplicitAbortReason: () =>
+			abortReason === "signal" || runtimeLimitExceeded || budgetLimitExceeded || abortReason === "watchdog",
 		isAbortedRun: () =>
-			abortReason === "signal" || runtimeLimitExceeded || budgetLimitExceeded || abortReason === undefined,
+			abortReason === "signal" ||
+			runtimeLimitExceeded ||
+			budgetLimitExceeded ||
+			abortReason === "watchdog" ||
+			abortReason === undefined,
 		requestAbort,
 		resolveSignalAbortReason,
 		resolveAbortReasonText,
@@ -2341,6 +2441,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		delegatedIo: options.delegatedIo,
 		softRequestBudget,
 		maxRuntimeMs,
+		watchdogConfig: options.watchdogConfig,
 	});
 	const progress = monitor.progress;
 	progress.executionProfile = executionProfile;
