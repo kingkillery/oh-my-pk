@@ -2,8 +2,8 @@
 	"schemaVersion": 1,
 	"wave": "W1-checkpoint+extension",
 	"generatedBy": "scripts/revamp-contract-freeze.ts",
-	"candidateManifestDigest": "7cb4fe3c2b1653dbc4fcaabf57c96ecac0fb1e5982dbce69ef5fc70a39cda9c5",
-	"candidateManifestFileCount": 2524,
+	"candidateManifestDigest": "31589601d0ff7e8db76c6bed12d96c1162a20c17f366cd227d0dee7e21a11230",
+	"candidateManifestFileCount": 2533,
 	"shapes": [
 		{
 			"typeName": "SnapshotRefV1",
@@ -47,7 +47,7 @@
 				"approvalRef",
 				"schemaVersion"
 			],
-			"parser": "parseCompiledLaunchContract",
+			"parser": "parseMutationContractV1",
 			"status": "frozen",
 			"descriptorDigest": "3ad8e43d703131bdeacd22d70a1cc52aee28d4c633f4efa67c850acba30b1076"
 		},
@@ -96,7 +96,7 @@
 			"acceptedFields": [
 				"attemptId",
 				"cancellationGeneration",
-				"contractVersion",
+				"launchAuthority",
 				"leaseEpoch",
 				"leaseOwner",
 				"nodeId",
@@ -104,7 +104,7 @@
 			],
 			"parser": "parseLifecycleFence",
 			"status": "frozen",
-			"descriptorDigest": "74492519ad130940c340ae8f2c158caea93936ba6a4ec22592035fae4c0fed83"
+			"descriptorDigest": "65e9e550c47f3e0e6bbf0c08a15667fe95c75fa25c3e0c775845a3870de2f005"
 		},
 		{
 			"typeName": "RuntimePolicySnapshotV1",
@@ -155,7 +155,94 @@
 			"descriptorDigest": "0e91e94be63058c33b608c21b7729eb81b52d489f97106ef8e6f00341a45e6bf"
 		},
 		{
+			"typeName": "CompiledLaunchContract",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": 2,
+			"acceptedFields": [
+				"authority",
+				"capsule",
+				"childPrincipalId",
+				"contractDigest",
+				"contractId",
+				"contractRevision",
+				"missionHash",
+				"parentPrincipalId",
+				"policy",
+				"policyHash",
+				"policyVersion",
+				"priorContractDigest",
+				"provenance",
+				"rootPrincipalId",
+				"schemaVersion"
+			],
+			"parser": "parseCompiledLaunchContract",
+			"status": "frozen",
+			"descriptorDigest": "110ca13f084ca5039cbeb1a173534a6371590fcfbb5af7e994a70fd7aa3024d9"
+		},
+		{
 			"typeName": "LaunchContract",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": 2,
+			"acceptedFields": [
+				"binding",
+				"compiled",
+				"schemaVersion"
+			],
+			"parser": "parseLaunchContract",
+			"status": "frozen",
+			"descriptorDigest": "6f82f1e64e9b3f78f65e9e01490f7c7829f242ccdc661af66b13e564cd5de00e"
+		},
+		{
+			"typeName": "LaunchBinding",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": 1,
+			"acceptedFields": [
+				"actualRuntimeGuarantees",
+				"attemptId",
+				"bindingId",
+				"childPrincipalId",
+				"contextGeneration",
+				"contractDigest",
+				"contractId",
+				"contractRevision",
+				"expiresAt",
+				"grantBindings",
+				"guaranteeEvidenceRefs",
+				"lifecycle",
+				"parentPrincipalId",
+				"policyEpoch",
+				"processRef",
+				"reservationId",
+				"restoresBindingId",
+				"rootPrincipalId",
+				"schemaVersion",
+				"serviceBindings",
+				"sessionId",
+				"state"
+			],
+			"parser": "parseLaunchBinding",
+			"status": "frozen",
+			"descriptorDigest": "aa14f053b87eb4644295c6dc4bd83ce8750b96948d2f408a9ba7a9abc8c5eef7"
+		},
+		{
+			"typeName": "LaunchAuthorityRefV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": null,
+			"acceptedFields": [
+				"attemptId",
+				"bindingId",
+				"contractDigest",
+				"contractId",
+				"contractRevision",
+				"policyEpoch",
+				"principalId"
+			],
+			"parser": "parseLaunchAuthorityRefV1",
+			"status": "frozen",
+			"descriptorDigest": "30e9eeaac4c65a6ff6727597ddff46d6cfdaadae1f3822743e55a71c168b90c1"
+		},
+		{
+			"typeName": "ArchivalLaunchContractV1",
 			"module": "packages/coding-agent/src/task/launch-contract.ts",
 			"schemaVersion": 1,
 			"acceptedFields": [
@@ -166,35 +253,9 @@
 				"policy",
 				"policySchemaVersion"
 			],
-			"parser": "parseLaunchContract",
+			"parser": "parseArchivalLaunchContractV1",
 			"status": "frozen",
-			"descriptorDigest": "2157c2de26f45f758000e356cc80b73394c59f1fa847b5d1b09adda725fc5a4e"
-		},
-		{
-			"typeName": "LaunchBinding",
-			"module": "packages/coding-agent/src/task/launch-contract.ts",
-			"schemaVersion": null,
-			"acceptedFields": [
-				"attemptId",
-				"budgetReservationId",
-				"cancellationGeneration",
-				"capabilityManifestRef",
-				"executionEnvironmentRef",
-				"harnessVersion",
-				"leaseEpoch",
-				"missionHash",
-				"nodeId",
-				"ownerNodeId",
-				"policyHash",
-				"role",
-				"runId",
-				"schemaVersion",
-				"topology",
-				"version"
-			],
-			"parser": "parseLaunchContract",
-			"status": "frozen",
-			"descriptorDigest": "73138b485ceca37374e4a2c6533fbcd7fe60c51adc358227c90b2b850cc4547c"
+			"descriptorDigest": "eedc283b8a530530cc725a27285681443b40bc7cc59be58f42482e92a074e86c"
 		},
 		{
 			"typeName": "LifecycleHandoffV1",
@@ -478,27 +539,303 @@
 			"parser": "parseGrantRecordV1",
 			"status": "frozen",
 			"descriptorDigest": "6c715b382d798462ec23ab587f2dee5954e3c4b070e574ca054521e025912744"
+		},
+		{
+			"typeName": "LaunchAuthorityV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": 1,
+			"acceptedFields": [
+				"agentTemplateRef",
+				"baseContextManifest",
+				"budget",
+				"collaboration",
+				"compatibility",
+				"contextMode",
+				"delegableCapabilities",
+				"deliveryChannels",
+				"initialDisclosures",
+				"launchClass",
+				"observation",
+				"requiredRuntimeGuarantees",
+				"resources",
+				"result",
+				"schemaVersion",
+				"spawn",
+				"usableCapabilities",
+				"workspaceInstructionRefs"
+			],
+			"parser": "parseLaunchAuthorityV1",
+			"status": "frozen",
+			"descriptorDigest": "fbc61df2bde805fb7e58acf60dfe7f1da898f1af623e79686fc43146a569f9ce"
+		},
+		{
+			"typeName": "BaseContextManifestV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": 1,
+			"acceptedFields": [
+				"manifestHash",
+				"schemaVersion",
+				"segments"
+			],
+			"parser": "parseBaseContextManifestV1",
+			"status": "frozen",
+			"descriptorDigest": "744345dcde1d3ba7fd580ef6689948b264f9e4bdc364a0896d969189ab793fa1"
+		},
+		{
+			"typeName": "DisclosureIntentV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": null,
+			"acceptedFields": [
+				"contentRef",
+				"domains",
+				"intentId",
+				"issuerPrincipalId",
+				"kind",
+				"purpose",
+				"recipientPrincipalId",
+				"required",
+				"resource",
+				"sourceGrantIds"
+			],
+			"parser": "parseDisclosureIntentV1",
+			"status": "frozen",
+			"descriptorDigest": "826ed2b4bd7f63b621563c5d2a123e4f1c04942598159d80cbf1c4a6ebdfa226"
+		},
+		{
+			"typeName": "DeliveryChannelV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": null,
+			"acceptedFields": [
+				"channelId",
+				"domains",
+				"expiresAt",
+				"maxMessageBytes",
+				"maxMessages",
+				"maxTotalBytes",
+				"messageKinds",
+				"onwardRecipientPrincipalIds",
+				"recipientPrincipalId",
+				"resourceSelectors",
+				"revealCondition",
+				"senderPrincipalIds"
+			],
+			"parser": "parseDeliveryChannelV1",
+			"status": "frozen",
+			"descriptorDigest": "71635dfc175e685f14ef922217d946954159e63e789d7a970c02b6f2cbb8a9f6"
+		},
+		{
+			"typeName": "CompatibilityExceptionV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": null,
+			"acceptedFields": [
+				"actualGuarantee",
+				"authorityRef",
+				"classification",
+				"code",
+				"reason",
+				"requiredGuarantee",
+				"resourceKind"
+			],
+			"parser": "parseCompatibilityExceptionV1",
+			"status": "frozen",
+			"descriptorDigest": "bacfe345041698e286e22c351f7f25b44ad4d766e5531d0775d677fed058cbd0"
+		},
+		{
+			"typeName": "CommunicationAuthorityV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": null,
+			"acceptedFields": [
+				"broadcastPrincipalIds",
+				"busyReplyPrincipalIds",
+				"channelIds",
+				"controlPrincipalIds",
+				"delegablePrincipalIds",
+				"policy",
+				"receivePrincipalIds",
+				"sendPrincipalIds",
+				"visiblePrincipalIds",
+				"wakePrincipalIds"
+			],
+			"parser": "parseCommunicationAuthorityV1",
+			"status": "frozen",
+			"descriptorDigest": "be56df6d334c3f0e0f2e25f81ff313f520d5bc3c9d89d54f5d4b4d9d06421adf"
+		},
+		{
+			"typeName": "ObservationAuthorityV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": null,
+			"acceptedFields": [
+				"observers"
+			],
+			"parser": "parseObservationAuthorityV1",
+			"status": "frozen",
+			"descriptorDigest": "eb7576e6a45cd6eec29a15ebedd5cd88e928dea0f8defefd2c32789b94650bba"
+		},
+		{
+			"typeName": "SpawnAuthorityV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": null,
+			"acceptedFields": [
+				"allowedAgentTypes",
+				"allowedLaunchClasses",
+				"delegableResourceGrantIds",
+				"maxChildren",
+				"maxDepth",
+				"mayDelegateSpawn",
+				"maySpawn"
+			],
+			"parser": "parseSpawnAuthorityV1",
+			"status": "frozen",
+			"descriptorDigest": "8f276438590f7909f04b2f582d9af0f9c83c2a78bc441491a7fb37bea0618cf6"
+		},
+		{
+			"typeName": "ResultAuthorityV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": null,
+			"acceptedFields": [
+				"acceptedRecipientPrincipalIds",
+				"maxOutputBytes",
+				"mutation",
+				"outputSchemaRef",
+				"publicationGrantIds",
+				"publicationRequired",
+				"requiredCriterionIds"
+			],
+			"parser": "parseResultAuthorityV1",
+			"status": "frozen",
+			"descriptorDigest": "34f36aec19ad1bdeeddd3fa46ae8d352207deb52ea178b066a30af759316b3e3"
+		},
+		{
+			"typeName": "RuntimeGuaranteesV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": null,
+			"acceptedFields": [
+				"artifactAccess",
+				"credentials",
+				"evalState",
+				"filesystemRead",
+				"filesystemWrite",
+				"initialContext",
+				"memoryAccess",
+				"network",
+				"process",
+				"serviceAccess",
+				"transcriptAccess"
+			],
+			"parser": "parseRuntimeGuaranteesV1",
+			"status": "frozen",
+			"descriptorDigest": "af501a993d871e9e86bf41c38f2cfe6e26c553c4e14d46390ba7c4e76f2a4be7"
+		},
+		{
+			"typeName": "AuthorityEnvelopeV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": 1,
+			"acceptedFields": [
+				"budget",
+				"collaboration",
+				"delegableCapabilities",
+				"resources",
+				"result",
+				"schemaVersion",
+				"spawn",
+				"usableCapabilities"
+			],
+			"parser": "parseAuthorityEnvelopeV1",
+			"status": "frozen",
+			"descriptorDigest": "e640414a36bc53c773054fb2f3a6e802f7b12beeec5e010a3627d1474c290bae"
+		},
+		{
+			"typeName": "LaunchAuthorizationSnapshotV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": 1,
+			"acceptedFields": [
+				"agentMaximum",
+				"authorizationRef",
+				"childPrincipalId",
+				"contractId",
+				"contractRevision",
+				"entryPoint",
+				"hostMaximum",
+				"issuerPolicyEpoch",
+				"issuerPrincipalId",
+				"parentDelegable",
+				"parentPrincipalId",
+				"priorContractDigest",
+				"reason",
+				"requestedAuthority",
+				"rootPrincipalId",
+				"schemaVersion",
+				"sourceGrants",
+				"toolCatalogDigest",
+				"workflowMaximum"
+			],
+			"parser": "parseLaunchAuthorizationSnapshotV1",
+			"status": "frozen",
+			"descriptorDigest": "0b326385d2b8016848f54467a81125aa80f3315991f2df2157bc49c831b82aa8"
+		},
+		{
+			"typeName": "GrantEventV1",
+			"module": "packages/coding-agent/src/task/launch-contract.ts",
+			"schemaVersion": null,
+			"acceptedFields": [
+				"actorPrincipalId",
+				"eventId",
+				"grantId",
+				"kind",
+				"occurredAt",
+				"policyEpoch",
+				"reason",
+				"recordDigest"
+			],
+			"parser": "parseGrantEventV1",
+			"status": "frozen",
+			"descriptorDigest": "e6339dee3f0723acab9585f49f00fb83cb9c8ac3b0e10957b9fecb603e5c219f"
+		},
+		{
+			"typeName": "DeliveryRecordV1",
+			"module": "packages/coding-agent/src/operational/lifecycle-types.ts",
+			"schemaVersion": 1,
+			"acceptedFields": [
+				"attemptId",
+				"bytes",
+				"channelId",
+				"contextGeneration",
+				"contractRevision",
+				"deliveryId",
+				"domains",
+				"kind",
+				"payloadRef",
+				"policyEpoch",
+				"recipientBindingId",
+				"recipientPrincipalId",
+				"requestDigest",
+				"resourceRefs",
+				"schemaVersion",
+				"senderPrincipalId"
+			],
+			"parser": "parseDeliveryRecordV1",
+			"status": "frozen",
+			"descriptorDigest": "f1cd524fe2170ccbc476314b047534cfdd8464a73fd9caf5316ecf206dd05f9b"
+		},
+		{
+			"typeName": "DeliveryEventV1",
+			"module": "packages/coding-agent/src/operational/lifecycle-types.ts",
+			"schemaVersion": null,
+			"acceptedFields": [
+				"code",
+				"deliveryId",
+				"eventId",
+				"kind",
+				"occurredAt",
+				"requestId"
+			],
+			"parser": "parseDeliveryEventV1",
+			"status": "frozen",
+			"descriptorDigest": "7908ca448956b2f889c6df027465c3fa01f6a4f4c0ff7d9d91f837a7a412c08d"
 		}
 	],
 	"unresolvedShapes": [],
-	"pendingShapes": [
-		"AuthorityEnvelopeV1",
-		"BaseContextManifestV1",
-		"CommunicationAuthorityV1",
-		"CompatibilityExceptionV1",
-		"DeliveryChannelV1",
-		"DeliveryEventV1",
-		"DeliveryRecordV1",
-		"DisclosureIntentV1",
-		"GrantEventV1",
-		"LaunchAuthorityV1",
-		"LaunchAuthorizationSnapshotV1",
-		"LaunchBinding",
-		"ObservationAuthorityV1",
-		"ResultAuthorityV1",
-		"RuntimeGuaranteesV1",
-		"SpawnAuthorityV1"
-	],
-	"complete": false,
+	"pendingShapes": [],
+	"complete": true,
 	"resolvedComplete": true
 }

@@ -7,13 +7,15 @@ import { getSupportedEfforts } from "@pk-nerdsaver-ai/pi-catalog/model-thinking"
 import type { Component } from "@pk-nerdsaver-ai/pi-tui";
 import { logger, prompt, Snowflake } from "@pk-nerdsaver-ai/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
-import { formatModelString, parseModelPattern } from "../../config/model-resolver";
+import { formatModelString, parseModelPattern, resolveModelOverride } from "../../config/model-resolver";
 import { mergeSubagentModelAliases, resolveSubagentModelAlias } from "../../config/subagent-model-aliases";
 import type { ExtensionUISelectItem } from "../../extensibility/extensions";
 import type { LocalProtocolOptions } from "../../internal-urls";
 import { ModelSelectorComponent } from "../../modes/components/model-selector";
 import { isValidThemeColor, type ThemeColor } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
+import { resolveAgentHarness } from "../../orchestration/agent-harness";
+import type { LifecycleExecutionContext } from "../../orchestration/lifecycle-authority";
 import { loadOverallPlanReference } from "../../plan-mode/plan-handoff";
 import subagentUserPromptTemplate from "../../prompts/system/subagent-user-prompt.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
@@ -22,6 +24,13 @@ import { discoverAgents, getAgent } from "../../task/discovery";
 import { runSubprocess } from "../../task/executor";
 import { generateTaskName } from "../../task/name-generator";
 import { AgentOutputManager } from "../../task/output-manager";
+import {
+	admissionStore,
+	admitBoundChildLaunch,
+	captureLaunchBaseline,
+	LAUNCH_ENTRY_POINTS,
+} from "../../task/spawn-admission";
+import { createSpawnPlan } from "../../task/spawn-plan";
 import { getThinkingLevelMetadata } from "../../thinking";
 
 export interface ParsedUsingForm {
@@ -271,7 +280,72 @@ export async function spawnSubagent(
 	// is the parent session's recursion depth (the executor adds +1 for the child).
 	const spawnIndex = allocateSpawnIndex(ctx.session);
 	const parentTaskDepth = resolveParentTaskDepth(ctx.session.getAgentId());
-
+	// W3 (§14.6): a bound issuer produces a durably admitted bound child —
+	// compile → admit → activate → projection bind via the shared spawn
+	// admission builder. The issuer accessor falls back to the bound context
+	// (a bound child issues under itself); absent issuer stays legacy. A
+	// strict rejection is surfaced — never a legacy fallback after admission
+	// ran.
+	const lifecycleIssuer = ctx.session.getLifecycleIssuerContext?.() ?? ctx.session.getLifecycleExecutionContext?.();
+	let lifecycleChild: LifecycleExecutionContext | undefined;
+	if (lifecycleIssuer) {
+		const correlationId = `slash-subagent-${Snowflake.next()}`;
+		const planned = createSpawnPlan({
+			correlationId,
+			agentName: agent.name,
+			assignment: state.task,
+			description: state.task,
+			modelPatterns: [state.modelOverride],
+			requestedModel: state.modelOverride,
+			manualModelSelection: true,
+			fusionSidekick: state.fusionSidekick ?? false,
+			softRequestBudget: ctx.settings.get("task.softRequestBudget"),
+			maxRuntimeMs: ctx.settings.get("task.maxRuntimeMs"),
+			isSelectorAvailable: ctx.session.modelRegistry
+				? selector => resolveModelOverride([selector], ctx.session.modelRegistry, ctx.settings).model !== undefined
+				: undefined,
+		});
+		if (!planned.ok) {
+			ctx.showError(
+				`Cannot spawn subagent: spawn plan rejected:\n${planned.diagnostics.map(d => `- [${d.code}] ${d.message}`).join("\n")}`,
+			);
+			return "";
+		}
+		const harness = resolveAgentHarness({
+			execution: planned.plan.profile,
+			agentName: agent.name,
+			role: state.name,
+			agentTools: agent.tools,
+			autoloadSkills: agent.autoloadSkills,
+			parentId: ctx.session.getAgentId() ?? MAIN_AGENT_ID,
+			requireYield: true,
+		});
+		const admission = admitBoundChildLaunch({
+			issuer: lifecycleIssuer,
+			store: admissionStore(),
+			spawnPlan: planned.plan,
+			entryPoint: LAUNCH_ENTRY_POINTS.slashSubagent,
+			reason: `slash /subagent spawn of '${agent.name}'`,
+			agentName: agent.name,
+			assignment: state.task,
+			agentDefinition: agent,
+			executionProfile: planned.plan.profile,
+			toolProfile: harness.toolProfile,
+			collaborationPolicy: harness.collaborationPolicy,
+			repoRoot: cwd,
+			baseline: await captureLaunchBaseline(cwd),
+			idempotencyKey: `spawn-${correlationId}-${id}`,
+			sessionId: `session-${id}`,
+			artifactManager: ctx.sessionManager.getArtifactManager() ?? { getPath: () => Promise.resolve(null) },
+		});
+		if (!admission.ok) {
+			ctx.showError(
+				`Subagent spawn denied by launch admission (${admission.code}):\n${admission.diagnostics.map(d => `- [${d.code}] ${d.message}`).join("\n")}`,
+			);
+			return "";
+		}
+		lifecycleChild = admission.context;
+	}
 	const run = runSubprocess({
 		cwd,
 		agent,
@@ -303,6 +377,7 @@ export async function spawnSubagent(
 		parentAgentId: ctx.session.getAgentId() ?? MAIN_AGENT_ID,
 		color: state.color,
 		planReference,
+		lifecycle: lifecycleChild,
 	});
 
 	ctx.showStatus(`Spawned subagent ${id} on ${state.modelOverride}.`);

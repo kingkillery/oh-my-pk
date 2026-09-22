@@ -53,7 +53,9 @@ describe("Acceptance 3 — recursive ownership under contention", () => {
 			expect(second.ok).toBe(true);
 			if (first.ok && second.ok) {
 				expect(second.job.id).toBe(first.job.id);
-				expect(second.launch.envelope.nodeId).toBe(first.launch.envelope.nodeId);
+				// Replay resolves the SAME durable binding, not a second authority.
+				expect(second.launch.binding.bindingId).toBe(first.launch.binding.bindingId);
+				expect(second.launch.binding.lifecycle?.nodeId).toBe(first.launch.binding.lifecycle?.nodeId);
 			}
 			expect(store.listLifecycleNodes("run-1")).toHaveLength(2);
 		} finally {

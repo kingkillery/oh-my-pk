@@ -10,6 +10,7 @@ import { type } from "arktype";
 function createTool(
 	name: string,
 	execute: (toolCallId: string, args: unknown, signal?: AbortSignal) => Promise<AgentToolResult>,
+	approval: "read" | "write" | "exec" = "read",
 ): AgentTool {
 	return {
 		name,
@@ -17,6 +18,7 @@ function createTool(
 		description: `${name} tool`,
 		parameters: type({}),
 		concurrency: "parallel",
+		approval,
 		execute,
 	} as unknown as AgentTool;
 }
@@ -30,6 +32,7 @@ function createSession(tools: AgentTool[]): ToolSession {
 		getSessionSpawns: () => null,
 		settings: Settings.isolated(),
 		getToolByName: name => registry.get(name),
+		getToolSource: name => (registry.has(name) ? "builtin" : undefined),
 	};
 }
 
@@ -162,7 +165,7 @@ describe("callSessionTool", () => {
 			allowExternalWrite: false,
 		});
 		const session = {
-			...createSession([createTool("bash", execute)]),
+			...createSession([createTool("bash", execute, "exec")]),
 			getLifecycleExecutionContext: () => worker,
 		} as unknown as ToolSession;
 
@@ -202,4 +205,32 @@ describe("callSessionTool", () => {
 		).resolves.toBe("ok");
 		expect(execute).toHaveBeenCalledTimes(1);
 	});
+	it.each(["mcp", "extension", "custom", "hidden", undefined] as const)(
+		"denies a builtin-name collision registered as %s before execution",
+		async source => {
+			const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "unexpected" }] });
+			const context = registerLifecycleExecutionContext({
+				mode: "hierarchical-v1",
+				role: "worker",
+				runId: "source-run",
+				nodeId: "source-node",
+				attemptId: "source-attempt",
+				policyEpoch: 1,
+				usableCapabilities: [{ source: "builtin", name: "read" }],
+				repoRoot: "/tmp",
+				readableRoots: ["src"],
+				writableRoots: [],
+				allowExternalWrite: false,
+			});
+			const session: ToolSession = {
+				...createSession([createTool("read", execute)]),
+				getToolSource: () => source,
+				getLifecycleExecutionContext: () => context,
+			};
+			await expect(callSessionTool("read", { path: "src/a.ts" }, { session })).rejects.toThrow(
+				source ? "capability_not_granted" : "unknown_tool_source",
+			);
+			expect(execute).not.toHaveBeenCalled();
+		},
+	);
 });

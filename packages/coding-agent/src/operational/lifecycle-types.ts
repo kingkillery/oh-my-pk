@@ -3,7 +3,7 @@
  * — frozen W1 contract surface.
  */
 
-import type { LifecycleExecutionContext } from "../orchestration/lifecycle-authority";
+import type { LifecycleExecutionContext, RootExecutionContext } from "../orchestration/lifecycle-authority";
 import type { VerificationReceiptV1 } from "../orchestration/snapshot-completion";
 import { parseVerificationReceiptV1 } from "../orchestration/snapshot-completion";
 import type {
@@ -26,15 +26,18 @@ import type {
 	SnapshotRefV1,
 } from "../task/launch-contract";
 import {
+	authorityDomains,
 	isHex64,
 	isNonEmptyString,
 	isPlainObject,
 	isSafeNonNegativeInt,
 	KNOWN_AGENT_ROLES,
+	KNOWN_DISCLOSURE_KINDS,
 	parseArtifactRefV1,
 	parseLifecycleFence,
 	parseObligationV1,
 	parseReservationVector,
+	parseResourceSelectorV1,
 	parseRunLimitsV1,
 	parseSnapshotRefV1,
 } from "../task/launch-contract";
@@ -531,7 +534,12 @@ export function parseLifecycleRunSnapshot(value: unknown): LifecycleRunSnapshot 
  * so a stale issuer cannot ride in on a fresh recipient epoch.
  */
 export interface LaunchMutationGuard {
-	readonly actor: LifecycleExecutionContext;
+	/**
+	 * Either a bound child context or the host's root issuer: the store
+	 * authenticates both lineages, so the type admits both rather than
+	 * forcing root callers to cast away their brand.
+	 */
+	readonly actor: LifecycleExecutionContext | RootExecutionContext;
 	readonly expectedPolicyEpoch: number;
 	readonly idempotencyKey: string;
 }
@@ -570,6 +578,9 @@ export interface LaunchAuthorityFailure {
 }
 
 export type GrantIssueResult = { readonly ok: true; readonly grant: RuntimeGrantRef } | LaunchAuthorityFailure;
+
+/** Typed acknowledgement for authority mutations that do not return a record. */
+export type LaunchMutationResult = { readonly ok: true } | LaunchAuthorityFailure;
 
 export interface ContextDeliveryRequest {
 	readonly deliveryId: string;
@@ -635,6 +646,82 @@ export interface DeliveryEventV1 {
 	readonly requestId: string | null;
 	readonly code: string | null;
 	readonly occurredAt: number;
+}
+
+export const DELIVERY_RECORD_KEYS = [
+	"schemaVersion",
+	"deliveryId",
+	"channelId",
+	"senderPrincipalId",
+	"recipientPrincipalId",
+	"recipientBindingId",
+	"attemptId",
+	"contractRevision",
+	"policyEpoch",
+	"contextGeneration",
+	"payloadRef",
+	"resourceRefs",
+	"domains",
+	"kind",
+	"bytes",
+	"requestDigest",
+] as const;
+
+export function parseDeliveryRecordV1(value: unknown, label = "DeliveryRecordV1"): DeliveryRecordV1 {
+	const rec = record(value, label);
+	rejectUnknownKeys(rec, DELIVERY_RECORD_KEYS, label);
+	if (rec.schemaVersion !== 1) throw new Error(`invalid_${label}: schemaVersion must be 1`);
+	const contractRevision = int(rec, "contractRevision", label);
+	if (contractRevision < 1) throw new Error(`invalid_${label}: contractRevision must be >= 1`);
+	const requestDigest = str(rec, "requestDigest", label);
+	if (!isHex64(requestDigest)) throw new Error(`invalid_${label}: requestDigest must be a 64-char hex digest`);
+	return Object.freeze({
+		schemaVersion: 1 as const,
+		deliveryId: str(rec, "deliveryId", label),
+		channelId: str(rec, "channelId", label),
+		senderPrincipalId: str(rec, "senderPrincipalId", label),
+		recipientPrincipalId: str(rec, "recipientPrincipalId", label),
+		recipientBindingId: str(rec, "recipientBindingId", label),
+		attemptId: str(rec, "attemptId", label),
+		contractRevision,
+		policyEpoch: int(rec, "policyEpoch", label),
+		contextGeneration: int(rec, "contextGeneration", label),
+		payloadRef: parseArtifactRefV1(rec.payloadRef, `${label}.payloadRef`),
+		resourceRefs: Object.freeze(
+			array(rec, "resourceRefs", label).map((entry, index) =>
+				parseResourceSelectorV1(entry, `${label}.resourceRefs[${index}]`),
+			),
+		),
+		domains: authorityDomains(rec.domains, label, "domains"),
+		kind: literal(rec, "kind", KNOWN_DISCLOSURE_KINDS, label),
+		bytes: int(rec, "bytes", label),
+		requestDigest,
+	});
+}
+
+export const KNOWN_DELIVERY_EVENT_KINDS: readonly DeliveryEventKind[] = [
+	"requested",
+	"authorized",
+	"admitted",
+	"rejected",
+	"included",
+	"provider-known",
+	"provider-unknown",
+] as const;
+
+export const DELIVERY_EVENT_KEYS = ["eventId", "deliveryId", "kind", "requestId", "code", "occurredAt"] as const;
+
+export function parseDeliveryEventV1(value: unknown, label = "DeliveryEventV1"): DeliveryEventV1 {
+	const rec = record(value, label);
+	rejectUnknownKeys(rec, DELIVERY_EVENT_KEYS, label);
+	return Object.freeze({
+		eventId: str(rec, "eventId", label),
+		deliveryId: str(rec, "deliveryId", label),
+		kind: literal(rec, "kind", KNOWN_DELIVERY_EVENT_KINDS, label),
+		requestId: nullableStr(rec, "requestId", label),
+		code: nullableStr(rec, "code", label),
+		occurredAt: int(rec, "occurredAt", label),
+	});
 }
 
 export type ContextDeliveryResult =

@@ -33,6 +33,7 @@ import type { LocalProtocolOptions } from "../internal-urls";
 import { callTool } from "../mcp/client";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
+import { OperationalStore } from "../operational/store";
 import type { AgentExecutionProfile } from "../orchestration/agent-execution-profile";
 import {
 	type CollaborationPolicy,
@@ -41,6 +42,7 @@ import {
 	serializeCollaborationPolicy,
 } from "../orchestration/collaboration-policy";
 import type { LifecycleExecutionContext } from "../orchestration/lifecycle-authority";
+import { getLifecycleRegistration } from "../orchestration/lifecycle-authority";
 import type { SubagentModelRoutingDecision } from "../orchestration/subagent-model-routing";
 import { snapshotFromAssignmentFields } from "../orchestration/task-contract";
 import assignmentContractPromptTemplate from "../prompts/system/assignment-contract.md" with { type: "text" };
@@ -55,6 +57,7 @@ import type { AuthStorage } from "../session/auth-storage";
 import type { ClientBridge } from "../session/client-bridge";
 import { type DelegatedIo, delegatedIoToolNames } from "../session/delegated-io";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
+import type { SessionLaunchAuthorityV1 } from "../session/session-entries";
 import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
 import type { ContextFileEntry, ForkContextSnapshot } from "../tools";
@@ -2762,6 +2765,38 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				await awaitAbortable(session.setActiveToolsByName(filteredSubagentTools));
 			}
 
+			// §4.3: a bound child session pins its durable launch authority in
+			// session_init so a cold revive resolves the SAME binding (never a
+			// second admission). The ref fields come from the context's
+			// registration; contextGeneration lives only on the store row, so
+			// it is read back through a short-lived store handle. A bound
+			// context whose row cannot be read fails the spawn rather than
+			// persisting a corrupt pin — never a legacy fallback.
+			let launchAuthorityPin: SessionLaunchAuthorityV1 | undefined;
+			if (options.lifecycle) {
+				const authority = getLifecycleRegistration(options.lifecycle)?.authority;
+				if (authority) {
+					const pinStore = OperationalStore.open();
+					try {
+						const boundRow = pinStore.getLaunchBinding(authority.bindingId);
+						launchAuthorityPin = {
+							schemaVersion: 1,
+							kind: "delegated-child",
+							bindingId: authority.bindingId,
+							principalId: authority.principalId,
+							attemptId: authority.attemptId,
+							contractId: authority.contractId,
+							contractRevision: authority.contractRevision,
+							contractDigest: authority.contractDigest,
+							policyEpoch: authority.policyEpoch,
+							contextGeneration: boundRow.contextGeneration,
+						};
+					} finally {
+						pinStore.close();
+					}
+				}
+			}
+
 			session.sessionManager.appendSessionInit({
 				systemPrompt: session.agent.state.systemPrompt.join("\n\n"),
 				task,
@@ -2774,6 +2809,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				executionProfile,
 				collaborationPolicy: collaborationPolicy ? serializeCollaborationPolicy(collaborationPolicy) : undefined,
 				toolCeiling: toolProfile?.maximum,
+				launchAuthority: launchAuthorityPin,
 			});
 
 			abortSignal.addEventListener(

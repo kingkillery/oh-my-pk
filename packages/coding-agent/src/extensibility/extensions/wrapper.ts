@@ -5,6 +5,7 @@ import type { AgentTool, AgentToolContext, AgentToolUpdateCallback } from "@pk-n
 import type { ImageContent, Static, TextContent, TSchema } from "@pk-nerdsaver-ai/pi-ai";
 import type { Settings } from "../../config/settings";
 import type { Theme } from "../../modes/theme/theme";
+import type { LifecycleToolGuard } from "../../orchestration/lifecycle-tool-guard";
 import { type ApprovalMode, formatApprovalPrompt, requiresApproval } from "../../tools/approval";
 import { normalizeToolEventInput } from "../tool-event-input";
 import { applyToolProxy } from "../tool-proxy";
@@ -88,11 +89,20 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 	declare label: string;
 	declare strict: boolean;
 
+	/**
+	 * Capability guard (W3 source slice). Bound to the registered identity of
+	 * `tool`, so the pre-callback and post-callback checks authorize the same
+	 * capability even if a handler mutates the tool object in between.
+	 */
+	readonly #guard: LifecycleToolGuard | undefined;
+
 	constructor(
 		private tool: AgentTool<TParameters, TDetails>,
 		private runner: ExtensionRunner,
+		guard?: LifecycleToolGuard,
 	) {
 		applyToolProxy(tool, this);
+		this.#guard = guard;
 	}
 
 	/**
@@ -111,6 +121,12 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		onUpdate?: AgentToolUpdateCallback<TDetails, TParameters>,
 		context?: AgentToolContext,
 	) {
+		// 0. Capability authorization, before approval prompts and before any
+		// extension callback can observe or act on this call. A denial here
+		// throws outside the execution try/catch below, so no `tool_result`
+		// handler ever sees it and none can rewrite it into success.
+		this.#guard?.(toolCallId, params);
+
 		// 1. Check approval policy (before extension handlers).
 		// CLI `--auto-approve` / `--yolo` sets approval mode to yolo.
 		// User `tools.approval.<tool>` policies are still applied in all modes.
@@ -201,6 +217,11 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			}
 		}
 
+		// 3. Re-authorize after the callbacks. A `tool_call` handler may have
+		// revoked or narrowed this principal's authority; the recheck stays
+		// outside the try/catch so a revoked call can never reach the tool.
+		this.#guard?.(toolCallId, params);
+
 		// Execute the actual tool
 		let result: { content: any; details?: TDetails };
 		let executionError: Error | undefined;
@@ -256,5 +277,51 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			throw executionError;
 		}
 		return result;
+	}
+}
+
+/**
+ * Capability guard for dispatch paths with no ExtensionRunner attached
+ * (sessions constructed without extensions, host-registered tools, tools
+ * added to the registry after the extension wrap pass). Behaviour is
+ * identical to the guard inside `ExtensionToolWrapper`; with no callbacks
+ * in between, one check is the whole contract.
+ */
+export class LifecycleToolWrapper<TParameters extends TSchema = TSchema, TDetails = unknown>
+	implements AgentTool<TParameters, TDetails>
+{
+	declare name: string;
+	declare description: string;
+	declare parameters: TParameters;
+	declare label: string;
+	declare strict: boolean;
+
+	readonly #tool: AgentTool<TParameters, TDetails>;
+	readonly #guard: LifecycleToolGuard;
+
+	constructor(tool: AgentTool<TParameters, TDetails>, guard: LifecycleToolGuard) {
+		applyToolProxy(tool, this);
+		this.#tool = tool;
+		this.#guard = guard;
+	}
+
+	/**
+	 * Forward browser mode changes when available.
+	 */
+	restartForModeChange(): Promise<void> {
+		const target = this.#tool as { restartForModeChange?: () => Promise<void> };
+		if (!target.restartForModeChange) return Promise.resolve();
+		return target.restartForModeChange();
+	}
+
+	async execute(
+		toolCallId: string,
+		params: Static<TParameters>,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<TDetails, TParameters>,
+		context?: AgentToolContext,
+	) {
+		this.#guard(toolCallId, params);
+		return this.#tool.execute(toolCallId, params, signal, onUpdate, context);
 	}
 }

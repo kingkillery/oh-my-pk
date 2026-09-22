@@ -56,6 +56,8 @@ import type { PrintModeOptions } from "./modes/print-mode";
 import { CURRENT_SETUP_VERSION } from "./modes/setup-version";
 import { initTheme, stopThemeWatcher } from "./modes/theme/theme";
 import type { SubmittedUserInput } from "./modes/types";
+import { DEFAULT_COLLABORATION_POLICY } from "./orchestration/collaboration-policy";
+import { createHostRootExecutionContext } from "./orchestration/lifecycle-authority";
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import {
 	type CreateAgentSessionOptions,
@@ -71,10 +73,17 @@ import { SessionManager } from "./session/session-manager";
 import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
 import { shouldShowStartupSplash } from "./startup-splash";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
+import {
+	type AuthorityEnvelopeV1,
+	canonicalJson,
+	type RuntimePolicySnapshotV1,
+	sha256Hex,
+} from "./task/launch-contract";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { AUTO_THINKING, parseConfiguredThinkingLevel } from "./thinking";
 import type { LspStartupServerInfo } from "./tools";
+import type { ToolCapability } from "./tools/tool-profiles";
 import {
 	getChangelogPath,
 	getNewEntries,
@@ -1306,8 +1315,15 @@ export async function runRootCommand(
 		}
 
 		const createAgentSessionImpl = deps.createAgentSession ?? createAgentSession;
+		const lifecycleEnabled = settingsInstance.get("task.lifecycle.enabled") === true;
 		const createSession = async (options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> => {
 			const result = await logger.time("createAgentSession", createAgentSessionImpl, options);
+			// W3 §14.6: when lifecycle execution is enabled, install the root issuer
+			// context so delegated-child admissions can authenticate against a real
+			// parent authority. The root context lives ONLY in the issuer slot —
+			// never in lifecycleExecutionContext — so the root's own requests stay
+			// on the legacy fail-open path. Flag off ⇒ byte-identical legacy boot.
+			if (lifecycleEnabled) installRootIssuerContext(result.session);
 			// Kick off background model discovery only after createAgentSession finishes its parallel
 			// discovery arms; running these concurrently contends for the event loop and stretches
 			// every parallel arm by ~30ms.
@@ -1526,6 +1542,150 @@ export async function runRootCommand(
 			setProjectDir(sourceCwd);
 		}
 	}
+}
+
+/**
+ * W3 §14.6: mint and install the root issuer context on a freshly created
+ * top-level session.
+ *
+ * The interactive root is NOT a delegated launch class — it gets a principal,
+ * not a binding, and no launch contract is compiled for it. The bootstrap has
+ * no persisted RuntimePolicySnapshotV1/AuthorityEnvelopeV1 to reuse, so this
+ * builds the minimal honest root records:
+ *
+ * - policy: role `root-planner`, topology `hierarchical` (the mode the root
+ *   issues children under when the flag is on), ambient/unconstrained
+ *   execution + tool profiles, the legacy default collaboration policy, an
+ *   apply-only mutation contract, finite-but-generous run limits, and an
+ *   empty content-addressed baseline (the root has no launch baseline — an
+ *   honest empty manifest, not a fabricated snapshot).
+ * - authority envelope: the session's real registered tools as both usable
+ *   and delegable capabilities, no resource grants yet, the default
+ *   collaboration authority, spawn rights covering every launch class (the
+ *   interactive root may spawn any class subject to per-launch admission), a
+ *   `legacy` budget (the honest class for a root with no finite reservation —
+ *   §14.2 reserves `legacy` for trusted compatibility and root policy), and a
+ *   minimal result authority.
+ *
+ * The context is installed ONLY in the session's issuer slot
+ * (`installLifecycleIssuerContext`), never in `lifecycleExecutionContext`, so
+ * the root's own provider requests stay on the legacy fail-open path.
+ */
+function installRootIssuerContext(session: AgentSession): void {
+	const sessionId = session.sessionManager.getSessionId();
+	const tools = session.agent.state.tools;
+	const capabilities: ToolCapability[] = tools.map(tool => ({
+		source: session.getToolSource(tool.name) ?? "builtin",
+		name: tool.name,
+	}));
+	const policy: RuntimePolicySnapshotV1 = Object.freeze({
+		schemaVersion: 1,
+		role: "root-planner",
+		topology: "hierarchical",
+		executionProfile: Object.freeze({
+			tier: "frontier",
+			autonomy: "independent",
+			collaboration: "self-coordinate",
+			workClass: "judgment",
+			editMode: "replace",
+			maxRequests: 0,
+			maxRuntimeMs: 0,
+			modelPool: Object.freeze([]),
+			modelPoolConstrained: false,
+		}),
+		toolProfile: Object.freeze({
+			maximum: Object.freeze(capabilities.map(capability => Object.freeze({ ...capability }))),
+			editMode: "replace",
+			allowDiscovery: true,
+			tier: "frontier",
+			autonomy: "independent",
+			toolsConstrained: false,
+		}),
+		collaborationPolicy: DEFAULT_COLLABORATION_POLICY,
+		mutation: Object.freeze({
+			schemaVersion: 1,
+			apply: true,
+			allowCommit: false,
+			allowPush: false,
+			allowMerge: false,
+			approvalRef: null,
+		}),
+		limits: Object.freeze({
+			schemaVersion: 1,
+			maxNodes: 1024,
+			maxDepth: 8,
+			maxAttemptsPerNode: 4,
+			maxOutstanding: 64,
+			maxActiveCompute: 16,
+			maxRequests: Number.MAX_SAFE_INTEGER,
+			maxRuntimeMs: Number.MAX_SAFE_INTEGER,
+			maxComputeRuntimeMs: Number.MAX_SAFE_INTEGER,
+			maxTokens: null,
+			maxCostMicrounits: null,
+			currency: null,
+			maxHandoffBytes: 1_048_576,
+			maxInboxEvents: 4096,
+		}),
+		baseline: Object.freeze({
+			schemaVersion: 1,
+			manifestHash: sha256Hex(canonicalJson({ schemaVersion: 1, entries: [] })),
+			manifestUri: "snapshot://interactive-root",
+		}),
+		grantRefs: Object.freeze([]),
+		harnessRef: "harness-interactive-root",
+		projectionVersion: 1,
+		environmentRef: "env-interactive-root",
+		isolationLevel: "cooperative-worktree",
+	});
+	const authority: AuthorityEnvelopeV1 = Object.freeze({
+		schemaVersion: 1,
+		usableCapabilities: Object.freeze(capabilities.map(capability => Object.freeze({ ...capability }))),
+		delegableCapabilities: Object.freeze(capabilities.map(capability => Object.freeze({ ...capability }))),
+		resources: Object.freeze([]),
+		collaboration: Object.freeze({
+			policy: DEFAULT_COLLABORATION_POLICY,
+			visiblePrincipalIds: Object.freeze([]),
+			sendPrincipalIds: Object.freeze([]),
+			receivePrincipalIds: Object.freeze([]),
+			wakePrincipalIds: Object.freeze([]),
+			broadcastPrincipalIds: Object.freeze([]),
+			busyReplyPrincipalIds: Object.freeze([]),
+			controlPrincipalIds: Object.freeze([]),
+			delegablePrincipalIds: Object.freeze([]),
+			channelIds: Object.freeze([]),
+		}),
+		spawn: Object.freeze({
+			maySpawn: true,
+			mayDelegateSpawn: true,
+			allowedAgentTypes: Object.freeze(["*"]),
+			allowedLaunchClasses: Object.freeze([
+				"strict-worker",
+				"privileged-helper",
+				"legacy-compatible-worker",
+			] as const),
+			maxDepth: 8,
+			maxChildren: 1024,
+			delegableResourceGrantIds: Object.freeze([]),
+		}),
+		budget: Object.freeze({
+			kind: "legacy" as const,
+			limits: policy.limits,
+			reservation: Object.freeze({ requests: 0, runtimeMs: 0, tokens: null, costMicrounits: null }),
+			zeroMeansUnlimited: true,
+			authorityRef: `principal-root-${sessionId}`,
+		}),
+		result: Object.freeze({
+			outputSchemaRef: null,
+			maxOutputBytes: 1_048_576,
+			requiredCriterionIds: Object.freeze([]),
+			publicationRequired: false,
+			mutation: policy.mutation,
+			publicationGrantIds: Object.freeze([]),
+			acceptedRecipientPrincipalIds: Object.freeze([]),
+		}),
+	});
+	const rootContext = createHostRootExecutionContext({ sessionId, policy, authority });
+	session.installLifecycleIssuerContext(rootContext);
 }
 
 export async function main(args: string[]): Promise<void> {

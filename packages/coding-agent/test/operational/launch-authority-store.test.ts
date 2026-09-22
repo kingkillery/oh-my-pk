@@ -13,12 +13,35 @@ import { describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import { OperationalStore } from "../../src/operational/store";
+import { createHostRootExecutionContext } from "../../src/orchestration/lifecycle-authority";
+import type { LaunchBinding } from "../../src/task/launch-contract";
 import {
 	createTestArtifactRef,
 	createTestCompiledContract,
+	createTestEnvelope,
+	createTestPolicy,
 	createTestRunLimits,
 	createTestRuntimeGuarantees,
 } from "../helpers/lifecycle-fixtures";
+
+/** A registered root issuer whose principal matches the fixture contracts. */
+function testActor() {
+	return createHostRootExecutionContext({
+		sessionId: `actor-${Math.random().toString(36).slice(2)}`,
+		policy: createTestPolicy({ role: "root-planner" }),
+		authority: createTestEnvelope(),
+		rootPrincipalId: "principal-root",
+	});
+}
+
+/** Contract whose parent IS the root principal, so a root actor may issue it. */
+function rootIssuedContract(objective?: string) {
+	return createTestCompiledContract(
+		objective === undefined ? {} : { objective },
+		{},
+		{ issuerPrincipalId: "principal-root", parentPrincipalId: "principal-root" },
+	);
+}
 
 function tempPath(label: string): string {
 	return path.join(os.tmpdir(), `${label}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -275,9 +298,9 @@ describe("launch authority commit protocol (§14.5)", () => {
 		return OperationalStore.open({ dbPath: tempPath(label) });
 	}
 
-	const GUARD = { actor: {} as never, expectedPolicyEpoch: 1, idempotencyKey: "idem-1" };
+	const GUARD = { actor: testActor(), expectedPolicyEpoch: 1, idempotencyKey: "idem-1" };
 
-	function admit(store: OperationalStore, compiled = createTestCompiledContract()) {
+	function admit(store: OperationalStore, compiled = rootIssuedContract()) {
 		return store.admitLaunchAuthority({
 			guard: GUARD,
 			compiled,
@@ -290,7 +313,7 @@ describe("launch authority commit protocol (§14.5)", () => {
 	it("commits authority as authorized, not live", () => {
 		const store = openStore("protocol-admit");
 		try {
-			const compiled = createTestCompiledContract();
+			const compiled = rootIssuedContract();
 			const result = admit(store, compiled);
 			expect(result.ok).toBe(true);
 			if (!result.ok) return;
@@ -313,7 +336,7 @@ describe("launch authority commit protocol (§14.5)", () => {
 	it("replays an identical admission instead of allocating twice", () => {
 		const store = openStore("protocol-replay");
 		try {
-			const compiled = createTestCompiledContract();
+			const compiled = rootIssuedContract();
 			expect(admit(store, compiled).ok).toBe(true);
 			const second = admit(store, compiled);
 			expect(second.ok).toBe(true);
@@ -327,12 +350,12 @@ describe("launch authority commit protocol (§14.5)", () => {
 	it("rejects a different contract on an attempt that is already bound", () => {
 		const store = openStore("protocol-conflict");
 		try {
-			const first = createTestCompiledContract({ objective: "first mission" });
+			const first = rootIssuedContract("first mission");
 			expect(admit(store, first).ok).toBe(true);
 
 			// Same derived attempt id, different contract bytes: a real
 			// conflict, never a silent rebind.
-			const second = createTestCompiledContract({ objective: "second mission" });
+			const second = rootIssuedContract("second mission");
 			const result = admit(store, second);
 			expect(result.ok).toBe(false);
 			if (result.ok) return;
@@ -345,7 +368,7 @@ describe("launch authority commit protocol (§14.5)", () => {
 	it("refuses activation when measured guarantees fall short of the contract", () => {
 		const store = openStore("protocol-shortfall");
 		try {
-			const compiled = createTestCompiledContract();
+			const compiled = rootIssuedContract();
 			expect(admit(store, compiled).ok).toBe(true);
 			const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-attempt-${compiled.contractId}-${compiled.contractRevision}`;
 
@@ -387,7 +410,7 @@ describe("launch authority commit protocol (§14.5)", () => {
 	it("activates when guarantees are met and evidence is supplied", () => {
 		const store = openStore("protocol-activate");
 		try {
-			const compiled = createTestCompiledContract();
+			const compiled = rootIssuedContract();
 			expect(admit(store, compiled).ok).toBe(true);
 			const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-attempt-${compiled.contractId}-${compiled.contractRevision}`;
 			const activation = {
@@ -423,7 +446,7 @@ describe("launch authority commit protocol (§14.5)", () => {
 	it("refuses activation without guarantee evidence", () => {
 		const store = openStore("protocol-evidence");
 		try {
-			const compiled = createTestCompiledContract();
+			const compiled = rootIssuedContract();
 			expect(admit(store, compiled).ok).toBe(true);
 			const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-attempt-${compiled.contractId}-${compiled.contractRevision}`;
 			const result = store.activateLaunchBinding({
@@ -447,11 +470,11 @@ describe("launch authority commit protocol (§14.5)", () => {
 	it("refuses activation under a stale policy epoch", () => {
 		const store = openStore("protocol-stale");
 		try {
-			const compiled = createTestCompiledContract();
+			const compiled = rootIssuedContract();
 			expect(admit(store, compiled).ok).toBe(true);
 			const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-attempt-${compiled.contractId}-${compiled.contractRevision}`;
 			const result = store.activateLaunchBinding({
-				guard: { actor: {} as never, expectedPolicyEpoch: 99, idempotencyKey: "idem-1" },
+				guard: { actor: testActor(), expectedPolicyEpoch: 99, idempotencyKey: "idem-1" },
 				bindingId,
 				expectedState: "authorized",
 				sessionId: "session-1",
@@ -484,29 +507,32 @@ describe("launch authority commit protocol (§14.5)", () => {
 });
 
 describe("launch grant lifecycle (§14.5)", () => {
-	const GUARD = { actor: {} as never, expectedPolicyEpoch: 1, idempotencyKey: "guard-1" };
+	const GUARD = { actor: testActor(), expectedPolicyEpoch: 1, idempotencyKey: "guard-1" };
+	const bindings = new Map<string, LaunchBinding>();
 
 	/** A grant must attach to a real binding; the schema enforces this. */
 	function admitBinding(store: OperationalStore, objective: string): string {
 		const admitted = store.admitLaunchAuthority({
 			guard: GUARD,
-			compiled: createTestCompiledContract({ objective }),
+			compiled: rootIssuedContract(objective),
 			reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
 			lifecycle: null,
 			restoresBindingId: null,
 		});
 		if (!admitted.ok) throw new Error(`binding fixture failed: ${admitted.code}`);
-		// In the authority-only path the envelope's attempt id carries the
-		// binding identity.
-		return admitted.launch.envelope.attemptId;
+		bindings.set(admitted.launch.binding.bindingId, admitted.launch.binding);
+		// The v2 wire names the binding directly.
+		return admitted.launch.binding.bindingId;
 	}
 
 	function grantRequest(overrides: Partial<Parameters<OperationalStore["appendLaunchGrant"]>[0]["request"]> = {}) {
+		const recipientBindingId = overrides.recipientBindingId ?? "binding-1";
+		const binding = bindings.get(recipientBindingId);
 		return {
 			idempotencyKey: "grant-key-1",
-			issuerPrincipalId: "principal-parent",
-			recipientPrincipalId: "principal-child",
-			recipientBindingId: "binding-1",
+			issuerPrincipalId: binding?.parentPrincipalId ?? "principal-parent",
+			recipientPrincipalId: binding?.childPrincipalId ?? "principal-child",
+			recipientBindingId,
 			resource: {
 				kind: "workspace" as const,
 				resourceId: "repo:main",
@@ -519,8 +545,8 @@ describe("launch grant lifecycle (§14.5)", () => {
 			remainingDelegationDepth: 2,
 			domains: ["public-task" as const],
 			sourceGrantIds: [],
-			contractRevision: 1,
-			attemptId: "att-1",
+			contractRevision: binding?.contractRevision ?? 1,
+			attemptId: binding?.attemptId ?? "att-1",
 			expiresAt: null,
 			purpose: "read the worker's own source scope",
 			...overrides,
@@ -541,10 +567,57 @@ describe("launch grant lifecycle (§14.5)", () => {
 			// The persisted canonical JSON must satisfy parseGrantRecordV1;
 			// an issuer/recipient stub or malformed field would throw here.
 			const read = store.getLaunchGrant(issued.grant.grantId);
-			expect(read.issuerPrincipalId).toBe("principal-parent");
-			expect(read.recipientPrincipalId).toBe("principal-child");
+			expect(read.issuerPrincipalId).toBe(store.getLaunchBinding(bindingId).parentPrincipalId);
+			expect(read.recipientPrincipalId).toBe(store.getLaunchBinding(bindingId).childPrincipalId);
 			expect(read.remainingDelegationDepth).toBe(2);
 			expect(read.recordDigest).toBe(issued.grant.recordDigest);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("denies forged, stale, foreign-root, and mismatched grant issuers before writing", () => {
+		const store = OperationalStore.open({ dbPath: tempPath("grant-auth") });
+		try {
+			const bindingId = admitBinding(store, "Grant authentication fixture");
+			const request = grantRequest({ recipientBindingId: bindingId });
+			const forged = store.appendLaunchGrant({
+				guard: { actor: {} as never, expectedPolicyEpoch: 1, idempotencyKey: "forged" },
+				request,
+			});
+			expect(forged).toMatchObject({ ok: false, code: "unauthenticated_actor" });
+
+			const stale = store.appendLaunchGrant({
+				guard: { actor: testActor(), expectedPolicyEpoch: 2, idempotencyKey: "stale" },
+				request,
+			});
+			expect(stale).toMatchObject({ ok: false, code: "stale_launch_authority" });
+
+			const foreignActor = createHostRootExecutionContext({
+				sessionId: "foreign-grant-root",
+				rootPrincipalId: "principal-foreign",
+				policy: createTestPolicy({ role: "root-planner" }),
+				authority: createTestEnvelope(),
+			});
+			const foreign = store.appendLaunchGrant({
+				guard: { actor: foreignActor, expectedPolicyEpoch: 1, idempotencyKey: "foreign" },
+				request,
+			});
+			expect(foreign).toMatchObject({ ok: false, code: "unauthenticated_actor" });
+
+			const mismatched = store.appendLaunchGrant({
+				guard: GUARD,
+				request: { ...request, issuerPrincipalId: "principal-foreign" },
+			});
+			expect(mismatched).toMatchObject({ ok: false, code: "grant_principal_mismatch" });
+
+			const db = new Database(store.dbPath, { readonly: true });
+			try {
+				const row = db.prepare("SELECT COUNT(*) AS n FROM launch_grants").get() as { n: number };
+				expect(row.n).toBe(0);
+			} finally {
+				db.close();
+			}
 		} finally {
 			store.close();
 		}
@@ -698,7 +771,30 @@ describe("launch grant lifecycle (§14.5)", () => {
 			expect([root.ok, mid.ok, leaf.ok]).toEqual([true, true, true]);
 			if (!root.ok || !mid.ok) return;
 
-			store.revokeLaunchGrant({ guard: GUARD, grantId: root.grant.grantId, reason: "root revoked" });
+			const forgedRevocation = store.revokeLaunchGrant({
+				guard: { actor: {} as never, expectedPolicyEpoch: 1, idempotencyKey: "forged-revoke" },
+				grantId: root.grant.grantId,
+				reason: "forged",
+			});
+			expect(forgedRevocation).toMatchObject({ ok: false, code: "unauthenticated_actor" });
+			const revocation = store.revokeLaunchGrant({
+				guard: GUARD,
+				grantId: root.grant.grantId,
+				reason: "root revoked",
+			});
+			expect(revocation).toEqual({ ok: true });
+			const auditDb = new Database(store.dbPath, { readonly: true });
+			try {
+				const event = auditDb
+					.prepare(
+						"SELECT actor_principal_id, record_digest FROM launch_grant_events WHERE grant_id = ? AND kind = 'revoked'",
+					)
+					.get(root.grant.grantId) as { actor_principal_id: string; record_digest: string };
+				expect(event.actor_principal_id).toBe(store.getLaunchBinding(bindingId).parentPrincipalId);
+				expect(event.record_digest).toBe(root.grant.recordDigest);
+			} finally {
+				auditDb.close();
+			}
 
 			// Revoking the ROOT must close the whole chain: a revoked source
 			// must not keep authorising through its children.
@@ -717,7 +813,9 @@ describe("launch grant lifecycle (§14.5)", () => {
 			}
 
 			// Double revocation is a no-op, not an error.
-			store.revokeLaunchGrant({ guard: GUARD, grantId: root.grant.grantId, reason: "again" });
+			expect(store.revokeLaunchGrant({ guard: GUARD, grantId: root.grant.grantId, reason: "again" })).toEqual({
+				ok: true,
+			});
 		} finally {
 			store.close();
 		}
@@ -736,19 +834,19 @@ describe("launch grant lifecycle (§14.5)", () => {
 });
 
 describe("launch delivery admission (§14.5)", () => {
-	const GUARD = { actor: {} as never, expectedPolicyEpoch: 1, idempotencyKey: "guard-1" };
+	const GUARD = { actor: testActor(), expectedPolicyEpoch: 1, idempotencyKey: "guard-1" };
 
 	function seedChannelFixture(label: string, maxMessageBytes = 2000, maxTotalBytes = 4000, maxMessages = 2) {
 		const store = OperationalStore.open({ dbPath: tempPath(label) });
 		const admitted = store.admitLaunchAuthority({
 			guard: GUARD,
-			compiled: createTestCompiledContract({ objective: `Delivery fixture ${label}` }),
+			compiled: rootIssuedContract(`Delivery fixture ${label}`),
 			reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
 			lifecycle: null,
 			restoresBindingId: null,
 		});
 		if (!admitted.ok) throw new Error(`fixture failed: ${admitted.code}`);
-		const bindingId = admitted.launch.envelope.attemptId;
+		const bindingId = admitted.launch.binding.bindingId;
 		return { store, bindingId, limits: { maxMessageBytes, maxTotalBytes, maxMessages } };
 	}
 
@@ -777,7 +875,15 @@ describe("launch delivery admission (§14.5)", () => {
 		bytes: number,
 		limits: { maxMessageBytes: number; maxTotalBytes: number; maxMessages: number },
 		overrides: Record<string, unknown> = {},
+		guard: Parameters<OperationalStore["admitLaunchDelivery"]>[0]["guard"] = GUARD,
 	) {
+		let binding: LaunchBinding | null = null;
+		try {
+			binding = store.getLaunchBinding(bindingId);
+		} catch {
+			// Unknown-binding cases intentionally exercise the store's typed denial.
+		}
+		const { senderPrincipalId, ...requestOverrides } = overrides;
 		// Seed the pinned channel row directly: channel pinning belongs to the
 		// compiler's initial-channel generation (W3); here we exercise the
 		// admission transaction against its recorded limits.
@@ -790,9 +896,18 @@ describe("launch delivery admission (§14.5)", () => {
 		);
 		db.close();
 		return store.admitLaunchDelivery({
-			guard: GUARD,
-			request: deliveryRequest(bindingId, deliveryId, { channelId, ...overrides }),
-			senderPrincipalId: "principal-parent",
+			guard,
+			request: deliveryRequest(bindingId, deliveryId, {
+				expectedPolicyEpoch: binding?.policyEpoch ?? 1,
+				attemptId: binding?.attemptId ?? "att-d",
+				contractRevision: binding?.contractRevision ?? 1,
+				channelId,
+				...requestOverrides,
+			}),
+			senderPrincipalId:
+				typeof senderPrincipalId === "string"
+					? senderPrincipalId
+					: (binding?.parentPrincipalId ?? "principal-root"),
 			bytes,
 		});
 	}
@@ -823,6 +938,83 @@ describe("launch delivery admission (§14.5)", () => {
 			expect(channel.consumed_bytes).toBe(500);
 			expect(channel.consumed_messages).toBe(1);
 			expect(inbox.n).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("denies forged, stale, foreign-root, and wrong-sender deliveries before disclosure", () => {
+		const { store, bindingId, limits } = seedChannelFixture("delivery-auth");
+		try {
+			const forged = admitDelivery(
+				store,
+				bindingId,
+				"d-forged",
+				100,
+				limits,
+				{},
+				{
+					actor: {} as never,
+					expectedPolicyEpoch: 1,
+					idempotencyKey: "forged-delivery",
+				},
+			);
+			expect(forged).toMatchObject({ ok: false, code: "unauthenticated_actor" });
+
+			const stale = admitDelivery(
+				store,
+				bindingId,
+				"d-stale",
+				100,
+				limits,
+				{},
+				{
+					actor: testActor(),
+					expectedPolicyEpoch: 2,
+					idempotencyKey: "stale-delivery",
+				},
+			);
+			expect(stale).toMatchObject({ ok: false, code: "stale_launch_authority" });
+
+			const foreignActor = createHostRootExecutionContext({
+				sessionId: "foreign-delivery-root",
+				rootPrincipalId: "principal-foreign",
+				policy: createTestPolicy({ role: "root-planner" }),
+				authority: createTestEnvelope(),
+			});
+			const foreign = admitDelivery(
+				store,
+				bindingId,
+				"d-foreign",
+				100,
+				limits,
+				{},
+				{
+					actor: foreignActor,
+					expectedPolicyEpoch: 1,
+					idempotencyKey: "foreign-delivery",
+				},
+			);
+			expect(foreign).toMatchObject({ ok: false, code: "unauthenticated_actor" });
+
+			const wrongSender = admitDelivery(store, bindingId, "d-wrong-sender", 100, limits, {
+				senderPrincipalId: "principal-foreign",
+			});
+			expect(wrongSender).toMatchObject({ ok: false, code: "delivery_sender_mismatch" });
+
+			const db = new Database(store.dbPath, { readonly: true });
+			try {
+				const deliveries = db.prepare("SELECT COUNT(*) AS n FROM launch_deliveries").get() as { n: number };
+				const inbox = db.prepare("SELECT COUNT(*) AS n FROM launch_context_inbox").get() as { n: number };
+				const channel = db
+					.prepare("SELECT consumed_bytes, consumed_messages FROM launch_channels WHERE channel_id = 'chan-1'")
+					.get() as { consumed_bytes: number; consumed_messages: number };
+				expect(deliveries.n).toBe(0);
+				expect(inbox.n).toBe(0);
+				expect(channel).toEqual({ consumed_bytes: 0, consumed_messages: 0 });
+			} finally {
+				db.close();
+			}
 		} finally {
 			store.close();
 		}
@@ -899,13 +1091,30 @@ describe("launch delivery admission (§14.5)", () => {
 		try {
 			expect(admitDelivery(store, bindingId, "d-1", 500, limits).ok).toBe(true);
 			// A provider timeout must not undo the admission or the debit.
-			store.recordLaunchProviderOutcome({
+			const forged = store.recordLaunchProviderOutcome({
+				guard: { actor: {} as never, expectedPolicyEpoch: 1, idempotencyKey: "forged-provider" },
+				bindingId,
+				deliveryId: "d-1",
+				requestId: "req-forged",
+				outcome: "provider-unknown",
+			});
+			expect(forged).toMatchObject({ ok: false, code: "unauthenticated_actor" });
+			const stale = store.recordLaunchProviderOutcome({
+				guard: { actor: testActor(), expectedPolicyEpoch: 2, idempotencyKey: "stale-provider" },
+				bindingId,
+				deliveryId: "d-1",
+				requestId: "req-stale",
+				outcome: "provider-unknown",
+			});
+			expect(stale).toMatchObject({ ok: false, code: "stale_launch_authority" });
+			const recorded = store.recordLaunchProviderOutcome({
 				guard: GUARD,
 				bindingId,
 				deliveryId: "d-1",
 				requestId: "req-77",
 				outcome: "provider-unknown",
 			});
+			expect(recorded).toEqual({ ok: true });
 			const db = new Database(store.dbPath, { readonly: true });
 			const events = db
 				.prepare("SELECT kind FROM launch_delivery_events WHERE delivery_id = 'd-1' ORDER BY occurred_at")
@@ -964,4 +1173,202 @@ describe("launch authority under cross-process contention (§14.5)", () => {
 		expect(summary.allocations).toBe(1);
 		expect(summary.conflicts).toBe(3);
 	}, 90_000);
+});
+
+describe("launch authority actor authentication (§14.5)", () => {
+	function openStore(label: string): OperationalStore {
+		return OperationalStore.open({ dbPath: tempPath(label) });
+	}
+
+	it("refuses a forged actor that is not a registered lifecycle context", () => {
+		const store = openStore("forged-actor");
+		try {
+			const result = store.admitLaunchAuthority({
+				guard: { actor: {} as never, expectedPolicyEpoch: 1, idempotencyKey: "idem-1" },
+				compiled: rootIssuedContract(),
+				reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
+				lifecycle: null,
+				restoresBindingId: null,
+			});
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			expect(result.code).toBe("unauthenticated_actor");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refuses a root actor whose principal does not match the contract lineage", () => {
+		const store = openStore("wrong-root");
+		try {
+			const result = store.admitLaunchAuthority({
+				guard: { actor: testActor(), expectedPolicyEpoch: 1, idempotencyKey: "idem-1" },
+				// Default fixture lineage: parent 'principal-parent' ≠ actor's root.
+				compiled: createTestCompiledContract(),
+				reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
+				lifecycle: null,
+				restoresBindingId: null,
+			});
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			expect(result.code).toBe("unauthenticated_actor");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refuses a tampered contract digest before any row is written", () => {
+		const store = openStore("tampered-digest");
+		try {
+			const compiled = rootIssuedContract();
+			const tampered = { ...compiled, contractDigest: "0".repeat(64) };
+			const result = store.admitLaunchAuthority({
+				guard: { actor: testActor(), expectedPolicyEpoch: 1, idempotencyKey: "idem-1" },
+				compiled: tampered,
+				reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
+				lifecycle: null,
+				restoresBindingId: null,
+			});
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			expect(result.code).toBe("digest_mismatch");
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("terminateLaunchBinding (§14.5)", () => {
+	function openStore(label: string): OperationalStore {
+		return OperationalStore.open({ dbPath: tempPath(label) });
+	}
+
+	function seedBinding(store: OperationalStore) {
+		const guard = { actor: testActor(), expectedPolicyEpoch: 1, idempotencyKey: "idem-1" };
+		const compiled = rootIssuedContract();
+		const admitted = store.admitLaunchAuthority({
+			guard,
+			compiled,
+			reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
+			lifecycle: null,
+			restoresBindingId: null,
+		});
+		if (!admitted.ok) throw new Error(`fixture failed: ${admitted.code}`);
+		return { guard, bindingId: admitted.launch.binding.bindingId };
+	}
+
+	it("terminalizes an authorized binding and bumps its policy epoch", () => {
+		const store = openStore("terminate");
+		try {
+			const { guard, bindingId } = seedBinding(store);
+			const before = store.getLaunchBinding(bindingId);
+			const result = store.terminateLaunchBinding({
+				guard,
+				bindingId,
+				targetState: "failed",
+				reason: "activation refused",
+			});
+			expect(result.ok).toBe(true);
+			const after = store.getLaunchBinding(bindingId);
+			expect(after.state).toBe("failed");
+			expect(after.policyEpoch).toBe(before.policyEpoch + 1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("replays termination idempotently on an already-terminal binding", () => {
+		const store = openStore("terminate-replay");
+		try {
+			const { guard, bindingId } = seedBinding(store);
+			expect(store.terminateLaunchBinding({ guard, bindingId, targetState: "failed", reason: "r" }).ok).toBe(true);
+			const second = store.terminateLaunchBinding({ guard, bindingId, targetState: "revoked", reason: "r2" });
+			expect(second.ok).toBe(true);
+			expect(store.getLaunchBinding(bindingId).state).toBe("failed");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("releases a real lifecycle reservation exactly once", () => {
+		const store = openStore("terminate-reservation");
+		try {
+			const actor = testActor();
+			const compiled = rootIssuedContract("Reservation conservation fixture");
+			const created = store.createLifecycleRun(
+				"run-reservation-conservation",
+				compiled,
+				createTestRunLimits(),
+				"reservation-conservation",
+			);
+			expect(created.ok).toBe(true);
+			if (!created.ok) return;
+			const binding = created.launch.binding;
+			expect(binding.reservationId).not.toBeNull();
+			if (!binding.reservationId) return;
+			const db = new Database(store.dbPath, { readonly: true });
+			try {
+				const before = db
+					.prepare("SELECT active_compute FROM lifecycle_reservations WHERE reservation_id = ?")
+					.get(binding.reservationId) as { active_compute: number };
+				expect(before.active_compute).toBe(1);
+
+				const guard = { actor, expectedPolicyEpoch: 1, idempotencyKey: "terminate-reservation" };
+				expect(
+					store.terminateLaunchBinding({
+						guard,
+						bindingId: binding.bindingId,
+						targetState: "failed",
+						reason: "attempt failed before activation",
+					}).ok,
+				).toBe(true);
+				const afterFirst = db
+					.prepare("SELECT active_compute FROM lifecycle_reservations WHERE reservation_id = ?")
+					.get(binding.reservationId) as { active_compute: number };
+				expect(afterFirst.active_compute).toBe(0);
+
+				expect(
+					store.terminateLaunchBinding({
+						guard,
+						bindingId: binding.bindingId,
+						targetState: "revoked",
+						reason: "idempotent replay",
+					}).ok,
+				).toBe(true);
+				const afterReplay = db
+					.prepare("SELECT active_compute FROM lifecycle_reservations WHERE reservation_id = ?")
+					.get(binding.reservationId) as { active_compute: number };
+				expect(afterReplay.active_compute).toBe(0);
+			} finally {
+				db.close();
+			}
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refuses termination by an actor outside the binding lineage", () => {
+		const store = openStore("terminate-forged");
+		try {
+			const { bindingId } = seedBinding(store);
+			const outsider = createHostRootExecutionContext({
+				sessionId: "outsider",
+				policy: createTestPolicy({ role: "root-planner" }),
+				authority: createTestEnvelope(),
+				rootPrincipalId: "principal-outsider",
+			});
+			const result = store.terminateLaunchBinding({
+				guard: { actor: outsider, expectedPolicyEpoch: 1, idempotencyKey: "idem-x" },
+				bindingId,
+				targetState: "revoked",
+				reason: "hostile",
+			});
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			expect(result.code).toBe("unauthenticated_actor");
+			expect(store.getLaunchBinding(bindingId).state).toBe("authorized");
+		} finally {
+			store.close();
+		}
+	});
 });

@@ -156,6 +156,34 @@ describe("AgentSession MCP discovery", () => {
 		}
 	});
 
+	it("tracks source provenance across MCP and RPC registry replacement and deletion", async () => {
+		const readTool = createBasicTool("read", "Read");
+		const session = new AgentSession({
+			agent: new Agent({ initialState: { model: createModel(), tools: [readTool], messages: [] } }),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "mcp.discoveryMode": true }),
+			modelRegistry: {} as never,
+			toolRegistry: new Map([[readTool.name, readTool]]),
+			toolSources: new Map([["read", "builtin"]]),
+			rebuildSystemPrompt: async () => ({ systemPrompt: ["test"] }),
+		});
+		sessions.push(session);
+		expect(session.getToolSource("read")).toBe("builtin");
+		await session.refreshMCPTools([
+			createMcpCustomTool("mcp__docs_search", "docs", "search", "Search docs", ["query"]),
+		]);
+		expect(session.getToolSource("mcp__docs_search")).toBe("mcp");
+		await session.refreshMCPTools([]);
+		expect(session.getToolSource("mcp__docs_search")).toBeUndefined();
+		expect(session.getToolByName("mcp__docs_search")).toBeUndefined();
+		await session.refreshRpcHostTools([createBasicTool("mcp__docs_search", "RPC search")]);
+		expect(session.getToolSource("mcp__docs_search")).toBe("custom");
+		await session.refreshRpcHostTools([]);
+		expect(session.getToolSource("mcp__docs_search")).toBeUndefined();
+		expect(session.getToolByName("mcp__docs_search")).toBeUndefined();
+		expect(session.getToolSource("read")).toBe("builtin");
+	});
+
 	it("caches discoverable MCP search indexes until MCP tools refresh", async () => {
 		const readTool = createBasicTool("read", "Read");
 		const docsSearchTool = createMcpTool("mcp__docs_search", "docs", "search", "Search internal docs", ["query"]);

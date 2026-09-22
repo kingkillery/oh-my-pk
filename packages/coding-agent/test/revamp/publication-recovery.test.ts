@@ -4,7 +4,11 @@ import * as path from "node:path";
 import { schedulerTick } from "../../src/operational/lifecycle-scheduler";
 import { OperationalStore } from "../../src/operational/store";
 import { prepareLifecycleLaunch } from "../../src/task/launch-admission";
-import type { RuntimePolicySnapshotV1 } from "../../src/task/launch-contract";
+import {
+	type LaunchAuthorityRefV1,
+	launchAuthorityRefFor,
+	type RuntimePolicySnapshotV1,
+} from "../../src/task/launch-contract";
 import { createSpawnPlan } from "../../src/task/spawn-plan";
 import {
 	createTestAuthorizationSnapshot,
@@ -61,13 +65,11 @@ describe("Acceptance 6 — declared confinement", () => {
 					authorization: createTestAuthorizationSnapshot(),
 					requiredInputIds: [],
 				},
-				ownerNodeId: null,
-				runId: "run-1",
+				owner: null,
 				idempotencyKey: "key-confined",
 				reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
 				prerequisiteIds: [],
-				expectedPlanVersion: 1,
-				expectedCancellationGeneration: 0,
+				services: { confinedBackend: null },
 			});
 			expect(result.ok).toBe(false);
 			if (!result.ok) expect(result.diagnostics[0]?.code).toBe("required_isolation_unavailable");
@@ -86,18 +88,24 @@ describe("Acceptance 12/13 — durable delivery and stale attempts", () => {
 		const compiled = createTestCompiledContract({ objective: "Recovery fixture" }, { limits: RECOVERY_LIMITS });
 		const first = OperationalStore.open({ dbPath });
 		let attemptId = "";
+		// Captured from the durable binding the run admission persisted, so the
+		// reopened process fences against the real authority rather than a
+		// literal restated in the test.
+		let launchAuthority: LaunchAuthorityRefV1 | null = null;
 		try {
 			const created = first.createLifecycleRun("run-1", compiled, RECOVERY_LIMITS, "key-root");
 			if (!created.ok) throw new Error(`fixture run failed: ${created.code}`);
-			attemptId = created.launch.envelope.attemptId;
+			const rootBinding = created.launch.binding;
+			attemptId = rootBinding.attemptId;
+			launchAuthority = launchAuthorityRefFor(rootBinding);
 			const fence = {
 				runId: "run-1",
-				nodeId: created.launch.envelope.nodeId,
+				nodeId: rootBinding.lifecycle?.nodeId ?? "",
 				attemptId,
 				leaseOwner: "owner-1",
 				leaseEpoch: 1,
 				cancellationGeneration: 0,
-				contractVersion: 1,
+				launchAuthority,
 			};
 			const settled = first.settleLifecycleAttempt({
 				fence,
@@ -145,7 +153,7 @@ describe("Acceptance 12/13 — durable delivery and stale attempts", () => {
 					leaseOwner: "owner-1",
 					leaseEpoch: 99,
 					cancellationGeneration: 0,
-					contractVersion: 1,
+					launchAuthority: launchAuthority!,
 				},
 				idempotencyKey: "settle-stale",
 				handoff: {
@@ -159,7 +167,7 @@ describe("Acceptance 12/13 — durable delivery and stale attempts", () => {
 						leaseOwner: "owner-1",
 						leaseEpoch: 99,
 						cancellationGeneration: 0,
-						contractVersion: 1,
+						launchAuthority: launchAuthority!,
 					},
 					ownerNodeId: "run-1-root",
 					targetNodeId: null,

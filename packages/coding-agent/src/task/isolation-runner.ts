@@ -26,12 +26,14 @@ export {
 
 import * as path from "node:path";
 import type * as natives from "@pk-nerdsaver-ai/pi-natives";
+import { getLifecycleRegistration } from "../orchestration/lifecycle-authority";
 import type { ToolSession } from "../tools";
 import { generateCommitMessage } from "../utils/commit-message-generator";
 import * as git from "../utils/git";
 import type { ExecutorOptions } from "./executor";
 import { runSubprocess } from "./executor";
-import { captureLifecycleArtifacts } from "./lifecycle-capture";
+import type { LaunchAuthorityRefV1 } from "./launch-contract";
+import { type CleanupPermitHandle, captureLifecycleArtifacts, mintCleanupPermit } from "./lifecycle-capture";
 import type { SingleResult } from "./types";
 import {
 	applyNestedPatches,
@@ -40,6 +42,7 @@ import {
 	cleanupIsolation,
 	cleanupTaskBranches,
 	commitToBranch,
+	type DeltaPatchResult,
 	ensureIsolation,
 	getRepoRoot,
 	type IsolationHandle,
@@ -129,7 +132,12 @@ export interface IsolatedRunOptions {
 		readonly runId: string;
 		readonly nodeId: string;
 		readonly attemptId: string;
-		readonly contractVersion: number;
+		/**
+		 * Persisted binding the attempt runs under. Naming the authority is
+		 * mandatory for captured evidence: a contract revision integer could
+		 * not say WHICH binding admitted the writer.
+		 */
+		readonly launchAuthority: LaunchAuthorityRefV1;
 	};
 }
 
@@ -151,25 +159,56 @@ export interface IsolatedRunOptions {
  */
 export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<SingleResult> {
 	let handle: IsolationHandle | undefined;
+	let quarantined = false;
+	let permitHandle: CleanupPermitHandle | null = null;
+	let effectiveLifecycle = opts.lifecycle;
 	try {
 		const taskBaseline = structuredClone(opts.context.baseline);
 		handle = await ensureIsolation(opts.context.repoRoot, opts.agentId, opts.preferredBackend);
 		const isolationDir = handle.mergedDir;
-		const recordLifecycleManifest = async (current: SingleResult): Promise<void> => {
-			if (!opts.lifecycle || !handle) return;
+
+		if (!effectiveLifecycle && opts.baseOptions?.lifecycle) {
+			const reg = getLifecycleRegistration(opts.baseOptions.lifecycle);
+			if (reg?.runId && reg.nodeId && reg.attemptId && reg.authority) {
+				effectiveLifecycle = {
+					runId: reg.runId,
+					nodeId: reg.nodeId,
+					attemptId: reg.attemptId,
+					launchAuthority: reg.authority,
+				};
+			}
+		}
+
+		if (effectiveLifecycle && handle) {
+			permitHandle = mintCleanupPermit({
+				attemptId: effectiveLifecycle.attemptId,
+				workspaceRoot: path.dirname(handle.mergedDir),
+				artifactRoot: opts.artifactsDir,
+				deadlineMs: 60_000,
+			});
+		}
+
+		const recordLifecycleManifest = async (current: SingleResult, delta?: DeltaPatchResult): Promise<void> => {
+			if (!effectiveLifecycle || !handle) return;
 			try {
-				await captureLifecycleArtifacts({
-					runId: opts.lifecycle.runId,
-					nodeId: opts.lifecycle.nodeId,
-					attemptId: opts.lifecycle.attemptId,
-					contractVersion: opts.lifecycle.contractVersion,
+				const captureRes = await captureLifecycleArtifacts({
+					runId: effectiveLifecycle.runId,
+					nodeId: effectiveLifecycle.nodeId,
+					attemptId: effectiveLifecycle.attemptId,
+					launchAuthority: effectiveLifecycle.launchAuthority,
 					baseline: taskBaseline,
 					isolation: handle,
 					result: current,
 					artifactRoot: opts.artifactsDir,
+					artifactManager: opts.baseOptions?.parentArtifactManager ?? null,
+					permit: permitHandle?.permit,
+					delta,
 				});
+				if (!captureRes.ok) {
+					quarantined = true;
+				}
 			} catch {
-				// Best-effort: lifecycle manifest failure must never mask the run result.
+				quarantined = true;
 			}
 		};
 		let result = await runSubprocess({
@@ -199,7 +238,9 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 				const branchName = `omp/task/${opts.agentId}`;
 				await git.branch.tryDelete(opts.context.repoRoot, branchName);
 				const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-				return { ...result, error: `Merge failed: ${msg}` };
+				const failed = { ...result, error: `Merge failed: ${msg}` };
+				await recordLifecycleManifest(failed);
+				return failed;
 			}
 		}
 		if (result.exitCode === 0) {
@@ -212,11 +253,13 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 					patchPath,
 					nestedPatches: delta.nestedPatches,
 				};
-				await recordLifecycleManifest(completed);
+				await recordLifecycleManifest(completed, delta);
 				return completed;
 			} catch (patchErr) {
 				const msg = patchErr instanceof Error ? patchErr.message : String(patchErr);
-				return { ...result, error: `Patch capture failed: ${msg}` };
+				const failed = { ...result, error: `Patch capture failed: ${msg}` };
+				await recordLifecycleManifest(failed);
+				return failed;
 			}
 		}
 		if (result.aborted || result.exitCode !== 0) {
@@ -227,16 +270,24 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 					await Bun.write(partialPath, delta.rootPatch);
 					result = { ...result, patchPath: partialPath };
 				}
+				await recordLifecycleManifest(result, delta);
+				return result;
 			} catch {
-				// Best-effort: a capture failure must never mask the original run failure.
+				// Delta failed; still try the durable manifest so cleanup stays ack-gated.
+				await recordLifecycleManifest(result);
 			}
 		}
 		await recordLifecycleManifest(result);
 		return result;
 	} catch (err) {
+		// A rejected subprocess bypasses the local result/capture branches.
+		// If this was a bound lifecycle child, keep the workspace rather than
+		// claiming its capture was acknowledged; recovery can inspect it.
+		if (effectiveLifecycle && handle) quarantined = true;
 		return opts.buildFailureResult(err);
 	} finally {
-		if (handle) {
+		permitHandle?.dispose();
+		if (handle && !quarantined) {
 			await cleanupIsolation(handle);
 		}
 	}

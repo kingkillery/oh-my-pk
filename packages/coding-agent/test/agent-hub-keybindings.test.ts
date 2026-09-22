@@ -31,6 +31,7 @@ function createTestAgent(overrides: Partial<AgentRef> = {}): AgentRef {
 		session: null,
 		sessionFile: null,
 		createdAt: Date.now(),
+		collaborationScopeId: "test-scope",
 		lastActivity: Date.now(),
 		...overrides,
 	};

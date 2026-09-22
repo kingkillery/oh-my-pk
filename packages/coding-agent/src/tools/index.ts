@@ -22,7 +22,7 @@ import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { JobExecutorContext } from "../operational/runner";
-import type { LifecycleExecutionContext } from "../orchestration/lifecycle-authority";
+import type { LifecycleExecutionContext, RootExecutionContext } from "../orchestration/lifecycle-authority";
 import type { PlanModeState } from "../plan-mode/state";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
@@ -258,6 +258,19 @@ export interface ToolSession {
 	 * side effects.
 	 */
 	getLifecycleExecutionContext?: () => LifecycleExecutionContext | undefined;
+	/**
+	 * Host-registered issuer context for delegated-child admissions (W3 §14.6).
+	 * Distinct from getLifecycleExecutionContext: a bound child session returns
+	 * its own bound context (it issues further children under it); a root
+	 * session returns the root-branded context installed at bootstrap. Absent
+	 * preserves the legacy spawn path — callers MUST treat `undefined` as
+	 * "no lifecycle admission", never as fail-closed.
+	 *
+	 * A RootExecutionContext is an issuer identity only: it must never be
+	 * installed as a session's lifecycleExecutionContext (the root is unbound
+	 * for its own requests).
+	 */
+	getLifecycleIssuerContext?: () => LifecycleExecutionContext | RootExecutionContext | undefined;
 	nativeTaskExecution?: JobExecutorContext;
 	/** Get shared eval executor session ID. Subagents inherit this to share JS/Python/Ruby/Julia state. */
 	getEvalSessionId?: () => string | null;
@@ -281,6 +294,8 @@ export interface ToolSession {
 	getForkContext?: () => ForkContextSnapshot | undefined;
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
 	getToolByName?: (name: string) => AgentTool | undefined;
+	/** Host-recorded provenance of the current registry entry; never inferred from its name. */
+	getToolSource?: (name: string) => ToolSource | undefined;
 	/** Agent registry for IRC routing across live sessions. */
 	agentRegistry?: AgentRegistry;
 	/** Cross-process IRC transport for this process. */

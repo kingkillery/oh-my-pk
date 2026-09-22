@@ -5,8 +5,9 @@ import * as path from "node:path";
 import type { AgentToolContext } from "@pk-nerdsaver-ai/pi-agent-core";
 import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
 import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { createAgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
+import { createAgentSession, discoverAuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/sdk";
 import type { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
+import type { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries, Snowflake } from "@pk-nerdsaver-ai/pi-utils";
 
@@ -35,17 +36,26 @@ describe("tools.approvalMode setting", () => {
 	// settings per assertion. This avoids paying createAgentSession's cost (model registry,
 	// auth-storage discovery, settings init) nine times over.
 	let tempDir: string;
-	let session: AgentSession;
+	let session: AgentSession | undefined;
+	// Fixture-owned auth storage. createAgentSession's default discovery opens
+	// agent.db under agentDir but never closes it on the success path (the SDK
+	// only closes internally-created storage when construction fails), leaving a
+	// SQLite handle that keeps tempDir EBUSY-locked on Windows. Passing an
+	// explicit instance transfers ownership to this fixture so afterAll can
+	// close it before removing the directory.
+	let authStorage: AuthStorage | undefined;
 
 	beforeAll(async () => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-approval-mode-${Snowflake.next()}-`));
 		const cwd = path.join(tempDir, "cwd");
 		fs.mkdirSync(cwd, { recursive: true });
 		const sessionManager = SessionManager.create(cwd, path.join(tempDir, "sessions"));
+		authStorage = await discoverAuthStorage(tempDir);
 		const created = await createAgentSession({
 			cwd,
 			agentDir: tempDir,
 			sessionManager,
+			authStorage,
 			settings: Settings.isolated(BASE_SETTINGS),
 			model: getBundledModel("openai", "gpt-4o-mini"),
 			disableExtensionDiscovery: true,
@@ -62,7 +72,10 @@ describe("tools.approvalMode setting", () => {
 	});
 
 	afterAll(async () => {
-		await session.dispose();
+		await session?.dispose();
+		// Release the fixture-owned SQLite handle before deleting tempDir; the
+		// session only unsubscribes its credential listener during dispose.
+		authStorage?.close();
 		// Windows can briefly hold tempdir handles after session.dispose(); retry a few times.
 		for (let attempt = 0; attempt < 5; attempt++) {
 			try {
@@ -71,10 +84,11 @@ describe("tools.approvalMode setting", () => {
 			} catch (err) {
 				const code = (err as NodeJS.ErrnoException).code;
 				if (code !== "EBUSY" && code !== "ENOTEMPTY" && code !== "EPERM") throw err;
-				if (attempt === 4) break; // best-effort: OS will reclaim
+				if (attempt === 4) throw err;
 				await Bun.sleep(50 * (attempt + 1));
 			}
 		}
+		expect(fs.existsSync(tempDir)).toBe(false);
 	});
 
 	function approvalSettings(extraSettings: Record<string, unknown> = {}): Settings {
@@ -82,7 +96,7 @@ describe("tools.approvalMode setting", () => {
 	}
 
 	function bashTool() {
-		const bash = session.getToolByName("bash");
+		const bash = session?.getToolByName("bash");
 		if (!bash) throw new Error("Expected bash tool");
 		return bash;
 	}
@@ -188,6 +202,6 @@ describe("tools.approvalMode setting", () => {
 		// any non-yolo approval mode setting would be a no-op without feedback. The
 		// fix is to construct the runner unconditionally; this test makes that contract explicit so
 		// a future change to make the runner optional again cannot silently re-open the hole.
-		expect(session.extensionRunner).toBeDefined();
+		expect(session!.extensionRunner).toBeDefined();
 	});
 });

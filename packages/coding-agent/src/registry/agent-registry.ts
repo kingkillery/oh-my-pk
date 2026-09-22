@@ -46,6 +46,8 @@ export interface AgentRef {
 	session: AgentSession | null;
 	sessionFile: string | null;
 	/** Collaboration authorization used for agent-facing roster and IRC filtering. */
+	/** Opaque root-session boundary. IRC never crosses this scope. */
+	collaborationScopeId: string;
 	collaborationPolicy?: CollaborationPolicy;
 	createdAt: number;
 	lastActivity: number;
@@ -77,6 +79,8 @@ export interface RegisterInput {
 	status?: AgentStatus;
 	color?: string;
 	cwd?: string;
+	/** Explicit scope handoff for an already-authorized child/runtime. */
+	collaborationScopeId?: string;
 	collaborationPolicy?: CollaborationPolicy;
 }
 
@@ -97,6 +101,26 @@ export class AgentRegistry {
 
 	readonly #refs = new Map<string, AgentRef>();
 	readonly #listeners = new Set<RegistryListener>();
+	readonly #defaultCollaborationScopeId = crypto.randomUUID();
+
+	#resolveCollaborationScope(input: RegisterInput): string {
+		const explicit = input.collaborationScopeId?.trim();
+		if (explicit) return explicit;
+
+		const existing = this.#refs.get(input.id);
+		if (existing) return existing.collaborationScopeId;
+
+		if (input.parentId) {
+			const parent = this.#refs.get(input.parentId);
+			if (parent) return parent.collaborationScopeId;
+		}
+
+		if (input.kind !== "main") return this.#defaultCollaborationScopeId;
+		const primaryMainExists = [...this.#refs.values()].some(
+			ref => ref.kind === "main" && ref.collaborationScopeId === this.#defaultCollaborationScopeId,
+		);
+		return primaryMainExists ? crypto.randomUUID() : this.#defaultCollaborationScopeId;
+	}
 
 	register(input: RegisterInput): AgentRef {
 		const now = Date.now();
@@ -109,6 +133,7 @@ export class AgentRegistry {
 			color: input.color,
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
+			collaborationScopeId: this.#resolveCollaborationScope(input),
 			collaborationPolicy: input.collaborationPolicy ?? sessionCollaborationPolicy(input.session),
 			createdAt: now,
 			lastActivity: now,
@@ -212,15 +237,43 @@ export class AgentRegistry {
 		return this.#refs.get(id);
 	}
 
-	/** List raw refs for process-internal observability, or policy-filtered peers for a viewer. */
+	/** List raw refs for process-internal observability, or scope- and policy-filtered peers for a viewer. */
 	list(viewerId?: string): AgentRef[] {
 		const refs = [...this.#refs.values()];
 		if (!viewerId) return refs;
 		const viewer = this.#refs.get(viewerId);
-		const policy = viewer?.collaborationPolicy ?? sessionCollaborationPolicy(viewer?.session);
+		if (!viewer) return [];
+		const policy = viewer.collaborationPolicy ?? sessionCollaborationPolicy(viewer.session);
 		return refs.filter(
-			ref => ref.id !== viewerId && ref.kind !== "advisor" && canDiscoverPeer(policy, viewerId, ref.id),
+			ref =>
+				ref.id !== viewerId &&
+				ref.kind !== "advisor" &&
+				ref.collaborationScopeId === viewer.collaborationScopeId &&
+				canDiscoverPeer(policy, viewerId, ref.id),
 		);
+	}
+
+	/** Resolve the main/root ref for one registered agent without crossing a scope boundary. */
+	rootFor(id: string): AgentRef | undefined {
+		let current = this.#refs.get(id);
+		if (!current) return undefined;
+		const scopeId = current.collaborationScopeId;
+		const seen = new Set<string>();
+		while (current.parentId && !seen.has(current.id)) {
+			seen.add(current.id);
+			const parent = this.#refs.get(current.parentId);
+			if (!parent || parent.collaborationScopeId !== scopeId) break;
+			current = parent;
+		}
+		if (current.kind === "main") return current;
+		return [...this.#refs.values()].find(ref => ref.kind === "main" && ref.collaborationScopeId === scopeId);
+	}
+
+	/** True only for two registered agents rooted in the same live session scope. */
+	inSameCollaborationScope(firstId: string, secondId: string): boolean {
+		const first = this.#refs.get(firstId);
+		const second = this.#refs.get(secondId);
+		return Boolean(first && second && first.collaborationScopeId === second.collaborationScopeId);
 	}
 
 	/**

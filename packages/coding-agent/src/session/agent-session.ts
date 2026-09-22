@@ -214,7 +214,7 @@ import type {
 } from "../extensibility/extensions";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
-import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
+import { ExtensionToolWrapper, LifecycleToolWrapper } from "../extensibility/extensions/wrapper";
 import type { HookCommandContext } from "../extensibility/hooks/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
@@ -244,6 +244,7 @@ import {
 	type CompletionGateInput,
 	evaluateCompletionGate,
 } from "../orchestration/completion-gate";
+import { projectLifecycleSideRequest } from "../orchestration/context-projector";
 import { buildContractInjectionBlock, type InjectionBlock } from "../orchestration/contract-injector";
 import {
 	type AssumptionRecord,
@@ -252,6 +253,14 @@ import {
 	patchContractFromAnswer,
 	type QuestionSpec,
 } from "../orchestration/intent-compiler";
+import type { LifecycleExecutionContext, RootExecutionContext } from "../orchestration/lifecycle-authority";
+import {
+	createLifecycleToolGuard,
+	getRecordedToolProvenance,
+	isToolGuardedFor,
+	markToolGuarded,
+	recordToolProvenance,
+} from "../orchestration/lifecycle-tool-guard";
 import {
 	createOrchestrationTelemetrySink,
 	type OrchestrationTelemetrySink,
@@ -656,6 +665,23 @@ export interface AgentSessionConfig {
 	toolProfile?: ResolvedToolProfile;
 	/** Source resolver captured when the registry is built; unknown sources fail closed under a profile. */
 	toolSourceOf?: (name: string) => ToolSource | undefined;
+	/** Registration provenance shared with the SDK registry and updated on replacement. */
+	toolSources?: Map<string, ToolSource>;
+	/**
+	 * Host-minted lifecycle binding for this session (W3). Absent keeps legacy
+	 * dispatch; present makes every guarded path authorize before side effects,
+	 * and an unknown or revoked context fails closed.
+	 */
+	lifecycleExecutionContext?: LifecycleExecutionContext;
+	/**
+	 * Host-minted issuer context for delegated-child admissions (W3 §14.6).
+	 * For a root session this is the root-branded context created at bootstrap;
+	 * for a bound child it is normally left unset so the accessor falls back to
+	 * the session's own bound `lifecycleExecutionContext`. It is NEVER copied
+	 * into `lifecycleExecutionContext` — a root context is unbound and would
+	 * fail closed `untrusted_context` on every provider request.
+	 */
+	lifecycleIssuerContext?: LifecycleExecutionContext | RootExecutionContext;
 	/** Whether this session is the top-level agent or a subagent. Drives eager-task
 	 *  prelude gating so a top-level session created with a custom `agentId` still
 	 *  receives the always-mode reminder. Defaults to "main". */
@@ -1444,6 +1470,9 @@ export class AgentSession {
 	#collaborationPolicy: CollaborationPolicy | undefined;
 	#toolProfile: ResolvedToolProfile | undefined;
 	#toolSourceOf: ((name: string) => ToolSource | undefined) | undefined;
+	#toolSources: Map<string, ToolSource> | undefined;
+	#lifecycleExecutionContext: LifecycleExecutionContext | undefined;
+	#lifecycleIssuerContext: LifecycleExecutionContext | RootExecutionContext | undefined;
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
 	#isDisposed = false;
@@ -1912,6 +1941,9 @@ export class AgentSession {
 		this.#collaborationPolicy = config.collaborationPolicy;
 		this.#toolProfile = config.toolProfile;
 		this.#toolSourceOf = config.toolSourceOf;
+		this.#toolSources = config.toolSources;
+		this.#lifecycleExecutionContext = config.lifecycleExecutionContext;
+		this.#lifecycleIssuerContext = config.lifecycleIssuerContext;
 		this.#reconcileXdevRegistry();
 		this.#providerSessionId = config.providerSessionId;
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
@@ -2233,8 +2265,19 @@ export class AgentSession {
 			providerSessionState: this.agent.providerSessionState,
 			onPayload: this.#onPayload,
 			onResponse: this.#onResponse,
-			onSseEvent: this.#onSseEvent,
-			transformProviderContext: this.#transformProviderContext,
+			// §5.2: the advisor's own requests are a side request under this
+			// session's principal — project with the 'advisor' purpose after
+			// the shared provider-context transform (obfuscation/background
+			// packs) has run. Unbound sessions pass straight through.
+			transformProviderContext:
+				this.#transformProviderContext || this.#lifecycleExecutionContext !== undefined
+					? async (context, model) =>
+							await projectLifecycleSideRequest(
+								this.#transformProviderContext ? await this.#transformProviderContext(context, model) : context,
+								"advisor",
+								this.#lifecycleExecutionContext ?? null,
+							)
+					: undefined,
 			intentTracing: false,
 			telemetry: advisorTelemetry,
 		});
@@ -4991,12 +5034,22 @@ export class AgentSession {
 	getToolByName(name: string): AgentTool | undefined {
 		const tool = this.#toolRegistry.get(name);
 		if (!tool) return undefined;
+		// Provenance is captured synchronously with the executable, not looked up at
+		// execute time: a handle taken before an MCP/RPC replacement keeps the source
+		// it was registered with, and an executable with no recorded provenance stays
+		// unknown (denied under a lifecycle binding) instead of inheriting whatever
+		// tool now answers to this name.
+		const capturedSource = getRecordedToolProvenance(tool) ?? this.getToolSource(name);
+		const guard = createLifecycleToolGuard(() => this.#lifecycleExecutionContext, capturedSource, tool);
 		// Eval's tool.* bridge uses this registry directly, bypassing Agent.beforeToolCall.
 		// Check at execution time so a handle obtained before a mode change cannot bypass it.
 		return new Proxy(tool, {
 			get: (target, property) => {
 				if (property === "execute") {
 					return async (...params: Parameters<AgentTool["execute"]>) => {
+						// Capability authorization precedes every other gate and every side
+						// effect on this path; a denial throws before the tool is entered.
+						guard(params[0], params[1]);
 						const reason =
 							getDelegatedIoToolBlockReason(this.#delegatedIo, name) ??
 							getAutonomousRootToolBlockReason(this.settings, this.#agentKind, name, params[1]);
@@ -5008,6 +5061,62 @@ export class AgentSession {
 				return typeof value === "function" ? value.bind(target) : value;
 			},
 		});
+	}
+
+	/** Return authenticated registration provenance, not a name-prefix guess. */
+	getToolSource(name: string): ToolSource | undefined {
+		if (!this.#toolRegistry.has(name)) return undefined;
+		return this.#toolSources ? this.#toolSources.get(name) : this.#toolSourceOf?.(name);
+	}
+
+	/** Host-minted lifecycle binding for this session, or `undefined` when unbound. */
+	getLifecycleExecutionContext(): LifecycleExecutionContext | undefined {
+		return this.#lifecycleExecutionContext;
+	}
+
+	/**
+	 * Issuer context for delegated-child admissions (W3 §14.6): the context
+	 * under which THIS session's spawned children are admitted. A bound child
+	 * issues under its own bound context; a root session issues under the
+	 * root-branded context installed at bootstrap. `undefined` = legacy spawn
+	 * path (no lifecycle admission).
+	 */
+	getLifecycleIssuerContext(): LifecycleExecutionContext | RootExecutionContext | undefined {
+		return this.#lifecycleIssuerContext ?? this.#lifecycleExecutionContext;
+	}
+
+	/**
+	 * Host-only: install the issuer context after construction. Used by the
+	 * root bootstrap, which cannot pass the context through
+	 * CreateAgentSessionOptions (sdk.ts owns that surface). First writer wins —
+	 * a config-supplied or previously installed context is never overwritten.
+	 */
+	installLifecycleIssuerContext(context: LifecycleExecutionContext | RootExecutionContext): void {
+		if (this.#lifecycleIssuerContext === undefined) this.#lifecycleIssuerContext = context;
+	}
+
+	/**
+	 * Bind the capability guard to a freshly registered executable and pair it
+	 * with the provenance captured at this registration (W3 source slice).
+	 *
+	 * With an extension runner the guard lives inside `ExtensionToolWrapper`, so
+	 * it runs before the extension callbacks and again after them; without one it
+	 * runs in `LifecycleToolWrapper`. Guarding therefore never depends on
+	 * extensions being loaded. An executable that already carries recorded
+	 * provenance was guarded at its own registration and is not wrapped twice.
+	 */
+	#registerGuardedTool(tool: AgentTool, source: ToolSource): AgentTool {
+		// Only a guard built for THIS session's binding counts: an executable
+		// carrying provenance from another session (or from before this session
+		// was bound) is still unguarded here.
+		if (isToolGuardedFor(tool, this.#lifecycleExecutionContext)) return tool;
+		const guard = createLifecycleToolGuard(() => this.#lifecycleExecutionContext, source, tool);
+		const guarded = (
+			this.#extensionRunner
+				? new ExtensionToolWrapper(tool, this.#extensionRunner, guard)
+				: new LifecycleToolWrapper(tool, guard)
+		) as AgentTool;
+		return markToolGuarded(recordToolProvenance(guarded, source), this.#lifecycleExecutionContext);
 	}
 
 	getXdevRegistry(): XdevRegistry | undefined {
@@ -5603,9 +5712,12 @@ export class AgentSession {
 		const sshAllowed = this.#requestedToolNames === undefined || this.#requestedToolNames.has("ssh");
 		const refreshedTool = await this.#reloadSshTool();
 		if (refreshedTool) {
-			this.#toolRegistry.set(refreshedTool.name, refreshedTool);
+			const guardedSshTool = this.#registerGuardedTool(refreshedTool, "builtin");
+			this.#toolRegistry.set(guardedSshTool.name, guardedSshTool);
+			this.#toolSources?.set(guardedSshTool.name, "builtin");
 		} else {
 			this.#toolRegistry.delete("ssh");
+			this.#toolSources?.delete("ssh");
 			this.#selectedDiscoveredToolNames.delete("ssh");
 		}
 
@@ -5797,12 +5909,15 @@ export class AgentSession {
 	 */
 	async refreshMCPTools(mcpTools: CustomTool[], options?: { activateAll?: boolean }): Promise<void> {
 		await this.#runDiscoveredToolMutation(async () => {
-			mcpTools = mcpTools.filter(tool => this.#isToolNameAllowedByProfile(tool.name));
+			mcpTools = mcpTools.filter(
+				tool => !this.#toolProfile || isAllowedByToolProfile(this.#toolProfile, "mcp", tool.name),
+			);
 			const previousSelectedMCPToolNames = this.getSelectedMCPToolNames();
 			const existingNames = Array.from(this.#toolRegistry.keys());
 			for (const name of existingNames) {
 				if (isMCPToolName(name)) {
 					this.#toolRegistry.delete(name);
+					this.#toolSources?.delete(name);
 				}
 			}
 
@@ -5821,10 +5936,9 @@ export class AgentSession {
 				const wrapped = wrapToolWithMetaNotice(
 					CustomToolAdapter.wrap(customTool, getCustomToolContext) as AgentTool,
 				);
-				const finalTool = (
-					this.#extensionRunner ? new ExtensionToolWrapper(wrapped, this.#extensionRunner) : wrapped
-				) as AgentTool;
+				const finalTool = this.#registerGuardedTool(wrapped, "mcp");
 				this.#toolRegistry.set(finalTool.name, finalTool);
+				this.#toolSources?.set(finalTool.name, "mcp");
 			}
 			this.#reconcileXdevRegistry();
 
@@ -5885,15 +5999,15 @@ export class AgentSession {
 		const previousActiveToolNames = this.getActiveToolNames();
 		for (const name of previousRpcHostToolNames) {
 			this.#toolRegistry.delete(name);
+			this.#toolSources?.delete(name);
 		}
 		this.#rpcHostToolNames.clear();
 
 		for (const tool of rpcTools) {
 			const metaWrapped = wrapToolWithMetaNotice(tool);
-			const finalTool = (
-				this.#extensionRunner ? new ExtensionToolWrapper(metaWrapped, this.#extensionRunner) : metaWrapped
-			) as AgentTool;
+			const finalTool = this.#registerGuardedTool(metaWrapped, "custom");
 			this.#toolRegistry.set(finalTool.name, finalTool);
+			this.#toolSources?.set(finalTool.name, "custom");
 			this.#rpcHostToolNames.add(finalTool.name);
 		}
 		this.#reconcileXdevRegistry();
@@ -6135,6 +6249,21 @@ export class AgentSession {
 			}
 		}
 
+		// §5.2 late-injection closure: under a bound lifecycle, a composed
+		// onPayload that returns a mutated payload is an unprojectable
+		// provider hook — the mutation would bypass the authorized
+		// projection. Observational hooks (undefined return) and identity
+		// returns remain the explicit compatible exception.
+		if (this.#lifecycleExecutionContext !== undefined && preparedOptions.onPayload) {
+			const innerOnPayload = preparedOptions.onPayload;
+			preparedOptions.onPayload = async (payload, model) => {
+				const result = await innerOnPayload(payload, model);
+				if (result !== undefined && result !== payload) {
+					throw new Error("unprojectable_provider_hook");
+				}
+				return result;
+			};
+		}
 		return preparedOptions;
 	}
 
@@ -13281,7 +13410,15 @@ export class AgentSession {
 		let providerReplyText = "";
 		let emittedReplyText = "";
 		let assistantMessage: AssistantMessage | undefined;
-		const stream = streamSimple(model, obfuscateProviderContext(this.#obfuscator, context), options);
+		// §5.2: side-channel turns run through the same principal-scoped
+		// projection as the main request path — after obfuscation, before the
+		// provider. Absent lifecycle stays legacy passthrough.
+		const projectedContext = await projectLifecycleSideRequest(
+			obfuscateProviderContext(this.#obfuscator, context),
+			"completion",
+			this.#lifecycleExecutionContext ?? null,
+		);
+		const stream = streamSimple(model, projectedContext, options);
 		for await (const event of stream) {
 			if (event.type === "text_delta") {
 				providerReplyText += event.delta;

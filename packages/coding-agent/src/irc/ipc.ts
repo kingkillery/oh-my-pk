@@ -39,6 +39,7 @@ interface IrcPeerDescriptor {
 		kind: string;
 		status: AgentStatus;
 		parentId?: string;
+		collaborationScopeId: string;
 		lastActivity: number;
 		activity?: string;
 		color?: string;
@@ -93,7 +94,13 @@ function isDescriptor(value: unknown): value is IrcPeerDescriptor {
 		typeof candidate.endpoint === "string" &&
 		typeof candidate.token === "string" &&
 		typeof candidate.updatedAt === "number" &&
-		Array.isArray(candidate.agents)
+		Array.isArray(candidate.agents) &&
+		candidate.agents.every(
+			agent =>
+				agent !== null &&
+				typeof agent === "object" &&
+				typeof (agent as { collaborationScopeId?: unknown }).collaborationScopeId === "string",
+		)
 	);
 }
 
@@ -200,15 +207,17 @@ export class IrcIpc {
 	}
 
 	async list(viewerId?: string): Promise<IrcRemotePeer[]> {
-		if (!this.#enabled || !this.#cwdKey) return [];
+		if (!this.#enabled || !this.#cwdKey || !viewerId) return [];
+		const viewer = this.#config?.registry.get(viewerId);
+		if (!viewer) return [];
 		const peers: IrcRemotePeer[] = [];
-		const viewerPolicy = viewerId ? this.#config?.registry.get(viewerId)?.collaborationPolicy : undefined;
+		const viewerPolicy = viewer.collaborationPolicy;
 		for (const descriptor of await this.#readDescriptors()) {
 			if (descriptor.processId === this.#processId) continue;
 			for (const agent of descriptor.agents) {
-				if (agent.kind === "advisor") continue;
+				if (agent.kind === "advisor" || agent.collaborationScopeId !== viewer.collaborationScopeId) continue;
 				const peer = toRemotePeer(descriptor, agent);
-				if (viewerId && !canDiscoverPeer(viewerPolicy, viewerId, peer.id)) continue;
+				if (!canDiscoverPeer(viewerPolicy, viewerId, peer.id)) continue;
 				peers.push(peer);
 			}
 		}
@@ -226,10 +235,21 @@ export class IrcIpc {
 		if (at <= 0 || at === targetId.length - 1) return undefined;
 		const localId = targetId.slice(0, at);
 		const processId = targetId.slice(at + 1);
+		const sender = this.#config?.registry.get(message.from);
+		if (!sender) {
+			return { to: targetId, outcome: "failed", error: `Unknown local IRC sender "${message.from}".` };
+		}
 		const descriptor = (await this.#readDescriptors()).find(item => item.processId === processId);
 		if (!descriptor) return { to: targetId, outcome: "failed", error: `Unknown remote IRC peer "${targetId}".` };
 		const agent = descriptor.agents.find(item => item.id === localId);
 		if (!agent) return { to: targetId, outcome: "failed", error: `Unknown remote IRC peer "${targetId}".` };
+		if (agent.collaborationScopeId !== sender.collaborationScopeId) {
+			return {
+				to: targetId,
+				outcome: "failed",
+				error: "Remote IRC peer is outside the sender's session scope.",
+			};
+		}
 		const authorizationError = authorize?.(toRemotePeer(descriptor, agent));
 		if (authorizationError) return { to: targetId, outcome: "failed", error: authorizationError };
 		try {
@@ -249,6 +269,7 @@ export class IrcIpc {
 					replyTo: message.replyTo,
 					isBroadcast: opts?.isBroadcast === true,
 					expectsReply: opts?.expectsReply === true,
+					collaborationScopeId: sender.collaborationScopeId,
 				}),
 			});
 			const body = (await response.json().catch(() => ({}))) as RemoteDeliveryBody;
@@ -276,6 +297,7 @@ export class IrcIpc {
 		await mkdir(directory, { recursive: true });
 		const token = this.#token;
 		const cwdKey = this.#cwdKey;
+		const readDescriptors = () => this.#readDescriptors();
 		try {
 			const server = Bun.serve({
 				hostname: "127.0.0.1",
@@ -296,6 +318,7 @@ export class IrcIpc {
 						replyTo?: unknown;
 						isBroadcast?: unknown;
 						expectsReply?: unknown;
+						collaborationScopeId?: unknown;
 					};
 					try {
 						body = (await request.json()) as typeof body;
@@ -311,6 +334,27 @@ export class IrcIpc {
 					) {
 						return Response.json({ ok: false, error: "Invalid IRC delivery." }, { status: 400 });
 					}
+					if (typeof body.collaborationScopeId !== "string" || body.collaborationScopeId.length === 0) {
+						return Response.json({ ok: false, error: "Invalid IRC delivery." }, { status: 400 });
+					}
+					const target = config.registry.get(body.to);
+					const sourceDescriptor = (await readDescriptors()).find(
+						descriptor => descriptor.processId === body.fromProcessId,
+					);
+					const source = sourceDescriptor?.agents.find(agent => agent.id === body.from);
+					if (
+						!target ||
+						target.collaborationScopeId !== body.collaborationScopeId ||
+						source?.collaborationScopeId !== body.collaborationScopeId
+					) {
+						return Response.json(
+							{
+								ok: false,
+								error: "IRC delivery denied: sender and recipient belong to different session scopes.",
+							},
+							{ status: 403 },
+						);
+					}
 					const qualifiedFrom = `${body.from}@${body.fromProcessId}`;
 					const result = await config.bus.deliverRemote(
 						{
@@ -321,6 +365,7 @@ export class IrcIpc {
 							ts: Date.now(),
 							replyTo: typeof body.replyTo === "string" ? body.replyTo : undefined,
 						},
+						body.collaborationScopeId,
 						{
 							isBroadcast: body.isBroadcast === true,
 							expectsReply: body.expectsReply === true,
@@ -357,6 +402,7 @@ export class IrcIpc {
 				kind: ref.kind,
 				status: ref.status,
 				parentId: ref.parentId,
+				collaborationScopeId: ref.collaborationScopeId,
 				lastActivity: ref.lastActivity,
 				activity: ref.activity,
 				color: ref.color,

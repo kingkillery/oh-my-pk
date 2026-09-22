@@ -1,10 +1,15 @@
 /**
  * Immutable Versioned Launch Contracts (A02) — frozen W1 contract surface.
  *
- * Compilation (pure, allocation-free) is separated from runtime binding:
+ * Compilation (pure, allocation-free) is separated from durable binding:
  * - compileLaunchContract validates + deep-freezes a mission/policy snapshot.
- * - bindLaunchContract attaches store-admitted runtime identities.
- * - parseLaunchContract strictly revalidates a serialized contract.
+ * - bindLaunchContract pairs that compiled body with the persisted
+ *   `launch_bindings` record that admitted it, proving both halves name the
+ *   same contract identity. It invents no runtime ids of its own.
+ * - parseLaunchContract strictly revalidates a serialized v2 contract;
+ *   parseArchivalLaunchContractV1 reads pre-cutover v1 records only.
+ *
+ * The runtime wire is schema v2: `{schemaVersion: 2, compiled, binding}`.
  *
  * Hashing: SHA-256 over canonical JSON with UTF-16 code-unit key ordering.
  * Array order is significant and retained. Absent fields are distinct from
@@ -79,6 +84,14 @@ export interface ReservationVector {
 	readonly costMicrounits: number | null;
 }
 
+/**
+ * Write-authentication token for one claimed attempt.
+ *
+ * `launchAuthority` replaces the precursor `contractVersion: number`. A wire
+ * revision integer said nothing about WHICH authority admitted the writer,
+ * so it could not fence out a stale, superseded or revoked binding; the
+ * durable reference can.
+ */
 export interface LifecycleFence {
 	readonly runId: string;
 	readonly nodeId: string;
@@ -86,7 +99,7 @@ export interface LifecycleFence {
 	readonly leaseOwner: string;
 	readonly leaseEpoch: number;
 	readonly cancellationGeneration: number;
-	readonly contractVersion: number;
+	readonly launchAuthority: LaunchAuthorityRefV1;
 }
 
 export interface RuntimePolicySnapshotV1 {
@@ -141,6 +154,11 @@ export interface MissionCapsule {
 	readonly outputSchemaRef?: string;
 }
 
+/**
+ * ARCHIVAL v1 envelope. Retained only to read records serialized before the
+ * §14.2 wire cutover; the runtime carries a durable `LaunchBinding` instead,
+ * so nothing new should synthesize one of these.
+ */
 export interface LaunchEnvelope {
 	readonly schemaVersion: 1;
 	readonly version: LaunchContractVersion;
@@ -161,13 +179,37 @@ export interface LaunchEnvelope {
 	readonly cancellationGeneration: number;
 }
 
-export interface LaunchContract {
+/**
+ * ARCHIVAL v1 contract.
+ *
+ * Deliberately NOT assignable to the runtime `LaunchContract`: it carries a
+ * synthesized envelope rather than the durable binding that admitted it, so
+ * handing one to a runtime consumer would reintroduce exactly the invented
+ * identities the v2 wire removes. Reading an archived record is allowed;
+ * executing under it requires recompilation and readmission.
+ */
+export interface ArchivalLaunchContractV1 {
 	readonly capsule: MissionCapsule;
 	readonly envelope: LaunchEnvelope;
 	readonly policy: RuntimePolicySnapshotV1;
 	readonly contractVersion: number;
 	readonly policySchemaVersion: 1;
 	readonly harnessSchemaVersion: 1;
+}
+
+/**
+ * The runtime launch contract (§14.2 schema v2).
+ *
+ * Exactly two parts, both authenticated: the compiled authority and the
+ * persisted `launch_bindings` record that admitted it. Consumers read
+ * runtime identity from `binding` — `bindingId` for the durable record,
+ * `attemptId` for the attempt, `lifecycle` for graph placement — instead of
+ * from ids fabricated at bind time.
+ */
+export interface LaunchContract {
+	readonly schemaVersion: 2;
+	readonly compiled: CompiledLaunchContract;
+	readonly binding: LaunchBinding;
 }
 
 export interface LaunchContractDiagnostic {
@@ -218,11 +260,13 @@ export type LaunchCompileResult =
 	| { readonly ok: false; readonly diagnostics: readonly LaunchContractDiagnostic[] };
 
 /**
- * Store-admitted runtime identities handed to `bindLaunchContract`.
+ * Runtime identities the store allocates before writing a binding row.
  *
- * This is the bind INPUT, not the persisted authority record: the durable
- * record is `LaunchBinding` (§14.2), which carries these fields in its
- * `lifecycle` block alongside principal, grant and guarantee state.
+ * This is the store's ROW-WRITER input, not an authority record and no
+ * longer a `bindLaunchContract` argument: the durable record is
+ * `LaunchBinding` (§14.2), which carries these fields in its `lifecycle`
+ * block alongside principal, grant and guarantee state. Validate one with
+ * `parseLaunchBindingInput` at the point the row is written.
  */
 export interface LaunchBindingInput {
 	readonly runId: string;
@@ -700,9 +744,18 @@ const FENCE_KEYS = [
 	"leaseOwner",
 	"leaseEpoch",
 	"cancellationGeneration",
-	"contractVersion",
+	"launchAuthority",
 ] as const;
 
+/**
+ * Strict parse of an execution fence.
+ *
+ * The fence names the authority it was issued under, so a stale or revoked
+ * binding is identifiable from the fence alone. `launchAuthority.attemptId`
+ * must equal the fenced `attemptId`: a fence carrying another attempt's
+ * authority would authenticate writes under a binding that never admitted
+ * this attempt.
+ */
 export function parseLifecycleFence(value: unknown): LifecycleFence {
 	const diagnostics: LaunchContractDiagnostic[] = [];
 	if (!isPlainObject(value)) throw new Error("invalid_fence: fence must be an object");
@@ -711,7 +764,7 @@ export function parseLifecycleFence(value: unknown): LifecycleFence {
 		if (!isNonEmptyString(value[field]))
 			diagnostics.push(diag("invalid_fence", `Fence '${field}' must be a non-empty string.`, `fence.${field}`));
 	}
-	for (const field of ["leaseEpoch", "cancellationGeneration", "contractVersion"] as const) {
+	for (const field of ["leaseEpoch", "cancellationGeneration"] as const) {
 		if (!isSafeNonNegativeInt(value[field])) {
 			diagnostics.push(
 				diag("invalid_fence", `Fence '${field}' must be a safe non-negative integer.`, `fence.${field}`),
@@ -719,15 +772,21 @@ export function parseLifecycleFence(value: unknown): LifecycleFence {
 		}
 	}
 	if (diagnostics.length > 0) throw new Error(diagnostics[0]?.code ?? "invalid_fence");
-	return {
+	const launchAuthority = parseLaunchAuthorityRefV1(value.launchAuthority, "fence.launchAuthority");
+	if (launchAuthority.attemptId !== value.attemptId) {
+		throw new Error(
+			`invalid_fence: launchAuthority.attemptId '${launchAuthority.attemptId}' does not fence attempt '${String(value.attemptId)}'`,
+		);
+	}
+	return Object.freeze({
 		runId: value.runId as string,
 		nodeId: value.nodeId as string,
 		attemptId: value.attemptId as string,
 		leaseOwner: value.leaseOwner as string,
 		leaseEpoch: value.leaseEpoch as number,
 		cancellationGeneration: value.cancellationGeneration as number,
-		contractVersion: value.contractVersion as number,
-	};
+		launchAuthority,
+	});
 }
 
 /**
@@ -764,6 +823,10 @@ export function parseRunLimitsV1(value: unknown, path = "limits"): RunLimitsV1 {
 
 export function parseReservationVector(value: unknown, path = "reservation"): ReservationVector {
 	return parseWithValidator(value, path, validateReservationVector);
+}
+
+export function parseMutationContractV1(value: unknown, path = "mutation"): MutationContractV1 {
+	return Object.freeze(parseWithValidator(value, path, validateMutationContract));
 }
 
 function validateExecutionProfile(
@@ -1495,10 +1558,38 @@ function validateBinding(value: unknown): {
 	};
 }
 
-export function bindLaunchContract(compiled: CompiledLaunchContract, binding: LaunchBindingInput): LaunchContract {
-	const checked = validateBinding(binding);
+/**
+ * Strict parse of the store's row-writer input.
+ *
+ * This is NOT the durable binding: it is the set of runtime identities the
+ * store allocates before it writes a `launch_bindings` row. Exported so the
+ * row writer validates them at its own boundary — `bindLaunchContract` no
+ * longer accepts them, because a contract must be bound to a persisted
+ * record rather than to ids that only exist in the caller's memory.
+ */
+export function parseLaunchBindingInput(value: unknown): LaunchBindingInput {
+	const checked = validateBinding(value);
 	if (!checked.binding) throw new Error(checked.diagnostics[0]?.code ?? "invalid_binding");
-	const validBinding = checked.binding;
+	return Object.freeze(checked.binding);
+}
+
+/**
+ * Bind a compiled contract to the durable record that admitted it (§14.2).
+ *
+ * No identity is fabricated here. The binding argument is the persisted
+ * `launch_bindings` record, so every runtime identity a consumer needs
+ * (bindingId, attemptId, lifecycle graph ids, reservation, epochs) is read
+ * from storage rather than invented at the wire boundary.
+ *
+ * Binding therefore proves two things and nothing else:
+ * - the compiled body still reproduces its own mission hash, policy hash
+ *   and contract digest, so a tampered capsule, policy or authority is
+ *   rejected before it can be executed under; and
+ * - the durable record names exactly that contract identity and lineage,
+ *   so a valid binding for a different contract, revision, or principal
+ *   chain cannot be paired with this body.
+ */
+export function bindLaunchContract(compiled: CompiledLaunchContract, binding: LaunchBinding): LaunchContract {
 	if (!isPlainObject(compiled) || compiled.schemaVersion !== 2) throw new Error("unknown_version");
 	// Tamper-evident: bound hashes must reproduce from the frozen snapshot.
 	if (computeMissionHash(compiled.capsule) !== compiled.missionHash) throw new Error("contract_hash_mismatch");
@@ -1510,35 +1601,38 @@ export function bindLaunchContract(compiled: CompiledLaunchContract, binding: La
 	if (!KNOWN_AGENT_ROLES.includes(compiled.policy.role) || !KNOWN_TOPOLOGIES.includes(compiled.policy.topology)) {
 		throw new Error("unknown_role");
 	}
-	const envelope: LaunchEnvelope = Object.freeze({
-		schemaVersion: 1,
-		version: LAUNCH_CONTRACT_VERSION,
-		runId: validBinding.runId,
-		nodeId: validBinding.nodeId,
-		ownerNodeId: validBinding.ownerNodeId,
-		attemptId: validBinding.attemptId,
-		role: compiled.policy.role,
-		topology: compiled.policy.topology,
-		missionHash: compiled.missionHash,
-		policyHash: compiled.policyHash,
-		harnessVersion: compiled.policy.harnessRef,
-		capabilityManifestRef: computeCapabilityManifestRef(compiled.policy),
-		budgetReservationId: validBinding.budgetReservationId,
-		executionEnvironmentRef: compiled.policy.environmentRef,
-		leaseEpoch: validBinding.leaseEpoch,
-		cancellationGeneration: validBinding.cancellationGeneration,
-	});
-	return Object.freeze({
-		capsule: compiled.capsule,
-		envelope,
-		policy: compiled.policy,
-		contractVersion: LAUNCH_CONTRACT_VERSION,
-		policySchemaVersion: 1 as const,
-		harnessSchemaVersion: 1 as const,
-	});
+	const durable = parseLaunchBinding(binding, "binding");
+	const mismatch = (field: string, expected: string, actual: string): never => {
+		throw new Error(
+			`launch_binding_identity_mismatch: binding ${field} '${actual}' does not match contract '${expected}'`,
+		);
+	};
+	if (durable.contractId !== compiled.contractId) {
+		mismatch("contractId", compiled.contractId, durable.contractId);
+	}
+	if (durable.contractDigest !== compiled.contractDigest) {
+		mismatch("contractDigest", compiled.contractDigest, durable.contractDigest);
+	}
+	if (durable.contractRevision !== compiled.contractRevision) {
+		mismatch("contractRevision", String(compiled.contractRevision), String(durable.contractRevision));
+	}
+	if (durable.rootPrincipalId !== compiled.rootPrincipalId) {
+		mismatch("rootPrincipalId", compiled.rootPrincipalId, durable.rootPrincipalId);
+	}
+	if (durable.parentPrincipalId !== compiled.parentPrincipalId) {
+		mismatch("parentPrincipalId", compiled.parentPrincipalId, durable.parentPrincipalId);
+	}
+	if (durable.childPrincipalId !== compiled.childPrincipalId) {
+		mismatch("childPrincipalId", compiled.childPrincipalId, durable.childPrincipalId);
+	}
+	// Re-asserted at the bind boundary, not only inside the parser: a bound
+	// child must never advertise runtime protections nobody probed for.
+	validateLaunchBindingGuarantees(durable);
+	return Object.freeze({ schemaVersion: 2 as const, compiled, binding: durable });
 }
 
-const CONTRACT_KEYS = [
+const CONTRACT_KEYS = ["schemaVersion", "compiled", "binding"] as const;
+const ARCHIVAL_CONTRACT_KEYS = [
 	"capsule",
 	"envelope",
 	"policy",
@@ -1546,7 +1640,7 @@ const CONTRACT_KEYS = [
 	"policySchemaVersion",
 	"harnessSchemaVersion",
 ] as const;
-const ENVELOPE_KEYS = [
+const ARCHIVAL_ENVELOPE_KEYS = [
 	"schemaVersion",
 	"version",
 	"runId",
@@ -1566,18 +1660,39 @@ const ENVELOPE_KEYS = [
 ] as const;
 
 /**
- * Strictly revalidates a serialized contract. Recomputes both hashes and
- * the capability manifest ref; any mismatch, unknown version, or extra
- * authority field rejects instead of being dropped.
+ * Strictly revalidates a serialized runtime contract (schema v2).
+ *
+ * Both halves are re-parsed from scratch and then re-bound, so a serialized
+ * contract gets exactly the same identity and tamper proof as a freshly
+ * admitted one: recomputed hashes, a recomputed contract digest, and a
+ * binding that must name that same contract lineage.
  */
 export function parseLaunchContract(value: unknown): LaunchContract {
 	if (!isPlainObject(value)) throw new Error("Invalid LaunchContract: expected object");
 	checkThrow(value, CONTRACT_KEYS, "contract");
+	if (value.schemaVersion !== 2) throw new Error("Invalid LaunchContract: unknown version");
+	const compiled = parseCompiledLaunchContract(value.compiled, "contract.compiled");
+	const binding = parseLaunchBinding(value.binding, "contract.binding");
+	return bindLaunchContract(compiled, binding);
+}
+
+/**
+ * Strictly revalidates an ARCHIVED v1 contract.
+ *
+ * Kept only for reading records serialized before the §14.2 wire cutover
+ * (archival inspection and explicit reauthorization). Its result is
+ * deliberately not a runtime `LaunchContract`: a v1 record carries a
+ * synthesized envelope rather than a durable binding, so it must be
+ * recompiled and readmitted before anything may execute under it.
+ */
+export function parseArchivalLaunchContractV1(value: unknown): ArchivalLaunchContractV1 {
+	if (!isPlainObject(value)) throw new Error("Invalid ArchivalLaunchContractV1: expected object");
+	checkThrow(value, ARCHIVAL_CONTRACT_KEYS, "contract");
 	const capsule = validateMissionCapsule(value.capsule, throwDiagnostics("contract.capsule"), "capsule");
 	const policy = validateRuntimePolicy(value.policy, throwDiagnostics("contract.policy"), "policy");
 	if (!capsule || !policy) throw new Error("Invalid LaunchContract: capsule/policy failed validation");
 	if (!isPlainObject(value.envelope)) throw new Error("Invalid LaunchContract: envelope must be an object");
-	checkThrow(value.envelope as Record<string, unknown>, ENVELOPE_KEYS, "contract.envelope");
+	checkThrow(value.envelope as Record<string, unknown>, ARCHIVAL_ENVELOPE_KEYS, "contract.envelope");
 	const envelope = value.envelope as Record<string, unknown>;
 	if (envelope.schemaVersion !== 1 || envelope.version !== LAUNCH_CONTRACT_VERSION) {
 		throw new Error("Invalid LaunchContract: unknown version");
@@ -2543,7 +2658,7 @@ function authorityOperations(value: unknown, label: string, field: string): read
 	);
 }
 
-function authorityDomains(value: unknown, label: string, field: string): readonly DisclosureDomain[] {
+export function authorityDomains(value: unknown, label: string, field: string): readonly DisclosureDomain[] {
 	if (!Array.isArray(value)) throw new Error(`invalid_${label}: ${field} must be an array`);
 	return Object.freeze(
 		value.map((entry, index) => {
@@ -2704,6 +2819,927 @@ export function computeLaunchContractDigest(contract: Record<string, unknown>): 
 	return sha256Hex(canonicalJson(rest));
 }
 
+// --- Strict parsers for the launch-authority dictionary (§14.2/§14.3) -----
+//
+// These gate the authority records embedded in a compiled contract and in
+// its durable binding at every storage boundary. They reject rather than
+// coerce: `String(undefined)` would mint the literal "undefined" as an
+// identity, `Number(undefined)` would mint NaN as a counter, and an
+// unchecked `as` cast would let an unrecognised enum through as if the host
+// had authorized it. Each parser reconstructs a frozen canonical record, so
+// a caller cannot mutate a validated record after the check.
+
+function authorityArray(value: unknown, label: string, field: string): readonly unknown[] {
+	if (!Array.isArray(value)) throw new Error(`invalid_${label}: ${field} must be an array`);
+	return value;
+}
+
+function authorityString(record: Record<string, unknown>, label: string, field: string): string {
+	const value = record[field];
+	if (!isNonEmptyString(value)) throw new Error(`invalid_${label}: ${field} must be a non-empty string`);
+	return value;
+}
+
+function authorityNullableString(record: Record<string, unknown>, label: string, field: string): string | null {
+	const value = record[field];
+	if (value === null) return null;
+	if (!isNonEmptyString(value)) throw new Error(`invalid_${label}: ${field} must be a non-empty string or null`);
+	return value;
+}
+
+function authorityBoolean(record: Record<string, unknown>, label: string, field: string): boolean {
+	const value = record[field];
+	if (typeof value !== "boolean") throw new Error(`invalid_${label}: ${field} must be an explicit boolean`);
+	return value;
+}
+
+function authorityCount(record: Record<string, unknown>, label: string, field: string): number {
+	const value = record[field];
+	if (!isSafeNonNegativeInt(value)) {
+		throw new Error(`invalid_${label}: ${field} must be a safe non-negative integer`);
+	}
+	return value;
+}
+
+function authorityNullableCount(record: Record<string, unknown>, label: string, field: string): number | null {
+	const value = record[field];
+	if (value === null) return null;
+	if (!isSafeNonNegativeInt(value)) {
+		throw new Error(`invalid_${label}: ${field} must be a safe non-negative integer or null`);
+	}
+	return value;
+}
+
+function authorityHash(record: Record<string, unknown>, label: string, field: string): string {
+	const value = record[field];
+	if (!isHex64(value)) throw new Error(`invalid_${label}: ${field} must be a lowercase 64-hex sha256`);
+	return value;
+}
+
+function authorityEnum<T extends string>(
+	record: Record<string, unknown>,
+	label: string,
+	field: string,
+	known: readonly T[],
+): T {
+	const value = record[field];
+	if (typeof value !== "string" || !known.includes(value as T)) {
+		throw new Error(`invalid_${label}: ${field} '${String(value)}' is not a known value`);
+	}
+	return value as T;
+}
+
+function authorityEnums<T extends string>(
+	value: unknown,
+	label: string,
+	field: string,
+	known: readonly T[],
+): readonly T[] {
+	return Object.freeze(
+		authorityArray(value, label, field).map((entry, index) => {
+			if (typeof entry !== "string" || !known.includes(entry as T)) {
+				throw new Error(`invalid_${label}: ${field}[${index}] '${String(entry)}' is not a known value`);
+			}
+			return entry as T;
+		}),
+	);
+}
+
+const TOOL_CAPABILITY_KEYS = ["source", "name"] as const;
+
+/** Source-qualified tool identity; a bare `name` is never a capability. */
+export function parseToolCapability(value: unknown, label = "ToolCapability"): ToolCapability {
+	const record = authorityRecord(value, label, TOOL_CAPABILITY_KEYS);
+	return Object.freeze({
+		source: authorityEnum(record, label, "source", TOOL_CAPABILITY_SOURCES),
+		name: authorityString(record, label, "name"),
+	});
+}
+
+function authorityCapabilities(value: unknown, label: string, field: string): readonly ToolCapability[] {
+	return Object.freeze(
+		authorityArray(value, label, field).map((entry, index) =>
+			parseToolCapability(entry, `${label}.${field}[${index}]`),
+		),
+	);
+}
+
+const CONTEXT_MODE_FRESH_KEYS = ["kind", "strategy", "independence"] as const;
+const CONTEXT_MODE_FORK_KEYS = [
+	"kind",
+	"parentSnapshotRef",
+	"parentSnapshotGrantIntentId",
+	"snapshotVersion",
+	"reason",
+] as const;
+
+/**
+ * Strict parse of a context mode.
+ *
+ * The two kinds carry disjoint fields, so they are parsed as a discriminated
+ * union rather than as one permissive record: a `fresh` mode must not be
+ * able to smuggle a parent snapshot reference through an ignored field.
+ */
+export function parseContextMode(value: unknown, label = "ContextMode"): ContextMode {
+	if (!isPlainObject(value)) throw new Error(`invalid_${label}: expected object`);
+	if (value.kind === "fresh") {
+		const record = authorityRecord(value, label, CONTEXT_MODE_FRESH_KEYS);
+		return Object.freeze({
+			kind: "fresh" as const,
+			strategy: authorityEnum(record, label, "strategy", KNOWN_CONTEXT_STRATEGIES),
+			independence: authorityEnum(record, label, "independence", KNOWN_CONTEXT_INDEPENDENCE),
+		});
+	}
+	if (value.kind === "privileged-fork") {
+		const record = authorityRecord(value, label, CONTEXT_MODE_FORK_KEYS);
+		if (record.snapshotVersion !== 1) throw new Error(`invalid_${label}: snapshotVersion must be 1`);
+		return Object.freeze({
+			kind: "privileged-fork" as const,
+			parentSnapshotRef: parseArtifactRefV1(record.parentSnapshotRef, `${label}.parentSnapshotRef`),
+			parentSnapshotGrantIntentId: authorityString(record, label, "parentSnapshotGrantIntentId"),
+			snapshotVersion: 1 as const,
+			reason: authorityString(record, label, "reason"),
+		});
+	}
+	throw new Error(`invalid_${label}: kind '${String(value.kind)}' is not a known context mode`);
+}
+
+const BASE_CONTEXT_MANIFEST_KEYS = ["schemaVersion", "manifestHash", "segments"] as const;
+const BASE_CONTEXT_SEGMENT_KEYS = ["segmentId", "kind", "contentRef"] as const;
+
+export function parseBaseContextManifestV1(value: unknown, label = "BaseContextManifestV1"): BaseContextManifestV1 {
+	const record = authorityRecord(value, label, BASE_CONTEXT_MANIFEST_KEYS);
+	if (record.schemaVersion !== 1) throw new Error(`invalid_${label}: schemaVersion must be 1`);
+	return Object.freeze({
+		schemaVersion: 1 as const,
+		manifestHash: authorityHash(record, label, "manifestHash"),
+		segments: Object.freeze(
+			authorityArray(record.segments, label, "segments").map((entry, index) => {
+				const segmentLabel = `${label}.segments[${index}]`;
+				const segment = authorityRecord(entry, segmentLabel, BASE_CONTEXT_SEGMENT_KEYS);
+				return Object.freeze({
+					segmentId: authorityString(segment, segmentLabel, "segmentId"),
+					kind: authorityEnum(segment, segmentLabel, "kind", KNOWN_BASE_SEGMENT_KINDS),
+					contentRef: parseArtifactRefV1(segment.contentRef, `${segmentLabel}.contentRef`),
+				});
+			}),
+		),
+	});
+}
+
+const RESOURCE_AUTHORITY_KEYS = [
+	"resource",
+	"mayUse",
+	"mayIssue",
+	"recipientPrincipalIds",
+	"maxDelegationDepth",
+	"disclosureDomains",
+	"sourceGrantIds",
+] as const;
+
+/**
+ * Strict parse of a resource authority entry.
+ *
+ * `mayIssue` is deliberately NOT required to be a subset of `mayUse`: a
+ * planner may legitimately hand a resource onward without holding the right
+ * to touch it itself, so deriving one set from the other would either strip
+ * that planner or grant it access nobody issued.
+ */
+export function parseResourceAuthorityV1(value: unknown, label = "ResourceAuthorityV1"): ResourceAuthorityV1 {
+	const record = authorityRecord(value, label, RESOURCE_AUTHORITY_KEYS);
+	return Object.freeze({
+		resource: parseResourceSelectorV1(record.resource, `${label}.resource`),
+		mayUse: authorityOperations(record.mayUse, label, "mayUse"),
+		mayIssue: authorityOperations(record.mayIssue, label, "mayIssue"),
+		recipientPrincipalIds: authorityStrings(record.recipientPrincipalIds, label, "recipientPrincipalIds"),
+		maxDelegationDepth: authorityCount(record, label, "maxDelegationDepth"),
+		disclosureDomains: authorityDomains(record.disclosureDomains, label, "disclosureDomains"),
+		sourceGrantIds: authorityStrings(record.sourceGrantIds, label, "sourceGrantIds"),
+	});
+}
+
+const DISCLOSURE_INTENT_KEYS = [
+	"intentId",
+	"issuerPrincipalId",
+	"recipientPrincipalId",
+	"resource",
+	"contentRef",
+	"kind",
+	"domains",
+	"purpose",
+	"sourceGrantIds",
+	"required",
+] as const;
+
+export function parseDisclosureIntentV1(value: unknown, label = "DisclosureIntentV1"): DisclosureIntentV1 {
+	const record = authorityRecord(value, label, DISCLOSURE_INTENT_KEYS);
+	return Object.freeze({
+		intentId: authorityString(record, label, "intentId"),
+		issuerPrincipalId: authorityString(record, label, "issuerPrincipalId"),
+		recipientPrincipalId: authorityString(record, label, "recipientPrincipalId"),
+		resource: parseResourceSelectorV1(record.resource, `${label}.resource`),
+		contentRef: parseArtifactRefV1(record.contentRef, `${label}.contentRef`),
+		kind: authorityEnum(record, label, "kind", KNOWN_DISCLOSURE_KINDS),
+		domains: authorityDomains(record.domains, label, "domains"),
+		purpose: authorityString(record, label, "purpose"),
+		sourceGrantIds: authorityStrings(record.sourceGrantIds, label, "sourceGrantIds"),
+		required: authorityBoolean(record, label, "required"),
+	});
+}
+
+const DELIVERY_CHANNEL_KEYS = [
+	"channelId",
+	"senderPrincipalIds",
+	"recipientPrincipalId",
+	"resourceSelectors",
+	"domains",
+	"messageKinds",
+	"revealCondition",
+	"maxMessageBytes",
+	"maxTotalBytes",
+	"maxMessages",
+	"expiresAt",
+	"onwardRecipientPrincipalIds",
+] as const;
+const KNOWN_REVEAL_CONDITIONS = ["open", "authorized-synthesis"] as const;
+
+export function parseDeliveryChannelV1(value: unknown, label = "DeliveryChannelV1"): DeliveryChannelV1 {
+	const record = authorityRecord(value, label, DELIVERY_CHANNEL_KEYS);
+	return Object.freeze({
+		channelId: authorityString(record, label, "channelId"),
+		senderPrincipalIds: authorityStrings(record.senderPrincipalIds, label, "senderPrincipalIds"),
+		recipientPrincipalId: authorityString(record, label, "recipientPrincipalId"),
+		resourceSelectors: Object.freeze(
+			authorityArray(record.resourceSelectors, label, "resourceSelectors").map((entry, index) =>
+				parseResourceSelectorV1(entry, `${label}.resourceSelectors[${index}]`),
+			),
+		),
+		domains: authorityDomains(record.domains, label, "domains"),
+		messageKinds: authorityEnums(record.messageKinds, label, "messageKinds", KNOWN_DISCLOSURE_KINDS),
+		revealCondition: authorityEnum(record, label, "revealCondition", KNOWN_REVEAL_CONDITIONS),
+		maxMessageBytes: authorityCount(record, label, "maxMessageBytes"),
+		maxTotalBytes: authorityCount(record, label, "maxTotalBytes"),
+		maxMessages: authorityCount(record, label, "maxMessages"),
+		expiresAt: authorityNullableCount(record, label, "expiresAt"),
+		onwardRecipientPrincipalIds: authorityStrings(
+			record.onwardRecipientPrincipalIds,
+			label,
+			"onwardRecipientPrincipalIds",
+		),
+	});
+}
+
+const COMMUNICATION_AUTHORITY_KEYS = [
+	"policy",
+	"visiblePrincipalIds",
+	"sendPrincipalIds",
+	"receivePrincipalIds",
+	"wakePrincipalIds",
+	"broadcastPrincipalIds",
+	"busyReplyPrincipalIds",
+	"controlPrincipalIds",
+	"delegablePrincipalIds",
+	"channelIds",
+] as const;
+
+export function parseCommunicationAuthorityV1(
+	value: unknown,
+	label = "CommunicationAuthorityV1",
+): CommunicationAuthorityV1 {
+	const record = authorityRecord(value, label, COMMUNICATION_AUTHORITY_KEYS);
+	return Object.freeze({
+		policy: parseWithValidator(record.policy, `${label}.policy`, validateCollaborationPolicy),
+		visiblePrincipalIds: authorityStrings(record.visiblePrincipalIds, label, "visiblePrincipalIds"),
+		sendPrincipalIds: authorityStrings(record.sendPrincipalIds, label, "sendPrincipalIds"),
+		receivePrincipalIds: authorityStrings(record.receivePrincipalIds, label, "receivePrincipalIds"),
+		wakePrincipalIds: authorityStrings(record.wakePrincipalIds, label, "wakePrincipalIds"),
+		broadcastPrincipalIds: authorityStrings(record.broadcastPrincipalIds, label, "broadcastPrincipalIds"),
+		busyReplyPrincipalIds: authorityStrings(record.busyReplyPrincipalIds, label, "busyReplyPrincipalIds"),
+		controlPrincipalIds: authorityStrings(record.controlPrincipalIds, label, "controlPrincipalIds"),
+		delegablePrincipalIds: authorityStrings(record.delegablePrincipalIds, label, "delegablePrincipalIds"),
+		channelIds: authorityStrings(record.channelIds, label, "channelIds"),
+	});
+}
+
+const OBSERVATION_AUTHORITY_KEYS = ["observers"] as const;
+const OBSERVER_KEYS = ["principalId", "rights"] as const;
+
+export function parseObservationAuthorityV1(value: unknown, label = "ObservationAuthorityV1"): ObservationAuthorityV1 {
+	const record = authorityRecord(value, label, OBSERVATION_AUTHORITY_KEYS);
+	return Object.freeze({
+		observers: Object.freeze(
+			authorityArray(record.observers, label, "observers").map((entry, index) => {
+				const observerLabel = `${label}.observers[${index}]`;
+				const observer = authorityRecord(entry, observerLabel, OBSERVER_KEYS);
+				return Object.freeze({
+					principalId: authorityString(observer, observerLabel, "principalId"),
+					rights: authorityEnums(observer.rights, observerLabel, "rights", KNOWN_OBSERVATION_RIGHTS),
+				});
+			}),
+		),
+	});
+}
+
+const SPAWN_AUTHORITY_KEYS = [
+	"maySpawn",
+	"mayDelegateSpawn",
+	"allowedAgentTypes",
+	"allowedLaunchClasses",
+	"maxDepth",
+	"maxChildren",
+	"delegableResourceGrantIds",
+] as const;
+
+export function parseSpawnAuthorityV1(value: unknown, label = "SpawnAuthorityV1"): SpawnAuthorityV1 {
+	const record = authorityRecord(value, label, SPAWN_AUTHORITY_KEYS);
+	return Object.freeze({
+		maySpawn: authorityBoolean(record, label, "maySpawn"),
+		mayDelegateSpawn: authorityBoolean(record, label, "mayDelegateSpawn"),
+		allowedAgentTypes: authorityStrings(record.allowedAgentTypes, label, "allowedAgentTypes"),
+		allowedLaunchClasses: authorityEnums(
+			record.allowedLaunchClasses,
+			label,
+			"allowedLaunchClasses",
+			KNOWN_LAUNCH_CLASSES,
+		),
+		maxDepth: authorityCount(record, label, "maxDepth"),
+		maxChildren: authorityCount(record, label, "maxChildren"),
+		delegableResourceGrantIds: authorityStrings(record.delegableResourceGrantIds, label, "delegableResourceGrantIds"),
+	});
+}
+
+const BUDGET_FINITE_KEYS = ["kind", "limits", "reservation"] as const;
+const BUDGET_LEGACY_KEYS = ["kind", "limits", "reservation", "zeroMeansUnlimited", "authorityRef"] as const;
+
+/**
+ * Strict parse of a launch budget.
+ *
+ * The `legacy` kind must carry an explicit `zeroMeansUnlimited: true` and an
+ * authority reference: unbounded budgeting is an authorized exception, never
+ * a default a record can fall into by omitting a field.
+ */
+export function parseLaunchBudgetV1(value: unknown, label = "LaunchBudgetV1"): LaunchBudgetV1 {
+	if (!isPlainObject(value)) throw new Error(`invalid_${label}: expected object`);
+	if (value.kind === "finite") {
+		const record = authorityRecord(value, label, BUDGET_FINITE_KEYS);
+		return Object.freeze({
+			kind: "finite" as const,
+			limits: parseRunLimitsV1(record.limits, `${label}.limits`),
+			reservation: parseReservationVector(record.reservation, `${label}.reservation`),
+		});
+	}
+	if (value.kind === "legacy") {
+		const record = authorityRecord(value, label, BUDGET_LEGACY_KEYS);
+		if (record.zeroMeansUnlimited !== true) {
+			throw new Error(`invalid_${label}: legacy budgets must declare zeroMeansUnlimited: true`);
+		}
+		return Object.freeze({
+			kind: "legacy" as const,
+			limits: parseRunLimitsV1(record.limits, `${label}.limits`),
+			reservation: parseReservationVector(record.reservation, `${label}.reservation`),
+			zeroMeansUnlimited: true as const,
+			authorityRef: authorityString(record, label, "authorityRef"),
+		});
+	}
+	throw new Error(`invalid_${label}: kind '${String(value.kind)}' is not a known budget kind`);
+}
+
+const RESULT_AUTHORITY_KEYS = [
+	"outputSchemaRef",
+	"maxOutputBytes",
+	"requiredCriterionIds",
+	"publicationRequired",
+	"mutation",
+	"publicationGrantIds",
+	"acceptedRecipientPrincipalIds",
+] as const;
+
+export function parseResultAuthorityV1(value: unknown, label = "ResultAuthorityV1"): ResultAuthorityV1 {
+	const record = authorityRecord(value, label, RESULT_AUTHORITY_KEYS);
+	return Object.freeze({
+		outputSchemaRef: authorityNullableString(record, label, "outputSchemaRef"),
+		maxOutputBytes: authorityCount(record, label, "maxOutputBytes"),
+		requiredCriterionIds: authorityStrings(record.requiredCriterionIds, label, "requiredCriterionIds"),
+		publicationRequired: authorityBoolean(record, label, "publicationRequired"),
+		mutation: parseMutationContractV1(record.mutation, `${label}.mutation`),
+		publicationGrantIds: authorityStrings(record.publicationGrantIds, label, "publicationGrantIds"),
+		acceptedRecipientPrincipalIds: authorityStrings(
+			record.acceptedRecipientPrincipalIds,
+			label,
+			"acceptedRecipientPrincipalIds",
+		),
+	});
+}
+
+const RUNTIME_GUARANTEE_KEYS = [
+	"initialContext",
+	"transcriptAccess",
+	"serviceAccess",
+	"artifactAccess",
+	"memoryAccess",
+	"evalState",
+	"filesystemRead",
+	"filesystemWrite",
+	"process",
+	"network",
+	"credentials",
+] as const;
+
+/**
+ * Accepted values per dimension are read from the same satisfaction table
+ * `compareRuntimeGuarantees` uses, so a new guarantee value cannot be
+ * parseable while being uncomparable.
+ */
+function guaranteeValue<K extends keyof RuntimeGuaranteesV1>(
+	record: Record<string, unknown>,
+	label: string,
+	dimension: K,
+): RuntimeGuaranteesV1[K] {
+	const accepted = Object.keys(GUARANTEE_SATISFACTION[dimension] ?? {});
+	const value = record[dimension];
+	if (typeof value !== "string" || !accepted.includes(value)) {
+		throw new Error(`invalid_${label}: ${dimension} '${String(value)}' is not a known guarantee`);
+	}
+	return value as RuntimeGuaranteesV1[K];
+}
+
+export function parseRuntimeGuaranteesV1(value: unknown, label = "RuntimeGuaranteesV1"): RuntimeGuaranteesV1 {
+	const record = authorityRecord(value, label, RUNTIME_GUARANTEE_KEYS);
+	return Object.freeze({
+		initialContext: guaranteeValue(record, label, "initialContext"),
+		transcriptAccess: guaranteeValue(record, label, "transcriptAccess"),
+		serviceAccess: guaranteeValue(record, label, "serviceAccess"),
+		artifactAccess: guaranteeValue(record, label, "artifactAccess"),
+		memoryAccess: guaranteeValue(record, label, "memoryAccess"),
+		evalState: guaranteeValue(record, label, "evalState"),
+		filesystemRead: guaranteeValue(record, label, "filesystemRead"),
+		filesystemWrite: guaranteeValue(record, label, "filesystemWrite"),
+		process: guaranteeValue(record, label, "process"),
+		network: guaranteeValue(record, label, "network"),
+		credentials: guaranteeValue(record, label, "credentials"),
+	});
+}
+
+const COMPATIBILITY_EXCEPTION_KEYS = [
+	"classification",
+	"code",
+	"resourceKind",
+	"requiredGuarantee",
+	"actualGuarantee",
+	"reason",
+	"authorityRef",
+] as const;
+
+export function parseCompatibilityExceptionV1(
+	value: unknown,
+	label = "CompatibilityExceptionV1",
+): CompatibilityExceptionV1 {
+	const record = authorityRecord(value, label, COMPATIBILITY_EXCEPTION_KEYS);
+	return Object.freeze({
+		classification: authorityEnum(record, label, "classification", KNOWN_COMPATIBILITY_CLASSIFICATIONS),
+		code: authorityString(record, label, "code"),
+		resourceKind: authorityString(record, label, "resourceKind"),
+		requiredGuarantee: authorityNullableString(record, label, "requiredGuarantee"),
+		actualGuarantee: authorityString(record, label, "actualGuarantee"),
+		reason: authorityString(record, label, "reason"),
+		authorityRef: authorityNullableString(record, label, "authorityRef"),
+	});
+}
+
+const LAUNCH_AUTHORITY_KEYS = [
+	"schemaVersion",
+	"launchClass",
+	"contextMode",
+	"baseContextManifest",
+	"workspaceInstructionRefs",
+	"agentTemplateRef",
+	"initialDisclosures",
+	"deliveryChannels",
+	"usableCapabilities",
+	"delegableCapabilities",
+	"resources",
+	"collaboration",
+	"observation",
+	"spawn",
+	"budget",
+	"result",
+	"requiredRuntimeGuarantees",
+	"compatibility",
+] as const;
+
+/**
+ * Strict parse of the authority a child may hold.
+ *
+ * Structural only, exactly like `compileLaunchAuthority`: whether the issuer
+ * was entitled to issue this authority is decided by the compiler and the
+ * admission transaction, not by a decoder.
+ */
+export function parseLaunchAuthorityV1(value: unknown, label = "LaunchAuthorityV1"): LaunchAuthorityV1 {
+	const record = authorityRecord(value, label, LAUNCH_AUTHORITY_KEYS);
+	if (record.schemaVersion !== 1) throw new Error(`invalid_${label}: schemaVersion must be 1`);
+	return Object.freeze({
+		schemaVersion: 1 as const,
+		launchClass: authorityEnum(record, label, "launchClass", KNOWN_LAUNCH_CLASSES),
+		contextMode: parseContextMode(record.contextMode, `${label}.contextMode`),
+		baseContextManifest: parseBaseContextManifestV1(record.baseContextManifest, `${label}.baseContextManifest`),
+		workspaceInstructionRefs: Object.freeze(
+			authorityArray(record.workspaceInstructionRefs, label, "workspaceInstructionRefs").map((entry, index) =>
+				parseArtifactRefV1(entry, `${label}.workspaceInstructionRefs[${index}]`),
+			),
+		),
+		agentTemplateRef: parseArtifactRefV1(record.agentTemplateRef, `${label}.agentTemplateRef`),
+		initialDisclosures: Object.freeze(
+			authorityArray(record.initialDisclosures, label, "initialDisclosures").map((entry, index) =>
+				parseDisclosureIntentV1(entry, `${label}.initialDisclosures[${index}]`),
+			),
+		),
+		deliveryChannels: Object.freeze(
+			authorityArray(record.deliveryChannels, label, "deliveryChannels").map((entry, index) =>
+				parseDeliveryChannelV1(entry, `${label}.deliveryChannels[${index}]`),
+			),
+		),
+		usableCapabilities: authorityCapabilities(record.usableCapabilities, label, "usableCapabilities"),
+		delegableCapabilities: authorityCapabilities(record.delegableCapabilities, label, "delegableCapabilities"),
+		resources: Object.freeze(
+			authorityArray(record.resources, label, "resources").map((entry, index) =>
+				parseResourceAuthorityV1(entry, `${label}.resources[${index}]`),
+			),
+		),
+		collaboration: parseCommunicationAuthorityV1(record.collaboration, `${label}.collaboration`),
+		observation: parseObservationAuthorityV1(record.observation, `${label}.observation`),
+		spawn: parseSpawnAuthorityV1(record.spawn, `${label}.spawn`),
+		budget: parseLaunchBudgetV1(record.budget, `${label}.budget`),
+		result: parseResultAuthorityV1(record.result, `${label}.result`),
+		requiredRuntimeGuarantees: parseRuntimeGuaranteesV1(
+			record.requiredRuntimeGuarantees,
+			`${label}.requiredRuntimeGuarantees`,
+		),
+		compatibility: Object.freeze(
+			authorityArray(record.compatibility, label, "compatibility").map((entry, index) =>
+				parseCompatibilityExceptionV1(entry, `${label}.compatibility[${index}]`),
+			),
+		),
+	});
+}
+
+export const AUTHORITY_ENVELOPE_KEYS = [
+	"schemaVersion",
+	"usableCapabilities",
+	"delegableCapabilities",
+	"resources",
+	"collaboration",
+	"spawn",
+	"budget",
+	"result",
+] as const;
+
+export function parseAuthorityEnvelopeV1(value: unknown, label = "AuthorityEnvelopeV1"): AuthorityEnvelopeV1 {
+	const record = authorityRecord(value, label, AUTHORITY_ENVELOPE_KEYS);
+	if (record.schemaVersion !== 1) throw new Error(`invalid_${label}: schemaVersion must be 1`);
+	return Object.freeze({
+		schemaVersion: 1 as const,
+		usableCapabilities: authorityCapabilities(record.usableCapabilities, label, "usableCapabilities"),
+		delegableCapabilities: authorityCapabilities(record.delegableCapabilities, label, "delegableCapabilities"),
+		resources: Object.freeze(
+			authorityArray(record.resources, label, "resources").map((entry, index) =>
+				parseResourceAuthorityV1(entry, `${label}.resources[${index}]`),
+			),
+		),
+		collaboration: parseCommunicationAuthorityV1(record.collaboration, `${label}.collaboration`),
+		spawn: parseSpawnAuthorityV1(record.spawn, `${label}.spawn`),
+		budget: parseLaunchBudgetV1(record.budget, `${label}.budget`),
+		result: parseResultAuthorityV1(record.result, `${label}.result`),
+	});
+}
+
+export const LAUNCH_AUTHORIZATION_SNAPSHOT_KEYS = [
+	"schemaVersion",
+	"authorizationRef",
+	"issuerPrincipalId",
+	"rootPrincipalId",
+	"parentPrincipalId",
+	"childPrincipalId",
+	"contractId",
+	"contractRevision",
+	"priorContractDigest",
+	"issuerPolicyEpoch",
+	"entryPoint",
+	"reason",
+	"requestedAuthority",
+	"sourceGrants",
+	"parentDelegable",
+	"hostMaximum",
+	"agentMaximum",
+	"workflowMaximum",
+	"toolCatalogDigest",
+] as const;
+
+export function parseLaunchAuthorizationSnapshotV1(
+	value: unknown,
+	label = "LaunchAuthorizationSnapshotV1",
+): LaunchAuthorizationSnapshotV1 {
+	const record = authorityRecord(value, label, LAUNCH_AUTHORIZATION_SNAPSHOT_KEYS);
+	if (record.schemaVersion !== 1) throw new Error(`invalid_${label}: schemaVersion must be 1`);
+	const contractRevision = authorityCount(record, label, "contractRevision");
+	if (contractRevision < 1) throw new Error(`invalid_${label}: contractRevision must be >= 1`);
+	if (record.priorContractDigest !== null && typeof record.priorContractDigest !== "string") {
+		throw new Error(`invalid_${label}: priorContractDigest must be a 64-hex digest or null`);
+	}
+	const priorContractDigest =
+		record.priorContractDigest === null ? null : authorityHash(record, label, "priorContractDigest");
+	return Object.freeze({
+		schemaVersion: 1 as const,
+		authorizationRef: authorityString(record, label, "authorizationRef"),
+		issuerPrincipalId: authorityString(record, label, "issuerPrincipalId"),
+		rootPrincipalId: authorityString(record, label, "rootPrincipalId"),
+		parentPrincipalId: authorityString(record, label, "parentPrincipalId"),
+		childPrincipalId: authorityString(record, label, "childPrincipalId"),
+		contractId: authorityString(record, label, "contractId"),
+		contractRevision,
+		priorContractDigest,
+		issuerPolicyEpoch: authorityCount(record, label, "issuerPolicyEpoch"),
+		entryPoint: authorityString(record, label, "entryPoint"),
+		reason: authorityString(record, label, "reason"),
+		requestedAuthority: parseLaunchAuthorityV1(record.requestedAuthority, `${label}.requestedAuthority`),
+		sourceGrants: Object.freeze(
+			authorityArray(record.sourceGrants, label, "sourceGrants").map(entry => parseGrantRecordV1(entry)),
+		),
+		parentDelegable: parseAuthorityEnvelopeV1(record.parentDelegable, `${label}.parentDelegable`),
+		hostMaximum: parseAuthorityEnvelopeV1(record.hostMaximum, `${label}.hostMaximum`),
+		agentMaximum: parseAuthorityEnvelopeV1(record.agentMaximum, `${label}.agentMaximum`),
+		workflowMaximum: parseAuthorityEnvelopeV1(record.workflowMaximum, `${label}.workflowMaximum`),
+		toolCatalogDigest: authorityHash(record, label, "toolCatalogDigest"),
+	});
+}
+
+export const KNOWN_GRANT_EVENT_KINDS = ["issued", "revoked", "superseded"] as const;
+
+export const GRANT_EVENT_KEYS = [
+	"eventId",
+	"grantId",
+	"kind",
+	"actorPrincipalId",
+	"policyEpoch",
+	"reason",
+	"recordDigest",
+	"occurredAt",
+] as const;
+
+export function parseGrantEventV1(value: unknown, label = "GrantEventV1"): GrantEventV1 {
+	const record = authorityRecord(value, label, GRANT_EVENT_KEYS);
+	return Object.freeze({
+		eventId: authorityString(record, label, "eventId"),
+		grantId: authorityString(record, label, "grantId"),
+		kind: authorityEnum(record, label, "kind", KNOWN_GRANT_EVENT_KINDS),
+		actorPrincipalId: authorityString(record, label, "actorPrincipalId"),
+		policyEpoch: authorityCount(record, label, "policyEpoch"),
+		reason: authorityString(record, label, "reason"),
+		recordDigest: authorityHash(record, label, "recordDigest"),
+		occurredAt: authorityCount(record, label, "occurredAt"),
+	});
+}
+
+const LAUNCH_AUTHORITY_REF_KEYS = [
+	"bindingId",
+	"principalId",
+	"attemptId",
+	"contractId",
+	"contractRevision",
+	"contractDigest",
+	"policyEpoch",
+] as const;
+
+/**
+ * Strict parse of a pinned authority reference.
+ *
+ * Every field is required: a ref missing its digest or epoch would name a
+ * binding without pinning WHICH revision of it, which is precisely how a
+ * stale or superseded authority survives a restart.
+ */
+export function parseLaunchAuthorityRefV1(value: unknown, label = "LaunchAuthorityRefV1"): LaunchAuthorityRefV1 {
+	const record = authorityRecord(value, label, LAUNCH_AUTHORITY_REF_KEYS);
+	const contractRevision = authorityCount(record, label, "contractRevision");
+	if (contractRevision < 1) throw new Error(`invalid_${label}: contractRevision must be >= 1`);
+	return Object.freeze({
+		bindingId: authorityString(record, label, "bindingId"),
+		principalId: authorityString(record, label, "principalId"),
+		attemptId: authorityString(record, label, "attemptId"),
+		contractId: authorityString(record, label, "contractId"),
+		contractRevision,
+		contractDigest: authorityHash(record, label, "contractDigest"),
+		policyEpoch: authorityCount(record, label, "policyEpoch"),
+	});
+}
+
+const COMPILED_CONTRACT_KEYS = [
+	"schemaVersion",
+	"policyVersion",
+	"contractId",
+	"contractRevision",
+	"contractDigest",
+	"priorContractDigest",
+	"rootPrincipalId",
+	"parentPrincipalId",
+	"childPrincipalId",
+	"capsule",
+	"policy",
+	"missionHash",
+	"policyHash",
+	"authority",
+	"provenance",
+] as const;
+const PROVENANCE_KEYS = ["authorizationRef", "reason", "issuerPrincipalId"] as const;
+
+/**
+ * Strict parse of a compiled contract read back from storage.
+ *
+ * Recomputes the mission hash, the policy hash and the contract digest from
+ * the reconstructed record. A stored contract whose body was edited after
+ * compilation therefore fails here, instead of being handed to a binding as
+ * if the compiler had approved it.
+ */
+export function parseCompiledLaunchContract(value: unknown, label = "CompiledLaunchContract"): CompiledLaunchContract {
+	const record = authorityRecord(value, label, COMPILED_CONTRACT_KEYS);
+	if (record.schemaVersion !== 2) throw new Error(`invalid_${label}: schemaVersion must be 2`);
+	if (record.policyVersion !== 1) throw new Error(`invalid_${label}: policyVersion must be 1`);
+	const contractRevision = authorityCount(record, label, "contractRevision");
+	if (contractRevision < 1) throw new Error(`invalid_${label}: contractRevision must be >= 1`);
+	const capsule = parseWithValidator(record.capsule, `${label}.capsule`, validateMissionCapsule);
+	const policy = parseWithValidator(record.policy, `${label}.policy`, validateRuntimePolicy);
+	const missionHash = authorityHash(record, label, "missionHash");
+	const policyHash = authorityHash(record, label, "policyHash");
+	if (computeMissionHash(capsule) !== missionHash) {
+		throw new Error(`invalid_${label}: contract_hash_mismatch (missionHash does not match the capsule)`);
+	}
+	if (computePolicyHash(policy) !== policyHash) {
+		throw new Error(`invalid_${label}: contract_hash_mismatch (policyHash does not match the policy)`);
+	}
+	const provenanceLabel = `${label}.provenance`;
+	const provenance = authorityRecord(record.provenance, provenanceLabel, PROVENANCE_KEYS);
+	const body = {
+		schemaVersion: 2 as const,
+		policyVersion: 1 as const,
+		contractId: authorityString(record, label, "contractId"),
+		contractRevision,
+		priorContractDigest:
+			record.priorContractDigest === null ? null : authorityHash(record, label, "priorContractDigest"),
+		rootPrincipalId: authorityString(record, label, "rootPrincipalId"),
+		parentPrincipalId: authorityString(record, label, "parentPrincipalId"),
+		childPrincipalId: authorityString(record, label, "childPrincipalId"),
+		capsule,
+		policy,
+		missionHash,
+		policyHash,
+		authority: parseLaunchAuthorityV1(record.authority, `${label}.authority`),
+		provenance: Object.freeze({
+			authorizationRef: authorityString(provenance, provenanceLabel, "authorizationRef"),
+			reason: authorityString(provenance, provenanceLabel, "reason"),
+			issuerPrincipalId: authorityString(provenance, provenanceLabel, "issuerPrincipalId"),
+		}),
+	};
+	const contractDigest = authorityHash(record, label, "contractDigest");
+	if (computeLaunchContractDigest(body) !== contractDigest) {
+		throw new Error(`invalid_${label}: contract_digest_mismatch`);
+	}
+	return Object.freeze({ ...body, contractDigest });
+}
+
+const BINDING_KEYS = [
+	"schemaVersion",
+	"bindingId",
+	"contractId",
+	"contractRevision",
+	"contractDigest",
+	"rootPrincipalId",
+	"parentPrincipalId",
+	"childPrincipalId",
+	"attemptId",
+	"sessionId",
+	"processRef",
+	"policyEpoch",
+	"contextGeneration",
+	"state",
+	"grantBindings",
+	"serviceBindings",
+	"actualRuntimeGuarantees",
+	"guaranteeEvidenceRefs",
+	"reservationId",
+	"lifecycle",
+	"expiresAt",
+	"restoresBindingId",
+] as const;
+const GRANT_BINDING_KEYS = ["intentId", "grantId", "recordDigest"] as const;
+const SERVICE_BINDING_KEYS = ["kind", "adapterId", "namespace", "guarantee"] as const;
+const BINDING_LIFECYCLE_KEYS = [
+	"runId",
+	"nodeId",
+	"ownerNodeId",
+	"jobId",
+	"leaseEpoch",
+	"cancellationGeneration",
+] as const;
+
+function parseBindingLifecycle(value: unknown, label: string): LaunchBinding["lifecycle"] {
+	if (value === null) return null;
+	const record = authorityRecord(value, label, BINDING_LIFECYCLE_KEYS);
+	return Object.freeze({
+		runId: authorityString(record, label, "runId"),
+		nodeId: authorityString(record, label, "nodeId"),
+		ownerNodeId: authorityNullableString(record, label, "ownerNodeId"),
+		jobId: authorityString(record, label, "jobId"),
+		leaseEpoch: authorityCount(record, label, "leaseEpoch"),
+		cancellationGeneration: authorityCount(record, label, "cancellationGeneration"),
+	});
+}
+
+/**
+ * Strict parse of the persisted binding record (§14.2).
+ *
+ * Also enforces the state-to-evidence invariant through
+ * `validateLaunchBindingGuarantees`, so a decoded `bound`/`active` row can
+ * never advertise protections nobody measured.
+ */
+export function parseLaunchBinding(value: unknown, label = "LaunchBinding"): LaunchBinding {
+	const record = authorityRecord(value, label, BINDING_KEYS);
+	if (record.schemaVersion !== 1) throw new Error(`invalid_${label}: schemaVersion must be 1`);
+	const contractRevision = authorityCount(record, label, "contractRevision");
+	if (contractRevision < 1) throw new Error(`invalid_${label}: contractRevision must be >= 1`);
+	const binding: LaunchBinding = Object.freeze({
+		schemaVersion: 1 as const,
+		bindingId: authorityString(record, label, "bindingId"),
+		contractId: authorityString(record, label, "contractId"),
+		contractRevision,
+		contractDigest: authorityHash(record, label, "contractDigest"),
+		rootPrincipalId: authorityString(record, label, "rootPrincipalId"),
+		parentPrincipalId: authorityString(record, label, "parentPrincipalId"),
+		childPrincipalId: authorityString(record, label, "childPrincipalId"),
+		attemptId: authorityString(record, label, "attemptId"),
+		sessionId: authorityNullableString(record, label, "sessionId"),
+		processRef: authorityNullableString(record, label, "processRef"),
+		policyEpoch: authorityCount(record, label, "policyEpoch"),
+		contextGeneration: authorityCount(record, label, "contextGeneration"),
+		state: authorityEnum(record, label, "state", KNOWN_LAUNCH_BINDING_STATES),
+		grantBindings: Object.freeze(
+			authorityArray(record.grantBindings, label, "grantBindings").map((entry, index) => {
+				const grantLabel = `${label}.grantBindings[${index}]`;
+				const grant = authorityRecord(entry, grantLabel, GRANT_BINDING_KEYS);
+				return Object.freeze({
+					intentId: authorityString(grant, grantLabel, "intentId"),
+					grantId: authorityString(grant, grantLabel, "grantId"),
+					recordDigest: authorityHash(grant, grantLabel, "recordDigest"),
+				});
+			}),
+		),
+		serviceBindings: Object.freeze(
+			authorityArray(record.serviceBindings, label, "serviceBindings").map((entry, index) => {
+				const serviceLabel = `${label}.serviceBindings[${index}]`;
+				const service = authorityRecord(entry, serviceLabel, SERVICE_BINDING_KEYS);
+				return Object.freeze({
+					kind: authorityEnum(service, serviceLabel, "kind", KNOWN_RESOURCE_KINDS),
+					adapterId: authorityString(service, serviceLabel, "adapterId"),
+					namespace: authorityString(service, serviceLabel, "namespace"),
+					guarantee: authorityString(service, serviceLabel, "guarantee"),
+				});
+			}),
+		),
+		actualRuntimeGuarantees:
+			record.actualRuntimeGuarantees === null
+				? null
+				: parseRuntimeGuaranteesV1(record.actualRuntimeGuarantees, `${label}.actualRuntimeGuarantees`),
+		guaranteeEvidenceRefs: Object.freeze(
+			authorityArray(record.guaranteeEvidenceRefs, label, "guaranteeEvidenceRefs").map((entry, index) =>
+				parseArtifactRefV1(entry, `${label}.guaranteeEvidenceRefs[${index}]`),
+			),
+		),
+		reservationId: authorityNullableString(record, label, "reservationId"),
+		lifecycle: parseBindingLifecycle(record.lifecycle, `${label}.lifecycle`),
+		expiresAt: authorityNullableCount(record, label, "expiresAt"),
+		restoresBindingId: authorityNullableString(record, label, "restoresBindingId"),
+	});
+	validateLaunchBindingGuarantees(binding);
+	return binding;
+}
+
+/**
+ * Project a persisted binding onto the authority reference that pins it.
+ *
+ * Derived, never authored: every field is copied from the durable record, so
+ * a fence or an evidence manifest names exactly the binding, revision and
+ * epoch it was produced under rather than a value its writer chose.
+ * `principalId` is the CHILD principal, matching `LaunchAuthorityRefV1`.
+ */
+export function launchAuthorityRefFor(binding: LaunchBinding): LaunchAuthorityRefV1 {
+	return Object.freeze({
+		bindingId: binding.bindingId,
+		principalId: binding.childPrincipalId,
+		attemptId: binding.attemptId,
+		contractId: binding.contractId,
+		contractRevision: binding.contractRevision,
+		contractDigest: binding.contractDigest,
+		policyEpoch: binding.policyEpoch,
+	});
+}
+
 // --- Authority compilation (§14.3) -----------------------------------------
 
 /** Canonical identity for a source-qualified capability. */
@@ -2763,7 +3799,7 @@ export function compileLaunchAuthority(snapshot: LaunchAuthorizationSnapshotV1):
 	}
 
 	const ceilings = [
-		snapshot.parentDelegable.usableCapabilities,
+		snapshot.parentDelegable.delegableCapabilities,
 		snapshot.agentMaximum.usableCapabilities,
 		snapshot.workflowMaximum.usableCapabilities,
 		snapshot.hostMaximum.usableCapabilities,
@@ -2781,9 +3817,9 @@ export function compileLaunchAuthority(snapshot: LaunchAuthorizationSnapshotV1):
 
 	const delegableCeilings = [
 		snapshot.parentDelegable.delegableCapabilities,
-		snapshot.agentMaximum.usableCapabilities,
-		snapshot.workflowMaximum.usableCapabilities,
-		snapshot.hostMaximum.usableCapabilities,
+		snapshot.agentMaximum.delegableCapabilities,
+		snapshot.workflowMaximum.delegableCapabilities,
+		snapshot.hostMaximum.delegableCapabilities,
 	];
 	const delegableCapabilities = intersectCapabilities(requested.delegableCapabilities, delegableCeilings);
 	for (const capability of requested.delegableCapabilities) {

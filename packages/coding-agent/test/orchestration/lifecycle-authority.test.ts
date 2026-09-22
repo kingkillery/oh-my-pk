@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import {
 	authorizeLifecycleAction,
 	type CapabilityRequest,
+	deriveChildLifecycleContext,
+	getLifecycleRegistration,
 	type LifecycleAuthorityRegistration,
 	type LifecycleExecutionContext,
 	registerLifecycleExecutionContext,
@@ -109,6 +111,58 @@ describe("Lifecycle dispatch authority (A05)", () => {
 		const decision = authorizeLifecycleAction(revocable, request("escalate_owner"));
 		expect(decision.allowed).toBe(false);
 		if (!decision.allowed) expect(decision.code).toBe("missing_lifecycle_binding");
+	});
+
+	it("does not turn revoked or forged parent authority into an unscoped child", () => {
+		const parent = registerWorker({ role: "root-planner" });
+		const child = { role: "worker" as const, nodeId: "child", attemptId: "child-attempt" };
+		const registeredChild = deriveChildLifecycleContext(parent, child);
+		expect(getLifecycleRegistration(registeredChild)?.role).toBe("worker");
+		revokeLifecycleExecutionContext(parent);
+		for (const invalidParent of [parent, {} as LifecycleExecutionContext]) {
+			expect(() => deriveChildLifecycleContext(invalidParent, child)).toThrow("missing_lifecycle_binding");
+		}
+	});
+
+	it("snapshots caller-owned capability and root arrays at registration", () => {
+		const capability = { source: "builtin" as const, name: "read" };
+		const usableCapabilities = [capability];
+		const readableRoots = ["src"];
+		const writableRoots = ["src"];
+		const context = registerWorker({ usableCapabilities, readableRoots, writableRoots });
+		capability.name = "bash";
+		usableCapabilities.push({ source: "builtin", name: "write" });
+		readableRoots.push("private");
+		writableRoots.push("private");
+		expect(authorizeLifecycleAction(context, request("invoke_tool", "read")).allowed).toBe(true);
+		expect(authorizeLifecycleAction(context, request("invoke_tool", "bash")).allowed).toBe(false);
+		expect(authorizeLifecycleAction(context, request("invoke_tool", "write")).allowed).toBe(false);
+		for (const effect of ["read", "local-write"] as const) {
+			expect(
+				authorizeLifecycleAction(context, {
+					...request("invoke_tool", "read"),
+					effect,
+					targets: ["private/secret"],
+				}).allowed,
+			).toBe(false);
+		}
+	});
+
+	it("does not expose mutable authority through registration readback", () => {
+		const context = registerWorker();
+		const registration = getLifecycleRegistration(context)!;
+		expect(Reflect.set(registration.usableCapabilities[0]!, "name", "bash")).toBe(false);
+		expect(Reflect.set(registration.usableCapabilities, "0", { source: "builtin", name: "bash" })).toBe(false);
+		expect(Reflect.set(registration.readableRoots, "0", ".")).toBe(false);
+		expect(Reflect.set(registration.writableRoots, "0", ".")).toBe(false);
+		expect(authorizeLifecycleAction(context, request("invoke_tool", "bash")).allowed).toBe(false);
+		expect(
+			authorizeLifecycleAction(context, {
+				...request("invoke_tool", "read"),
+				effect: "read",
+				targets: ["private/secret"],
+			}).allowed,
+		).toBe(false);
 	});
 
 	it("denies a tool outside the registered capabilities, by source as well as name", () => {

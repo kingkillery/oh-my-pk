@@ -165,3 +165,212 @@ describe("applyEligibleNestedPatches", () => {
 		expect(suffix).toContain("<system-notification>");
 	});
 });
+
+describe("runIsolatedSubprocess lifecycle capture", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("records capture on branch merge failure and skips cleanup when capture fails", async () => {
+		const { runIsolatedSubprocess } = await import("@pk-nerdsaver-ai/pi-coding-agent/task/isolation-runner");
+		const captureModule = await import("../../src/task/lifecycle-capture");
+		const executorModule = await import("../../src/task/executor");
+		const { parseLaunchAuthorityRefV1 } = await import("../../src/task/launch-contract");
+
+		vi.spyOn(worktreeModule, "ensureIsolation").mockResolvedValue({
+			mergedDir: "/tmp/iso-merged",
+			backend: 0 as never,
+			fellBack: false,
+			fallbackReason: null,
+		});
+		const cleanup = vi.spyOn(worktreeModule, "cleanupIsolation").mockResolvedValue(undefined);
+		vi.spyOn(worktreeModule, "commitToBranch").mockRejectedValue(new Error("commit refused"));
+		const gitModule = await import("../../src/utils/git");
+		vi.spyOn(gitModule.branch, "tryDelete").mockResolvedValue(true);
+		vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(
+			result({ exitCode: 0, error: undefined, aborted: false }),
+		);
+		vi.spyOn(captureModule, "captureLifecycleArtifacts").mockResolvedValue({
+			ok: false,
+			code: "capture-failed",
+			attemptId: "att-merge",
+			retainedWorkspace: "/tmp/iso-merged",
+			failures: [{ stage: "manifest", message: "forced" }],
+		} as never);
+
+		const launchAuthority = parseLaunchAuthorityRefV1({
+			bindingId: "binding-contract-1-1-att-merge",
+			principalId: "child-principal-1",
+			attemptId: "att-merge",
+			contractId: "contract-1",
+			contractRevision: 1,
+			contractDigest: "f".repeat(64),
+			policyEpoch: 1,
+		});
+
+		const isolated = await runIsolatedSubprocess({
+			baseOptions: { cwd: "/tmp", agent: { name: "task" } } as never,
+			context: {
+				repoRoot: "/tmp/repo",
+				baseline: {
+					root: {
+						repoRoot: "/tmp/repo",
+						headCommit: "abc",
+						staged: "",
+						unstaged: "",
+						untracked: [],
+						untrackedPatch: "",
+					},
+					nested: [],
+				},
+			},
+			preferredBackend: undefined,
+			agentId: "NestedOnly",
+			mergeMode: "branch",
+			artifactsDir: "/tmp/arts",
+			buildFailureResult: err => result({ error: String(err), exitCode: 1 }),
+			lifecycle: {
+				runId: "run-1",
+				nodeId: "node-1",
+				attemptId: "att-merge",
+				launchAuthority,
+			},
+		});
+
+		expect(isolated.error).toContain("Merge failed");
+		expect(captureModule.captureLifecycleArtifacts).toHaveBeenCalled();
+		expect(cleanup).not.toHaveBeenCalled();
+	});
+
+	it("derives capture identity from baseOptions.lifecycle when opts.lifecycle is omitted", async () => {
+		const { runIsolatedSubprocess } = await import("@pk-nerdsaver-ai/pi-coding-agent/task/isolation-runner");
+		const captureModule = await import("../../src/task/lifecycle-capture");
+		const executorModule = await import("../../src/task/executor");
+		const { parseLaunchAuthorityRefV1 } = await import("../../src/task/launch-contract");
+		const { registerLifecycleExecutionContext } = await import("../../src/orchestration/lifecycle-authority");
+
+		vi.spyOn(worktreeModule, "ensureIsolation").mockResolvedValue({
+			mergedDir: "/tmp/iso-derived",
+			backend: 0 as never,
+			fellBack: false,
+			fallbackReason: null,
+		});
+		vi.spyOn(worktreeModule, "cleanupIsolation").mockResolvedValue(undefined);
+		vi.spyOn(worktreeModule, "commitToBranch").mockResolvedValue({
+			branchName: "omp/task/Derived",
+			nestedPatches: [],
+		});
+		vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(
+			result({ exitCode: 0, error: undefined, aborted: false }),
+		);
+		const capture = vi.spyOn(captureModule, "captureLifecycleArtifacts").mockResolvedValue({
+			ok: true,
+			manifest: { launchAuthority: { bindingId: "binding-contract-1-1-att-derived" } },
+			manifestRef: { uri: "file://manifest" },
+			manifestPath: "/tmp/arts/att-derived.manifest.json",
+			manifestRefPath: "/tmp/arts/att-derived.manifest-ref.json",
+			rootPatchPath: "/tmp/arts/att-derived.patch",
+			delta: { rootPatch: "diff", nestedPatches: [] },
+		} as never);
+
+		const launchAuthority = parseLaunchAuthorityRefV1({
+			bindingId: "binding-contract-1-1-att-derived",
+			principalId: "child-principal-1",
+			attemptId: "att-derived",
+			contractId: "contract-1",
+			contractRevision: 1,
+			contractDigest: "f".repeat(64),
+			policyEpoch: 1,
+		});
+		const lifecycle = registerLifecycleExecutionContext({
+			mode: "direct-v1",
+			role: "worker",
+			runId: "run-derived",
+			nodeId: "node-derived",
+			attemptId: "att-derived",
+			policyEpoch: 1,
+			authority: launchAuthority,
+			usableCapabilities: [],
+			repoRoot: "/tmp/repo",
+			readableRoots: ["/tmp/repo"],
+			writableRoots: ["/tmp/repo"],
+			allowExternalWrite: false,
+		});
+
+		await runIsolatedSubprocess({
+			baseOptions: { cwd: "/tmp", agent: { name: "task" }, lifecycle } as never,
+			context: {
+				repoRoot: "/tmp/repo",
+				baseline: {
+					root: {
+						repoRoot: "/tmp/repo",
+						headCommit: "abc",
+						staged: "",
+						unstaged: "",
+						untracked: [],
+						untrackedPatch: "",
+					},
+					nested: [],
+				},
+			},
+			preferredBackend: undefined,
+			agentId: "Derived",
+			mergeMode: "branch",
+			artifactsDir: "/tmp/arts",
+			buildFailureResult: err => result({ error: String(err), exitCode: 1 }),
+		});
+
+		expect(capture).toHaveBeenCalled();
+		const input = capture.mock.calls[0]?.[0] as { attemptId?: string; launchAuthority?: { bindingId: string } };
+		expect(input.attemptId).toBe("att-derived");
+		expect(input.launchAuthority?.bindingId).toBe(launchAuthority.bindingId);
+	});
+
+	it("retains a bound workspace when the subprocess rejects before capture", async () => {
+		const { runIsolatedSubprocess } = await import("@pk-nerdsaver-ai/pi-coding-agent/task/isolation-runner");
+		const executorModule = await import("../../src/task/executor");
+		const { parseLaunchAuthorityRefV1 } = await import("../../src/task/launch-contract");
+		vi.spyOn(worktreeModule, "ensureIsolation").mockResolvedValue({
+			mergedDir: "/tmp/iso-throw",
+			backend: 0 as never,
+			fellBack: false,
+			fallbackReason: null,
+		});
+		const cleanup = vi.spyOn(worktreeModule, "cleanupIsolation").mockResolvedValue(undefined);
+		vi.spyOn(executorModule, "runSubprocess").mockRejectedValue(new Error("pinned provider unavailable"));
+		const launchAuthority = parseLaunchAuthorityRefV1({
+			bindingId: "binding-contract-1-1-att-throw",
+			principalId: "child-principal-1",
+			attemptId: "att-throw",
+			contractId: "contract-1",
+			contractRevision: 1,
+			contractDigest: "f".repeat(64),
+			policyEpoch: 1,
+		});
+		const failed = await runIsolatedSubprocess({
+			baseOptions: { cwd: "/tmp", agent: { name: "task" } } as never,
+			context: {
+				repoRoot: "/tmp/repo",
+				baseline: {
+					root: {
+						repoRoot: "/tmp/repo",
+						headCommit: "abc",
+						staged: "",
+						unstaged: "",
+						untracked: [],
+						untrackedPatch: "",
+					},
+					nested: [],
+				},
+			},
+			preferredBackend: undefined,
+			agentId: "Throwing",
+			mergeMode: "patch",
+			artifactsDir: "/tmp/arts",
+			buildFailureResult: err => result({ error: String(err), exitCode: 1 }),
+			lifecycle: { runId: "run-throw", nodeId: "node-throw", attemptId: "att-throw", launchAuthority },
+		});
+		expect(failed.error).toContain("pinned provider unavailable");
+		expect(cleanup).not.toHaveBeenCalled();
+	});
+});

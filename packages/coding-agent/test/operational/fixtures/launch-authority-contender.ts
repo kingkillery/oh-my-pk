@@ -15,7 +15,13 @@
 
 import { appendFileSync, writeFileSync } from "node:fs";
 import { OperationalStore } from "../../../src/operational/store";
-import { createTestCompiledContract } from "../../helpers/lifecycle-fixtures";
+import { createHostRootExecutionContext } from "../../../src/orchestration/lifecycle-authority";
+import {
+	createTestCompiledContract,
+	createTestEnvelope,
+	createTestPolicy,
+	createTestSpawnAuthority,
+} from "../../helpers/lifecycle-fixtures";
 
 const [dbPath, objective, barrierPath, slot] = process.argv.slice(2);
 if (!dbPath || !objective || !barrierPath || !slot) {
@@ -46,9 +52,29 @@ try {
 	// Store opening lives INSIDE the try: a crash here (e.g. temp-file
 	// contention under rapid reruns) must still produce a result file.
 	store = OperationalStore.open({ dbPath });
-	const compiled = createTestCompiledContract({ objective });
+	const compiled = createTestCompiledContract(
+		{ objective },
+		{},
+		{ parentPrincipalId: "principal-root", issuerPrincipalId: "principal-root" },
+	);
+	const rootActor = createHostRootExecutionContext({
+		sessionId: `contender-session-${slot}`,
+		rootPrincipalId: compiled.rootPrincipalId,
+		policy: createTestPolicy({ role: "root-planner" }),
+		authority: createTestEnvelope({
+			usableCapabilities: [
+				{ source: "builtin", name: "read" },
+				{ source: "builtin", name: "edit" },
+			],
+			delegableCapabilities: [
+				{ source: "builtin", name: "read" },
+				{ source: "builtin", name: "edit" },
+			],
+			spawn: createTestSpawnAuthority({ maySpawn: true, mayDelegateSpawn: true, maxDepth: 4, maxChildren: 16 }),
+		}),
+	});
 	const result = store.admitLaunchAuthority({
-		guard: { actor: {} as never, expectedPolicyEpoch: 1, idempotencyKey: "contended-key" },
+		guard: { actor: rootActor, expectedPolicyEpoch: 1, idempotencyKey: "contended-key" },
 		compiled,
 		reservation: { requests: 1, runtimeMs: 1000, tokens: null, costMicrounits: null },
 		lifecycle: null,

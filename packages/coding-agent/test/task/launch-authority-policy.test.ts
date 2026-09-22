@@ -409,6 +409,47 @@ describe("compileLaunchAuthority (§14.3)", () => {
 		expect(result.diagnostics.some(d => d.code === "capability_not_issuable")).toBe(true);
 	});
 
+	it("denies usable tools the parent can invoke but cannot delegate (worker invoke-without-delegate)", () => {
+		// Parent can USE edit, but can only DELEGATE read.
+		// Child requests USABLE edit. Must be denied.
+		const snapshot = createTestAuthorizationSnapshot({
+			parentDelegable: createTestEnvelope({
+				usableCapabilities: [
+					{ source: "builtin", name: "read" },
+					{ source: "builtin", name: "edit" },
+				],
+				delegableCapabilities: [{ source: "builtin", name: "read" }],
+			}),
+			requestedAuthority: createTestLaunchAuthority({
+				usableCapabilities: [{ source: "builtin", name: "edit" }],
+				delegableCapabilities: [],
+			}),
+		});
+		const result = compileLaunchAuthority(snapshot);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.diagnostics.some(d => d.code === "capability_not_delegable")).toBe(true);
+	});
+
+	it("permits child to use tools the planner can delegate even if planner cannot invoke them", () => {
+		// Planner parent cannot USE read, but CAN delegate read.
+		// Child requests USABLE read. Must be admitted.
+		const snapshot = createTestAuthorizationSnapshot({
+			parentDelegable: createTestEnvelope({
+				usableCapabilities: [],
+				delegableCapabilities: [{ source: "builtin", name: "read" }],
+			}),
+			requestedAuthority: createTestLaunchAuthority({
+				usableCapabilities: [{ source: "builtin", name: "read" }],
+				delegableCapabilities: [],
+			}),
+		});
+		const result = compileLaunchAuthority(snapshot);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.authority.usableCapabilities).toEqual([{ source: "builtin", name: "read" }]);
+	});
+
 	it("requires spawn depth to strictly decrease", () => {
 		const parentDelegable = createTestEnvelope({
 			spawn: createTestSpawnAuthority({ maySpawn: true, mayDelegateSpawn: true, maxDepth: 2, maxChildren: 4 }),

@@ -3,10 +3,13 @@ import * as fs from "node:fs/promises";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import { MCPManager } from "../mcp/manager";
+import { OperationalStore } from "../operational/store";
 import { hydrateCollaborationPolicy } from "../orchestration/collaboration-policy";
+import { activateBoundSessionAuthority, unbindLifecycleProjection } from "../orchestration/context-projector";
+import type { LifecycleExecutionContext } from "../orchestration/lifecycle-authority";
 import type { PersistedSubagentReviverFactory } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
-import { createAgentSession } from "../sdk";
+import { type CreateAgentSessionResult, createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import type { AuthStorage } from "../session/auth-storage";
 import { SessionManager } from "../session/session-manager";
@@ -27,6 +30,12 @@ export interface PersistedSubagentReviveContext {
 	settings: Settings;
 	/** LSP policy of the top-level session; revived subagents inherit it rather than defaulting on. */
 	enableLsp: boolean;
+	/**
+	 * Operational store used to resolve a persisted §4.3 launchAuthority pin
+	 * back to its binding. When absent the reviver opens a short-lived handle
+	 * at revive time; an injected handle (tests, embedders) is never closed.
+	 */
+	store?: OperationalStore;
 }
 
 /**
@@ -114,81 +123,170 @@ export function createPersistedSubagentReviverFactory(
 			taskDepth++;
 			parentId = registry.get(parentId)?.parentId;
 		}
+		// §4.3 resolve-existing: a persisted launchAuthority pin means this
+		// session was launched under a bound contract. The revive must rebind to
+		// THAT binding — never mint a second job — so resolution happens inside
+		// the revive closure against the live store, and any missing, revoked or
+		// mismatched record fails closed instead of reviving unbound.
+		const launchAuthority = init.launchAuthority;
+		// A pin minted by a different launch path (e.g. an interactive root) is
+		// not this reviver's authority to resolve — fail closed, never guess.
+		if (launchAuthority && launchAuthority.kind !== "delegated-child") {
+			throw new Error(
+				`lifecycle_authority_mismatch: launchAuthority kind '${launchAuthority.kind}' cannot be revived as a delegated child`,
+			);
+		}
 		return async () => {
-			// Re-open fresh on every revive: park closes the writer, so this takes
-			// the single-writer lock cleanly and restores the full message history.
-			const reopened = await SessionManager.open(sessionFile, undefined, undefined, {
-				suppressBreadcrumb: true,
-			});
-			const artifactManager = ctx.session.sessionManager.getArtifactManager();
-			if (artifactManager) reopened.adoptArtifactManager(artifactManager);
-			// Reuse the parent's live MCP connections via proxy tools (no
-			// re-discovery), exactly as the executor does for live subagents.
-			const mcpManager = MCPManager.instance();
-			const mcpProxyTools = mcpManager ? createMCPProxyTools(mcpManager) : [];
-			// `reopened` holds the session's single-writer guard. If session
-			// creation throws or returns a session built on a different manager,
-			// close it here or the guard is held until process exit.
-			let created: Awaited<ReturnType<typeof createAgentSession>>;
+			let lifecycleExecutionContext: LifecycleExecutionContext | undefined;
+			let owned: OperationalStore | undefined;
+			// The revived session is only assigned after createAgentSession; the
+			// projection delegates below resolve through it lazily and are never
+			// invoked before it exists (toolSourceOf/artifactManager are called
+			// per provider request, not at bind time).
+			let session: AgentSession | undefined;
+			if (launchAuthority) {
+				// Resolve BEFORE taking the session writer lock: a failed resolve
+				// must not strand the lock, and a missing/revoked/mismatched
+				// binding fails closed here rather than reviving unbound.
+				let store = ctx.store;
+				if (!store) {
+					// A store opened by the reviver itself must stay open for the
+					// revived session's lifetime: the projection binding reads
+					// launch rows through it on every provider request. It closes
+					// when the session disposes (or on any failure below); an
+					// injected handle is never closed.
+					owned = OperationalStore.open();
+					store = owned;
+				}
+				try {
+					const binding = store.getLaunchBindingByAttempt(launchAuthority.attemptId);
+					const contract = store.getLaunchContract(binding.contractDigest);
+					// One-seam activation (§14.6): re-materialize the bound context
+					// AND attach its projection binding, so the revived session's
+					// provider requests project instead of failing closed
+					// `untrusted_context`. The binding is the SAME persisted row —
+					// never a second admission.
+					lifecycleExecutionContext = activateBoundSessionAuthority({
+						store,
+						binding,
+						contract,
+						repoRoot: ctx.session.sessionManager.getCwd(),
+						// The session's artifact space is the parent's adopted
+						// ArtifactManager; resolve it lazily so adoption below is
+						// honored. Absent manager → artifact:// refs fail closed
+						// `content_unresolvable`, never fabricated.
+						artifactManager: {
+							getPath: id =>
+								session?.sessionManager?.getArtifactManager?.()?.getPath(id) ?? Promise.resolve(null),
+						},
+						// Source-qualify tools through the revived session's own
+						// registry; before it exists (or for an unknown name) the
+						// source is unprovable and the request fails closed.
+						toolSourceOf: name => session?.getToolSource?.(name),
+						pin: launchAuthority,
+					});
+				} catch (error) {
+					owned?.close();
+					throw error;
+				}
+			}
 			try {
-				created = await createAgentSession({
-					cwd: ctx.session.sessionManager.getCwd(),
-					authStorage: ctx.authStorage,
-					modelRegistry: ctx.modelRegistry,
-					settings: createSubagentSettings(
-						ctx.settings,
-						init.readSummarize === false ? { "read.summarize.enabled": false } : undefined,
-					),
-					sessionManager: reopened,
-					agentId: ref.id,
-					agentDisplayName: ref.displayName,
-					parentTaskPrefix: ref.id,
-					parentAgentId: ref.parentId,
-					taskDepth,
-					executionProfile: init.executionProfile,
-					toolProfile,
-					collaborationPolicy,
-					toolNames: activeToolNames,
-					outputSchema: init.outputSchema,
-					requireYieldTool: true,
-					maxModelRequestsPerRun: init.fusionSidekick ? init.maxModelRequestsPerRun : undefined,
-					systemPrompt: () => [init.systemPrompt],
-					// Old files predate persisted spawns: deny re-spawning rather than let
-					// createAgentSession default to wildcard ("*").
-					spawns: init.spawns ?? "",
-					hasUI: false,
-					enableLsp: ctx.enableLsp,
-					enableMCP: !mcpManager,
-					mcpManager,
-					customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
-					customToolSources:
-						mcpProxyTools.length > 0
-							? new Map(mcpProxyTools.map(tool => [tool.name, "mcp" as const]))
-							: undefined,
-					clientBridge: ctx.session.clientBridge,
+				// Re-open fresh on every revive: park closes the writer, so this takes
+				// the single-writer lock cleanly and restores the full message history.
+				const reopened = await SessionManager.open(sessionFile, undefined, undefined, {
+					suppressBreadcrumb: true,
 				});
+				const artifactManager = ctx.session.sessionManager.getArtifactManager();
+				if (artifactManager) reopened.adoptArtifactManager(artifactManager);
+				// Reuse the parent's live MCP connections via proxy tools (no
+				// re-discovery), exactly as the executor does for live subagents.
+				const mcpManager = MCPManager.instance();
+				const mcpProxyTools = mcpManager ? createMCPProxyTools(mcpManager) : [];
+				// `reopened` holds the session's single-writer guard. If session
+				// creation throws or returns a session built on a different manager,
+				// close it here or the guard is held until process exit.
+				let created: CreateAgentSessionResult;
+				try {
+					created = await createAgentSession({
+						cwd: ctx.session.sessionManager.getCwd(),
+						authStorage: ctx.authStorage,
+						modelRegistry: ctx.modelRegistry,
+						settings: createSubagentSettings(
+							ctx.settings,
+							init.readSummarize === false ? { "read.summarize.enabled": false } : undefined,
+						),
+						sessionManager: reopened,
+						agentId: ref.id,
+						agentDisplayName: ref.displayName,
+						parentTaskPrefix: ref.id,
+						parentAgentId: ref.parentId,
+						taskDepth,
+						executionProfile: init.executionProfile,
+						toolProfile,
+						collaborationPolicy,
+						toolNames: activeToolNames,
+						outputSchema: init.outputSchema,
+						requireYieldTool: true,
+						maxModelRequestsPerRun: init.fusionSidekick ? init.maxModelRequestsPerRun : undefined,
+						systemPrompt: () => [init.systemPrompt],
+						// Old files predate persisted spawns: deny re-spawning rather than let
+						// createAgentSession default to wildcard ("*").
+						spawns: init.spawns ?? "",
+						hasUI: false,
+						enableLsp: ctx.enableLsp,
+						enableMCP: !mcpManager,
+						mcpManager,
+						customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
+						customToolSources:
+							mcpProxyTools.length > 0
+								? new Map(mcpProxyTools.map(tool => [tool.name, "mcp" as const]))
+								: undefined,
+						clientBridge: ctx.session.clientBridge,
+						lifecycleExecutionContext,
+					});
+				} catch (error) {
+					await reopened.close();
+					throw error;
+				}
+				session = created.session;
+				if (session.sessionManager !== reopened) {
+					await reopened.close();
+				}
+				// Clamp the active set to the persisted names intersected with the
+				// reconstructed source-aware ceiling. Unknown names are ignored.
+				session.setCollaborationPolicy(collaborationPolicy);
+				registry.setCollaborationPolicy(ref.id, collaborationPolicy);
+				await session.setActiveToolsByName(activeToolNames);
+				// Cold revives must drive registry status themselves — createAgentSession
+				// doesn't wire this generically (the live path does it in the executor).
+				// Without it the idle-TTL timer never clears on a turn and the lifecycle
+				// could park the agent mid-run.
+				session.subscribe(event => {
+					if (event.type === "agent_start") registry.setStatus(ref.id, "running");
+					else if (event.type === "agent_end") registry.setStatus(ref.id, "idle");
+				});
+				// The projection binding reads launch rows through the store for the
+				// session's whole life. A reviver-owned store therefore closes only
+				// when the session disposes — and the binding is dropped first so a
+				// post-dispose request can never project against a closed store.
+				if (owned && lifecycleExecutionContext && session.dispose) {
+					const bound = lifecycleExecutionContext;
+					const release = owned;
+					const dispose = session.dispose.bind(session);
+					session.dispose = async () => {
+						try {
+							await dispose();
+						} finally {
+							unbindLifecycleProjection(bound);
+							release.close();
+						}
+					};
+				}
+				return session;
 			} catch (error) {
-				await reopened.close();
+				owned?.close();
 				throw error;
 			}
-			const { session } = created;
-			if (session.sessionManager !== reopened) {
-				await reopened.close();
-			}
-			// Clamp the active set to the persisted names intersected with the
-			// reconstructed source-aware ceiling. Unknown names are ignored.
-			session.setCollaborationPolicy(collaborationPolicy);
-			registry.setCollaborationPolicy(ref.id, collaborationPolicy);
-			await session.setActiveToolsByName(activeToolNames);
-			// Cold revives must drive registry status themselves — createAgentSession
-			// doesn't wire this generically (the live path does it in the executor).
-			// Without it the idle-TTL timer never clears on a turn and the lifecycle
-			// could park the agent mid-run.
-			session.subscribe(event => {
-				if (event.type === "agent_start") registry.setStatus(ref.id, "running");
-				else if (event.type === "agent_end") registry.setStatus(ref.id, "idle");
-			});
-			return session;
 		};
 	};
 }

@@ -181,6 +181,7 @@ import * as bundledPiCodingAgentAutoresearch from "@pk-nerdsaver-ai/pi-coding-ag
 import * as bundledPiCodingAgentAutoresearchDashboard from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/dashboard";
 import * as bundledPiCodingAgentAutoresearchGit from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/git";
 import * as bundledPiCodingAgentAutoresearchHelpers from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/helpers";
+import * as bundledPiCodingAgentAutoresearchLifecycleLab from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/lifecycle-lab";
 import * as bundledPiCodingAgentAutoresearchState from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/state";
 import * as bundledPiCodingAgentAutoresearchStorage from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/storage";
 import * as bundledPiCodingAgentAutoresearchToolsInitExperiment from "@pk-nerdsaver-ai/pi-coding-agent/autoresearch/tools/init-experiment";
@@ -742,6 +743,8 @@ import * as bundledPiCodingAgentOkf from "@pk-nerdsaver-ai/pi-coding-agent/okf";
 import * as bundledPiCodingAgentOkfParser from "@pk-nerdsaver-ai/pi-coding-agent/okf/parser";
 import * as bundledPiCodingAgentOperational from "@pk-nerdsaver-ai/pi-coding-agent/operational";
 import * as bundledPiCodingAgentOperationalCron from "@pk-nerdsaver-ai/pi-coding-agent/operational/cron";
+import * as bundledPiCodingAgentOperationalLifecycleScheduler from "@pk-nerdsaver-ai/pi-coding-agent/operational/lifecycle-scheduler";
+import * as bundledPiCodingAgentOperationalLifecycleTypes from "@pk-nerdsaver-ai/pi-coding-agent/operational/lifecycle-types";
 import * as bundledPiCodingAgentOperationalNativeTaskExecutor from "@pk-nerdsaver-ai/pi-coding-agent/operational/native-task-executor";
 import * as bundledPiCodingAgentOperationalNativeTaskLock from "@pk-nerdsaver-ai/pi-coding-agent/operational/native-task-lock";
 import * as bundledPiCodingAgentOperationalNativeTaskPayload from "@pk-nerdsaver-ai/pi-coding-agent/operational/native-task-payload";
@@ -830,18 +833,26 @@ import * as bundledPiCodingAgentTaskCodeWrite from "@pk-nerdsaver-ai/pi-coding-a
 import * as bundledPiCodingAgentTaskCommands from "@pk-nerdsaver-ai/pi-coding-agent/task/commands";
 import * as bundledPiCodingAgentTaskDelegatedOutput from "@pk-nerdsaver-ai/pi-coding-agent/task/delegated-output";
 import * as bundledPiCodingAgentTaskDiscovery from "@pk-nerdsaver-ai/pi-coding-agent/task/discovery";
+import * as bundledPiCodingAgentTaskEvaluateManifest from "@pk-nerdsaver-ai/pi-coding-agent/task/evaluate-manifest";
 import * as bundledPiCodingAgentTaskExecutor from "@pk-nerdsaver-ai/pi-coding-agent/task/executor";
 import * as bundledPiCodingAgentTaskIntegration from "@pk-nerdsaver-ai/pi-coding-agent/task/integration";
 import * as bundledPiCodingAgentTaskIsolationRunner from "@pk-nerdsaver-ai/pi-coding-agent/task/isolation-runner";
+import * as bundledPiCodingAgentTaskLaunchAdmission from "@pk-nerdsaver-ai/pi-coding-agent/task/launch-admission";
+import * as bundledPiCodingAgentTaskLaunchContract from "@pk-nerdsaver-ai/pi-coding-agent/task/launch-contract";
+import * as bundledPiCodingAgentTaskLifecycleCapture from "@pk-nerdsaver-ai/pi-coding-agent/task/lifecycle-capture";
+import * as bundledPiCodingAgentTaskLifecycleObservations from "@pk-nerdsaver-ai/pi-coding-agent/task/lifecycle-observations";
+import * as bundledPiCodingAgentTaskLifecyclePublisher from "@pk-nerdsaver-ai/pi-coding-agent/task/lifecycle-publisher";
 import * as bundledPiCodingAgentTaskNameGenerator from "@pk-nerdsaver-ai/pi-coding-agent/task/name-generator";
 import * as bundledPiCodingAgentTaskOmpCommand from "@pk-nerdsaver-ai/pi-coding-agent/task/omp-command";
 import * as bundledPiCodingAgentTaskOutputManager from "@pk-nerdsaver-ai/pi-coding-agent/task/output-manager";
 import * as bundledPiCodingAgentTaskParallel from "@pk-nerdsaver-ai/pi-coding-agent/task/parallel";
 import * as bundledPiCodingAgentTaskPersistedRevive from "@pk-nerdsaver-ai/pi-coding-agent/task/persisted-revive";
+import * as bundledPiCodingAgentTaskRecoveryCapsule from "@pk-nerdsaver-ai/pi-coding-agent/task/recovery-capsule";
 import * as bundledPiCodingAgentTaskRecoveryPolicy from "@pk-nerdsaver-ai/pi-coding-agent/task/recovery-policy";
 import * as bundledPiCodingAgentTaskRender from "@pk-nerdsaver-ai/pi-coding-agent/task/render";
 import * as bundledPiCodingAgentTaskRepairArgs from "@pk-nerdsaver-ai/pi-coding-agent/task/repair-args";
 import * as bundledPiCodingAgentTaskRepoEvidence from "@pk-nerdsaver-ai/pi-coding-agent/task/repo-evidence";
+import * as bundledPiCodingAgentTaskSpawnAdmission from "@pk-nerdsaver-ai/pi-coding-agent/task/spawn-admission";
 import * as bundledPiCodingAgentTaskSpawnPlan from "@pk-nerdsaver-ai/pi-coding-agent/task/spawn-plan";
 import * as bundledPiCodingAgentTaskSubprocessToolRegistry from "@pk-nerdsaver-ai/pi-coding-agent/task/subprocess-tool-registry";
 import * as bundledPiCodingAgentTaskTypes from "@pk-nerdsaver-ai/pi-coding-agent/task/types";
@@ -1627,6 +1638,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	>,
 	"@pk-nerdsaver-ai/pi-coding-agent/autoresearch/helpers":
 		bundledPiCodingAgentAutoresearchHelpers as unknown as Readonly<Record<string, unknown>>,
+	"@pk-nerdsaver-ai/pi-coding-agent/autoresearch/lifecycle-lab":
+		bundledPiCodingAgentAutoresearchLifecycleLab as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/autoresearch/state": bundledPiCodingAgentAutoresearchState as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -2864,6 +2877,10 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@pk-nerdsaver-ai/pi-coding-agent/operational/cron": bundledPiCodingAgentOperationalCron as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@pk-nerdsaver-ai/pi-coding-agent/operational/lifecycle-scheduler":
+		bundledPiCodingAgentOperationalLifecycleScheduler as unknown as Readonly<Record<string, unknown>>,
+	"@pk-nerdsaver-ai/pi-coding-agent/operational/lifecycle-types":
+		bundledPiCodingAgentOperationalLifecycleTypes as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/operational/native-task-executor":
 		bundledPiCodingAgentOperationalNativeTaskExecutor as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/operational/native-task-lock":
@@ -3065,6 +3082,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@pk-nerdsaver-ai/pi-coding-agent/task/discovery": bundledPiCodingAgentTaskDiscovery as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@pk-nerdsaver-ai/pi-coding-agent/task/evaluate-manifest":
+		bundledPiCodingAgentTaskEvaluateManifest as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/task/executor": bundledPiCodingAgentTaskExecutor as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -3073,6 +3092,16 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	>,
 	"@pk-nerdsaver-ai/pi-coding-agent/task/isolation-runner":
 		bundledPiCodingAgentTaskIsolationRunner as unknown as Readonly<Record<string, unknown>>,
+	"@pk-nerdsaver-ai/pi-coding-agent/task/launch-admission":
+		bundledPiCodingAgentTaskLaunchAdmission as unknown as Readonly<Record<string, unknown>>,
+	"@pk-nerdsaver-ai/pi-coding-agent/task/launch-contract":
+		bundledPiCodingAgentTaskLaunchContract as unknown as Readonly<Record<string, unknown>>,
+	"@pk-nerdsaver-ai/pi-coding-agent/task/lifecycle-capture":
+		bundledPiCodingAgentTaskLifecycleCapture as unknown as Readonly<Record<string, unknown>>,
+	"@pk-nerdsaver-ai/pi-coding-agent/task/lifecycle-observations":
+		bundledPiCodingAgentTaskLifecycleObservations as unknown as Readonly<Record<string, unknown>>,
+	"@pk-nerdsaver-ai/pi-coding-agent/task/lifecycle-publisher":
+		bundledPiCodingAgentTaskLifecyclePublisher as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/task/name-generator": bundledPiCodingAgentTaskNameGenerator as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -3087,6 +3116,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	>,
 	"@pk-nerdsaver-ai/pi-coding-agent/task/persisted-revive":
 		bundledPiCodingAgentTaskPersistedRevive as unknown as Readonly<Record<string, unknown>>,
+	"@pk-nerdsaver-ai/pi-coding-agent/task/recovery-capsule":
+		bundledPiCodingAgentTaskRecoveryCapsule as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/task/recovery-policy":
 		bundledPiCodingAgentTaskRecoveryPolicy as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/task/render": bundledPiCodingAgentTaskRender as unknown as Readonly<
@@ -3098,6 +3129,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@pk-nerdsaver-ai/pi-coding-agent/task/repo-evidence": bundledPiCodingAgentTaskRepoEvidence as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@pk-nerdsaver-ai/pi-coding-agent/task/spawn-admission":
+		bundledPiCodingAgentTaskSpawnAdmission as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/task/spawn-plan": bundledPiCodingAgentTaskSpawnPlan as unknown as Readonly<
 		Record<string, unknown>
 	>,

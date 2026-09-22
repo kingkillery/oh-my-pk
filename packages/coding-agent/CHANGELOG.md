@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed (revamp W1–W4, testing build 16.4.28-test.1)
+
+- Runtime launch wire cut over to schema-v2 `LaunchContract = {schemaVersion: 2, compiled, binding}`; `LifecycleFence` now carries a persisted `LaunchAuthorityRefV1`; v1 envelopes remain only in explicit archival/trusted reauthorization paths. Contract freeze is complete: 41/41 authority dictionary shapes frozen with real parsers, 0 pending.
+- Durable authority mutations are authenticated in-transaction: actor registration, root/recipient lineage, policy epoch, and canonical contract-digest recomputation on admission/activation/grants; idempotent `terminateLaunchBinding` terminalizes post-admission failures; live-binding revocation denies use-time authorization.
+- `compileLaunchContract` non-expansion now intersects the parent's **delegable** capability ceiling (use-vs-issue rights preserved); issuer spawn admission enforces `maySpawn`/`maxDepth` before child compilation; admission persists immutable baseline/template/probe evidence bytes with exact UTF-8 counts and positively distinguishes non-Git workspaces from capture failures.
+- New `schedulerTick(store)` on the existing durable queue: expired-lease reconciliation, settlement-outbox relay into exact-owner inboxes, deterministic dependency-ready claim with capacity — no second queue.
+- Common lifecycle capture integrated across callers: cleanup permits gate capture, acknowledgement failure retains (quarantines) the workspace instead of unconditional cleanup; artifact refs use real `file:///` URLs.
+- `publishLifecycleCandidate` is now a real fenced publisher over durable `lifecycle_publications` rows (claim/renew/journal/finalize): per-effect lease + live before-image rechecks, real `git apply` effects, prepared/applied/verified stage journals, partial/conflicted outcomes with recovery material, and crash-restart reconciliation. The no-effect `publishWithEffects` facade is removed.
+- `OperationalStore.close()` checkpoints the WAL without demoting journal mode (mode demotion corrupted concurrent cross-process holders); publication-path statements are cached and finalized on close.
+
+Verified: plan union 1090 pass / 0 fail across 106 files; `bun check` (biome + types) green; D-gate real root+nested Git publication green. Default-off rollout state unchanged.
+
 ## [16.4.24] - 2026-09-20
 
 ### Fixed

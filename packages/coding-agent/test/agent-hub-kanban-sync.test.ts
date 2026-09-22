@@ -45,6 +45,7 @@ function createAgent(overrides: Partial<AgentRef> = {}): AgentRef {
 		createdAt: 1,
 		lastActivity: 2,
 		activity: "editing files",
+		collaborationScopeId: "test-scope",
 		cwd: "C:/work/repo",
 		...overrides,
 	};

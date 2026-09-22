@@ -3,6 +3,7 @@ import type { OperationalStore } from "../../src/operational/store";
 import { OperationalTrajectoryRecorder } from "../../src/operational/trajectory-recorder";
 import type { AppendEventInput, JsonValue, TrajectoryEvent } from "../../src/operational/types";
 import type { AgentSessionEvent } from "../../src/session/agent-session";
+import { parseLaunchAuthorityRefV1 } from "../../src/task/launch-contract";
 
 class TestClock {
 	#now: number;
@@ -473,5 +474,35 @@ describe("OperationalTrajectoryRecorder", () => {
 		} as AgentSessionEvent);
 		expect(store.events).toHaveLength(0);
 		expect(session.listenerCount()).toBe(0);
+	});
+
+	it("stamps launchAuthority on every recorded event payload", () => {
+		const store = new FakeStore();
+		const launchAuthority = parseLaunchAuthorityRefV1({
+			bindingId: "binding-contract-1-1-att-ev",
+			principalId: "child-principal-1",
+			attemptId: "att-ev",
+			contractId: "contract-1",
+			contractRevision: 1,
+			contractDigest: "a".repeat(64),
+			policyEpoch: 3,
+		});
+		const recorder = new OperationalTrajectoryRecorder({
+			store: asStore(store),
+			sessionId: "sess-auth",
+			jobId: "job-auth",
+			launchAuthority,
+		});
+		recorder.recordOutcome({ status: "ok" });
+		recorder.recordPatch({ toolName: "edit", status: "ok", paths: ["a.ts"] });
+		expect(store.events).toHaveLength(2);
+		for (const event of store.events) {
+			const payload = event.payload as {
+				launchAuthority?: { bindingId: string; attemptId: string; policyEpoch: number };
+			};
+			expect(payload.launchAuthority?.bindingId).toBe(launchAuthority.bindingId);
+			expect(payload.launchAuthority?.attemptId).toBe("att-ev");
+			expect(payload.launchAuthority?.policyEpoch).toBe(3);
+		}
 	});
 });

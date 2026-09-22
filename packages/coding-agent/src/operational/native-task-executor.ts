@@ -2,6 +2,8 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { type } from "arktype";
 import { Settings } from "../config/settings";
+import { activateBoundSessionAuthority } from "../orchestration/context-projector";
+import type { LifecycleExecutionContext } from "../orchestration/lifecycle-authority";
 import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import { delegatedIoToolNames, isPathWithinWorkspace } from "../session/delegated-io";
@@ -464,6 +466,44 @@ export function createNativeTaskExecutor(options: NativeTaskExecutorOptions): Jo
 				settings.override("task.isolation.merge", policy.mergeMode);
 				settings.override("task.maxRecursionDepth", policy.maxRecursionDepth);
 				settings.override("task.maxRuntimeMs", policy.maxRuntimeMs);
+				// §4.3 resolve-existing: a v2 payload pins run/node/attempt, so the
+				// replayed session must run under the SAME persisted binding — never a
+				// second admission. A missing, revoked or mismatched binding fails
+				// closed here rather than replaying unbound; v1 payloads have no pin
+				// and stay legacy.
+				let lifecycleExecutionContext: LifecycleExecutionContext | undefined;
+				if (payload.version === 2) {
+					const binding = options.store.getLaunchBindingByAttempt(payload.attemptId);
+					const contract = options.store.getLaunchContract(binding.contractDigest);
+					// One-seam activation (§14.6): re-materialize the bound context
+					// AND attach its projection binding, so the replayed session's
+					// provider requests project instead of failing closed
+					// `untrusted_context`. The binding is the SAME persisted row —
+					// never a second admission.
+					lifecycleExecutionContext = activateBoundSessionAuthority({
+						store: options.store,
+						binding,
+						contract,
+						repoRoot: payload.cwd,
+						// The replayed session's artifact space is its session
+						// manager's ArtifactManager; resolve it lazily. An in-memory
+						// manager has none → artifact:// refs fail closed
+						// `content_unresolvable`, never fabricated.
+						artifactManager: {
+							getPath: id =>
+								session?.sessionManager?.getArtifactManager?.()?.getPath(id) ?? Promise.resolve(null),
+						},
+						// Source-qualify tools through the replayed session's own
+						// registry; before it exists (or for an unknown name) the
+						// source is unprovable and the request fails closed.
+						toolSourceOf: name => session?.getToolSource?.(name),
+						pin: {
+							attemptId: payload.attemptId,
+							runId: payload.runId,
+							nodeId: payload.nodeId,
+						},
+					});
+				}
 				const created = await (options.createSession ?? createAgentSession)({
 					cwd: payload.cwd,
 					settings,
@@ -487,6 +527,7 @@ export function createNativeTaskExecutor(options: NativeTaskExecutorOptions): Jo
 					slashCommands: [],
 					preloadedCustomToolPaths: [],
 					preloadedExtensionPaths: [],
+					lifecycleExecutionContext,
 				});
 				session = created.session;
 				const task = session.getToolByName("task");

@@ -77,8 +77,10 @@ interface HubRow {
 	prefix: string;
 }
 type HubAgentKind = AgentRef["kind"] | "background" | "folder";
-type HubAgentRef = Omit<AgentRef, "kind"> & {
+type HubAgentRef = Omit<AgentRef, "kind" | "collaborationScopeId"> & {
 	kind: HubAgentKind;
+	/** Present when the row mirrors a live registry ref; fabricated rows (folders, background lanes) have none. */
+	collaborationScopeId?: string;
 	/** Folder rows only: number of session lanes grouped under this folder. */
 	laneCount?: number;
 	/** Folder rows only: whether this folder holds the active (current) session. */

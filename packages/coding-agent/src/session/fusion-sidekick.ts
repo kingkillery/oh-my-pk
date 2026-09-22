@@ -11,6 +11,8 @@ import { formatModelString, getModelMatchPreferences, resolveModelRoleValue } fr
 import type { Settings } from "../config/settings";
 import type { LocalProtocolOptions } from "../internal-urls";
 import type { MCPManager } from "../mcp/manager";
+import { resolveAgentHarness } from "../orchestration/agent-harness";
+import type { LifecycleExecutionContext } from "../orchestration/lifecycle-authority";
 import { loadOverallPlanReference } from "../plan-mode/plan-handoff";
 import fusionSidekickBootstrapPrompt from "../prompts/fusion/sidekick-bootstrap.md" with { type: "text" };
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
@@ -25,6 +27,12 @@ import {
 	type RecoveryFailureFacts,
 	toFusionRecoveryRetryInput,
 } from "../task/recovery-policy";
+import {
+	admissionStore,
+	admitBoundChildLaunch,
+	captureLaunchBaseline,
+	LAUNCH_ENTRY_POINTS,
+} from "../task/spawn-admission";
 import { createSpawnPlan } from "../task/spawn-plan";
 import type { SingleResult } from "../task/types";
 import type { EventBus } from "../utils/event-bus";
@@ -268,6 +276,51 @@ async function spawnFusionSidekick(host: FusionSidekickHost, sidekickModel: stri
 		index: number,
 	): Promise<{ id: string; runPromise: Promise<SingleResult> }> => {
 		const id = await outputManager.allocate("Sidekick");
+		// W3 (§14.6): a bound issuer produces a durably admitted bound child —
+		// compile → admit → activate → projection bind via the shared spawn
+		// admission builder. The issuer accessor falls back to the bound
+		// context (a bound child issues under itself); absent issuer stays
+		// legacy. Admission runs per attempt so each recovery retry mints a
+		// fresh attemptId; a strict rejection throws — never a legacy
+		// fallback after admission ran.
+		const lifecycleIssuer = session.getLifecycleIssuerContext?.() ?? session.getLifecycleExecutionContext?.();
+		let lifecycleChild: LifecycleExecutionContext | undefined;
+		if (lifecycleIssuer) {
+			const harness = resolveAgentHarness({
+				execution: plan.profile,
+				agentName: agent.name,
+				role: "Sidekick",
+				agentTools: agent.tools,
+				autoloadSkills: agent.autoloadSkills,
+				parentId: parentAgentId,
+				requireYield: true,
+			});
+			const admission = admitBoundChildLaunch({
+				issuer: lifecycleIssuer,
+				store: admissionStore(),
+				spawnPlan: plan,
+				entryPoint: LAUNCH_ENTRY_POINTS.fusionSidekick,
+				reason: "fusion warm-sidekick spawn",
+				agentName: agent.name,
+				assignment,
+				agentDefinition: agent,
+				executionProfile: plan.profile,
+				toolProfile: harness.toolProfile,
+				collaborationPolicy: harness.collaborationPolicy,
+				repoRoot: cwd,
+				baseline: await captureLaunchBaseline(cwd),
+				idempotencyKey: `fusion-sidekick-${id}`,
+				sessionId: `session-${id}`,
+				artifactManager: sessionManager.getArtifactManager() ?? { getPath: () => Promise.resolve(null) },
+				outputSchemaRef: `output-schema://${id}`,
+			});
+			if (!admission.ok) {
+				throw new Error(
+					`Fusion sidekick denied by launch admission (${admission.code}): ${admission.diagnostics.map(d => d.message).join("; ")}`,
+				);
+			}
+			lifecycleChild = admission.context;
+		}
 		const runPromise = taskExecutor.runSubprocess({
 			cwd,
 			agent,
@@ -309,6 +362,7 @@ async function spawnFusionSidekick(host: FusionSidekickHost, sidekickModel: stri
 			parentAgentId,
 			color: undefined,
 			planReference,
+			lifecycle: lifecycleChild,
 		});
 		return { id, runPromise };
 	};

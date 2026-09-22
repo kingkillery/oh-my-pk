@@ -158,6 +158,50 @@ describe("IRC", () => {
 			expect(main.relayed[0]?.details).toEqual({ from: "0-A", to: "0-B", body: "sibling note" });
 		});
 
+		it("isolates discovery, delivery, and relays between root sessions", async () => {
+			const main = makeFakeSession();
+			registry.register({ id: "Main", displayName: "main", kind: "main", session: main.session });
+			const localWorker = makeFakeSession();
+			registry.register({
+				id: "LocalWorker",
+				displayName: "local worker",
+				kind: "sub",
+				parentId: "Main",
+				session: localWorker.session,
+			});
+
+			const otherMain = makeFakeSession();
+			registry.register({ id: "OtherMain", displayName: "other main", kind: "main", session: otherMain.session });
+			const rubberMoose = makeFakeSession();
+			registry.register({
+				id: "RubberMoose",
+				displayName: "other worker",
+				kind: "sub",
+				parentId: "OtherMain",
+				session: rubberMoose.session,
+			});
+			const otherPeer = makeFakeSession();
+			registry.register({
+				id: "OtherPeer",
+				displayName: "other peer",
+				kind: "sub",
+				parentId: "OtherMain",
+				session: otherPeer.session,
+			});
+
+			expect(registry.list("LocalWorker").map(ref => ref.id)).not.toContain("RubberMoose");
+
+			const crossRoot = await bus.send({ from: "RubberMoose", to: "LocalWorker", body: "foreign instruction" });
+			expect(crossRoot).toMatchObject({ outcome: "failed" });
+			expect(localWorker.delivered).toEqual([]);
+
+			const sameRoot = await bus.send({ from: "RubberMoose", to: "OtherPeer", body: "same-root note" });
+			expect(sameRoot).toMatchObject({ outcome: "injected" });
+			expect(otherPeer.delivered.map(message => message.body)).toEqual(["same-root note"]);
+			expect(otherMain.relayed).toHaveLength(1);
+			expect(main.relayed).toEqual([]);
+		});
+
 		it("send to an unknown or aborted agent fails", async () => {
 			const unknown = await bus.send({ from: "0-Main", to: "0-Ghost", body: "hello?" });
 			expect(unknown.outcome).toBe("failed");

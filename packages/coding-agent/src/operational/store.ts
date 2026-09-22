@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir } from "@pk-nerdsaver-ai/pi-utils";
+import { getLifecycleRegistration } from "../orchestration/lifecycle-authority";
 import {
 	type AgentRole,
 	type ArtifactRefV1,
@@ -10,11 +11,16 @@ import {
 	type CompiledLaunchContract,
 	canonicalJson,
 	compareRuntimeGuarantees,
+	computeLaunchContractDigest,
 	type GrantRecordV1,
-	LAUNCH_CONTRACT_VERSION,
+	type LaunchAuthorityRefV1,
 	type LaunchBinding,
-	type LaunchBindingInput,
+	type LaunchBindingState,
+	type LaunchClass,
+	type LifecycleFence,
 	type LifecycleHandoffV1,
+	launchAuthorityRefFor,
+	type MutationContractV1,
 	type ObligationV1,
 	parseGrantRecordV1,
 	parseObligationV1,
@@ -24,6 +30,7 @@ import {
 	type RuntimeGuaranteesV1,
 	sha256Hex,
 } from "../task/launch-contract";
+import type { PublicationReceipt } from "../task/lifecycle-publisher";
 import type {
 	CaptureDimension,
 	ContextDeliveryRequest,
@@ -39,6 +46,7 @@ import type {
 	LaunchBindingActivationInput,
 	LaunchBindingActivationResult,
 	LaunchMutationGuard,
+	LaunchMutationResult,
 	LifecycleAdmissionInput,
 	LifecycleAdmissionResult,
 	LifecycleCancellationInput,
@@ -98,6 +106,11 @@ export class LifecycleReadError extends Error {
 		this.name = "LifecycleReadError";
 		this.code = code;
 	}
+}
+
+/** States whose authority may still be mutated by an authenticated issuer. */
+function isLiveLaunchBindingState(state: string): boolean {
+	return state === "authorized" || state === "bound" || state === "active" || state === "suspended";
 }
 
 interface LifecycleRunRow {
@@ -348,6 +361,33 @@ function episodeSearchText(title: string, summary: string, tags: readonly string
 	return `${title}\n${summary}\n${tags.join(" ")}`.trim();
 }
 
+/** A `launch_principals` row as read back by `getLaunchPrincipal` (§14.5). */
+export interface LaunchPrincipalRow {
+	readonly principalId: string;
+	readonly rootPrincipalId: string | null;
+	readonly parentPrincipalId: string | null;
+	readonly launchClass: LaunchClass | null;
+	readonly authorityEnvelopeRef: string | null;
+	readonly policyEpoch: number;
+	readonly status: "active" | "revoked" | "terminal";
+	readonly createdAt: number;
+	readonly updatedAt: number;
+}
+
+/**
+ * Result of `terminateLaunchBinding`: the binding's post-call state and the
+ * epoch it now carries. Terminalization is idempotent — replaying it against
+ * an already-terminal binding returns ok rather than a conflict.
+ */
+export type LaunchBindingTerminationResult =
+	| {
+			readonly ok: true;
+			readonly bindingId: string;
+			readonly state: LaunchBindingState;
+			readonly policyEpoch: number;
+	  }
+	| LaunchAuthorityFailure;
+
 export class OperationalStore {
 	readonly #db: Database;
 	readonly #dbPath: string;
@@ -388,6 +428,16 @@ export class OperationalStore {
 
 	readonly #insertEventStmt: Statement;
 	readonly #listEventsStmt: Statement;
+	readonly #publicationClaimExistingStmt: Statement;
+	readonly #publicationClaimLeaseStmt: Statement;
+	readonly #publicationInsertStmt: Statement;
+	readonly #publicationRenewLeaseStmt: Statement;
+	readonly #publicationJournalSelectStmt: Statement;
+	readonly #publicationJournalUpdateStmt: Statement;
+	readonly #publicationFinalizeSelectStmt: Statement;
+	readonly #publicationFinalizeUpdateStmt: Statement;
+	readonly #publicationAttemptStateStmt: Statement;
+	readonly #publicationSelectAllStmt: Statement;
 
 	constructor(options: OperationalStoreOptions = {}) {
 		this.#dbPath = options.dbPath ?? defaultDbPath();
@@ -533,6 +583,50 @@ export class OperationalStore {
 			 ORDER BY created_at ASC, id ASC
 			 LIMIT ?`,
 		);
+		this.#publicationClaimExistingStmt = this.#db.prepare(
+			`SELECT publication_id, publisher_owner, publisher_epoch, publisher_expires_at, state
+			 FROM lifecycle_publications
+			 WHERE attempt_id = ? AND target_kind = ? AND target_id = ? AND manifest_hash = ? AND expected_snapshot_hash = ?`,
+		);
+		this.#publicationClaimLeaseStmt = this.#db.prepare(
+			`UPDATE lifecycle_publications
+			 SET publisher_owner = ?, publisher_epoch = ?, publisher_expires_at = ?, updated_at = ?
+			 WHERE publication_id = ?`,
+		);
+		this.#publicationInsertStmt = this.#db.prepare(
+			`INSERT INTO lifecycle_publications (
+				publication_id, attempt_id, target_kind, target_id, manifest_hash,
+				expected_snapshot_hash, publisher_owner, publisher_epoch, publisher_expires_at,
+				stage_journal_json, mutation_policy_json, state, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, '[]', ?, 'pending', ?, ?)`,
+		);
+		this.#publicationRenewLeaseStmt = this.#db.prepare(
+			`UPDATE lifecycle_publications
+			 SET publisher_expires_at = ?, updated_at = ?
+			 WHERE publication_id = ? AND publisher_owner = ? AND publisher_epoch = ? AND state = 'pending'`,
+		);
+		this.#publicationJournalSelectStmt = this.#db.prepare(
+			`SELECT stage_journal_json FROM lifecycle_publications
+			 WHERE publication_id = ? AND publisher_owner = ? AND publisher_epoch = ? AND state = 'pending'`,
+		);
+		this.#publicationJournalUpdateStmt = this.#db.prepare(
+			"UPDATE lifecycle_publications SET stage_journal_json = ?, updated_at = ? WHERE publication_id = ?",
+		);
+		this.#publicationFinalizeSelectStmt = this.#db.prepare(
+			`SELECT attempt_id FROM lifecycle_publications
+			 WHERE publication_id = ? AND publisher_owner = ? AND publisher_epoch = ? AND state = 'pending'`,
+		);
+		this.#publicationFinalizeUpdateStmt = this.#db.prepare(
+			`UPDATE lifecycle_publications
+			 SET state = ?, resulting_snapshot_hash = ?, publisher_expires_at = NULL, updated_at = ?
+			 WHERE publication_id = ?`,
+		);
+		this.#publicationAttemptStateStmt = this.#db.prepare(
+			"UPDATE lifecycle_attempts SET publication_state = ?, updated_at = ? WHERE attempt_id = ?",
+		);
+		this.#publicationSelectAllStmt = this.#db.prepare(
+			"SELECT * FROM lifecycle_publications WHERE publication_id = ?",
+		);
 	}
 
 	/** Open (or create) the operational SQLite database. */
@@ -577,6 +671,25 @@ export class OperationalStore {
 		this.#markNotificationReadStmt.finalize();
 		this.#insertEventStmt.finalize();
 		this.#listEventsStmt.finalize();
+		this.#publicationClaimExistingStmt.finalize();
+		this.#publicationClaimLeaseStmt.finalize();
+		this.#publicationInsertStmt.finalize();
+		this.#publicationRenewLeaseStmt.finalize();
+		this.#publicationJournalSelectStmt.finalize();
+		this.#publicationJournalUpdateStmt.finalize();
+		this.#publicationFinalizeSelectStmt.finalize();
+		this.#publicationFinalizeUpdateStmt.finalize();
+		this.#publicationAttemptStateStmt.finalize();
+		this.#publicationSelectAllStmt.finalize();
+		// Clean shutdown: fold the WAL back into the main database. The
+		// journal mode itself must stay WAL — switching it on close requires
+		// exclusive access and corrupts concurrent holders (cross-process
+		// admission races fail with "database is locked"/"disk I/O error").
+		try {
+			this.#db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+		} catch {
+			// A failed checkpoint must not mask the actual close below.
+		}
 		this.#db.close();
 	}
 
@@ -1935,21 +2048,48 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 					} as const;
 				}
 				const priorAttempt = this.#db
-					.prepare("SELECT job_id, contract_ref, harness_ref FROM lifecycle_attempts WHERE attempt_id = ?")
-					.get(prior.attempt_id) as { job_id: string; contract_ref: string; harness_ref: string } | undefined;
+					.prepare(
+						"SELECT job_id, contract_ref, harness_ref, lease_epoch, cancellation_generation FROM lifecycle_attempts WHERE attempt_id = ?",
+					)
+					.get(prior.attempt_id) as
+					| {
+							job_id: string;
+							contract_ref: string;
+							harness_ref: string;
+							lease_epoch: number;
+							cancellation_generation: number;
+					  }
+					| undefined;
 				if (priorAttempt) {
 					const priorReservation = this.#db
 						.prepare("SELECT reservation_id FROM lifecycle_reservations WHERE attempt_id = ?")
 						.get(prior.attempt_id) as { reservation_id: string } | undefined;
-					const boundPrior = bindLaunchContract(input.compiled, {
-						runId: input.runId,
-						nodeId: prior.node_id,
-						ownerNodeId: input.ownerNodeId,
+					// Replay resolves the SAME durable authority row rather than
+					// re-deriving one: identical inputs must return the identical
+					// binding, not a second authority for one attempt.
+					const priorAuthority = this.#admitLaunchAuthorityRow({
+						compiled: input.compiled,
 						attemptId: prior.attempt_id,
-						budgetReservationId: priorReservation?.reservation_id ?? `res-${prior.attempt_id}`,
-						leaseEpoch: 1,
-						cancellationGeneration: run.cancellation_generation,
+						policyEpoch: this.#launchPrincipalEpoch(input.compiled.childPrincipalId),
+						lifecycle: {
+							runId: input.runId,
+							nodeId: prior.node_id,
+							ownerNodeId: input.ownerNodeId,
+							jobId: priorAttempt.job_id,
+							leaseEpoch: priorAttempt.lease_epoch,
+							cancellationGeneration: priorAttempt.cancellation_generation,
+						},
+						reservationId: priorReservation?.reservation_id ?? null,
+						restoresBindingId: null,
 					});
+					if (!priorAuthority.ok) {
+						return {
+							ok: false,
+							code: priorAuthority.code,
+							message: priorAuthority.diagnostics[0]?.message ?? priorAuthority.code,
+						} as const;
+					}
+					const boundPrior = bindLaunchContract(input.compiled, this.getLaunchBinding(priorAuthority.bindingId));
 					// Idempotent replay returns the SAME job that was admitted
 					// originally, so a retrying caller can never create a second
 					// execution unit for one authorized attempt.
@@ -2072,15 +2212,43 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 			`)
 				.run(input.idempotencyKey, input.runId, nodeId, attemptId, digest, now);
 
-			const boundLaunch = bindLaunchContract(input.compiled, {
-				runId: input.runId,
-				nodeId,
-				ownerNodeId: input.ownerNodeId,
+			// The hierarchical attempt owns a durable authority record too: the
+			// compiled contract, its principal rows and exactly ONE
+			// `launch_bindings` row are committed by this same transaction, so
+			// the schema-v2 wrapper below is backed by storage rather than by
+			// identities invented at the wire boundary.
+			const attemptRow = this.#db
+				.prepare("SELECT lease_epoch, cancellation_generation FROM lifecycle_attempts WHERE attempt_id = ?")
+				.get(attemptId) as { lease_epoch: number; cancellation_generation: number } | undefined;
+			if (!attemptRow) {
+				throw new LifecycleReadError(
+					"lifecycle_attempt_missing_row",
+					`Attempt '${attemptId}' was inserted but could not be read back`,
+				);
+			}
+			const authority = this.#admitLaunchAuthorityRow({
+				compiled: input.compiled,
 				attemptId,
-				budgetReservationId: reservationId,
-				leaseEpoch: 1,
-				cancellationGeneration: run.cancellation_generation,
+				policyEpoch: this.#launchPrincipalEpoch(input.compiled.childPrincipalId),
+				lifecycle: {
+					runId: input.runId,
+					nodeId,
+					ownerNodeId: input.ownerNodeId,
+					jobId,
+					leaseEpoch: attemptRow.lease_epoch,
+					cancellationGeneration: attemptRow.cancellation_generation,
+				},
+				reservationId,
+				restoresBindingId: null,
 			});
+			if (!authority.ok) {
+				return {
+					ok: false,
+					code: authority.code,
+					message: authority.diagnostics[0]?.message ?? authority.code,
+				} as const;
+			}
+			const boundLaunch = bindLaunchContract(input.compiled, this.getLaunchBinding(authority.bindingId));
 
 			const job = this.getJob(jobId);
 			if (!job) {
@@ -2252,6 +2420,24 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 			plannerActivity: n.planner_activity,
 		}));
 
+		// The fence's `launchAuthority` is the durable binding that admitted
+		// the attempt, so it is decoded from `launch_bindings` rather than
+		// restated from a wire constant: a revision integer could not fence
+		// out a superseded or revoked authority, and a pinned binding ref can.
+		// Row decoding and ref projection both reuse the shared definitions so
+		// a reconstructed fence cannot drift from a directly read binding.
+		const authorityByAttempt = new Map<string, LaunchAuthorityRefV1>(
+			(
+				this.#db
+					.prepare(
+						"SELECT b.* FROM launch_bindings b JOIN lifecycle_attempts a ON b.attempt_id = a.attempt_id JOIN lifecycle_nodes n ON a.node_id = n.node_id WHERE n.run_id = ?",
+					)
+					.all(runId) as Record<string, unknown>[]
+			)
+				.map(row => this.#launchBindingFromRow(row))
+				.map(binding => [binding.attemptId, launchAuthorityRefFor(binding)]),
+		);
+
 		// lifecycle_attempts has no run_id column: attempts are run-scoped only
 		// through their owning node. There is also no fence_json column — the
 		// fence is reconstructed from the authoritative lease/generation columns.
@@ -2268,25 +2454,33 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 					`Attempt '${a.attempt_id}' has no job row; the attempt record is incomplete`,
 				);
 			}
+			let fence: LifecycleFence | null = null;
+			// An unclaimed attempt genuinely has no write-authentication
+			// token yet. Emitting a fence with an empty owner would hand
+			// out a token that authenticates nothing.
+			if (a.lease_owner !== null) {
+				const launchAuthority = authorityByAttempt.get(a.attempt_id);
+				if (!launchAuthority) {
+					throw new LifecycleReadError(
+						"lifecycle_attempt_missing_launch_authority",
+						`Attempt '${a.attempt_id}' holds a lease but has no launch binding to fence it; the attempt record is incomplete`,
+					);
+				}
+				fence = {
+					runId,
+					nodeId: a.node_id,
+					attemptId: a.attempt_id,
+					leaseOwner: a.lease_owner,
+					leaseEpoch: a.lease_epoch,
+					cancellationGeneration: a.cancellation_generation,
+					launchAuthority,
+				};
+			}
 			return {
 				attemptId: a.attempt_id,
 				nodeId: a.node_id,
 				jobId: a.job_id,
-				// An unclaimed attempt genuinely has no write-authentication
-				// token yet. Emitting a fence with an empty owner would hand
-				// out a token that authenticates nothing.
-				fence:
-					a.lease_owner === null
-						? null
-						: {
-								runId,
-								nodeId: a.node_id,
-								attemptId: a.attempt_id,
-								leaseOwner: a.lease_owner,
-								leaseEpoch: a.lease_epoch,
-								cancellationGeneration: a.cancellation_generation,
-								contractVersion: LAUNCH_CONTRACT_VERSION,
-							},
+				fence,
 				execution: a.execution_state,
 				capture: a.capture_state,
 				delivery: a.delivery_state,
@@ -2336,14 +2530,56 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 				.all(runId) as { event_id: string }[]
 		).map(e => e.event_id);
 
-		// v3 persists neither a complete PublicationReceipt (no mutated
-		// repositories, changesApplied, recovery refs or obligation links) nor
-		// any run/attempt scoping on lifecycle_receipts. Empty is therefore the
-		// honest answer only while those tables hold nothing for this run;
-		// existing rows cannot be projected without inventing fields, so they
-		// surface as an explicit read error until the v4 migration adds the
-		// missing columns.
-		this.#assertUnrepresentableLifecycleEvidence(runId);
+		const pubRows = this.#db
+			.prepare(
+				`SELECT p.publication_id, p.attempt_id, p.target_kind, p.target_id, p.manifest_hash,
+				        p.expected_snapshot_hash, p.resulting_snapshot_hash, p.state, p.mutation_policy_json
+				 FROM lifecycle_publications p
+				 JOIN lifecycle_attempts a ON p.attempt_id = a.attempt_id
+				 JOIN lifecycle_nodes n ON a.node_id = n.node_id
+				 WHERE n.run_id = ?
+				 ORDER BY p.created_at ASC, p.publication_id ASC`,
+			)
+			.all(runId) as {
+			publication_id: string;
+			attempt_id: string;
+			target_kind: "run-candidate" | "user-workspace";
+			target_id: string;
+			manifest_hash: string;
+			expected_snapshot_hash: string;
+			resulting_snapshot_hash: string | null;
+			state: PublicationReceipt["state"];
+			mutation_policy_json: string;
+		}[];
+
+		const publicationReceipts: readonly PublicationReceipt[] = Object.freeze(
+			pubRows.map(p =>
+				Object.freeze({
+					schemaVersion: 1 as const,
+					publicationId: p.publication_id,
+					state: p.state,
+					candidate: p.resulting_snapshot_hash
+						? Object.freeze({
+								schemaVersion: 1 as const,
+								manifestHash: p.resulting_snapshot_hash,
+								manifestUri: `snapshot://${p.resulting_snapshot_hash}`,
+							})
+						: Object.freeze({
+								schemaVersion: 1 as const,
+								manifestHash: p.expected_snapshot_hash,
+								manifestUri: `snapshot://${p.expected_snapshot_hash}`,
+							}),
+					mutatedRepositories:
+						p.state === "integrated" || p.state === "partial" ? Object.freeze([p.target_id]) : Object.freeze([]),
+					changesApplied: p.state === "integrated" && p.target_kind === "user-workspace",
+					recoveryRefs: Object.freeze([]),
+					obligationIds:
+						p.state === "partial" ? Object.freeze([`publication-partial:${p.attempt_id}`]) : Object.freeze([]),
+				}),
+			),
+		);
+
+		this.#assertUnrepresentableLifecycleEvidence();
 
 		return {
 			schemaVersion: 1 as const,
@@ -2359,7 +2595,7 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 			attempts,
 			dependencies,
 			obligations,
-			publicationReceipts: [],
+			publicationReceipts,
 			verificationReceipts: [],
 			pendingInboxEventIds,
 			// v3 has no projection manifest table, so no manifests are recorded.
@@ -2367,18 +2603,7 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 		};
 	}
 
-	#assertUnrepresentableLifecycleEvidence(runId: string): void {
-		const publication = this.#db
-			.prepare(
-				"SELECT COUNT(*) AS n FROM lifecycle_publications p JOIN lifecycle_attempts a ON p.attempt_id = a.attempt_id JOIN lifecycle_nodes n ON a.node_id = n.node_id WHERE n.run_id = ?",
-			)
-			.get(runId) as { n: number };
-		if (publication.n > 0) {
-			throw new LifecycleReadError(
-				"lifecycle_publication_unrepresentable",
-				`Run '${runId}' has ${publication.n} publication row(s) that the v3 schema cannot project into a PublicationReceipt`,
-			);
-		}
+	#assertUnrepresentableLifecycleEvidence(): void {
 		const receipts = this.#db.prepare("SELECT COUNT(*) AS n FROM lifecycle_receipts").get() as { n: number };
 		if (receipts.n > 0) {
 			throw new LifecycleReadError(
@@ -2386,6 +2611,232 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 				`${receipts.n} verification receipt(s) exist but the v3 schema records no run or attempt scope for them`,
 			);
 		}
+	}
+
+	// --- Publication persistence protocol (§7.2–7.3) -----------------------
+
+	claimPublication(input: {
+		readonly attemptId: string;
+		readonly targetKind: "run-candidate" | "user-workspace";
+		readonly targetId: string;
+		readonly manifestHash: string;
+		readonly expectedSnapshotHash: string;
+		readonly publisherOwner: string;
+		readonly leaseMs?: number;
+		readonly mutationPolicy: MutationContractV1;
+	}):
+		| {
+				readonly ok: true;
+				readonly publicationId: string;
+				readonly epoch: number;
+				readonly state: PublicationReceipt["state"];
+				readonly replayed: boolean;
+		  }
+		| { readonly ok: false; readonly code: string; readonly message: string } {
+		this.#assertOpen();
+		const leaseMs = input.leaseMs ?? 60_000;
+		const now = this.#now();
+		const tx = this.#db.transaction(() => {
+			const existing = this.#publicationClaimExistingStmt.get(
+				input.attemptId,
+				input.targetKind,
+				input.targetId,
+				input.manifestHash,
+				input.expectedSnapshotHash,
+			) as
+				| {
+						publication_id: string;
+						publisher_owner: string | null;
+						publisher_epoch: number;
+						publisher_expires_at: number | null;
+						state: PublicationReceipt["state"];
+				  }
+				| undefined;
+
+			if (existing) {
+				if (existing.state !== "pending") {
+					return {
+						ok: true,
+						publicationId: existing.publication_id,
+						epoch: existing.publisher_epoch,
+						state: existing.state,
+						replayed: true,
+					} as const;
+				}
+				const isExpired = existing.publisher_expires_at !== null && existing.publisher_expires_at < now;
+				const isSameOwner = existing.publisher_owner === input.publisherOwner;
+				if (!isExpired && !isSameOwner) {
+					return {
+						ok: false,
+						code: "publication_lease_held",
+						message: `Publication '${existing.publication_id}' is leased to '${existing.publisher_owner}' until ${existing.publisher_expires_at}`,
+					} as const;
+				}
+				const nextEpoch = existing.publisher_epoch + 1;
+				this.#publicationClaimLeaseStmt.run(
+					input.publisherOwner,
+					nextEpoch,
+					now + leaseMs,
+					now,
+					existing.publication_id,
+				);
+				return {
+					ok: true,
+					publicationId: existing.publication_id,
+					epoch: nextEpoch,
+					state: existing.state,
+					replayed: false,
+				} as const;
+			}
+
+			const publicationId = `pub-${input.attemptId}-${this.#createId()}`;
+			this.#publicationInsertStmt.run(
+				publicationId,
+				input.attemptId,
+				input.targetKind,
+				input.targetId,
+				input.manifestHash,
+				input.expectedSnapshotHash,
+				input.publisherOwner,
+				now + leaseMs,
+				JSON.stringify(input.mutationPolicy),
+				now,
+				now,
+			);
+			return {
+				ok: true,
+				publicationId,
+				epoch: 1,
+				state: "pending",
+				replayed: false,
+			} as const;
+		});
+		return tx.immediate();
+	}
+
+	renewPublicationLease(input: {
+		readonly publicationId: string;
+		readonly publisherOwner: string;
+		readonly expectedEpoch: number;
+		readonly leaseMs?: number;
+	}): boolean {
+		this.#assertOpen();
+		const now = this.#now();
+		const leaseMs = input.leaseMs ?? 60_000;
+		const res = this.#publicationRenewLeaseStmt.run(
+			now + leaseMs,
+			now,
+			input.publicationId,
+			input.publisherOwner,
+			input.expectedEpoch,
+		);
+		return res.changes === 1;
+	}
+
+	journalPublicationStage(input: {
+		readonly publicationId: string;
+		readonly publisherOwner: string;
+		readonly expectedEpoch: number;
+		readonly stage: "prepared" | "applied" | "verified";
+		readonly stageData: Record<string, unknown>;
+	}): boolean {
+		this.#assertOpen();
+		const now = this.#now();
+		const tx = this.#db.transaction(() => {
+			const row = this.#publicationJournalSelectStmt.get(
+				input.publicationId,
+				input.publisherOwner,
+				input.expectedEpoch,
+			) as { stage_journal_json: string } | undefined;
+			if (!row) return false;
+			const journal: unknown[] = JSON.parse(row.stage_journal_json || "[]");
+			journal.push({ stage: input.stage, data: input.stageData, timestamp: now });
+			this.#publicationJournalUpdateStmt.run(JSON.stringify(journal), now, input.publicationId);
+			return true;
+		});
+		return tx.immediate();
+	}
+
+	finalizePublication(input: {
+		readonly publicationId: string;
+		readonly publisherOwner: string;
+		readonly expectedEpoch: number;
+		readonly state: PublicationReceipt["state"];
+		readonly resultingSnapshotHash?: string | null;
+	}): boolean {
+		this.#assertOpen();
+		const now = this.#now();
+		const tx = this.#db.transaction(() => {
+			const row = this.#publicationFinalizeSelectStmt.get(
+				input.publicationId,
+				input.publisherOwner,
+				input.expectedEpoch,
+			) as { attempt_id: string } | undefined;
+			if (!row) return false;
+
+			this.#publicationFinalizeUpdateStmt.run(
+				input.state,
+				input.resultingSnapshotHash ?? null,
+				now,
+				input.publicationId,
+			);
+
+			this.#publicationAttemptStateStmt.run(input.state, now, row.attempt_id);
+
+			return true;
+		});
+		return tx.immediate();
+	}
+
+	getPublication(publicationId: string): {
+		readonly publicationId: string;
+		readonly attemptId: string;
+		readonly targetKind: "run-candidate" | "user-workspace";
+		readonly targetId: string;
+		readonly manifestHash: string;
+		readonly expectedSnapshotHash: string;
+		readonly resultingSnapshotHash: string | null;
+		readonly publisherOwner: string | null;
+		readonly publisherEpoch: number;
+		readonly publisherExpiresAt: number | null;
+		readonly state: PublicationReceipt["state"];
+		readonly stageJournal: readonly unknown[];
+		readonly mutationPolicy: MutationContractV1;
+	} | null {
+		this.#assertOpen();
+		const row = this.#publicationSelectAllStmt.get(publicationId) as
+			| {
+					publication_id: string;
+					attempt_id: string;
+					target_kind: "run-candidate" | "user-workspace";
+					target_id: string;
+					manifest_hash: string;
+					expected_snapshot_hash: string;
+					resulting_snapshot_hash: string | null;
+					publisher_owner: string | null;
+					publisher_epoch: number;
+					publisher_expires_at: number | null;
+					stage_journal_json: string;
+					mutation_policy_json: string;
+					state: PublicationReceipt["state"];
+			  }
+			| undefined;
+		if (!row) return null;
+		return Object.freeze({
+			publicationId: row.publication_id,
+			attemptId: row.attempt_id,
+			targetKind: row.target_kind,
+			targetId: row.target_id,
+			manifestHash: row.manifest_hash,
+			expectedSnapshotHash: row.expected_snapshot_hash,
+			resultingSnapshotHash: row.resulting_snapshot_hash,
+			publisherOwner: row.publisher_owner,
+			publisherEpoch: row.publisher_epoch,
+			publisherExpiresAt: row.publisher_expires_at,
+			state: row.state,
+			stageJournal: Object.freeze(JSON.parse(row.stage_journal_json || "[]")),
+			mutationPolicy: JSON.parse(row.mutation_policy_json) as MutationContractV1,
+		});
 	}
 
 	// --- Launch authority commit protocol (§14.5) --------------------------
@@ -2406,7 +2857,6 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 	admitLaunchAuthority(input: LaunchAuthorityAdmissionInput): LaunchAuthorityAdmissionResult {
 		this.#assertOpen();
 		const { compiled, guard } = input;
-		const now = Date.now();
 		const attemptId = input.lifecycle?.attemptId ?? `attempt-${compiled.contractId}-${compiled.contractRevision}`;
 
 		// Bounded retry on lock contention. Retrying is safe here and ONLY
@@ -2419,77 +2869,43 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 			try {
 				return this.#db
 					.transaction((): LaunchAuthorityAdmissionResult => {
-						const existing = this.#db
-							.prepare("SELECT binding_id, contract_digest FROM launch_bindings WHERE attempt_id = ?")
-							.get(attemptId) as { binding_id: string; contract_digest: string } | undefined;
-						if (existing) {
-							// Idempotent replay returns the recorded allocation; the
-							// same key with different content is a real conflict.
-							if (existing.contract_digest !== compiled.contractDigest) {
-								return {
-									ok: false,
-									code: "admission_conflict",
-									diagnostics: [
-										{
-											code: "admission_conflict",
-											message: `attempt '${attemptId}' is already bound to a different contract digest`,
-											path: "compiled.contractDigest",
-										},
-									],
-								};
-							}
-							return {
-								ok: true,
-								launch: bindLaunchContract(compiled, this.#bindingInputFor(existing.binding_id, input)),
-								replayed: true,
-							};
-						}
-
-						this.#db
-							.prepare(
-								`INSERT OR IGNORE INTO launch_contracts (contract_id, revision, digest, prior_digest, policy_version, root_principal_id, parent_principal_id, child_principal_id, canonical_json, created_at)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-							)
-							.run(
-								compiled.contractId,
-								compiled.contractRevision,
-								compiled.contractDigest,
-								compiled.priorContractDigest,
-								compiled.policyVersion,
-								compiled.rootPrincipalId,
-								compiled.parentPrincipalId,
-								compiled.childPrincipalId,
-								canonicalJson(compiled),
-								now,
-							);
-
-						const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-${attemptId}`;
-						this.#db
-							.prepare(
-								`INSERT INTO launch_bindings (binding_id, contract_id, contract_revision, contract_digest, root_principal_id, parent_principal_id, child_principal_id, attempt_id, policy_epoch, context_generation, state, lifecycle_json, reservation_id, restores_binding_id, created_at, updated_at)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'authorized', ?, ?, ?, ?, ?)`,
-							)
-							.run(
-								bindingId,
-								compiled.contractId,
-								compiled.contractRevision,
-								compiled.contractDigest,
-								compiled.rootPrincipalId,
-								compiled.parentPrincipalId,
-								compiled.childPrincipalId,
-								attemptId,
-								guard.expectedPolicyEpoch,
-								input.lifecycle ? JSON.stringify(input.lifecycle) : null,
-								input.lifecycle?.reservationId ?? null,
-								input.restoresBindingId,
-								now,
-								now,
-							);
-
+						// Authenticate the mutating actor BEFORE any write: the
+						// guard's context must resolve to a registered issuer whose
+						// durable principal/binding is live at the claimed epoch,
+						// and whose lineage matches the contract being admitted.
+						const actorDenied = this.#authenticateActor(guard, {
+							rootPrincipalId: compiled.rootPrincipalId,
+							parentPrincipalId: compiled.parentPrincipalId,
+						});
+						if (actorDenied) return actorDenied;
+						const admitted = this.#admitLaunchAuthorityRow({
+							compiled,
+							attemptId,
+							policyEpoch: guard.expectedPolicyEpoch,
+							// The durable binding records graph placement only;
+							// attempt and reservation identity live in their own
+							// columns, so the persisted block is exactly the
+							// `LaunchBinding.lifecycle` shape and nothing wider.
+							lifecycle: input.lifecycle
+								? {
+										runId: input.lifecycle.runId,
+										nodeId: input.lifecycle.nodeId,
+										ownerNodeId: input.lifecycle.ownerNodeId,
+										jobId: input.lifecycle.jobId,
+										leaseEpoch: input.lifecycle.leaseEpoch,
+										cancellationGeneration: input.lifecycle.cancellationGeneration,
+									}
+								: null,
+							reservationId: input.lifecycle?.reservationId ?? null,
+							restoresBindingId: input.restoresBindingId,
+						});
+						if (!admitted.ok) return admitted;
+						// Bound against the row that was just committed, read back
+						// through the same decoder every other reader uses.
 						return {
 							ok: true,
-							launch: bindLaunchContract(compiled, this.#bindingInputFor(bindingId, input)),
-							replayed: false,
+							launch: bindLaunchContract(compiled, this.getLaunchBinding(admitted.bindingId)),
+							replayed: admitted.replayed,
 						};
 						// BEGIN IMMEDIATE: SQLite does NOT honour busy_timeout when a
 						// deferred transaction has to upgrade to a write lock, so a
@@ -2520,17 +2936,330 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 		}
 	}
 
-	#bindingInputFor(bindingId: string, input: LaunchAuthorityAdmissionInput): LaunchBindingInput {
-		const lifecycle = input.lifecycle;
-		return {
-			runId: lifecycle?.runId ?? input.compiled.contractId,
-			nodeId: lifecycle?.nodeId ?? input.compiled.childPrincipalId,
-			ownerNodeId: lifecycle?.ownerNodeId ?? null,
-			attemptId: lifecycle?.attemptId ?? bindingId,
-			budgetReservationId: lifecycle?.reservationId ?? `reservation-${bindingId}`,
-			leaseEpoch: lifecycle?.leaseEpoch ?? 1,
-			cancellationGeneration: lifecycle?.cancellationGeneration ?? 0,
-		};
+	/**
+	 * The single launch-authority row writer, shared by authority-only
+	 * admission and hierarchical attempt admission.
+	 *
+	 * Persists the compiled contract, the root/issuer/child principal rows
+	 * and EXACTLY ONE `launch_bindings` row, or resolves the row an earlier
+	 * admission of the same attempt already committed. Both entry points go
+	 * through here so a hierarchical attempt can never execute against a
+	 * fabricated binding, and a replay can never mint a second authority for
+	 * one attempt.
+	 *
+	 * MUST be called inside the caller's `.immediate()` transaction: it
+	 * neither opens one nor retries, so authority commits atomically with
+	 * whatever else that transaction writes.
+	 */
+	#admitLaunchAuthorityRow(input: {
+		readonly compiled: CompiledLaunchContract;
+		readonly attemptId: string;
+		readonly policyEpoch: number;
+		readonly lifecycle: LaunchBinding["lifecycle"];
+		readonly reservationId: string | null;
+		readonly restoresBindingId: string | null;
+	}): { readonly ok: true; readonly bindingId: string; readonly replayed: boolean } | LaunchAuthorityFailure {
+		const { compiled, attemptId } = input;
+		const now = Date.now();
+
+		// Recompute the canonical digest BEFORE any write or replay lookup:
+		// a tampered body must fail with a typed diagnostic and commit
+		// nothing, never surface as a generic admission failure or ride in
+		// behind an existing attempt row.
+		const { contractDigest, ...body } = compiled;
+		if (computeLaunchContractDigest(body) !== contractDigest) {
+			return {
+				ok: false,
+				code: "digest_mismatch",
+				diagnostics: [
+					{
+						code: "digest_mismatch",
+						message: `compiled contract '${compiled.contractId}' digest does not recompute from its body`,
+						path: "compiled.contractDigest",
+					},
+				],
+			};
+		}
+
+		const existing = this.#db
+			.prepare("SELECT binding_id, contract_digest FROM launch_bindings WHERE attempt_id = ?")
+			.get(attemptId) as { binding_id: string; contract_digest: string } | undefined;
+		if (existing) {
+			// Idempotent replay returns the recorded allocation; the
+			// same key with different content is a real conflict.
+			if (existing.contract_digest !== compiled.contractDigest) {
+				return {
+					ok: false,
+					code: "admission_conflict",
+					diagnostics: [
+						{
+							code: "admission_conflict",
+							message: `attempt '${attemptId}' is already bound to a different contract digest`,
+							path: "compiled.contractDigest",
+						},
+					],
+				};
+			}
+			return { ok: true, bindingId: existing.binding_id, replayed: true };
+		}
+
+		this.#db
+			.prepare(
+				`INSERT OR IGNORE INTO launch_contracts (contract_id, revision, digest, prior_digest, policy_version, root_principal_id, parent_principal_id, child_principal_id, canonical_json, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				compiled.contractId,
+				compiled.contractRevision,
+				compiled.contractDigest,
+				compiled.priorContractDigest,
+				compiled.policyVersion,
+				compiled.rootPrincipalId,
+				compiled.parentPrincipalId,
+				compiled.childPrincipalId,
+				canonicalJson(compiled),
+				now,
+			);
+
+		// §14.5 lazy principal persistence: the launch_principals
+		// row for the root, the issuer and the new child is written
+		// inside the SAME transaction that commits the contract and
+		// authorized binding, so a root stays scheduler-free until
+		// its first delegated child. INSERT OR IGNORE keeps the
+		// first-recorded lineage; a later admission never rewrites
+		// an existing principal's parent or envelope.
+		this.ensureLaunchPrincipal(compiled.rootPrincipalId, compiled.rootPrincipalId, null, null);
+		if (compiled.parentPrincipalId !== compiled.rootPrincipalId) {
+			const parentRow = this.#db
+				.prepare(
+					`SELECT parent_principal_id, digest FROM launch_contracts
+					 WHERE child_principal_id = ? ORDER BY rowid DESC LIMIT 1`,
+				)
+				.get(compiled.parentPrincipalId) as { parent_principal_id: string; digest: string } | undefined;
+			this.ensureLaunchPrincipal(
+				compiled.parentPrincipalId,
+				compiled.rootPrincipalId,
+				parentRow?.parent_principal_id ?? null,
+				parentRow?.digest ?? null,
+			);
+		}
+		this.ensureLaunchPrincipal(
+			compiled.childPrincipalId,
+			compiled.rootPrincipalId,
+			compiled.parentPrincipalId,
+			compiled.contractDigest,
+			{ launchClass: compiled.authority.launchClass, policyEpoch: input.policyEpoch },
+		);
+
+		const bindingId = `binding-${compiled.contractId}-${compiled.contractRevision}-${attemptId}`;
+		this.#db
+			.prepare(
+				`INSERT INTO launch_bindings (binding_id, contract_id, contract_revision, contract_digest, root_principal_id, parent_principal_id, child_principal_id, attempt_id, policy_epoch, context_generation, state, lifecycle_json, reservation_id, restores_binding_id, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'authorized', ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				bindingId,
+				compiled.contractId,
+				compiled.contractRevision,
+				compiled.contractDigest,
+				compiled.rootPrincipalId,
+				compiled.parentPrincipalId,
+				compiled.childPrincipalId,
+				attemptId,
+				input.policyEpoch,
+				input.lifecycle ? JSON.stringify(input.lifecycle) : null,
+				input.reservationId,
+				input.restoresBindingId,
+				now,
+				now,
+			);
+
+		return { ok: true, bindingId, replayed: false };
+	}
+
+	/**
+	 * Authenticate the mutating actor inside the caller's `.immediate()`
+	 * transaction. The guard's context must resolve to a registered issuer
+	 * whose durable identity is live at the epoch the guard claims:
+	 *
+	 * - A bound actor (`registration.authority`) must be the child principal
+	 *   of a live (`bound`/`active`) binding whose epoch matches both the
+	 *   registration's pinned epoch and `guard.expectedPolicyEpoch`, and it
+	 *   may only mutate authority it issued: `expected.parentPrincipalId`
+	 *   must be that principal and `expected.rootPrincipalId` must be the
+	 *   binding's recorded root.
+	 * - A root actor (`registration.root`) may only issue for its own
+	 *   principal: `expected.parentPrincipalId` and `expected.rootPrincipalId`
+	 *   must both equal the root principal id. When the principal row exists
+	 *   it must be `active` at the claimed epoch; when it does not (lazy
+	 *   persistence), only the schema-default epoch 1 is honest.
+	 *
+	 * Returns null when the actor authenticates; otherwise the typed failure
+	 * the caller returns without writing anything.
+	 */
+	#authenticateActor(
+		guard: LaunchMutationGuard,
+		expected: { readonly rootPrincipalId: string; readonly parentPrincipalId: string },
+	): LaunchAuthorityFailure | null {
+		const registration = getLifecycleRegistration(guard.actor);
+		if (!registration) {
+			return this.#authorityFailure(
+				"unauthenticated_actor",
+				"mutation guard carries no registered execution context",
+			);
+		}
+		const authority = registration.authority;
+		if (authority) {
+			const issuer = this.#db
+				.prepare(
+					"SELECT state, policy_epoch, child_principal_id, root_principal_id FROM launch_bindings WHERE binding_id = ?",
+				)
+				.get(authority.bindingId) as
+				| { state: string; policy_epoch: number; child_principal_id: string; root_principal_id: string }
+				| undefined;
+			if (!issuer) {
+				return this.#authorityFailure(
+					"unauthenticated_actor",
+					`actor binding '${authority.bindingId}' is not persisted`,
+				);
+			}
+			if (issuer.state !== "bound" && issuer.state !== "active") {
+				return this.#authorityFailure(
+					"unauthenticated_actor",
+					`actor binding '${authority.bindingId}' is '${issuer.state}', not live`,
+				);
+			}
+			if (
+				issuer.child_principal_id !== authority.principalId ||
+				issuer.policy_epoch !== authority.policyEpoch ||
+				issuer.policy_epoch !== guard.expectedPolicyEpoch
+			) {
+				return this.#authorityFailure(
+					"stale_launch_authority",
+					`actor binding '${authority.bindingId}' is at epoch ${issuer.policy_epoch}, guard expected ${guard.expectedPolicyEpoch}`,
+				);
+			}
+			if (
+				authority.principalId !== expected.parentPrincipalId ||
+				issuer.root_principal_id !== expected.rootPrincipalId
+			) {
+				return this.#authorityFailure(
+					"unauthenticated_actor",
+					"actor lineage does not match the mutated authority's parent/root principals",
+				);
+			}
+			return null;
+		}
+		const root = registration.root;
+		if (root) {
+			if (
+				expected.parentPrincipalId !== expected.rootPrincipalId ||
+				root.rootPrincipalId !== expected.rootPrincipalId
+			) {
+				return this.#authorityFailure(
+					"unauthenticated_actor",
+					"a root actor may only issue authority whose parent is that root principal",
+				);
+			}
+			const principal = this.#db
+				.prepare("SELECT status, policy_epoch FROM launch_principals WHERE principal_id = ?")
+				.get(root.rootPrincipalId) as { status: string; policy_epoch: number } | undefined;
+			if (principal) {
+				if (principal.status !== "active") {
+					return this.#authorityFailure(
+						"unauthenticated_actor",
+						`actor principal '${root.rootPrincipalId}' is '${principal.status}'`,
+					);
+				}
+				if (principal.policy_epoch !== guard.expectedPolicyEpoch) {
+					return this.#authorityFailure(
+						"stale_launch_authority",
+						`actor principal '${root.rootPrincipalId}' is at epoch ${principal.policy_epoch}, guard expected ${guard.expectedPolicyEpoch}`,
+					);
+				}
+			} else if (guard.expectedPolicyEpoch !== 1) {
+				return this.#authorityFailure(
+					"stale_launch_authority",
+					`actor principal '${root.rootPrincipalId}' is unpersisted at epoch 1, guard expected ${guard.expectedPolicyEpoch}`,
+				);
+			}
+			return null;
+		}
+		return this.#authorityFailure(
+			"unauthenticated_actor",
+			"registered context carries neither root nor bound authority",
+		);
+	}
+
+	/**
+	 * Current recorded policy epoch for a principal, or the schema default
+	 * for one that has not been persisted yet. Read rather than assumed: a
+	 * binding must record the epoch its principal actually carries.
+	 */
+	#launchPrincipalEpoch(principalId: string): number {
+		const row = this.#db
+			.prepare("SELECT policy_epoch FROM launch_principals WHERE principal_id = ?")
+			.get(principalId) as { policy_epoch: number } | undefined;
+		return row?.policy_epoch ?? 1;
+	}
+
+	/**
+	 * §14.5 lazy principal persistence (additive). INSERT OR IGNOREs one row
+	 * into `launch_principals`: the first-recorded lineage wins and a later
+	 * admission never rewrites an existing principal's parent or envelope.
+	 * Called inside `admitLaunchAuthority`'s transaction for the root, the
+	 * issuer and the new child; also safe standalone (autocommit) for a host
+	 * that wants to persist a root principal before any child exists.
+	 *
+	 * `envelopeRef` is the durable ref backing the principal's authority
+	 * envelope — the contract digest for a contract-admitted principal, null
+	 * for a lazily stubbed root/issuer row whose envelope is not persisted.
+	 */
+	ensureLaunchPrincipal(
+		principalId: string,
+		rootPrincipalId: string,
+		parentPrincipalId: string | null,
+		envelopeRef: string | null,
+		opts?: { readonly launchClass?: LaunchClass | null; readonly policyEpoch?: number },
+	): void {
+		this.#assertOpen();
+		const now = Date.now();
+		this.#db
+			.prepare(
+				`INSERT OR IGNORE INTO launch_principals
+				 (principal_id, root_principal_id, parent_principal_id, launch_class, authority_envelope_ref, policy_epoch, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				principalId,
+				rootPrincipalId,
+				parentPrincipalId,
+				opts?.launchClass ?? null,
+				envelopeRef,
+				opts?.policyEpoch ?? 1,
+				now,
+				now,
+			);
+	}
+
+	/** Read-back for a lazily persisted principal; null when none was recorded. */
+	getLaunchPrincipal(principalId: string): LaunchPrincipalRow | null {
+		this.#assertOpen();
+		const row = this.#db.prepare("SELECT * FROM launch_principals WHERE principal_id = ?").get(principalId) as
+			| Record<string, unknown>
+			| undefined;
+		if (!row) return null;
+		return Object.freeze({
+			principalId: row.principal_id as string,
+			rootPrincipalId: (row.root_principal_id ?? null) as string | null,
+			parentPrincipalId: (row.parent_principal_id ?? null) as string | null,
+			launchClass: (row.launch_class ?? null) as LaunchClass | null,
+			authorityEnvelopeRef: (row.authority_envelope_ref ?? null) as string | null,
+			policyEpoch: row.policy_epoch as number,
+			status: row.status as LaunchPrincipalRow["status"],
+			createdAt: row.created_at as number,
+			updatedAt: row.updated_at as number,
+		});
 	}
 
 	/**
@@ -2576,6 +3305,61 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 		try {
 			return this.#db
 				.transaction((): GrantIssueResult => {
+					const binding = this.#db
+						.prepare(
+							`SELECT state, policy_epoch, root_principal_id, parent_principal_id, child_principal_id, attempt_id, contract_revision
+							 FROM launch_bindings WHERE binding_id = ?`,
+						)
+						.get(request.recipientBindingId) as
+						| {
+								state: string;
+								policy_epoch: number;
+								root_principal_id: string;
+								parent_principal_id: string;
+								child_principal_id: string;
+								attempt_id: string;
+								contract_revision: number;
+						  }
+						| undefined;
+					if (!binding) {
+						return this.#authorityFailure(
+							"launch_binding_not_found",
+							`binding '${request.recipientBindingId}' not found`,
+						);
+					}
+					if (binding.policy_epoch !== input.guard.expectedPolicyEpoch) {
+						return this.#authorityFailure(
+							"stale_launch_authority",
+							`binding is at epoch ${binding.policy_epoch}, guard expected ${input.guard.expectedPolicyEpoch}`,
+						);
+					}
+					if (!isLiveLaunchBindingState(binding.state)) {
+						return this.#authorityFailure(
+							"launch_binding_not_live",
+							`binding '${request.recipientBindingId}' is '${binding.state}', not live`,
+						);
+					}
+					const actorDenied = this.#authenticateActor(input.guard, {
+						rootPrincipalId: binding.root_principal_id,
+						parentPrincipalId: binding.parent_principal_id,
+					});
+					if (actorDenied) return actorDenied;
+					if (
+						request.issuerPrincipalId !== binding.parent_principal_id ||
+						request.recipientPrincipalId !== binding.child_principal_id
+					) {
+						return this.#authorityFailure(
+							"grant_principal_mismatch",
+							"grant issuer/recipient principals do not match the durable recipient binding",
+						);
+					}
+					if (request.attemptId !== binding.attempt_id || request.contractRevision !== binding.contract_revision) {
+						return this.#authorityFailure(
+							"grant_binding_mismatch",
+							"grant attempt/revision do not match the durable recipient binding",
+						);
+					}
+
 					// Idempotency: the same request content under the same
 					// idempotency key returns the recorded grant rather than
 					// issuing a second one. Different content under the same
@@ -2685,52 +3469,104 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 	 * and every grant derived from this one is transitively revoked too — a
 	 * revoked source must not keep authorising through its children.
 	 */
-	revokeLaunchGrant(input: { guard: LaunchMutationGuard; grantId: string; reason: string }): void {
+	revokeLaunchGrant(input: { guard: LaunchMutationGuard; grantId: string; reason: string }): LaunchMutationResult {
 		this.#assertOpen();
 		const now = Date.now();
-		this.#db
-			.transaction(() => {
-				const target = this.#db
-					.prepare("SELECT revoked_at FROM launch_grants WHERE grant_id = ?")
-					.get(input.grantId) as { revoked_at: number | null } | undefined;
-				if (!target) {
-					throw new LifecycleReadError("launch_grant_not_found", `grant '${input.grantId}' not found`);
-				}
-				if (target.revoked_at !== null) return;
-
-				// BFS over lineage edges so derived grants fall with their
-				// source, in the same transaction.
-				const queue = [input.grantId];
-				const revoked = new Set<string>();
-				while (queue.length > 0) {
-					const current = queue.shift() as string;
-					if (revoked.has(current)) continue;
-					revoked.add(current);
-					this.#db
-						.prepare("UPDATE launch_grants SET revoked_at = ? WHERE grant_id = ? AND revoked_at IS NULL")
-						.run(now, current);
-					this.#db
+		try {
+			return this.#db
+				.transaction((): LaunchMutationResult => {
+					const target = this.#db
+						.prepare("SELECT recipient_binding_id, revoked_at FROM launch_grants WHERE grant_id = ?")
+						.get(input.grantId) as { recipient_binding_id: string; revoked_at: number | null } | undefined;
+					if (!target) {
+						return this.#authorityFailure("launch_grant_not_found", `grant '${input.grantId}' not found`);
+					}
+					const binding = this.#db
 						.prepare(
-							`INSERT INTO launch_grant_events (event_id, grant_id, kind, actor_principal_id, policy_epoch, reason, record_digest, occurred_at)
-							 VALUES (?, ?, 'revoked', ?, ?, ?, '', ?)`,
+							"SELECT state, policy_epoch, root_principal_id, parent_principal_id FROM launch_bindings WHERE binding_id = ?",
 						)
-						.run(
-							`event-${current}-revoked-${now}`,
-							current,
-							"",
-							input.guard.expectedPolicyEpoch,
-							input.reason,
-							now,
+						.get(target.recipient_binding_id) as
+						| {
+								state: string;
+								policy_epoch: number;
+								root_principal_id: string;
+								parent_principal_id: string;
+						  }
+						| undefined;
+					if (!binding) {
+						return this.#authorityFailure(
+							"launch_binding_not_found",
+							`binding '${target.recipient_binding_id}' not found`,
 						);
-					const children = (
-						this.#db
-							.prepare("SELECT derived_grant_id FROM launch_grant_edges WHERE source_grant_id = ?")
-							.all(current) as { derived_grant_id: string }[]
-					).map(row => row.derived_grant_id);
-					queue.push(...children);
-				}
-			})
-			.immediate();
+					}
+					if (binding.policy_epoch !== input.guard.expectedPolicyEpoch) {
+						return this.#authorityFailure(
+							"stale_launch_authority",
+							`binding is at epoch ${binding.policy_epoch}, guard expected ${input.guard.expectedPolicyEpoch}`,
+						);
+					}
+					if (!isLiveLaunchBindingState(binding.state)) {
+						return this.#authorityFailure(
+							"launch_binding_not_live",
+							`binding '${target.recipient_binding_id}' is '${binding.state}', not live`,
+						);
+					}
+					const actorDenied = this.#authenticateActor(input.guard, {
+						rootPrincipalId: binding.root_principal_id,
+						parentPrincipalId: binding.parent_principal_id,
+					});
+					if (actorDenied) return actorDenied;
+					if (target.revoked_at !== null) return { ok: true };
+
+					// BFS over lineage edges so derived grants fall with their
+					// source, in the same transaction.
+					const queue = [input.grantId];
+					const revoked = new Set<string>();
+					while (queue.length > 0) {
+						const current = queue.shift() as string;
+						if (revoked.has(current)) continue;
+						revoked.add(current);
+						const grant = this.#db
+							.prepare("SELECT record_digest FROM launch_grants WHERE grant_id = ?")
+							.get(current) as { record_digest: string } | undefined;
+						if (!grant) {
+							return this.#authorityFailure("launch_grant_not_found", `derived grant '${current}' not found`);
+						}
+						const update = this.#db
+							.prepare("UPDATE launch_grants SET revoked_at = ? WHERE grant_id = ? AND revoked_at IS NULL")
+							.run(now, current);
+						if (update.changes === 1) {
+							this.#db
+								.prepare(
+									`INSERT INTO launch_grant_events (event_id, grant_id, kind, actor_principal_id, policy_epoch, reason, record_digest, occurred_at)
+									 VALUES (?, ?, 'revoked', ?, ?, ?, ?, ?)`,
+								)
+								.run(
+									`event-${current}-revoked-${now}`,
+									current,
+									binding.parent_principal_id,
+									input.guard.expectedPolicyEpoch,
+									input.reason,
+									grant.record_digest,
+									now,
+								);
+						}
+						const children = (
+							this.#db
+								.prepare("SELECT derived_grant_id FROM launch_grant_edges WHERE source_grant_id = ?")
+								.all(current) as { derived_grant_id: string }[]
+						).map(row => row.derived_grant_id);
+						queue.push(...children);
+					}
+					return { ok: true };
+				})
+				.immediate();
+		} catch (error) {
+			return this.#authorityFailure(
+				"grant_revocation_failed",
+				error instanceof Error ? error.message : String(error),
+			);
+		}
 	}
 
 	getLaunchGrant(grantId: string): GrantRecordV1 {
@@ -2764,9 +3600,20 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 			return this.#db
 				.transaction((): ContextDeliveryResult => {
 					const binding = this.#db
-						.prepare("SELECT policy_epoch, state, child_principal_id FROM launch_bindings WHERE binding_id = ?")
+						.prepare(
+							`SELECT policy_epoch, state, root_principal_id, parent_principal_id, child_principal_id, attempt_id, contract_revision
+							 FROM launch_bindings WHERE binding_id = ?`,
+						)
 						.get(request.recipientBindingId) as
-						| { policy_epoch: number; state: string; child_principal_id: string }
+						| {
+								policy_epoch: number;
+								state: string;
+								root_principal_id: string;
+								parent_principal_id: string;
+								child_principal_id: string;
+								attempt_id: string;
+								contract_revision: number;
+						  }
 						| undefined;
 					if (!binding) {
 						return this.#authorityFailure(
@@ -2774,17 +3621,38 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 							`binding '${request.recipientBindingId}' not found`,
 						);
 					}
-					if (binding.policy_epoch !== request.expectedPolicyEpoch) {
+					if (
+						binding.policy_epoch !== input.guard.expectedPolicyEpoch ||
+						binding.policy_epoch !== request.expectedPolicyEpoch
+					) {
 						return this.#authorityFailure(
 							"stale_launch_authority",
-							`binding is at epoch ${binding.policy_epoch}, request expected ${request.expectedPolicyEpoch}`,
+							`binding is at epoch ${binding.policy_epoch}, guard expected ${input.guard.expectedPolicyEpoch} and request expected ${request.expectedPolicyEpoch}`,
 						);
 					}
-					if (binding.state === "revoked" || binding.state === "superseded") {
-						// A revoked binding receives nothing further.
+					if (!isLiveLaunchBindingState(binding.state)) {
 						return this.#authorityFailure(
-							"launch_binding_revoked",
-							`binding '${request.recipientBindingId}' is ${binding.state}`,
+							binding.state === "revoked" || binding.state === "superseded"
+								? "launch_binding_revoked"
+								: "launch_binding_not_live",
+							`binding '${request.recipientBindingId}' is '${binding.state}', not live`,
+						);
+					}
+					const actorDenied = this.#authenticateActor(input.guard, {
+						rootPrincipalId: binding.root_principal_id,
+						parentPrincipalId: binding.parent_principal_id,
+					});
+					if (actorDenied) return actorDenied;
+					if (input.senderPrincipalId !== binding.parent_principal_id) {
+						return this.#authorityFailure(
+							"delivery_sender_mismatch",
+							"delivery sender principal does not match the durable recipient binding's parent",
+						);
+					}
+					if (request.attemptId !== binding.attempt_id || request.contractRevision !== binding.contract_revision) {
+						return this.#authorityFailure(
+							"delivery_binding_mismatch",
+							"delivery attempt/revision do not match the durable recipient binding",
 						);
 					}
 
@@ -2978,21 +3846,74 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 		deliveryId: string;
 		requestId: string;
 		outcome: "provider-known" | "provider-unknown";
-	}): void {
+	}): LaunchMutationResult {
 		this.#assertOpen();
-		this.#db
-			.prepare(
-				`INSERT INTO launch_delivery_events (event_id, binding_id, delivery_id, kind, request_id, occurred_at)
-				 VALUES (?, ?, ?, ?, ?, ?)`,
-			)
-			.run(
-				`event-${input.bindingId}-${input.deliveryId}-${input.outcome}-${input.requestId}`,
-				input.bindingId,
-				input.deliveryId,
-				input.outcome,
-				input.requestId,
-				Date.now(),
+		try {
+			return this.#db
+				.transaction((): LaunchMutationResult => {
+					const binding = this.#db
+						.prepare(
+							"SELECT state, policy_epoch, root_principal_id, parent_principal_id FROM launch_bindings WHERE binding_id = ?",
+						)
+						.get(input.bindingId) as
+						| {
+								state: string;
+								policy_epoch: number;
+								root_principal_id: string;
+								parent_principal_id: string;
+						  }
+						| undefined;
+					if (!binding) {
+						return this.#authorityFailure("launch_binding_not_found", `binding '${input.bindingId}' not found`);
+					}
+					if (binding.policy_epoch !== input.guard.expectedPolicyEpoch) {
+						return this.#authorityFailure(
+							"stale_launch_authority",
+							`binding is at epoch ${binding.policy_epoch}, guard expected ${input.guard.expectedPolicyEpoch}`,
+						);
+					}
+					if (!isLiveLaunchBindingState(binding.state)) {
+						return this.#authorityFailure(
+							"launch_binding_not_live",
+							`binding '${input.bindingId}' is '${binding.state}', not live`,
+						);
+					}
+					const actorDenied = this.#authenticateActor(input.guard, {
+						rootPrincipalId: binding.root_principal_id,
+						parentPrincipalId: binding.parent_principal_id,
+					});
+					if (actorDenied) return actorDenied;
+					const delivery = this.#db
+						.prepare("SELECT 1 AS present FROM launch_deliveries WHERE binding_id = ? AND delivery_id = ?")
+						.get(input.bindingId, input.deliveryId) as { present: number } | undefined;
+					if (!delivery) {
+						return this.#authorityFailure(
+							"launch_delivery_not_found",
+							`delivery '${input.deliveryId}' is not admitted for binding '${input.bindingId}'`,
+						);
+					}
+					this.#db
+						.prepare(
+							`INSERT OR IGNORE INTO launch_delivery_events (event_id, binding_id, delivery_id, kind, request_id, occurred_at)
+							 VALUES (?, ?, ?, ?, ?, ?)`,
+						)
+						.run(
+							`event-${input.bindingId}-${input.deliveryId}-${input.outcome}-${input.requestId}`,
+							input.bindingId,
+							input.deliveryId,
+							input.outcome,
+							input.requestId,
+							Date.now(),
+						);
+					return { ok: true };
+				})
+				.immediate();
+		} catch (error) {
+			return this.#authorityFailure(
+				"provider_outcome_failed",
+				error instanceof Error ? error.message : String(error),
 			);
+		}
 	}
 
 	/**
@@ -3012,14 +3933,29 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 				.transaction((): LaunchBindingActivationResult => {
 					const row = this.#db
 						.prepare(
-							"SELECT binding_id, contract_digest, state, policy_epoch FROM launch_bindings WHERE binding_id = ?",
+							"SELECT binding_id, contract_digest, state, policy_epoch, root_principal_id, parent_principal_id FROM launch_bindings WHERE binding_id = ?",
 						)
 						.get(input.bindingId) as
-						| { binding_id: string; contract_digest: string; state: string; policy_epoch: number }
+						| {
+								binding_id: string;
+								contract_digest: string;
+								state: string;
+								policy_epoch: number;
+								root_principal_id: string;
+								parent_principal_id: string;
+						  }
 						| undefined;
 					if (!row) {
 						return this.#authorityFailure("launch_binding_not_found", `binding '${input.bindingId}' not found`);
 					}
+					// Authenticate the activating actor against the binding's
+					// recorded lineage: only the issuer (parent) or the root may
+					// move this binding, at the epoch the guard claims.
+					const actorDenied = this.#authenticateActor(input.guard, {
+						rootPrincipalId: row.root_principal_id,
+						parentPrincipalId: row.parent_principal_id,
+					});
+					if (actorDenied) return actorDenied;
 					if (row.state !== input.expectedState) {
 						// CAS on state: a concurrent revoke or supersede must not
 						// be overwritten by a late activation.
@@ -3086,23 +4022,124 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 							input.guard.expectedPolicyEpoch,
 						);
 
+					// Read the row back AFTER the state/guarantee write: the
+					// returned contract must carry the binding as it now stands
+					// (`bound`/`active` with its measured guarantees), not the
+					// pre-activation row and never a synthesized identity.
+					const activated = this.#db
+						.prepare("SELECT * FROM launch_bindings WHERE binding_id = ?")
+						.get(input.bindingId) as Record<string, unknown> | undefined;
+					if (!activated) {
+						return this.#authorityFailure(
+							"launch_binding_not_found",
+							`binding '${input.bindingId}' disappeared during activation`,
+						);
+					}
 					return {
 						ok: true,
-						launch: bindLaunchContract(contract, {
-							runId: contract.contractId,
-							nodeId: contract.childPrincipalId,
-							ownerNodeId: null,
-							attemptId: input.bindingId,
-							budgetReservationId: `reservation-${input.bindingId}`,
-							leaseEpoch: 1,
-							cancellationGeneration: 0,
-						}),
+						launch: bindLaunchContract(contract, this.#launchBindingFromRow(activated)),
 						replayed: false,
 					};
 				})
 				.immediate();
 		} catch (error) {
 			return this.#authorityFailure("activation_failed", error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	/**
+	 * Fenced, idempotent terminalization (§14.5/R12): move a binding out of a
+	 * live or `authorized` state into `failed` or `revoked`.
+	 *
+	 * The transition CASes on the row being non-terminal, bumps
+	 * `policy_epoch` so in-process registrations pinned to the old epoch go
+	 * stale, and releases the binding's reserved compute exactly once
+	 * (predicated on `active_compute > 0`, so a replay is a no-op rather
+	 * than a double credit). Replaying terminalization against an
+	 * already-terminal binding returns ok — abort handling must never become
+	 * the flakiest path in the system.
+	 */
+	terminateLaunchBinding(input: {
+		readonly guard: LaunchMutationGuard;
+		readonly bindingId: string;
+		readonly targetState?: "failed" | "revoked";
+		readonly reason: string;
+	}): LaunchBindingTerminationResult {
+		this.#assertOpen();
+		const targetState = input.targetState ?? "failed";
+		const now = Date.now();
+		try {
+			return this.#db
+				.transaction((): LaunchBindingTerminationResult => {
+					const row = this.#db
+						.prepare(
+							"SELECT state, policy_epoch, root_principal_id, parent_principal_id, reservation_id FROM launch_bindings WHERE binding_id = ?",
+						)
+						.get(input.bindingId) as
+						| {
+								state: LaunchBindingState;
+								policy_epoch: number;
+								root_principal_id: string;
+								parent_principal_id: string;
+								reservation_id: string | null;
+						  }
+						| undefined;
+					if (!row) {
+						return this.#authorityFailure("launch_binding_not_found", `binding '${input.bindingId}' not found`);
+					}
+					// Same authentication as activation: only the issuer (parent)
+					// or the root may terminalize this binding.
+					const actorDenied = this.#authenticateActor(input.guard, {
+						rootPrincipalId: row.root_principal_id,
+						parentPrincipalId: row.parent_principal_id,
+					});
+					if (actorDenied) return actorDenied;
+
+					if (
+						row.state === "revoked" ||
+						row.state === "superseded" ||
+						row.state === "failed" ||
+						row.state === "terminal"
+					) {
+						// Already terminal: replay is a no-op, not a conflict.
+						return {
+							ok: true,
+							bindingId: input.bindingId,
+							state: row.state,
+							policyEpoch: row.policy_epoch,
+						};
+					}
+
+					const updated = this.#db
+						.prepare(
+							`UPDATE launch_bindings SET state = ?, policy_epoch = policy_epoch + 1, updated_at = ?
+							 WHERE binding_id = ? AND state NOT IN ('revoked','superseded','failed','terminal')`,
+						)
+						.run(targetState, now, input.bindingId);
+					if (updated.changes !== 1) {
+						return this.#authorityFailure(
+							"launch_binding_state_conflict",
+							`binding '${input.bindingId}' changed state during terminalization`,
+						);
+					}
+					if (row.reservation_id) {
+						this.#db
+							.prepare(
+								`UPDATE lifecycle_reservations SET active_compute = active_compute - 1, updated_at = ?
+								 WHERE reservation_id = ? AND active_compute > 0`,
+							)
+							.run(now, row.reservation_id);
+					}
+					return {
+						ok: true,
+						bindingId: input.bindingId,
+						state: targetState,
+						policyEpoch: row.policy_epoch + 1,
+					};
+				})
+				.immediate();
+		} catch (error) {
+			return this.#authorityFailure("termination_failed", error instanceof Error ? error.message : String(error));
 		}
 	}
 
@@ -3117,6 +4154,42 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 			| Record<string, unknown>
 			| undefined;
 		if (!row) throw new LifecycleReadError("launch_binding_not_found", `binding '${bindingId}' not found`);
+		return this.#launchBindingFromRow(row);
+	}
+
+	/**
+	 * Additive read for §4.3 resolve-existing: `attempt_id` is UNIQUE, so a
+	 * persisted launchAuthority pin (or a v2 native payload) can re-find its
+	 * binding without carrying the bindingId. Throws like getLaunchBinding —
+	 * a missing binding is never "no authority yet".
+	 */
+	getLaunchBindingByAttempt(attemptId: string): LaunchBinding {
+		this.#assertOpen();
+		const row = this.#db.prepare("SELECT * FROM launch_bindings WHERE attempt_id = ?").get(attemptId) as
+			| Record<string, unknown>
+			| undefined;
+		if (!row)
+			throw new LifecycleReadError("launch_binding_not_found", `binding for attempt '${attemptId}' not found`);
+		return this.#launchBindingFromRow(row);
+	}
+
+	/**
+	 * Live children an issuer principal currently holds. `maxChildren` is a
+	 * concurrency ceiling, not a lifetime quota, so terminal states
+	 * (revoked/superseded/failed/terminal) are excluded — a completed child
+	 * must not permanently consume the issuer's fan-out budget.
+	 */
+	countLiveChildBindings(parentPrincipalId: string): number {
+		this.#assertOpen();
+		const row = this.#db
+			.prepare(
+				"SELECT COUNT(*) AS live FROM launch_bindings WHERE parent_principal_id = ? AND state IN ('authorized','bound','active','suspended')",
+			)
+			.get(parentPrincipalId) as { live: number } | undefined;
+		return row?.live ?? 0;
+	}
+
+	#launchBindingFromRow(row: Record<string, unknown>): LaunchBinding {
 		return Object.freeze({
 			schemaVersion: 1 as const,
 			bindingId: row.binding_id as string,
@@ -3202,6 +4275,60 @@ CREATE TABLE IF NOT EXISTS launch_releases (
 			publication: row.publication_state,
 			verification: row.verification_state,
 		}));
+	}
+	reconcileExpiredLeases(now = this.#now()): number {
+		this.#assertOpen();
+		const updated = this.#db
+			.prepare(
+				`UPDATE jobs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+				 WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?`,
+			)
+			.run(now, now);
+		return updated.changes;
+	}
+
+	listDependencyReadyNativeTaskJobs(limit = 10): DurableJob[] {
+		this.#assertOpen();
+		const queued = this.#db
+			.prepare(
+				`SELECT * FROM jobs
+				 WHERE type = 'native_task' AND status = 'queued'
+				 ORDER BY created_at ASC, id ASC`,
+			)
+			.all() as JobRow[];
+
+		const ready: DurableJob[] = [];
+		for (const row of queued) {
+			if (ready.length >= limit) break;
+			let payload: { runId?: string; nodeId?: string; attemptId?: string } | null = null;
+			try {
+				payload = JSON.parse(row.payload_json);
+			} catch {
+				continue;
+			}
+			if (!payload?.nodeId) {
+				ready.push(this.#toJob(row));
+				continue;
+			}
+
+			const unmet = this.#db
+				.prepare(
+					`SELECT d.prerequisite_id
+					 FROM lifecycle_dependencies d
+					 WHERE d.node_id = ?
+					   AND NOT EXISTS (
+					     SELECT 1 FROM lifecycle_attempts a
+					     WHERE a.node_id = d.prerequisite_id AND a.execution_state = 'succeeded'
+					   )
+					 LIMIT 1`,
+				)
+				.get(payload.nodeId);
+
+			if (!unmet) {
+				ready.push(this.#toJob(row));
+			}
+		}
+		return ready;
 	}
 
 	listPendingHandoffs(limit = 100): string[] {

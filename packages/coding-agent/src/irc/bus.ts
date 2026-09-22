@@ -21,7 +21,7 @@ import {
 	type IrcAuthorizationInput,
 } from "../orchestration/collaboration-policy";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
-import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
 import type { CustomMessage } from "../session/messages";
 import type { IrcIpc } from "./ipc";
 
@@ -99,9 +99,13 @@ export class IrcBus {
 		this.#ipc = ipc;
 	}
 
-	/** Deliver a message received from a same-CWD remote process. */
-	async deliverRemote(message: IrcMessage, opts?: IrcSendOptions): Promise<IrcDeliveryReceipt> {
-		return this.send(message, opts);
+	/** Deliver a message received from a remote process already authenticated to one session scope. */
+	async deliverRemote(
+		message: IrcMessage,
+		collaborationScopeId: string,
+		opts?: IrcSendOptions,
+	): Promise<IrcDeliveryReceipt> {
+		return this.#deliver(message, opts, collaborationScopeId);
 	}
 
 	/**
@@ -129,7 +133,31 @@ export class IrcBus {
 	 * incoming card, so relaying the sibling legs would duplicate it.
 	 */
 	async send(msg: Omit<IrcMessage, "id" | "ts">, opts?: IrcSendOptions): Promise<IrcDeliveryReceipt> {
+		return this.#deliver(msg, opts);
+	}
+
+	async #deliver(
+		msg: Omit<IrcMessage, "id" | "ts">,
+		opts?: IrcSendOptions,
+		remoteScopeId?: string,
+	): Promise<IrcDeliveryReceipt> {
 		const message: IrcMessage = { ...msg, id: Snowflake.next(), ts: Date.now() };
+		const senderRef = this.#registry.get(message.from);
+		const recipientRef = this.#registry.get(message.to);
+		if (remoteScopeId && recipientRef?.collaborationScopeId !== remoteScopeId) {
+			return {
+				to: message.to,
+				outcome: "failed",
+				error: "IRC delivery denied: remote sender and recipient belong to different session scopes.",
+			};
+		}
+		if (senderRef && recipientRef && !this.#registry.inSameCollaborationScope(message.from, message.to)) {
+			return {
+				to: message.to,
+				outcome: "failed",
+				error: "IRC delivery denied: sender and recipient belong to different session scopes.",
+			};
+		}
 		if (!this.#registry.get(message.to) && this.#ipc) {
 			const reservations: WakeReservation[] = [];
 			const remoteReceipt = await this.#ipc.send(message.to, msg, opts, remotePeer => {
@@ -485,8 +513,10 @@ export class IrcBus {
 	 * outbound body — relaying it again would duplicate it in the transcript.
 	 */
 	#relayToMainUi(message: IrcMessage): void {
-		if (message.to === MAIN_AGENT_ID || message.from === MAIN_AGENT_ID) return;
-		const mainSession = this.#registry.get(MAIN_AGENT_ID)?.session;
+		const endpoint = this.#registry.get(message.to) ?? this.#registry.get(message.from);
+		const mainRef = endpoint ? this.#registry.rootFor(endpoint.id) : undefined;
+		if (!mainRef || message.to === mainRef.id || message.from === mainRef.id) return;
+		const mainSession = mainRef.session;
 		if (!mainSession) return;
 		const record: CustomMessage = {
 			role: "custom",

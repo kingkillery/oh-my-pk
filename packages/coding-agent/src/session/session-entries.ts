@@ -164,6 +164,26 @@ export type SessionLifecycleMetadata =
 			readonly harnessSnapshot: HarnessManifestV1;
 	  };
 
+/**
+ * §4.3 launch-authority pin persisted in session_init: the durable reference a
+ * cold revive resolves back to its launch_bindings row. This is a pointer, not
+ * authority — the store remains the source of truth and a missing/revoked
+ * binding fails closed at resolve time.
+ */
+export interface SessionLaunchAuthorityV1 {
+	readonly schemaVersion: 1;
+	/** Which launch path minted the binding this pin resolves to. */
+	readonly kind: "delegated-child" | "interactive-root";
+	readonly bindingId: string;
+	readonly principalId: string;
+	readonly attemptId: string;
+	readonly contractId: string;
+	readonly contractRevision: number;
+	readonly contractDigest: string;
+	readonly policyEpoch: number;
+	readonly contextGeneration: number;
+}
+
 /** Session init entry - captures initial context for subagent sessions (debugging/replay). */
 export interface SessionInitEntry extends SessionEntryBase {
 	type: "session_init";
@@ -191,6 +211,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	toolCeiling?: SessionToolCeiling;
 	/** Versioned runtime lifecycle metadata for hierarchical and direct sessions. */
 	lifecycle?: SessionLifecycleMetadata;
+	/** §4.3 launch-authority pin resolved (not re-minted) on cold revive. */
+	launchAuthority?: SessionLaunchAuthorityV1;
 }
 
 /** Mode change entry - tracks agent mode transitions (e.g. plan mode). */
