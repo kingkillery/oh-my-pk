@@ -7,6 +7,7 @@
  */
 import type { AgentMessage, AgentRunSummary } from "@pk-nerdsaver-ai/pi-agent-core";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
+import type { LaunchAuthorityRefV1 } from "../task/launch-contract";
 import type { OperationalStore } from "./store";
 import type { JsonObject, JsonValue, TrajectoryEventKind } from "./types";
 
@@ -95,6 +96,12 @@ export interface OperationalTrajectoryRecorderOptions {
 	readonly jobId?: string | null;
 	readonly now?: TrajectoryClock;
 	readonly onError?: (error: unknown) => void;
+	/**
+	 * Durable launch binding this recorder attributes evidence to. Stamped on
+	 * every event payload so trajectory rows name the admitting authority,
+	 * not only a session or job id.
+	 */
+	readonly launchAuthority?: LaunchAuthorityRefV1 | null;
 }
 
 interface PendingToolCall {
@@ -120,6 +127,7 @@ export class OperationalTrajectoryRecorder {
 	readonly #jobId: string | null;
 	readonly #now: TrajectoryClock;
 	readonly #onError: ((error: unknown) => void) | undefined;
+	readonly #launchAuthority: LaunchAuthorityRefV1 | null;
 	readonly #pending = new Map<string, PendingToolCall>();
 	#unsubscribe: (() => void) | undefined;
 	#disposed = false;
@@ -130,6 +138,7 @@ export class OperationalTrajectoryRecorder {
 		this.#jobId = options.jobId ?? null;
 		this.#now = options.now ?? Date.now;
 		this.#onError = options.onError;
+		this.#launchAuthority = options.launchAuthority ?? null;
 	}
 
 	recordModelDecision(input: RecordModelDecisionInput): void {
@@ -364,6 +373,17 @@ export class OperationalTrajectoryRecorder {
 	}
 
 	#append(kind: TrajectoryEventKind, payload: JsonObject): void {
+		if (this.#launchAuthority) {
+			payload.launchAuthority = {
+				bindingId: this.#launchAuthority.bindingId,
+				principalId: this.#launchAuthority.principalId,
+				attemptId: this.#launchAuthority.attemptId,
+				contractId: this.#launchAuthority.contractId,
+				contractRevision: this.#launchAuthority.contractRevision,
+				contractDigest: this.#launchAuthority.contractDigest,
+				policyEpoch: this.#launchAuthority.policyEpoch,
+			};
+		}
 		try {
 			this.#store.appendEvent({
 				kind,

@@ -1167,6 +1167,44 @@ describe("ModelRegistry runtime discovery", () => {
 		expect(registry.getProviderDiscoveryState("llama.cpp (colab)")?.status).toBe("ok");
 	});
 
+	test("refresh replaces the Colab entry with the live DiffusionGemma model", async () => {
+		let liveModelId = "Qwen3-8B-Q4_K_M";
+		writeRawModelsJson({
+			"llama.cpp (colab)": {
+				baseUrl: "http://colab.test:18082/v1",
+				api: "openai-completions",
+				auth: "none",
+				discovery: { type: "colab" },
+			},
+		});
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "http://colab.test:18082/v1/models") {
+				return Response.json({ data: [{ id: liveModelId }] });
+			}
+			if (url === "http://colab.test:18082/props") {
+				return Response.json({ default_generation_settings: { n_ctx: 2048 } });
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		await registry.refresh();
+		expect(getModelsForProvider(registry, "llama.cpp (colab)").map(model => model.id)).toEqual([liveModelId]);
+
+		liveModelId = "diffusiongemma-26B-A4B-it-Q4_K_M";
+		await registry.refresh();
+
+		const models = getModelsForProvider(registry, "llama.cpp (colab)");
+		expect(models.map(model => model.id)).toEqual([liveModelId]);
+		expect(models[0]).toMatchObject({
+			contextWindow: 2048,
+			maxTokens: 1536,
+			reasoning: false,
+			supportsTools: false,
+		});
+		expect(models[0]?.thinking).toBeUndefined();
+	});
+
 	test("removes the implicit Colab model when its bridge is unavailable", async () => {
 		Bun.env.OMPK_COLAB_BASE_URL = "http://colab.test:18082/v1";
 		let online = true;

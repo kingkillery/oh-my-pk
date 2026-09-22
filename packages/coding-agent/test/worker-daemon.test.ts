@@ -1,18 +1,28 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
-import { NdjsonLineBuffer } from "@pk-nerdsaver-ai/pi-coding-agent/subprocess/shared-worker-client";
 import {
+	DAEMON_HEARTBEAT_TYPE,
+	NdjsonLineBuffer,
+} from "@pk-nerdsaver-ai/pi-coding-agent/subprocess/shared-worker-client";
+import {
+	type DaemonExitReason,
+	type DaemonScheduler,
 	runSocketDaemonWorker,
 	splitDaemonId,
 	type WorkerTransport,
 } from "@pk-nerdsaver-ai/pi-coding-agent/subprocess/worker-daemon";
 import type { Socket } from "bun";
 
-type In = { type: "ping"; id: string } | { type: "complete"; id: string; text: string } | { type: "nudge" };
+type In =
+	| { type: "ping"; id: string }
+	| { type: "complete"; id: string; text: string }
+	| { type: "nudge" }
+	| { type: typeof DAEMON_HEARTBEAT_TYPE };
 type Out =
 	| { type: "pong"; id: string }
 	| { type: "completion"; id: string; text: string }
+	| { type: "progress"; id: string; note: string }
 	| { type: "log"; msg: string };
 
 function tmpSocketPath(tag: string): string {
@@ -31,6 +41,7 @@ function fakeWorker(transport: WorkerTransport<In, Out>): void {
 interface TestClient {
 	socket: Socket;
 	received: Out[];
+	closed: Promise<void>;
 	next(): Promise<Out>;
 	send(msg: In): void;
 }
@@ -38,6 +49,7 @@ interface TestClient {
 async function connectClient(socketPath: string): Promise<TestClient> {
 	const received: Out[] = [];
 	const waiters: Array<(m: Out) => void> = [];
+	const closed = Promise.withResolvers<void>();
 	const lines = new NdjsonLineBuffer();
 	const socket = await Bun.connect({
 		unix: socketPath,
@@ -50,11 +62,15 @@ async function connectClient(socketPath: string): Promise<TestClient> {
 					else received.push(msg);
 				}
 			},
+			close() {
+				closed.resolve();
+			},
 		},
 	});
 	return {
 		socket,
 		received,
+		closed: closed.promise,
 		next() {
 			const queued = received.shift();
 			if (queued) return Promise.resolve(queued);
@@ -67,6 +83,64 @@ async function connectClient(socketPath: string): Promise<TestClient> {
 		},
 	};
 }
+
+class FakeScheduler implements DaemonScheduler {
+	#now = 0;
+	#nextTimerId = 0;
+	#timeouts = new Map<number, { at: number; callback: () => void }>();
+	#intervals = new Map<number, { callback: () => void }>();
+
+	now(): number {
+		return this.#now;
+	}
+	setTimeout(callback: () => void, ms: number): Timer {
+		const id = ++this.#nextTimerId;
+		this.#timeouts.set(id, { at: this.#now + ms, callback });
+		return id as unknown as Timer;
+	}
+	clearTimeout(timer: Timer | undefined): void {
+		this.#timeouts.delete(timer as unknown as number);
+	}
+	setInterval(callback: () => void, _ms: number): Timer {
+		const id = ++this.#nextTimerId;
+		this.#intervals.set(id, { callback });
+		return id as unknown as Timer;
+	}
+	clearInterval(timer: Timer | undefined): void {
+		this.#intervals.delete(timer as unknown as number);
+	}
+	advance(ms: number): void {
+		const target = this.#now + ms;
+		while (true) {
+			let dueId: number | undefined;
+			let dueAt = Number.POSITIVE_INFINITY;
+			for (const [id, timeout] of this.#timeouts) {
+				if (timeout.at <= target && timeout.at < dueAt) {
+					dueId = id;
+					dueAt = timeout.at;
+				}
+			}
+			if (dueId === undefined) break;
+			const due = this.#timeouts.get(dueId);
+			this.#timeouts.delete(dueId);
+			this.#now = dueAt;
+			due?.callback();
+		}
+		this.#now = target;
+	}
+	tick(): void {
+		for (const interval of [...this.#intervals.values()]) interval.callback();
+	}
+}
+
+const TEST_POLICY = {
+	heartbeatMs: 50,
+	leaseMs: 100,
+	healthIntervalMs: 50,
+	maxAgeMs: 500,
+	requestTimeoutMs: 300,
+	maxPrivateBytes: 0,
+} as const;
 
 const openClients: Socket[] = [];
 afterEach(() => {
@@ -129,5 +203,201 @@ describe("runSocketDaemonWorker", () => {
 		capturedTransport?.send({ type: "pong", id: "2:mine" });
 		expect(await stays.next()).toEqual({ type: "pong", id: "mine" });
 		expect(stays.received).toEqual([]);
+	});
+});
+
+describe("runSocketDaemonWorker lifecycle", () => {
+	const leasePolicy = { ...TEST_POLICY, heartbeatMs: 10, leaseMs: 100, maxAgeMs: 60_000, requestTimeoutMs: 30_000 };
+
+	it("renews the client lease on heartbeat and traffic frames without dispatching heartbeats to the worker", async () => {
+		const socketPath = tmpSocketPath("lease");
+		const scheduler = new FakeScheduler();
+		const exits: DaemonExitReason[] = [];
+		const dispatched: In[] = [];
+		void runSocketDaemonWorker<In, Out>(
+			socketPath,
+			transport => {
+				transport.onMessage(message => dispatched.push(message));
+			},
+			100,
+			{ scheduler, onExit: reason => exits.push(reason), policy: leasePolicy },
+		);
+
+		const client = await connectClient(socketPath);
+		openClients.push(client.socket);
+
+		scheduler.advance(90);
+		client.send({ type: DAEMON_HEARTBEAT_TYPE });
+		await Bun.sleep(30);
+		scheduler.advance(60);
+		client.send({ type: "nudge" });
+		await Bun.sleep(30);
+		scheduler.advance(60);
+		scheduler.tick();
+
+		expect(exits).toEqual([]);
+		expect(dispatched).toEqual([{ type: "nudge" }]);
+
+		scheduler.advance(60);
+		scheduler.tick();
+		await client.closed;
+		scheduler.advance(100);
+		expect(exits).toEqual(["idle"]);
+	});
+
+	it("expires a represented socket that never sends another frame, then exits idle after the grace", async () => {
+		const socketPath = tmpSocketPath("expire");
+		const scheduler = new FakeScheduler();
+		const exits: DaemonExitReason[] = [];
+		void runSocketDaemonWorker<In, Out>(socketPath, fakeWorker, 100, {
+			scheduler,
+			onExit: reason => exits.push(reason),
+			policy: leasePolicy,
+		});
+
+		const client = await connectClient(socketPath);
+		openClients.push(client.socket);
+
+		scheduler.advance(150);
+		scheduler.tick();
+		await client.closed;
+		expect(exits).toEqual([]);
+
+		scheduler.advance(100);
+		expect(exits).toEqual(["idle"]);
+
+		scheduler.advance(1000);
+		scheduler.tick();
+		expect(exits).toEqual(["idle"]);
+	});
+
+	it("exits max-age at the rotation deadline despite a lease-healthy client", async () => {
+		const socketPath = tmpSocketPath("rotate");
+		const scheduler = new FakeScheduler();
+		const exits: DaemonExitReason[] = [];
+		void runSocketDaemonWorker<In, Out>(socketPath, fakeWorker, 100, {
+			scheduler,
+			onExit: reason => exits.push(reason),
+			policy: TEST_POLICY,
+		});
+
+		const client = await connectClient(socketPath);
+		openClients.push(client.socket);
+
+		scheduler.advance(450);
+		client.send({ type: DAEMON_HEARTBEAT_TYPE });
+		await Bun.sleep(30);
+		scheduler.advance(60);
+		scheduler.tick();
+
+		expect(exits).toEqual(["max-age"]);
+	});
+
+	it("exits request-timeout when one forwarded request is never answered", async () => {
+		const socketPath = tmpSocketPath("timeout");
+		const scheduler = new FakeScheduler();
+		const exits: DaemonExitReason[] = [];
+		void runSocketDaemonWorker<In, Out>(
+			socketPath,
+			transport => {
+				transport.onMessage(() => {});
+			},
+			100,
+			{ scheduler, onExit: reason => exits.push(reason), policy: TEST_POLICY },
+		);
+
+		const client = await connectClient(socketPath);
+		openClients.push(client.socket);
+		client.send({ type: "complete", id: "stuck", text: "never answered" });
+		await Bun.sleep(30);
+
+		scheduler.advance(300);
+		scheduler.tick();
+		expect(exits).toEqual(["request-timeout"]);
+	});
+
+	it("exits memory-limit at the private-commit ceiling even with work in flight", async () => {
+		const socketPath = tmpSocketPath("memory");
+		const scheduler = new FakeScheduler();
+		const exits: DaemonExitReason[] = [];
+		void runSocketDaemonWorker<In, Out>(
+			socketPath,
+			transport => {
+				transport.onMessage(() => {});
+			},
+			100,
+			{
+				scheduler,
+				onExit: reason => exits.push(reason),
+				policy: { ...TEST_POLICY, maxPrivateBytes: 1024 },
+				privateBytes: () => 2048,
+			},
+		);
+
+		const client = await connectClient(socketPath);
+		openClients.push(client.socket);
+		client.send({ type: "complete", id: "big", text: "still running" });
+		await Bun.sleep(30);
+
+		scheduler.tick();
+		expect(exits).toEqual(["memory-limit"]);
+	});
+
+	it("keeps a request in flight through progress frames until a terminal response", async () => {
+		const socketPath = tmpSocketPath("terminal");
+		const scheduler = new FakeScheduler();
+		const exits: DaemonExitReason[] = [];
+		let capturedTransport: WorkerTransport<In, Out> | undefined;
+		void runSocketDaemonWorker<In, Out>(
+			socketPath,
+			transport => {
+				capturedTransport = transport;
+				transport.onMessage(() => {});
+			},
+			100,
+			{ scheduler, onExit: reason => exits.push(reason), policy: TEST_POLICY },
+		);
+
+		const client = await connectClient(socketPath);
+		openClients.push(client.socket);
+		client.send({ type: "complete", id: "g1", text: "long work" });
+		await Bun.sleep(30);
+
+		capturedTransport?.send({ type: "progress", id: "1:g1", note: "half" });
+		expect(await client.next()).toEqual({ type: "progress", id: "g1", note: "half" });
+		scheduler.advance(300);
+		scheduler.tick();
+		expect(exits).toEqual(["request-timeout"]);
+	});
+
+	it("settles in-flight state on the terminal response so max-age exits cleanly", async () => {
+		const socketPath = tmpSocketPath("settle");
+		const scheduler = new FakeScheduler();
+		const exits: DaemonExitReason[] = [];
+		let capturedTransport: WorkerTransport<In, Out> | undefined;
+		void runSocketDaemonWorker<In, Out>(
+			socketPath,
+			transport => {
+				capturedTransport = transport;
+				transport.onMessage(() => {});
+			},
+			100,
+			{ scheduler, onExit: reason => exits.push(reason), policy: { ...TEST_POLICY, leaseMs: 1000 } },
+		);
+
+		const client = await connectClient(socketPath);
+		openClients.push(client.socket);
+		client.send({ type: "complete", id: "g1", text: "work" });
+		await Bun.sleep(30);
+		capturedTransport?.send({ type: "pong", id: "1:g1" });
+		expect(await client.next()).toEqual({ type: "pong", id: "g1" });
+
+		scheduler.advance(400);
+		scheduler.tick();
+		expect(exits).toEqual([]);
+
+		scheduler.advance(150);
+		scheduler.tick();
+		expect(exits).toEqual(["max-age"]);
 	});
 });

@@ -1,7 +1,7 @@
 #!/bin/bash
 # warmup.sh — one-shot SSH bring-up for a fresh Google Colab VM.
 # Runs INSIDE the Colab notebook (pasted into a code cell or executed
-# cell-by-cell by the /colab-ssh command). Takes ~60-90s.
+# cell-by-cell by the /colab-hub command). Takes ~60-90s.
 #
 # Result: VM joins your tailnet; `ssh -p 2222 root@<hostname>` from any
 # tailnet member. Tested on a stock Colab CPU runtime.
@@ -106,7 +106,7 @@ EOF
 # so hook interactive shells instead (verified: shows on real SSH logins).
 if ! grep -q COLAB_BANNER_SHOWN /root/.bashrc 2>/dev/null; then
 cat >> /root/.bashrc <<'HOOK'
-# colab-ssh login reminder
+# colab-hub login reminder
 if [ -n "$SSH_CONNECTION" ] && [ -z "$COLAB_BANNER_SHOWN" ]; then cat /etc/motd 2>/dev/null; export COLAB_BANNER_SHOWN=1; fi
 HOOK
 fi

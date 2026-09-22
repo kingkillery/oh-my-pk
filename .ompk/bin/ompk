@@ -1,0 +1,227 @@
+#!/usr/bin/env -S colab run --tpu v5e1 --keep
+# /// script
+# requires-python = ">=3.9"
+# ///
+"""
+ompk — rent a Colab VM, provision it, hand it back warm.
+
+Usage (local side):
+    ./ompk                                    # default: v5e1 TPU, keep alive
+    ./ompk --tpu v6e1
+    ./ompk --gpu t4 --session ompk-t4
+    ./ompk --no-keep                          # provision then tear down
+    ./ompk -- -x some/script.py               # passthrough args for the VM
+
+Flags consumed by this script (before `--`):
+    --no-keep            tear the session down when done (default: keep alive)
+    --session NAME       session name to (re)use
+    --skip-ompk          do not install oh-my-pk on the VM
+    --print-env          dump environment facts and exit
+Anything after `--` is passed to the VM payload as sys.argv.
+
+Accelerator selection lives in the shebang line, e.g.:
+    #!/usr/bin/env -S colab run --tpu v5e1 --keep
+Edit it, or invoke `colab run ompk --tpu v6e1` directly.
+
+Design notes (deep module):
+  - Interface: one command, few flags. Depth lives in provisioning.
+  - Idempotent: safe to re-run against a warm session.
+  - Accepts dependencies, returns results: no hidden global state; the
+    readiness contract is printed as a single machine-readable line.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+OMPK_INSTALL_URL = "https://oh-my-pk.pkking.computer/install.sh"
+READY_MARK = "OMPK_READY"
+SESSION_DEFAULT = "ompk-colab"
+
+
+def sh(cmd: str, *, timeout: int = 300) -> tuple[int, str]:
+    """Run a shell command, returning (exit_code, combined_output)."""
+    p = subprocess.run(
+        cmd, shell=True, capture_output=True, text=True, timeout=timeout
+    )
+    return p.returncode, (p.stdout or "") + (p.stderr or "")
+
+
+def parse_args(argv: list[str]) -> tuple[dict, list[str]]:
+    """Split our flags from passthrough args.
+
+    Everything after a bare `--` is passed through untouched. Unknown flags
+    before `--` are ignored (not errors) so `colab run ompk --tpu X` works
+    even though --tpu is consumed by the CLI, not by us.
+    """
+    opts = {
+        "keep": True,
+        "session": SESSION_DEFAULT,
+        "skip_ompk": False,
+        "print_env": False,
+    }
+    passthrough: list[str] = []
+    if "--" in argv:
+        i = argv.index("--")
+        head, passthrough = argv[:i], argv[i + 1 :]
+    else:
+        head = argv
+
+    j = 0
+    while j < len(head):
+        a = head[j]
+        if a in ("--no-keep", "--stop"):
+            opts["keep"] = False
+        elif a == "--skip-ompk":
+            opts["skip_ompk"] = True
+        elif a == "--print-env":
+            opts["print_env"] = True
+        elif a == "--session" and j + 1 < len(head):
+            opts["session"] = head[j + 1]
+            j += 1
+        elif a.startswith("--session="):
+            opts["session"] = a.split("=", 1)[1]
+        j += 1
+    return opts, passthrough
+
+
+def on_colab() -> bool:
+    return os.path.isdir("/content") or bool(os.environ.get("COLAB_RELEASE_TAG"))
+
+
+def which(cmd: str) -> str | None:
+    return shutil.which(cmd)
+
+
+def report(title: str, body: str) -> None:
+    print(f"\n=== {title} ===")
+    print(body.strip() or "(no output)")
+
+
+def ompk_present() -> bool:
+    """True if an ompk we can actually invoke is already on PATH."""
+    for name in ("ompk", "oh-my-pk", "omp"):
+        path = which(name)
+        if not path:
+            continue
+        rc, _ = sh(f"{path} --version", timeout=60)
+        if rc == 0:
+            return True
+    return False
+
+
+def install_ompk() -> bool:
+    """Install oh-my-pk. install.sh auto-detects Colab and picks the binary.
+
+    We pass --binary explicitly so the mode never depends on env detection.
+    """
+    cmd = f"curl -fsSL {OMPK_INSTALL_URL} | sh -s -- --binary"
+    rc, out = sh(cmd, timeout=900)
+    print(out)
+    if rc != 0:
+        return False
+    # install.sh symlinks into /usr/local/bin when writable; ensure PATH sees it.
+    if not which("ompk") and os.path.isdir("/usr/local/bin"):
+        for name in ("ompk", "oh-my-pk", "omp"):
+            src = os.path.join(os.path.expanduser("~/.local/bin"), name)
+            if os.path.exists(src):
+                try:
+                    os.symlink(src, f"/usr/local/bin/{name}")
+                except OSError:
+                    pass
+    return ompk_present()
+
+
+def gpu_facts() -> str:
+    rc, out = sh(
+        "nvidia-smi --query-gpu=name,memory.total,memory.used "
+        "--format=csv,noheader"
+    )
+    return out if rc == 0 else "no GPU (default/TPU variant)"
+
+
+def tpu_facts() -> str:
+    """Best-effort TPU description; Colab hides details behind their runtime."""
+    bits = []
+    for k in ("COLAB_TPU_ADDR", "TPU_NAME", "COLAB_ACCELERATOR_NAME"):
+        if v := os.environ.get(k):
+            bits.append(f"{k}={v}")
+    for probe in ("/dev/accel0", "/dev/vfio"):
+        if os.path.exists(probe):
+            bits.append(f"{probe} present")
+    return "\n".join(bits) if bits else "no TPU markers (default/GPU variant)"
+
+
+def main() -> int:
+    opts, passthrough = parse_args(sys.argv[1:])
+
+    if not on_colab():
+        print("error: this script must run on the Colab VM, not locally.", file=sys.stderr)
+        print("invoke it as:  ./ompk   or   colab run ompk", file=sys.stderr)
+        return 2
+
+    t0 = time.time()
+
+    report("host", sh("uname -a")[1] + f"\npython: {sys.version.split()[0]}")
+
+    if opts["print_env"]:
+        report("accelerator", gpu_facts() + "\n" + tpu_facts())
+        report("disk", sh("df -h /content")[1])
+        return 0
+
+    # ---- ompk provisioning (idempotent) ----
+    if opts["skip_ompk"]:
+        print("\n[ompk] skipping install (--skip-ompk)")
+        have_ompk = ompk_present()
+    elif ompk_present():
+        print("\n[ompk] already present; skipping install")
+        have_ompk = True
+    else:
+        print("\n[ompk] not found; installing prebuilt binary...")
+        have_ompk = install_ompk()
+
+    # ---- readiness contract: one machine-readable line ----
+    accel = gpu_facts().splitlines()[0] if "no GPU" not in gpu_facts() else tpu_facts().splitlines()[0]
+    version = ""
+    if have_ompk:
+        for name in ("ompk", "oh-my-pk", "omp"):
+            if p := which(name):
+                rc, v = sh(f"{p} --version", timeout=60)
+                if rc == 0:
+                    version = v.strip().splitlines()[0]
+                    break
+
+    report("summary", "\n".join([
+        f"accelerator: {accel}",
+        f"ompk:        {'installed — ' + version if version else 'UNAVAILABLE'}",
+        f"session:     {opts['session']}",
+        f"keep-alive:  {opts['keep']}",
+        f"elapsed:     {time.time() - t0:.1f}s",
+    ]))
+
+    if passthrough:
+        report("passthrough args", " ".join(passthrough))
+
+    print(f"\n{READY_MARK} ompk={int(have_ompk)} t={time.time() - t0:.1f}s")
+
+    # NOTE: teardown for --no-keep is handled by the CLI when it is not passed
+    # --keep; this script cannot stop its own session from inside the VM.
+    return 0 if have_ompk else 1
+
+
+if __name__ == "__main__":
+    # Set the exit status without raising SystemExit.
+    #
+    # `colab run` routes kernel outputs through a hook that suppresses the
+    # SystemExit traceback, but `colab exec` does not (it passes
+    # `display_output` directly). Calling sys.exit() here therefore leaks an
+    # "An exception has occurred... SystemExit: 0" banner when the payload is
+    # re-run against a warm session. Setting the code and returning normally
+    # produces identical exit status via both paths, with no traceback.
+    _rc = main()
+    if _rc:
+        sys.exit(_rc)

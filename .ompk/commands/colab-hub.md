@@ -1,4 +1,4 @@
-# Colab-SSH Command
+# Colab-Hub Command
 
 Bring up SSH on a fresh Google Colab VM and join it to the user's Tailscale
 tailnet, so any tailnet member can `ssh` straight in. The VM is reached
@@ -8,7 +8,7 @@ through the proxy's notebook tools.
 ## Arguments
 
 - `$ARGUMENTS` — `[--session <name>] [--port <number>] [tskey-auth-...] [hostname] [password] [gh-token] [repos...]`, all optional.
-- **Bare `/colab-ssh` (no args):** check for a live session first (see
+- **Bare `/colab-hub` (no args):** check for a live session first (see
   step 0), then offer the user two options:
   1. **Launch existing** — if a warmed VM is still on the tailnet, hand
      over its `ssh` command. No notebook, no warm-up needed.
@@ -41,7 +41,7 @@ prefer one model server per VM and stop the prior server before replacing it.
 
 Before starting any proxy, check whether a warmed VM is already alive:
 
-1. Read the state file `~/.local/state/oh-my-pk/colab-ssh.json` (written by
+1. Read the state file `~/.local/state/oh-my-pk/colab-hub.json` (written by
    step 3) for the last known `{hostname, ip, warmed_at}`. No file → no
    existing session; skip to warm-up.
 2. If the agent host is on the tailnet, probe liveness:
@@ -71,7 +71,7 @@ touching the notebook.
 
 ### 2. Push the warm-up script and run it
 
-Read `.ompk/skills/colab-ssh/warmup.sh` (repo-local, canonical copy) and
+Read `.ompk/skills/colab-hub/warmup.sh` (repo-local, canonical copy) and
 install it into a notebook code cell, then execute the cell. The script:
 
 1. Sets the root password, patches Colab's custom `sshd_config`
@@ -97,7 +97,7 @@ the VM is on the tailnet.
 ### 3. Verify, record, hand over
 
 Confirm `tailscale status` shows the node, then record the session for
-future bare invocations — write `~/.local/state/oh-my-pk/colab-ssh.json`:
+future bare invocations — write `~/.local/state/oh-my-pk/colab-hub.json`:
 `{hostname, ip, warmed_at (UTC), password_changed (bool)}`. Never store the
 auth key or the password itself. Then tell the user:
 
@@ -111,19 +111,19 @@ login if the agent host itself can reach the tailnet.
 ## Examples
 
 ```
-/colab-ssh tskey-auth-k7vy9usHUs11CNTRL-abc123
+/colab-hub tskey-auth-k7vy9usHUs11CNTRL-abc123
 ```
 
 Join a VM as `colab-pkherdr` with the default root password.
 
 ```
-/colab-ssh tskey-auth-abc123 gpu-box MyPass123
+/colab-hub tskey-auth-abc123 gpu-box MyPass123
 ```
 
 Join as `gpu-box` with root password `MyPass123`.
 
 ```
-/colab-ssh
+/colab-hub
 ```
 
 Bare invocation: the agent checks for a live session and offers
@@ -146,6 +146,8 @@ Bare invocation: the agent checks for a live session and offers
   node + fresh VM each time). The MagicDNS hostname is the stable handle as
   long as each session re-enrolls with the same `--hostname`.
 - The auth key is secret material: ephemeral + short expiry, never commit it.
-- Session memory lives in `~/.local/state/oh-my-pk/colab-ssh.json` (no
-  secrets). Delete it if detection ever disagrees with reality.
-- Canonical warm-up script: [warmup.sh](../skills/colab-ssh/warmup.sh).
+- Session memory lives in `~/.local/state/oh-my-pk/colab-hub.json` (no
+  secrets). Delete it if detection ever disagrees with reality. (Renamed from
+  `colab-ssh.json` — if a stale `colab-ssh.json` exists, delete it or move it
+  to `colab-hub.json`.)
+- Canonical warm-up script: [warmup.sh](../skills/colab-hub/warmup.sh).

@@ -46,6 +46,7 @@ import { getChangelogPath, parseChangelog } from "../utils/changelog";
 import { handleGraphtreeCommand, handleGraphtreeCommandTui } from "./builtin/graphtree";
 import { handleWikigraphCommand, handleWikigraphCommandTui } from "./builtin/wikigraph";
 import { handleColabModelSlashCommand } from "./helpers/colab-model";
+import { handleColabModelCacheSlashCommand } from "./helpers/colab-model-cache";
 import { CollabQrCodeComponent } from "./helpers/collab-qrcode";
 import { buildContextReportText } from "./helpers/context-report";
 import { handleDelegateSlashCommand } from "./helpers/delegate";
@@ -652,9 +653,16 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "colab-model",
 		description: "Launch a Hugging Face GGUF on a selected Colab GPU",
-		inlineHint: "[--gpu T4|L4|A100|H100|G4] <Hugging Face model id or GGUF URL>",
+		inlineHint: "[--setup NAME | --list-setups | --gpu T4|L4|A100|H100|G4] <Hugging Face model id or GGUF URL>",
 		allowArgs: true,
 		handle: async (command, runtime) => handleColabModelSlashCommand(command.args, runtime),
+	},
+	{
+		name: "colab-model-cache",
+		description: "Stage a verified GGUF and llama.cpp archive in persistent GCS using a CPU Colab session",
+		inlineHint: "stage [--gpu T4|L4] --file <GGUF> <Hugging Face model id or GGUF URL>",
+		allowArgs: true,
+		handle: async (command, runtime) => handleColabModelCacheSlashCommand(command.args, runtime),
 	},
 	{
 		name: "model",

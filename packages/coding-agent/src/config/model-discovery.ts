@@ -358,12 +358,13 @@ async function discoverLlamaCppServerMetadata(
 	ctx: DiscoveryContext,
 	baseUrl: string,
 	headers: Record<string, string> | undefined,
+	timeoutMs: number = 150,
 ): Promise<LlamaCppDiscoveredServerMetadata | null> {
 	const propsUrl = `${toLlamaCppNativeBaseUrl(baseUrl)}/props`;
 	try {
 		const response = await ctx.fetch(propsUrl, {
 			headers,
-			signal: AbortSignal.timeout(150),
+			signal: AbortSignal.timeout(timeoutMs),
 		});
 		if (!response.ok) {
 			return null;
@@ -493,6 +494,11 @@ export async function getColabBridgeCandidateBaseUrls(baseUrl?: string): Promise
 	return candidates;
 }
 
+/** DiffusionGemma's CLI wrapper cannot produce tool calls or Qwen thinking payloads. */
+function isDiffusionGemmaColabModel(id: string): boolean {
+	return /diffusion[-_]?gemma/i.test(id);
+}
+
 export async function discoverColabModels(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
@@ -511,7 +517,7 @@ export async function discoverColabModels(
 					headers: h,
 					signal: AbortSignal.timeout(COLAB_MODELS_DISCOVERY_TIMEOUT_MS),
 				}),
-				discoverLlamaCppServerMetadata(ctx, baseUrl, h),
+				discoverLlamaCppServerMetadata(ctx, baseUrl, h, COLAB_MODELS_DISCOVERY_TIMEOUT_MS),
 			]);
 			if (!response.ok) {
 				return null;
@@ -534,6 +540,7 @@ export async function discoverColabModels(
 			for (const item of parsedModels) {
 				const { id } = item;
 				if (!id) continue;
+				const isDiffusion = isDiffusionGemmaColabModel(id);
 				const contextWindow = item.contextWindow ?? serverMetadata?.contextWindow ?? 32_768;
 				discovered.push(
 					buildModel({
@@ -542,19 +549,23 @@ export async function discoverColabModels(
 						api: providerConfig.api ?? "openai-completions",
 						provider: providerConfig.provider,
 						baseUrl,
-						reasoning: true,
+						reasoning: !isDiffusion,
 						input: serverMetadata?.input ?? ["text"],
 						imageInputDecoder: "stb",
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 						contextWindow,
-						maxTokens: Math.min(contextWindow, 8192),
-						supportsTools: true,
-						supportsThinking: true,
+						maxTokens: Math.min(contextWindow, isDiffusion ? 1536 : 8192),
+						supportsTools: !isDiffusion,
+						supportsThinking: !isDiffusion,
 						headers: providerConfig.headers,
 						compat: {
-							thinkingFormat: "qwen-chat-template",
-							reasoningDisableMode: "qwen-template-false",
-							qwenPreserveThinking: true,
+							...(isDiffusion
+								? {}
+								: {
+										thinkingFormat: "qwen-chat-template" as const,
+										reasoningDisableMode: "qwen-template-false" as const,
+										qwenPreserveThinking: true,
+									}),
 							supportsStore: false,
 							supportsDeveloperRole: false,
 							supportsReasoningEffort: false,

@@ -24,7 +24,7 @@
       "host": "colab-pkherdr",
       "port": 2222,
       "username": "root",
-      "description": "Ephemeral Colab VM via /colab-ssh (MagicDNS; IP changes per session)"
+      "description": "Ephemeral Colab VM via /colab-hub (MagicDNS; IP changes per session)"
     }
   }
 }

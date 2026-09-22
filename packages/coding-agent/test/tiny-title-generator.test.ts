@@ -449,6 +449,52 @@ describe("tiny client pre-IPC bounding", () => {
 		}
 	});
 
+	it("spawns a fresh worker after a worker error and never replays the failed request", async () => {
+		const spawns: { sent: TinyTitleWorkerInbound[]; fireError: (error: Error) => void }[] = [];
+		const client = new TinyTitleClient(() => {
+			const sent: TinyTitleWorkerInbound[] = [];
+			const spawn = { sent, fireError: (_error: Error) => {} };
+			spawns.push(spawn);
+			let messageHandler: ((message: TinyTitleWorkerOutbound) => void) | undefined;
+			let errorHandler: ((error: Error) => void) | undefined;
+			spawn.fireError = error => errorHandler?.(error);
+			return {
+				send(message) {
+					sent.push(message);
+					if (spawns.length === 2 && message.type === "generate") {
+						messageHandler?.({ type: "title", id: message.id, title: "Recovered Title" });
+					}
+				},
+				onMessage(handler) {
+					messageHandler = handler;
+					return () => {
+						messageHandler = undefined;
+					};
+				},
+				onError(handler) {
+					errorHandler = handler;
+					return () => {
+						errorHandler = undefined;
+					};
+				},
+				async terminate() {},
+			};
+		});
+		try {
+			const first = client.generate("lfm2-350m", "first request");
+			expect(spawns).toHaveLength(1);
+			expect(spawns[0]?.sent).toHaveLength(1);
+			spawns[0]?.fireError(new Error("daemon socket closed"));
+			expect(await first).toBeNull();
+
+			expect(await client.generate("lfm2-350m", "second request")).toBe("Recovered Title");
+			expect(spawns).toHaveLength(2);
+			expect(spawns[1]?.sent.map(m => (m.type === "generate" ? m.message : m.type))).toEqual(["second request"]);
+		} finally {
+			await client.terminate();
+		}
+	});
+
 	it("handles empty and whitespace-only input without throwing", async () => {
 		const sent: TinyTitleWorkerInbound[] = [];
 		const client = new TinyTitleClient(() =>

@@ -3,11 +3,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
 	createSharedWorkerHandle,
+	DAEMON_HEARTBEAT_TYPE,
 	NdjsonLineBuffer,
 } from "@pk-nerdsaver-ai/pi-coding-agent/subprocess/shared-worker-client";
 import type { Socket, UnixSocketListener } from "bun";
 
-type Inbound = { type: "ping"; id: string } | { type: "complete"; id: string; text: string };
+type Inbound =
+	| { type: "ping"; id: string }
+	| { type: "complete"; id: string; text: string }
+	| { type: typeof DAEMON_HEARTBEAT_TYPE };
 type Outbound =
 	| { type: "pong"; id: string }
 	| { type: "completion"; id: string; text: string }
@@ -37,6 +41,7 @@ function startEchoServer(socketPath: string): {
 				for (const line of chunk.toString("utf8").split("\n")) {
 					if (!line) continue;
 					const msg = JSON.parse(line) as Inbound;
+					if (msg.type === DAEMON_HEARTBEAT_TYPE) continue;
 					const reply: Outbound =
 						msg.type === "ping"
 							? { type: "pong", id: msg.id }
@@ -153,6 +158,42 @@ describe("createSharedWorkerHandle", () => {
 		expect(errors.length).toBe(1);
 		expect(errors[0]?.message).toBe("echo connection closed");
 		await handle.terminate();
+	});
+
+	it("sends lease-renewal heartbeat frames until terminate()", async () => {
+		const socketPath = tmpSocketPath("heartbeat");
+		let heartbeatCount = 0;
+		const { promise: sawTwo, resolve: onSecond } = Promise.withResolvers<void>();
+		const server = Bun.listen({
+			unix: socketPath,
+			socket: {
+				data(_s, chunk) {
+					for (const line of chunk.toString("utf8").split("\n")) {
+						if (!line) continue;
+						const msg = JSON.parse(line) as { type?: string };
+						if (msg.type !== DAEMON_HEARTBEAT_TYPE) continue;
+						heartbeatCount += 1;
+						if (heartbeatCount === 2) onSecond();
+					}
+				},
+			},
+		});
+		servers.push(server);
+
+		const handle = createSharedWorkerHandle<Inbound, Outbound>({
+			socketPath,
+			spawnCommand: { cmd: [process.execPath, "-e", "process.exit(0)"] },
+			env: {},
+			label: "echo",
+			heartbeatMs: 10,
+		});
+		await sawTwo;
+		expect(heartbeatCount).toBeGreaterThanOrEqual(2);
+
+		await handle.terminate();
+		const settled = heartbeatCount;
+		await Bun.sleep(50);
+		expect(heartbeatCount).toBe(settled);
 	});
 
 	it("reports the daemon unreachable after the connect budget when nothing binds the socket", async () => {

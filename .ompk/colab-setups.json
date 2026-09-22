@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "comment": "Verified Colab inference setups. Listed by /colab-model --list-setups, selected with --setup <name>. Statuses: verified (end-to-end generation observed), degraded (works with a caveat), spike (exploration interrupted, resume from notes), unverified (estimated, not yet provisioned).",
+  "setups": [
+    {
+      "name": "t4-bonsai-gguf",
+      "accelerator": "T4",
+      "model": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+      "session": "ompk-colab-model",
+      "status": "verified",
+      "launch": "manual",
+      "verified": "2026-09-21",
+      "notes": "27B PQ2_0 reasoning GGUF (26.9B params, 7.2GB) via llama-server --port 8081 --ctx-size 32768 --n-gpu-layers 99 --flash-attn on. Served from a pre-staged VM file; re-stage before relaunch. Decode ~15.9 tok/s on T4. Reasoning model: read reasoning_content AND content, budget max_tokens >= 256 or replies truncate mid-thought."
+    },
+    {
+      "name": "tpu-jax-flax-aqt",
+      "accelerator": "v5e1",
+      "model": "google/gemma-2-2b-flax",
+      "status": "spike",
+      "launch": "manual",
+      "notes": "Interrupted during package install; no generation yet. Resume: pip install aqtp (NOT aqt, which is Anki's Qt package) + gemma 4.0.1 + orbax-checkpoint, load the -flax checkpoint via Orbax, quantize with AQT int8. transformers v5 dropped Flax model classes, so this path is raw JAX, not transformers. Goal: 12B-int8-on-one-chip (12GB < 13.3GB usable)."
+    },
+    {
+      "name": "l4-diffusiongemma-26b",
+      "accelerator": "L4",
+      "model": "unsloth/diffusiongemma-26B-A4B-it-GGUF",
+      "session": "colab-pkherdr-1",
+      "status": "verified",
+      "launch": "manual",
+      "verified": "2026-09-22",
+      "notes": "DiffusionGemma 26B-A4B-it Q4_K_M (15.65GB) via llama-diffusion-cli (PR #24423) and ompk-diffusion-server.py on port 8081. Throughput ~200 tok/s on NVIDIA L4 GPU. Accessible via Tailscale at http://100.84.15.10:8081/v1 or http://colab-pkherdr-1:8081/v1."
+    }
+  ]
+}

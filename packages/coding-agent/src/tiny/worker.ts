@@ -13,7 +13,6 @@ import {
 	getTransformersVersionSpec,
 	loadTransformersRuntime,
 	MemoizedRuntime,
-	replayCachedReady,
 	sendLog,
 	sendProgress,
 } from "../subprocess/worker-runtime";
@@ -67,7 +66,40 @@ interface TransformersRuntime {
 	) => Promise<TextGenerationPipeline>;
 }
 
-const pipelines = new Map<TinyLocalModelKey, Promise<TextGenerationPipeline>>();
+type DisposablePipeline = { dispose(): Promise<void> };
+
+export class SinglePipelineCache<K, V extends DisposablePipeline> {
+	#entry: { key: K; promise: Promise<V> } | undefined;
+
+	get(key: K): Promise<V> | undefined {
+		return this.#entry?.key === key ? this.#entry.promise : undefined;
+	}
+
+	async load(key: K, factory: () => Promise<V>, onDisposeError: (key: K, error: unknown) => void): Promise<V> {
+		const cached = this.get(key);
+		if (cached) return cached;
+		const previous = this.#entry;
+		this.#entry = undefined;
+		if (previous) {
+			try {
+				const value = await previous.promise;
+				await value.dispose();
+			} catch (error) {
+				onDisposeError(previous.key, error);
+			}
+		}
+		const promise = factory();
+		this.#entry = { key, promise };
+		try {
+			return await promise;
+		} catch (error) {
+			if (this.#entry?.promise === promise) this.#entry = undefined;
+			throw error;
+		}
+	}
+}
+
+const pipelines = new SinglePipelineCache<TinyLocalModelKey, TextGenerationPipeline>();
 
 // ORT defaults intra-op threads to all logical cores; with N ompk instances each
 // worker would spawn a full-core pool. Tiny models don't benefit past a couple
@@ -187,65 +219,78 @@ async function loadPipeline(
 	const spec = getTinyLocalModelSpec(modelKey);
 	if (!spec) throw new Error(`Unknown tiny local model: ${modelKey}`);
 	if (spec.unsupportedReason) throw new Error(`${modelKey} is unavailable: ${spec.unsupportedReason}`);
-	const cached = replayCachedReady(pipelines, modelKey, transport, requestId, "text-generation", spec.repo);
-	if (cached) return cached;
+	const cached = pipelines.get(modelKey);
+	if (cached) {
+		void cached
+			.then(() => {
+				transport.send({
+					type: "progress",
+					id: requestId,
+					event: { modelKey, status: "ready", task: "text-generation", model: spec.repo },
+				});
+			})
+			.catch(() => undefined);
+		return cached;
+	}
 
-	const transformers = await loadTransformersRuntime(
-		transformersRuntime,
-		transport,
-		requestId,
+	return pipelines.load(
 		modelKey,
-		getTinyTitleRuntimeDir,
-	);
-	const startedAt = performance.now();
-	const cacheDir = getTinyModelsCacheDir();
-	const loaded = withTinyModelDownloadLock(cacheDir, spec.repo, async () => {
-		const pruned = await pruneAbandonedTinyModelTemps(cacheDir, spec.repo);
-		if (pruned.removedFiles > 0 || pruned.failedFiles > 0) {
-			sendLog(
+		async () => {
+			const transformers = await loadTransformersRuntime(
+				transformersRuntime,
 				transport,
-				pruned.failedFiles === 0 ? "warn" : "error",
-				"tiny-model: cleaned abandoned partial downloads",
-				{
-					modelKey,
-					repo: spec.repo,
-					removedFiles: pruned.removedFiles,
-					reclaimedBytes: pruned.reclaimedBytes,
-					failedFiles: pruned.failedFiles,
-				},
+				requestId,
+				modelKey,
+				getTinyTitleRuntimeDir,
 			);
-		}
-		const beforeAttempt = await captureTinyModelTempSnapshot(cacheDir, spec.repo);
-		try {
-			return await loadPipelineWithDeviceFallback(transformers, spec, modelKey, transport, requestId);
-		} catch (error) {
-			try {
-				const failedAttempt = await pruneTinyModelAttemptTemps(cacheDir, spec.repo, beforeAttempt);
-				if (failedAttempt.removedFiles > 0 || failedAttempt.failedFiles > 0) {
+			const startedAt = performance.now();
+			const cacheDir = getTinyModelsCacheDir();
+			const { generator, device } = await withTinyModelDownloadLock(cacheDir, spec.repo, async () => {
+				const pruned = await pruneAbandonedTinyModelTemps(cacheDir, spec.repo);
+				if (pruned.removedFiles > 0 || pruned.failedFiles > 0) {
 					sendLog(
 						transport,
-						failedAttempt.failedFiles === 0 ? "warn" : "error",
-						"tiny-model: cleaned partial downloads from failed load",
+						pruned.failedFiles === 0 ? "warn" : "error",
+						"tiny-model: cleaned abandoned partial downloads",
 						{
 							modelKey,
 							repo: spec.repo,
-							removedFiles: failedAttempt.removedFiles,
-							reclaimedBytes: failedAttempt.reclaimedBytes,
-							failedFiles: failedAttempt.failedFiles,
+							removedFiles: pruned.removedFiles,
+							reclaimedBytes: pruned.reclaimedBytes,
+							failedFiles: pruned.failedFiles,
 						},
 					);
 				}
-			} catch (cleanupError) {
-				sendLog(transport, "error", "tiny-model: failed to clean partial downloads after load failure", {
-					modelKey,
-					repo: spec.repo,
-					error: errorMessage(cleanupError),
-				});
-			}
-			throw error;
-		}
-	}).then(
-		({ generator, device }) => {
+				const beforeAttempt = await captureTinyModelTempSnapshot(cacheDir, spec.repo);
+				try {
+					return await loadPipelineWithDeviceFallback(transformers, spec, modelKey, transport, requestId);
+				} catch (error) {
+					try {
+						const failedAttempt = await pruneTinyModelAttemptTemps(cacheDir, spec.repo, beforeAttempt);
+						if (failedAttempt.removedFiles > 0 || failedAttempt.failedFiles > 0) {
+							sendLog(
+								transport,
+								failedAttempt.failedFiles === 0 ? "warn" : "error",
+								"tiny-model: cleaned partial downloads from failed load",
+								{
+									modelKey,
+									repo: spec.repo,
+									removedFiles: failedAttempt.removedFiles,
+									reclaimedBytes: failedAttempt.reclaimedBytes,
+									failedFiles: failedAttempt.failedFiles,
+								},
+							);
+						}
+					} catch (cleanupError) {
+						sendLog(transport, "error", "tiny-model: failed to clean partial downloads after load failure", {
+							modelKey,
+							repo: spec.repo,
+							error: errorMessage(cleanupError),
+						});
+					}
+					throw error;
+				}
+			});
 			sendLog(transport, "debug", "tiny-model: local model loaded", {
 				modelKey,
 				repo: spec.repo,
@@ -261,13 +306,13 @@ async function loadPipeline(
 			});
 			return generator;
 		},
-		error => {
-			pipelines.delete(modelKey);
-			throw error;
+		(evictedModelKey, error) => {
+			sendLog(transport, "warn", "tiny-model: failed to dispose evicted model", {
+				modelKey: evictedModelKey,
+				error: errorMessage(error),
+			});
 		},
 	);
-	pipelines.set(modelKey, loaded);
-	return loaded;
 }
 
 function buildPrompt(generator: TextGenerationPipeline, message: string, systemPrompt?: string): string {

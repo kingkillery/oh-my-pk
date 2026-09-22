@@ -1,9 +1,10 @@
+import { dlopen, FFIType, ptr } from "bun:ffi";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isBunTestRuntime, logger } from "@pk-nerdsaver-ai/pi-utils";
-import type { Socket } from "bun";
-import { NdjsonLineBuffer } from "./shared-worker-client";
-import { spawnLockPath } from "./shared-worker-config";
+import type { Socket, UnixSocketListener } from "bun";
+import { DAEMON_HEARTBEAT_TYPE, NdjsonLineBuffer } from "./shared-worker-client";
+import { type DaemonLifecyclePolicy, resolveDaemonLifecyclePolicy, spawnLockPath } from "./shared-worker-config";
 
 /**
  * Daemon side of the shared inference worker. One process per worker kind
@@ -40,9 +41,61 @@ export function splitDaemonId(id: string): { clientSeq: number; originalId: stri
 	return { clientSeq, originalId: id.slice(colon + 1) };
 }
 
+export type DaemonExitReason = "idle" | "lease-expired" | "max-age" | "request-timeout" | "memory-limit";
+
+export interface DaemonScheduler {
+	now(): number;
+	setTimeout(callback: () => void, ms: number): Timer;
+	clearTimeout(timer: Timer | undefined): void;
+	setInterval(callback: () => void, ms: number): Timer;
+	clearInterval(timer: Timer | undefined): void;
+}
+
+const platformScheduler: DaemonScheduler = {
+	now: () => performance.now(),
+	setTimeout: (callback, ms) => setTimeout(callback, ms),
+	clearTimeout: timer => clearTimeout(timer),
+	setInterval: (callback, ms) => setInterval(callback, ms),
+	clearInterval: timer => clearInterval(timer),
+};
+
 export interface SocketDaemonOptions {
 	/** Test seam: replace the SIGKILL-on-idle with an observable callback. */
 	onIdleExit?: () => void;
+	onExit?: (reason: DaemonExitReason) => void;
+	scheduler?: DaemonScheduler;
+	policy?: Partial<DaemonLifecyclePolicy>;
+	privateBytes?: () => number | undefined;
+}
+
+const HEALTH_LOG_INTERVAL_MS = 5 * 60 * 1000;
+
+function windowsPrivateBytes(): number | undefined {
+	if (process.platform !== "win32") return undefined;
+	try {
+		const kernel32 = dlopen("kernel32.dll", {
+			GetCurrentProcess: { args: [], returns: FFIType.ptr },
+			K32GetProcessMemoryInfo: {
+				args: [FFIType.ptr, FFIType.ptr, FFIType.u32],
+				returns: FFIType.bool,
+			},
+		});
+		try {
+			const counters = new Uint8Array(80);
+			const view = new DataView(counters.buffer);
+			view.setUint32(0, counters.byteLength, true);
+			const ok = kernel32.symbols.K32GetProcessMemoryInfo(
+				kernel32.symbols.GetCurrentProcess(),
+				ptr(counters),
+				counters.byteLength,
+			);
+			return ok ? Number(view.getBigUint64(72, true)) : undefined;
+		} finally {
+			kernel32.close();
+		}
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -58,10 +111,24 @@ export async function runSocketDaemonWorker<In extends Identified, Out extends I
 ): Promise<never> {
 	fs.mkdirSync(path.dirname(socketPath), { recursive: true });
 
-	const clients = new Map<number, { socket: Socket<number>; lines: NdjsonLineBuffer }>();
+	const scheduler = options.scheduler ?? platformScheduler;
+	const policy: DaemonLifecyclePolicy = { ...resolveDaemonLifecyclePolicy(), ...options.policy };
+	policy.leaseMs = Math.max(policy.leaseMs, policy.heartbeatMs * 2);
+	const probePrivateBytes = options.privateBytes ?? windowsPrivateBytes;
+
+	const clients = new Map<number, { socket: Socket<number>; lines: NdjsonLineBuffer; lastSeenAt: number }>();
+	const inFlight = new Map<string, number>();
 	const inboundHandlers = new Set<(message: In) => void>();
+	const startedAt = scheduler.now();
 	let nextClientSeq = 0;
+	let requestCount = 0;
+	let lastHealthLogAt = startedAt;
+	let draining = false;
+	let exiting = false;
+	let listener: UnixSocketListener<number> | undefined;
 	let idleTimer: Timer | undefined;
+	let healthTimer: Timer | undefined;
+	let keepalive: Timer | undefined;
 
 	const removeSocketFile = (): void => {
 		try {
@@ -70,22 +137,81 @@ export async function runSocketDaemonWorker<In extends Identified, Out extends I
 			// Still bound on some platforms; the next spawner's stale-file cleanup handles it.
 		}
 	};
-	const exitIdle = (): void => {
-		if (options.onIdleExit) {
+
+	function handleSignal(): void {
+		removeSocketFile();
+		process.exit(0);
+	}
+
+	const endClient = (client: { socket: Socket<number> }): void => {
+		try {
+			client.socket.end();
+		} catch {}
+	};
+
+	const metrics = (): Record<string, unknown> => {
+		const memory = process.memoryUsage();
+		return {
+			pid: process.pid,
+			ageMs: Math.round(scheduler.now() - startedAt),
+			clients: clients.size,
+			inFlight: inFlight.size,
+			requests: requestCount,
+			heapUsed: memory.heapUsed,
+			external: memory.external,
+			arrayBuffers: memory.arrayBuffers,
+			rss: memory.rss,
+			privateBytes: probePrivateBytes(),
+		};
+	};
+
+	const exit = (reason: DaemonExitReason): void => {
+		if (exiting) return;
+		exiting = true;
+		const snapshot = reason === "idle" ? undefined : metrics();
+		scheduler.clearTimeout(idleTimer);
+		idleTimer = undefined;
+		scheduler.clearInterval(healthTimer);
+		healthTimer = undefined;
+		if (keepalive !== undefined) {
+			clearInterval(keepalive);
+			keepalive = undefined;
+		}
+		removeSocketFile();
+		try {
+			listener?.stop(true);
+		} catch {}
+		for (const client of clients.values()) endClient(client);
+		clients.clear();
+		process.off("SIGTERM", handleSignal);
+		process.off("SIGINT", handleSignal);
+		if (reason === "idle") {
+			logger.debug("worker-daemon: idle exit", { socketPath, idleMs });
+		} else {
+			logger.warn("worker-daemon: recycling daemon", { socketPath, reason, ...snapshot });
+		}
+		if (options.onExit) {
+			options.onExit(reason);
+			return;
+		}
+		if (reason === "idle" && options.onIdleExit) {
 			options.onIdleExit();
 			return;
 		}
-		logger.debug("worker-daemon: idle exit", { socketPath, idleMs });
-		removeSocketFile();
 		process.kill(process.pid, "SIGKILL");
 	};
+
 	const armIdle = (): void => {
-		clearTimeout(idleTimer);
-		idleTimer = setTimeout(exitIdle, idleMs);
-		if (isBunTestRuntime()) idleTimer.unref();
+		if (exiting || draining) return;
+		scheduler.clearTimeout(idleTimer);
+		idleTimer = scheduler.setTimeout(() => {
+			idleTimer = undefined;
+			exit("idle");
+		}, idleMs);
+		if (isBunTestRuntime() && typeof idleTimer.unref === "function") idleTimer.unref();
 	};
 	const disarmIdle = (): void => {
-		clearTimeout(idleTimer);
+		scheduler.clearTimeout(idleTimer);
 		idleTimer = undefined;
 	};
 
@@ -102,6 +228,9 @@ export async function runSocketDaemonWorker<In extends Identified, Out extends I
 			if (typeof message.id !== "string") {
 				for (const client of clients.values()) writeTo(client.socket, message);
 				return;
+			}
+			if (message.type !== "progress" && message.type !== "log") {
+				if (inFlight.delete(message.id) && draining && inFlight.size === 0) exit("max-age");
 			}
 			const target = splitDaemonId(message.id);
 			if (!target) return;
@@ -125,14 +254,63 @@ export async function runSocketDaemonWorker<In extends Identified, Out extends I
 		if (clients.size === 0) armIdle();
 	};
 
+	const healthTick = (): void => {
+		if (exiting) return;
+		const now = scheduler.now();
+
+		let expiredAny = false;
+		for (const [seq, client] of clients) {
+			if (now - client.lastSeenAt >= policy.leaseMs) {
+				expiredAny = true;
+				endClient(client);
+				clients.delete(seq);
+			}
+		}
+		if (expiredAny && clients.size === 0) armIdle();
+
+		let oldest: number | undefined;
+		for (const started of inFlight.values()) {
+			if (oldest === undefined || started < oldest) oldest = started;
+		}
+		if (oldest !== undefined && now - oldest >= policy.requestTimeoutMs) {
+			exit("request-timeout");
+			return;
+		}
+
+		if (!draining && now - startedAt >= policy.maxAgeMs) {
+			draining = true;
+			for (const client of clients.values()) endClient(client);
+			clients.clear();
+		}
+		if (draining && inFlight.size === 0) {
+			exit("max-age");
+			return;
+		}
+
+		const privateBytes = probePrivateBytes();
+		if (policy.maxPrivateBytes > 0 && privateBytes !== undefined && privateBytes >= policy.maxPrivateBytes) {
+			exit("memory-limit");
+			return;
+		}
+
+		if (now - lastHealthLogAt >= HEALTH_LOG_INTERVAL_MS) {
+			lastHealthLogAt = now;
+			logger.debug("worker-daemon: health", { socketPath, ...metrics() });
+		}
+	};
+
 	try {
-		Bun.listen<number>({
+		listener = Bun.listen<number>({
 			unix: socketPath,
 			socket: {
 				open(socket) {
+					if (draining || exiting) {
+						socket.end();
+						return;
+					}
 					disarmIdle();
 					const seq = ++nextClientSeq;
-					clients.set(seq, { socket, lines: new NdjsonLineBuffer() });
+					clients.set(seq, { socket, lines: new NdjsonLineBuffer(), lastSeenAt: scheduler.now() });
 					socket.data = seq;
 					logger.debug("worker-daemon: client connected", { socketPath, clientSeq: seq, clients: clients.size });
 				},
@@ -141,14 +319,20 @@ export async function runSocketDaemonWorker<In extends Identified, Out extends I
 					const client = clients.get(seq);
 					if (!client) return;
 					for (const line of client.lines.push(chunk)) {
+						client.lastSeenAt = scheduler.now();
 						let message: In;
 						try {
 							message = JSON.parse(line) as In;
 						} catch {
 							continue;
 						}
+						if (message.type === DAEMON_HEARTBEAT_TYPE) continue;
+						if (draining || exiting) continue;
 						if (typeof message.id === "string") {
-							message = { ...message, id: `${seq}:${message.id}` };
+							const rewrittenId = `${seq}:${message.id}`;
+							message = { ...message, id: rewrittenId };
+							inFlight.set(rewrittenId, scheduler.now());
+							requestCount += 1;
 						}
 						for (const handler of inboundHandlers) handler(message);
 					}
@@ -178,17 +362,14 @@ export async function runSocketDaemonWorker<In extends Identified, Out extends I
 	// A spawner that dies before ever connecting must not leave an orphan.
 	armIdle();
 
-	process.on("SIGTERM", () => {
-		removeSocketFile();
-		process.exit(0);
-	});
-	process.on("SIGINT", () => {
-		removeSocketFile();
-		process.exit(0);
-	});
+	healthTimer = scheduler.setInterval(healthTick, policy.healthIntervalMs);
+	if (isBunTestRuntime() && typeof healthTimer.unref === "function") healthTimer.unref();
 
-	const keepalive = setInterval(() => {}, 2 ** 30);
-	if (isBunTestRuntime()) keepalive.unref();
+	process.on("SIGTERM", handleSignal);
+	process.on("SIGINT", handleSignal);
+
+	keepalive = setInterval(() => {}, 2 ** 30);
+	if (isBunTestRuntime() && typeof keepalive.unref === "function") keepalive.unref();
 	const { promise: forever } = Promise.withResolvers<never>();
 	return forever;
 }

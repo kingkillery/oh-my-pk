@@ -3,7 +3,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { isBunTestRuntime, logger } from "@pk-nerdsaver-ai/pi-utils";
 import type { Socket } from "bun";
-import { DAEMON_CONNECT_TIMEOUT_MS, SHARED_WORKERS_ENV, spawnLockPath } from "./shared-worker-config";
+import {
+	DAEMON_CONNECT_TIMEOUT_MS,
+	resolveDaemonLifecyclePolicy,
+	SHARED_WORKERS_ENV,
+	spawnLockPath,
+} from "./shared-worker-config";
 import type { RefCountedWorkerHandle, WorkerSpawnCommand } from "./worker-client";
 
 /**
@@ -19,6 +24,8 @@ import type { RefCountedWorkerHandle, WorkerSpawnCommand } from "./worker-client
  * which every `onError` handler fires once and the caller's existing
  * error→terminate→respawn recovery takes over.
  */
+export const DAEMON_HEARTBEAT_TYPE = "__omp_daemon_heartbeat";
+
 export interface SharedWorkerSpawnSpec {
 	socketPath: string;
 	/** Relaunch command for the daemon (`resolveWorkerSpawnCmd(<DAEMON_ARG>)`). */
@@ -29,6 +36,7 @@ export interface SharedWorkerSpawnSpec {
 	label: string;
 	/** Test seam: override the cold-start connect budget. */
 	connectTimeoutMs?: number;
+	heartbeatMs?: number;
 }
 
 const FAST_RETRY_WINDOW_MS = 2_000;
@@ -61,7 +69,9 @@ export function createSharedWorkerHandle<Inbound extends { type: string }, Outbo
 	const errors = new Set<(error: Error) => void>();
 	const queue: string[] = [];
 	const lines = new NdjsonLineBuffer();
+	const heartbeatFrame = `${JSON.stringify({ type: DAEMON_HEARTBEAT_TYPE })}\n`;
 	let socket: Socket | undefined;
+	let heartbeatTimer: Timer | undefined;
 	let terminated = false;
 	let errored = false;
 	// Desired ref state before the socket exists; applied on open. Outside
@@ -72,6 +82,12 @@ export function createSharedWorkerHandle<Inbound extends { type: string }, Outbo
 		if (errored || terminated) return;
 		errored = true;
 		for (const handler of errors) handler(error);
+	};
+
+	const stopHeartbeat = (): void => {
+		if (heartbeatTimer === undefined) return;
+		clearInterval(heartbeatTimer);
+		heartbeatTimer = undefined;
 	};
 
 	const connectOnce = async (): Promise<Socket> =>
@@ -86,8 +102,17 @@ export function createSharedWorkerHandle<Inbound extends { type: string }, Outbo
 					socket = s;
 					if (wantRef) s.ref();
 					else s.unref();
+					s.write(heartbeatFrame);
 					for (const frame of queue) s.write(frame);
 					queue.length = 0;
+					stopHeartbeat();
+					heartbeatTimer = setInterval(() => {
+						if (socket !== s) return;
+						try {
+							s.write(heartbeatFrame);
+						} catch {}
+					}, spec.heartbeatMs ?? resolveDaemonLifecyclePolicy().heartbeatMs);
+					heartbeatTimer.unref();
 				},
 				data(_s, chunk) {
 					for (const line of lines.push(chunk)) {
@@ -103,10 +128,12 @@ export function createSharedWorkerHandle<Inbound extends { type: string }, Outbo
 				},
 				close() {
 					socket = undefined;
+					stopHeartbeat();
 					failOnce(new Error(`${spec.label} connection closed`));
 				},
 				error(_s, error) {
 					socket = undefined;
+					stopHeartbeat();
 					failOnce(error instanceof Error ? error : new Error(String(error)));
 				},
 			},
@@ -223,6 +250,7 @@ export function createSharedWorkerHandle<Inbound extends { type: string }, Outbo
 		async terminate() {
 			if (terminated) return;
 			terminated = true;
+			stopHeartbeat();
 			inbound.clear();
 			errors.clear();
 			queue.length = 0;

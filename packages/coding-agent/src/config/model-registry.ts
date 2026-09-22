@@ -1417,10 +1417,25 @@ export class ModelRegistry {
 				})
 				.map(provider => provider.provider),
 		);
+		// A successful Colab discovery is a live, authoritative inventory. Drop
+		// prior config/runtime entries so a restarted Colab never leaves its old
+		// model selectable beside the model its bridge actually serves.
+		const liveColabProviders = new Set(
+			strategy === "offline"
+				? []
+				: selectedDiscoverableProviders
+						.filter(
+							provider =>
+								provider.discovery.type === "colab" &&
+								this.#providerDiscoveryStates.get(provider.provider)?.status === "ok",
+						)
+						.map(provider => provider.provider),
+		);
+		const reconciledColabProviders = new Set([...unavailableColabProviders, ...liveColabProviders]);
 		if (
 			discovered.length === 0 &&
 			builtInDiscovery.authoritativeProviders.size === 0 &&
-			unavailableColabProviders.size === 0
+			reconciledColabProviders.size === 0
 		) {
 			return;
 		}
@@ -1434,7 +1449,7 @@ export class ModelRegistry {
 			),
 		);
 		const authoritativeProviders = providersWithAuthoritativeProjectCatalog(discoveredModels);
-		for (const provider of unavailableColabProviders) {
+		for (const provider of reconciledColabProviders) {
 			authoritativeProviders.add(provider);
 		}
 		for (const provider of builtInDiscovery.authoritativeProviders) {
@@ -1444,12 +1459,12 @@ export class ModelRegistry {
 			authoritativeProviders.size > 0 ? dropProviderModels(this.#models, authoritativeProviders) : this.#models;
 		const resolved = this.#mergeResolvedModels(baseModels, discoveredModels);
 		const withConfigModels = this.#mergeCustomModels(resolved, this.#customModelOverlays);
-		// Keep runtime extension models through discovery, except a Colab model
-		// whose bridge just proved unavailable.
+		// A Colab bridge is authoritative both when it reports a live model and
+		// when it is unavailable; either case must not retain a stale overlay.
 		const runtimeModels =
-			unavailableColabProviders.size === 0
+			reconciledColabProviders.size === 0
 				? this.#runtimeModelOverlays
-				: this.#runtimeModelOverlays.filter(overlay => !unavailableColabProviders.has(overlay.provider));
+				: this.#runtimeModelOverlays.filter(overlay => !reconciledColabProviders.has(overlay.provider));
 		const combined = this.#mergeCustomModels(withConfigModels, runtimeModels);
 		const withModelOverrides = this.#applyModelOverrides(collapseBuiltModelVariants(combined), this.#modelOverrides);
 		this.#models = this.#applyRuntimeProviderOverrides(withModelOverrides);
