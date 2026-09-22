@@ -279,12 +279,15 @@ export function embeddingDimFor(modelName: string): number {
 	return MODEL_DIMS[modelName] ?? 384;
 }
 
+function denseVector(row: ArrayLike<number>): Vector {
+	return Float32Array.from(row, value => value);
+}
 /** Drain an embedding stream (a custom provider or fastembed) into a `Float32Array` matrix. */
 async function collectMatrix(batches: EmbeddingOutput): Promise<EmbeddingMatrix> {
 	const rows: Vector[] = [];
 	for await (const batch of batches) {
 		for (const row of batch) {
-			rows.push(new Float32Array(row));
+			rows.push(denseVector(row));
 		}
 	}
 	return rows;

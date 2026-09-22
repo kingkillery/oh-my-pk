@@ -23,6 +23,9 @@ interface LoadedModel {
 
 let loaded: Promise<LoadedModel> | null = null;
 let loadedKey = "";
+function denseVector(row: ArrayLike<number>): number[] {
+	return Array.from(row, value => value);
+}
 
 async function loadModel(model: MnemopiEmbedModelId, cacheDir: string | undefined): Promise<LoadedModel> {
 	const { FlagEmbedding } = await loadFastembed();
@@ -65,10 +68,10 @@ async function handleEmbed(
 		// the parent SIGKILLed the previous subprocess but mnemopi still
 		// holds the cached `LocalEmbeddingModel` wrapper from before.
 		const { instance } = await ensureLoaded(message.model, message.cacheDir);
-		const vectors: number[][] = [];
+		const vectors = [];
 		const batches = instance.embed([...message.texts], message.batchSize);
 		for await (const batch of batches) {
-			for (const row of batch) vectors.push(row);
+			for (const row of batch) vectors.push(denseVector(row));
 		}
 		transport.send({ type: "vectors", id: message.id, vectors });
 	} catch (error) {

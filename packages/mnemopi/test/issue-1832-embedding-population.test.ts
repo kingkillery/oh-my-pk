@@ -113,6 +113,25 @@ describe("issue #1832 — embedding write/read coverage", () => {
 			expect(byId.get(ids[2] ?? "")).toEqual([0, 0, 1, 0]);
 		});
 	});
+	it("persists array-like embedding vectors as dense JSON arrays", async () => {
+		const provider = {
+			async *embed(texts: readonly string[]) {
+				yield texts.map(() => Float32Array.from([0.25, -0.5, 0.75, 1]));
+			},
+		};
+		const memory = new Mnemopi({
+			db: new Database(":memory:"),
+			embeddings: { provider: provider.embed.bind(provider) },
+		});
+		try {
+			memory.remember("array-like embedding vector", { source: "test", importance: 0.5 });
+			await memory.flushExtractions();
+			const rows = readEmbeddings(memory);
+			expect(JSON.parse(rows[0]?.embedding_json ?? "[]")).toEqual([0.25, -0.5, 0.75, 1]);
+		} finally {
+			memory.close();
+		}
+	});
 
 	it("recall() auto-derives queryEmbedding and surfaces a non-zero dense_score", async () => {
 		await withFakeMemory(async (memory, calls) => {
