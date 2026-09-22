@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import type { Server } from "bun";
 import { kNoAuth } from "../../config/model-registry";
 import type { SlashCommandRuntime } from "../types";
@@ -69,17 +71,28 @@ export interface ColabModelProfile {
 	id: string;
 	repoId: string;
 	artifactFile: string;
-	/** Maximum context supported by the model training configuration. */
-	nCtxTrain: number;
+	/**
+	 * Maximum context supported by the model training configuration. Required
+	 * together with `kvBytesPerToken` for VRAM-derived sizing; fixed-size
+	 * diffusion profiles omit both.
+	 */
+	nCtxTrain?: number;
 	defaultContextWindow: number;
-	/** Q8 KV bytes per token for both K and V, from the model architecture. */
-	kvBytesPerToken: number;
-	chatTemplate: "qwen-chat-template";
-	reasoningDisableMode: "qwen-template-false";
-	qwenPreserveThinking: boolean;
-	kvCacheType: "q8_0";
-	physicalMicrobatch: 1024 | 2048;
-	cachePrompt: boolean;
+	/** Q8 KV bytes per token for both K and V, from the model architecture. Undefined for fixed-size profiles. */
+	kvBytesPerToken?: number;
+	/** Runtime lane this profile was validated on; undefined means the upstream stock `llama-server` lane. */
+	runtime?: ColabRuntimeProfileId;
+	/**
+	 * Validated per-request generation ceiling. Diffusion canvases allocate
+	 * compute for the full generation, so this is an OOM bound, not a policy.
+	 */
+	maxGenerationTokens?: number;
+	chatTemplate?: "qwen-chat-template";
+	reasoningDisableMode?: "qwen-template-false";
+	qwenPreserveThinking?: boolean;
+	kvCacheType?: "q8_0";
+	physicalMicrobatch?: 1024 | 2048;
+	cachePrompt?: boolean;
 }
 
 /** Persisted launch manifest for models with validated serving parameters. */
@@ -98,6 +111,19 @@ export const COLAB_MODEL_PROFILES: readonly ColabModelProfile[] = [
 		kvCacheType: "q8_0",
 		physicalMicrobatch: 1024,
 		cachePrompt: true,
+	},
+	{
+		// Validated on a Colab L4 (23 GB) against llama.cpp PR #24423
+		// @ 12e0a962: one-shot -p generations completed at -n 256/1024/1536;
+		// -n 2048 aborts during KV allocation. Diffusion canvases size compute
+		// for the full generation (ubatch == n_ctx), so the context budget is
+		// fixed, not KV-derived.
+		id: "diffusiongemma-26b-a4b",
+		repoId: "unsloth/diffusiongemma-26B-A4B-it-GGUF",
+		artifactFile: "diffusiongemma-26B-A4B-it-Q4_K_M.gguf",
+		defaultContextWindow: 2_048,
+		runtime: "diffusion",
+		maxGenerationTokens: 1_536,
 	},
 ];
 
@@ -121,7 +147,7 @@ export function getColabModelProfile(
 export function calculateColabContextWindow(
 	accelerator: ColabAccelerator,
 	artifact: Pick<GgufArtifact, "totalSize">,
-	profile: ColabModelProfile,
+	profile: ColabModelProfile & { kvBytesPerToken: number; nCtxTrain: number },
 ): number {
 	const availableBytes = getColabAcceleratorProfile(accelerator).vramBytes * 0.85 - artifact.totalSize;
 	const calculated = Math.floor(availableBytes / profile.kvBytesPerToken);
@@ -129,6 +155,22 @@ export function calculateColabContextWindow(
 		throw new Error(`The ${accelerator} does not have enough reserved VRAM for ${profile.id} context.`);
 	}
 	return Math.min(profile.nCtxTrain, calculated);
+}
+
+/**
+ * Context budget for a launch. KV-sized profiles derive it from free VRAM;
+ * fixed-size profiles (diffusion lanes, where compute scales with the whole
+ * generation instead of KV) use their validated constant unchanged.
+ */
+export function resolveColabContextWindow(
+	accelerator: ColabAccelerator,
+	artifact: Pick<GgufArtifact, "totalSize">,
+	profile: ColabModelProfile,
+): number {
+	if (profile.kvBytesPerToken === undefined || profile.nCtxTrain === undefined) {
+		return profile.defaultContextWindow;
+	}
+	return calculateColabContextWindow(accelerator, artifact, profile as ColabModelProfile & { kvBytesPerToken: number; nCtxTrain: number });
 }
 
 export function getColabInferenceTimeoutSeconds(contextWindow: number): number {
@@ -155,7 +197,7 @@ export interface GgufArtifact {
 	totalSize: number;
 }
 
-export type ColabRuntimeProfileId = "upstream" | "prism";
+export type ColabRuntimeProfileId = "upstream" | "prism" | "diffusion";
 
 /** How the serving `llama-server` was obtained on the VM. */
 export type ColabRuntimeSource = "prebuilt" | "source";
@@ -192,7 +234,12 @@ export interface ColabRuntimeProfile {
 	/** Release tag matching `pinnedCommit`, for status output only. */
 	pinnedTag?: string;
 	/**
-	 * Validated release archives keyed by the accelerator they were verified on.
+	 * Git refspec to fetch when the pinned commit lives only on a pull request
+	 * (e.g. `pull/24423/head`). The checkout is still verified against
+	 * `pinnedCommit`, so a moved pull request fails loudly instead of drifting.
+	 */
+	fetchRef?: string;
+	/** Validated release archives keyed by the accelerator they were verified on.
 	 * Accelerators without an entry compile `pinnedCommit` from source.
 	 */
 	prebuilt?: Partial<Record<ColabAccelerator, ColabPrebuiltRuntime>>;
@@ -292,6 +339,31 @@ const PRISM_RUNTIME: ColabRuntimeProfile = {
 	reasoning: true,
 };
 
+const DIFFUSION_PR = "pull/24423/head";
+
+/**
+ * DiffusionGemma support from llama.cpp PR #24423. The architecture ships only
+ * `llama-diffusion-cli`: stock `llama-server` in this tree cannot run
+ * diffusion models (upstream deliberately has no diffusion server), so the
+ * remote lane serves the CLI behind a small OpenAI-compatible wrapper process.
+ *
+ * The pinned commit is the head validated end to end on a Colab L4 (three
+ * one-shot generations, rc=0, 2026-09-22). The PR ref is fetched because the
+ * commit exists only on the pull request; the checkout is verified against the
+ * pin, so a moved PR fails loudly. No prebuilt: community binary bundles are
+ * not publisher artifacts. Build target is `llama-diffusion-cli`.
+ */
+const DIFFUSION_RUNTIME: ColabRuntimeProfile = {
+	id: "diffusion",
+	directory: "/content/diffusion-llama.cpp",
+	repositoryUrl: `${UPSTREAM_REPOSITORY}.git`,
+	pinnedCommit: "12e0a9627d02c6395fd4bbf2aadff93d0d46a0e4",
+	pinnedTag: "pr24423-diffusiongemma",
+	fetchRef: DIFFUSION_PR,
+	requiredQuantizations: [],
+	reasoning: false,
+};
+
 const PRISM_PUBLISHER = "prism-ml";
 
 export interface ColabRuntimeSummary {
@@ -330,6 +402,8 @@ export interface ColabModelCommandRequest {
 	modelReference: string;
 	sessionName?: string;
 	localPort?: number;
+	setupName?: string;
+	listSetups?: boolean;
 }
 
 interface CommandResult {
@@ -450,6 +524,8 @@ export function parseColabModelCommandArgs(input: string): ColabModelCommandRequ
 	let accelerator: ColabAccelerator | undefined;
 	let sessionName: string | undefined;
 	let localPort: number | undefined;
+	let setupName: string | undefined;
+	let listSetups = false;
 	const parsePort = (raw: string): number => {
 		if (!/^\d+$/.test(raw)) throw new Error(`Invalid /colab-model port "${raw}". Expected 1-65535.`);
 		const port = Number(raw);
@@ -495,13 +571,175 @@ export function parseColabModelCommandArgs(input: string): ColabModelCommandRequ
 			localPort = parsePort(token.slice("--port=".length));
 			continue;
 		}
+		if (token === "--setup") {
+			const value = tokens[index + 1];
+			if (!value) throw new Error("--setup requires a setup name. See /colab-model --list-setups.");
+			setupName = value;
+			index += 1;
+			continue;
+		}
+		if (token.startsWith("--setup=")) {
+			const value = token.slice("--setup=".length);
+			if (!value) throw new Error("--setup requires a setup name. See /colab-model --list-setups.");
+			setupName = value;
+			continue;
+		}
+		if (token === "--list-setups") {
+			listSetups = true;
+			continue;
+		}
 		if (token.startsWith("--")) throw new Error(`Unknown /colab-model option "${token}".`);
 		modelTokens.push(token);
 	}
 	if (modelTokens.length > 1) {
 		throw new Error("Expected one Hugging Face model id or URL.");
 	}
-	return { accelerator, modelReference: modelTokens[0] ?? "", sessionName, localPort };
+	return { accelerator, modelReference: modelTokens[0] ?? "", sessionName, localPort, setupName, listSetups };
+}
+
+export const COLAB_SETUPS_FILENAME = "colab-setups.json";
+
+export type ColabSetupStatus = "verified" | "degraded" | "spike" | "unverified";
+
+export interface ColabSetup {
+	name: string;
+	accelerator: string;
+	model: string;
+	session?: string;
+	status: ColabSetupStatus;
+	launch: "colab-model" | "manual";
+	verified?: string;
+	notes?: string;
+}
+
+const COLAB_SETUP_STATUSES: readonly string[] = ["verified", "degraded", "spike", "unverified"];
+
+function parseColabSetup(value: unknown): ColabSetup {
+	if (typeof value !== "object" || value === null) {
+		throw new Error("Colab setup entries must be objects with a name.");
+	}
+	const entry = value as Record<string, unknown>;
+	if (typeof entry.name !== "string" || !entry.name) {
+		throw new Error("Colab setup entries must have a name.");
+	}
+	if (typeof entry.model !== "string" || !entry.model) {
+		throw new Error(`Colab setup "${entry.name}" must have a model.`);
+	}
+	if (typeof entry.accelerator !== "string" || !entry.accelerator) {
+		throw new Error(`Colab setup "${entry.name}" must have an accelerator.`);
+	}
+	const status = entry.status ?? "unverified";
+	if (typeof status !== "string" || !COLAB_SETUP_STATUSES.includes(status)) {
+		throw new Error(`Colab setup "${entry.name}" has unknown status "${String(status)}".`);
+	}
+	const launch = entry.launch ?? "manual";
+	if (launch !== "colab-model" && launch !== "manual") {
+		throw new Error(`Colab setup "${entry.name}" has unknown launch "${String(launch)}".`);
+	}
+	return {
+		name: entry.name,
+		accelerator: entry.accelerator,
+		model: entry.model,
+		...(typeof entry.session === "string" && entry.session ? { session: entry.session } : {}),
+		status: status as ColabSetupStatus,
+		launch,
+		...(typeof entry.verified === "string" ? { verified: entry.verified } : {}),
+		...(typeof entry.notes === "string" ? { notes: entry.notes } : {}),
+	};
+}
+
+/**
+ * Walk up from cwd looking for `.ompk/colab-setups.json` (project registry).
+ * Returns undefined when no registry exists — setups are optional.
+ */
+export async function findColabSetupsFile(cwd: string = process.cwd()): Promise<string | undefined> {
+	let dir = path.resolve(cwd);
+	const home = os.homedir();
+	for (;;) {
+		const candidate = path.join(dir, ".ompk", COLAB_SETUPS_FILENAME);
+		if (await Bun.file(candidate).exists()) return candidate;
+		const parent = path.dirname(dir);
+		if (parent === dir || dir === home) return undefined;
+		dir = parent;
+	}
+}
+
+/**
+ * Load the setups registry. Empty when no registry file exists; throws when
+ * the file exists but is unreadable or malformed (fail loud, never silently
+ * launch the wrong setup).
+ */
+export async function loadColabSetups(cwd: string = process.cwd()): Promise<ColabSetup[]> {
+	const file = await findColabSetupsFile(cwd);
+	if (!file) return [];
+	let payload: unknown;
+	try {
+		payload = await Bun.file(file).json();
+	} catch (error) {
+		throw new Error(`Could not load Colab setups from ${file}: ${errorMessage(error)}`);
+	}
+	const setups = (payload as { setups?: unknown } | null)?.setups;
+	if (setups === undefined) return [];
+	if (!Array.isArray(setups)) {
+		throw new Error(`Colab setups file ${file} must hold { "setups": [...] }.`);
+	}
+	try {
+		return setups.map(entry => parseColabSetup(entry));
+	} catch (error) {
+		throw new Error(`Invalid Colab setup in ${file}: ${errorMessage(error)}`);
+	}
+}
+
+/** One-line-per-setup listing for /colab-model --list-setups. */
+export function formatColabSetups(setups: ColabSetup[]): string {
+	if (setups.length === 0) {
+		return "No Colab setups configured. Add .ompk/colab-setups.json to register one.";
+	}
+	const lines = [`Colab setups (${setups.length}):`];
+	for (const setup of setups) {
+		lines.push(
+			`- ${setup.name} [${setup.status}] — ${setup.accelerator} — ${setup.model}${setup.session ? ` (session ${setup.session})` : ""}${setup.launch === "manual" ? " (manual)" : ""}`,
+		);
+		if (setup.notes) lines.push(`    ${setup.notes}`);
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Fill launch defaults from a named setup. Explicit CLI flags always win;
+ * unknown names throw listing what exists.
+ */
+export function applyColabSetup(
+	request: ColabModelCommandRequest,
+	setups: ColabSetup[],
+): { request: ColabModelCommandRequest; setup?: ColabSetup } {
+	if (!request.setupName) return { request };
+	const setup = setups.find(entry => entry.name === request.setupName);
+	if (!setup) {
+		const available = setups.map(entry => entry.name).join(", ") || "(none configured)";
+		throw new Error(
+			`Unknown Colab setup "${request.setupName}". Available: ${available}. See /colab-model --list-setups.`,
+		);
+	}
+	let accelerator = request.accelerator;
+	if (!accelerator && setup.launch === "colab-model") {
+		try {
+			accelerator = normalizeAccelerator(setup.accelerator);
+		} catch {
+			throw new Error(
+				`Colab setup "${setup.name}" accelerator "${setup.accelerator}" is not launchable via /colab-model.`,
+			);
+		}
+	}
+	return {
+		request: {
+			...request,
+			accelerator,
+			modelReference: request.modelReference || setup.model,
+			sessionName: request.sessionName ?? setup.session,
+		},
+		setup,
+	};
 }
 
 function isTreeEntry(value: unknown): value is Record<string, unknown> {
@@ -628,7 +866,7 @@ export function selectAutomaticColabAccelerators(
 		try {
 			const artifact = selectGgufArtifact(entries, reference, accelerator);
 			const profile = getColabModelProfile(reference, artifact);
-			if (profile && calculateColabContextWindow(accelerator, artifact, profile) < profile.defaultContextWindow)
+			if (profile && resolveColabContextWindow(accelerator, artifact, profile) < profile.defaultContextWindow)
 				return false;
 			return true;
 		} catch {
@@ -638,17 +876,30 @@ export function selectAutomaticColabAccelerators(
 }
 
 /**
+ * DiffusionGemma family marker in either the repository id or the GGUF file
+ * name; matched on a normalized lowercase form so `Diffusion-Gemma`,
+ * `diffusiongemma`, and `DiffusionGemma` all route identically.
+ */
+export function isDiffusionGemmaModel(repoId: string, primaryFile: string): boolean {
+	return /diffusion[-_]?gemma/i.test(`${repoId} ${primaryFile}`);
+}
+
+/**
  * Pick the llama.cpp source tree that can load the selected GGUF.
  *
- * PQ2_0 / PTQ1_0 require the PrismML fork regardless of publisher. A bare
- * `Q2_0` file from a prism-ml repository is the deprecated pre-migration
- * packing: stock llama.cpp loads it silently and emits garbage, and current
- * fork binaries refuse it, so it is rejected instead of falling back.
+ * DiffusionGemma models require the PR #24423 diffusion tree regardless of
+ * publisher: stock llama.cpp in any other tree rejects the `diffusion-gemma`
+ * architecture. PQ2_0 / PTQ1_0 require the PrismML fork regardless of
+ * publisher. A bare `Q2_0` file from a prism-ml repository is the deprecated
+ * pre-migration packing: stock llama.cpp loads it silently and emits garbage,
+ * and current fork binaries refuse it, so it is rejected instead of falling
+ * back.
  */
 export function selectColabRuntimeProfile(
 	reference: Pick<HuggingFaceModelReference, "repoId">,
 	artifact: Pick<GgufArtifact, "quantization" | "primaryFile">,
 ): ColabRuntimeProfile {
+	if (isDiffusionGemmaModel(reference.repoId, artifact.primaryFile)) return DIFFUSION_RUNTIME;
 	if (PRISM_RUNTIME.requiredQuantizations.includes(artifact.quantization)) return PRISM_RUNTIME;
 	const publisher = reference.repoId.split("/")[0]?.toLowerCase();
 	if (publisher === PRISM_PUBLISHER && artifact.quantization === "Q2_0") {
@@ -804,6 +1055,161 @@ function pythonJson(value: unknown): string {
 	return JSON.stringify(JSON.stringify(value));
 }
 
+/**
+ * OpenAI-compatible wrapper for diffusion lanes. PR #24423 ships only
+ * `llama-diffusion-cli` (no `llama-server`), so the remote setup writes this
+ * stdlib-only server and fronts the CLI with it. One generation runs at a
+ * time (the model owns the whole GPU); streaming requests get a single final
+ * SSE chunk because the CLI yields its completion in one piece.
+ */
+const DIFFUSION_SERVER_SOURCE = `import argparse
+import json
+import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+PARSER = argparse.ArgumentParser()
+PARSER.add_argument("--host", default="127.0.0.1")
+PARSER.add_argument("--port", type=int, required=True)
+PARSER.add_argument("--cli", required=True)
+PARSER.add_argument("--model", required=True)
+PARSER.add_argument("--alias", required=True)
+PARSER.add_argument("--n-gpu-layers", default="99")
+PARSER.add_argument("--max-gen", type=int, default=1024)
+PARSER.add_argument("--ctx", type=int, default=None)
+PARSER.add_argument("--timeout", type=int, default=600)
+ARGS = PARSER.parse_args()
+MODEL_PATH = str(Path(ARGS.model).resolve())
+ALIAS = ARGS.alias
+REPORTED_CTX = ARGS.ctx if ARGS.ctx is not None else ARGS.max_gen
+GENERATION_LOCK = threading.Lock()
+BASE_COMMAND = [ARGS.cli, "-m", MODEL_PATH, "-ngl", ARGS.n_gpu_layers]
+
+
+class GenerationError(RuntimeError):
+    pass
+
+
+def message_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(message_text(part.get("text")) for part in content if isinstance(part, dict))
+    return ""
+
+
+def build_prompt(messages):
+    parts = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        text = message_text(message.get("content")).strip()
+        if not text:
+            continue
+        if role == "system":
+            parts.append(text)
+        elif role == "user":
+            parts.append(text)
+    return "\\n\\n".join(parts)
+
+
+def generate(payload):
+    prompt = build_prompt(payload.get("messages"))
+    if not prompt:
+        raise GenerationError("no usable user message in the request")
+    try:
+        max_tokens = int(payload.get("max_tokens") or ARGS.max_gen)
+    except (TypeError, ValueError):
+        max_tokens = ARGS.max_gen
+    max_tokens = max(1, min(max_tokens, ARGS.max_gen))
+    command = BASE_COMMAND + ["-p", prompt, "-n", str(max_tokens)]
+    with GENERATION_LOCK:
+        completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=ARGS.timeout)
+    if completed.returncode != 0:
+        raise GenerationError(f"llama-diffusion-cli exited with {completed.returncode}")
+    text = completed.stdout.decode("utf-8", errors="replace").strip()
+    if not text:
+        raise GenerationError("generation produced no output")
+    now = int(time.time())
+    return {
+        "id": f"chatcmpl-ompk-diffusion-{now}",
+        "object": "chat.completion",
+        "created": now,
+        "model": ALIAS,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def send_json(self, payload, status=200):
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_json({"status": "ok"})
+        elif self.path == "/props":
+            self.send_json({"default_generation_settings": {"n_ctx": REPORTED_CTX}})
+        elif self.path == "/v1/models":
+            self.send_json({"object": "list", "data": [{"id": ALIAS, "object": "model", "owned_by": "ompk"}]})
+        else:
+            self.send_json({"error": {"message": f"unknown path {self.path}"}}, status=404)
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            self.send_json({"error": {"message": "invalid JSON body"}}, status=400)
+            return
+        if self.path != "/v1/chat/completions":
+            self.send_json({"error": {"message": f"unknown path {self.path}"}}, status=404)
+            return
+        try:
+            result = generate(payload)
+        except GenerationError as error:
+            self.send_json({"error": {"message": str(error)}}, status=502)
+            return
+        except subprocess.TimeoutExpired:
+            self.send_json({"error": {"message": "generation timed out"}}, status=504)
+            return
+        if payload.get("stream"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            chunk = {
+                "id": result["id"],
+                "object": "chat.completion.chunk",
+                "created": result["created"],
+                "model": ALIAS,
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": result["choices"][0]["message"]["content"]}, "finish_reason": "stop"}],
+            }
+            self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\\n\\n")
+            self.wfile.write(b"data: [DONE]\\n\\n")
+        else:
+            self.send_json(result)
+
+
+def main():
+    ThreadingHTTPServer((ARGS.host, ARGS.port), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()
+`;
+
 export function buildRemoteSetupScript(config: {
 	accelerator: ColabAccelerator;
 	artifact: GgufArtifact;
@@ -816,6 +1222,7 @@ export function buildRemoteSetupScript(config: {
 	const runtime = config.runtime ?? selectColabRuntimeProfile(config.reference, config.artifact);
 	const prebuilt = selectColabPrebuiltRuntime(runtime, config.accelerator);
 	const modelProfile = config.modelProfile ?? getColabModelProfile(config.reference, config.artifact);
+	const persistentCacheBucket = Bun.env.OMPK_GCS_MODEL_BUCKET?.trim() || Bun.env.GCS_BUCKET?.trim();
 	const payload = {
 		accelerator: config.accelerator,
 		cmakeArchitecture: getColabAcceleratorProfile(config.accelerator).cmakeArchitecture,
@@ -826,16 +1233,21 @@ export function buildRemoteSetupScript(config: {
 		remotePort: config.remotePort,
 		repoId: config.reference.repoId,
 		revision: config.reference.revision,
+		persistentCache: persistentCacheBucket?.startsWith("gs://")
+			? { bucket: persistentCacheBucket.replace(/\/+$/, ""), prefix: "ompk-colab-cache/v1" }
+			: null,
 		modelProfile: modelProfile
 			? {
 					artifactFile: modelProfile.artifactFile,
-					cachePrompt: modelProfile.cachePrompt,
-					chatTemplate: modelProfile.chatTemplate,
+					cachePrompt: modelProfile.cachePrompt ?? null,
+					chatTemplate: modelProfile.chatTemplate ?? null,
 					id: modelProfile.id,
-					kvCacheType: modelProfile.kvCacheType,
-					physicalMicrobatch: modelProfile.physicalMicrobatch,
-					qwenPreserveThinking: modelProfile.qwenPreserveThinking,
-					reasoningDisableMode: modelProfile.reasoningDisableMode,
+					kvCacheType: modelProfile.kvCacheType ?? null,
+					maxGenerationTokens: modelProfile.maxGenerationTokens ?? null,
+					physicalMicrobatch: modelProfile.physicalMicrobatch ?? null,
+					qwenPreserveThinking: modelProfile.qwenPreserveThinking ?? null,
+					reasoningDisableMode: modelProfile.reasoningDisableMode ?? null,
+					runtime: modelProfile.runtime ?? null,
 				}
 			: null,
 		runtime: {
@@ -844,6 +1256,7 @@ export function buildRemoteSetupScript(config: {
 			repositoryUrl: runtime.repositoryUrl,
 			pinnedCommit: runtime.pinnedCommit ?? null,
 			pinnedTag: runtime.pinnedTag ?? null,
+			fetchRef: runtime.fetchRef ?? null,
 			prebuilt: prebuilt
 				? {
 						archive: prebuilt.archive,
@@ -878,6 +1291,7 @@ READY_PREFIX = ${JSON.stringify(READY_PREFIX)}
 RUNTIME = CONFIG["runtime"]
 MODEL_PROFILE = CONFIG.get("modelProfile") or {}
 PREBUILT = RUNTIME["prebuilt"]
+PERSISTENT_CACHE = CONFIG.get("persistentCache") or {}
 LLAMA_DIR = Path(RUNTIME["directory"])
 MODEL_ROOT = Path("/content/ompk-models")
 PID_FILE = Path("/content/ompk-colab-model.pid")
@@ -932,8 +1346,13 @@ def cmake_cache_value(key):
     return ""
 
 
+def runtime_binary_name():
+    # The diffusion tree builds llama-diffusion-cli; every other lane serves llama-server.
+    return "llama-diffusion-cli" if RUNTIME["id"] == "diffusion" else "llama-server"
+
+
 def source_server_path():
-    return LLAMA_DIR / "build" / "bin" / "llama-server"
+    return LLAMA_DIR / "build" / "bin" / runtime_binary_name()
 
 
 def source_binary_is_valid():
@@ -983,15 +1402,25 @@ def prepare_runtime_source():
         progress(f"checking out {runtime_label()}")
         subprocess.run(["git", "remote", "remove", "origin"], cwd=LLAMA_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         run(["git", "remote", "add", "origin", RUNTIME["repositoryUrl"]], cwd=LLAMA_DIR)
-        run(["git", "fetch", "--depth", "1", "origin", pinned], cwd=LLAMA_DIR)
-        run(["git", "checkout", "--detach", "--force", pinned], cwd=LLAMA_DIR)
+        fetch_ref = RUNTIME.get("fetchRef")
+        if fetch_ref:
+            # The pin lives on a pull request; fetch the ref, land on it, and
+            # verify the commit so a moved PR fails instead of drifting.
+            run(["git", "fetch", "--depth", "1", "origin", fetch_ref], cwd=LLAMA_DIR)
+            run(["git", "checkout", "--detach", "--force", "FETCH_HEAD"], cwd=LLAMA_DIR)
+            head = git_output(["rev-parse", "HEAD"])
+            if head != pinned:
+                raise RuntimeError(f"{LLAMA_DIR} {fetch_ref} is at {head or 'an unknown commit'}, expected pinned {pinned}; the pull request moved past the validated commit")
+        else:
+            run(["git", "fetch", "--depth", "1", "origin", pinned], cwd=LLAMA_DIR)
+            run(["git", "checkout", "--detach", "--force", pinned], cwd=LLAMA_DIR)
     head = git_output(["rev-parse", "HEAD"])
     if head != pinned:
         raise RuntimeError(f"{LLAMA_DIR} is at {head or 'an unknown commit'}, expected pinned {pinned}")
 
 
 def build_source_runtime():
-    """Compile llama-server from the runtime checkout; the result must pass the same validation as a reused build."""
+    """Compile the runtime binary from the checkout; the result must pass the same validation as a reused build."""
     build_dir = LLAMA_DIR / "build"
     if build_dir.exists() and tree_in_use(build_dir):
         raise RuntimeError(f"Refusing to replace in-use runtime build {build_dir}")
@@ -999,7 +1428,8 @@ def build_source_runtime():
     if build_dir.exists():
         progress(f"discarding unvalidated {RUNTIME['id']} llama.cpp build")
         shutil.rmtree(build_dir)
-    progress(f"building CUDA llama-server from {runtime_label()}")
+    binary = runtime_binary_name()
+    progress(f"building CUDA {binary} from {runtime_label()}")
     configure = [
         "cmake", "-S", str(LLAMA_DIR), "-B", str(build_dir),
         "-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={CONFIG['cmakeArchitecture']}",
@@ -1010,10 +1440,10 @@ def build_source_runtime():
     run(configure)
     run([
         "cmake", "--build", str(build_dir), "--config", "Release",
-        "--parallel", str(max(2, os.cpu_count() or 2)), "--target", "llama-server",
+        "--parallel", str(max(2, os.cpu_count() or 2)), "--target", binary,
     ])
     if not source_binary_is_valid():
-        raise RuntimeError(f"Built llama-server did not pass the {runtime_label()} validation")
+        raise RuntimeError(f"Built {binary} did not pass the {runtime_label()} validation")
     return source_target()
 
 
@@ -1115,6 +1545,28 @@ def prebuilt_target():
     return RuntimeTarget("prebuilt", prebuilt_server_path(), RUNTIME["pinnedCommit"])
 
 
+def persistent_uri(*parts):
+    bucket = PERSISTENT_CACHE.get("bucket")
+    prefix = PERSISTENT_CACHE.get("prefix")
+    if not isinstance(bucket, str) or not bucket.startswith("gs://") or not isinstance(prefix, str) or not prefix:
+        return None
+    return "/".join([bucket.rstrip("/"), prefix.strip("/"), *parts])
+
+
+def restore_persistent_file(uri, destination, expected_sha256):
+    part = destination.with_name(destination.name + ".part")
+    try:
+        subprocess.run(["gsutil", "cp", uri, str(part)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=7200, check=True)
+        actual = sha256_of(part)
+        if actual != expected_sha256:
+            raise RuntimeError(f"{uri} sha256 {actual} does not match expected {expected_sha256}")
+        part.replace(destination)
+        return True
+    finally:
+        if part.exists():
+            part.unlink()
+
+
 def ensure_prebuilt_archive(archive):
     """Keep the cached archive only when it hashes to the pinned digest; otherwise download and verify a fresh copy."""
     if archive.is_file():
@@ -1123,6 +1575,14 @@ def ensure_prebuilt_archive(archive):
             return
         progress(f"discarding cached {PREBUILT['archive']} with an unexpected checksum")
         archive.unlink()
+    persistent = persistent_uri("runtimes", RUNTIME["id"], PREBUILT["archive"], PREBUILT["sha256"])
+    if persistent:
+        try:
+            progress(f"restoring {PREBUILT['archive']} from persistent GCS")
+            if restore_persistent_file(persistent, archive, PREBUILT["sha256"]):
+                return
+        except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+            progress(f"persistent runtime cache unavailable ({error}); downloading release")
     progress(f"downloading {PREBUILT['archive']}")
     part = archive.with_name(archive.name + ".part")
     try:
@@ -1246,7 +1706,7 @@ def validated_targets():
 def prepare_runtime_target(targets):
     """Pick a validated server, restoring the pinned release when possible and compiling only as a last resort."""
     if targets:
-        progress(f"reusing validated {targets[0].source} llama-server ({runtime_label()})")
+        progress(f"reusing validated {targets[0].source} {runtime_binary_name()} ({runtime_label()})")
         return targets[0]
     if PREBUILT:
         try:
@@ -1264,9 +1724,11 @@ def argv_option(argv, flag):
 
 
 def serving_process(port, processes=None):
-    """(pid, exe, argv) of the llama-server bound to the port, or None when nothing matches."""
+    """(pid, exe, argv) of the serving process bound to the port, or None when nothing matches."""
+    # The diffusion lane serves through the OpenAI wrapper, not llama-server itself.
+    expected = "ompk-diffusion-server" if RUNTIME["id"] == "diffusion" else "llama-server"
     for pid, exe, argv in (iter_processes() if processes is None else processes):
-        if "llama-server" not in Path(argv[0]).name:
+        if expected not in Path(argv[0]).name:
             continue
         if argv_option(argv, "--port") != str(port):
             continue
@@ -1274,13 +1736,22 @@ def serving_process(port, processes=None):
     return None
 
 
-def target_for_executable(targets, exe):
-    """The validated target whose llama-server is the very file the process executes, or None."""
-    if exe is None:
+def target_for_process(targets, running):
+    """The validated target behind the serving process, or None.
+
+    llama-server runs the binary directly (exe identity); the diffusion
+    wrapper is a python process whose --cli argument names the validated
+    CLI, so identity is taken from that argument instead.
+    """
+    if running is None:
+        return None
+    _pid, exe, argv = running
+    candidate = argv_option(argv, "--cli") if RUNTIME["id"] == "diffusion" else exe
+    if candidate is None:
         return None
     for target in targets:
         try:
-            if os.path.samefile(exe, target.server):
+            if os.path.samefile(candidate, target.server):
                 return target
         except OSError:
             continue
@@ -1322,6 +1793,22 @@ def announce_ready(model_id, primary_name, base_url, target):
     }, timeout=inference_timeout_seconds())
     if not isinstance(warmup.get("choices"), list) or not warmup["choices"]:
         raise RuntimeError("Warmup request returned no completion choices")
+    if RUNTIME["id"] == "diffusion":
+        # PR #24423's CLI cannot emit tool calls; the generation warmup above
+        # is the whole readiness contract for this lane.
+        progress("diffusion lane: skipping tool-call probe (architecture cannot emit tool calls)")
+        print(READY_PREFIX + json.dumps({
+            "contextWindow": context_window,
+            "modelId": model_id,
+            "modelName": Path(primary_name).stem,
+            "port": CONFIG["remotePort"],
+            "runtimeCommit": target.commit,
+            "runtimeServer": str(target.server),
+            "runtimeSource": target.source,
+            "toolCallReady": False,
+        }), flush=True)
+        return
+
 
     progress("checking deterministic tool-call support")
     tool_probe = request_json(base_url + "/v1/chat/completions", {
@@ -1391,6 +1878,54 @@ def announce_ready(model_id, primary_name, base_url, target):
     }), flush=True)
 
 
+def persistent_cache_key(value):
+    return value.replace("/", "--").replace("@", "--at--")
+
+
+def restore_persistent_model(primary_name, required_names):
+    manifest_uri = persistent_uri(
+        "manifests",
+        persistent_cache_key(CONFIG["repoId"]),
+        persistent_cache_key(CONFIG["revision"]),
+        Path(primary_name).name + ".json",
+    )
+    if not manifest_uri:
+        return None
+    try:
+        response = subprocess.run(["gsutil", "cat", manifest_uri], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60, check=True)
+        manifest = json.loads(response.stdout)
+        if not isinstance(manifest, dict):
+            raise RuntimeError("manifest is not an object")
+        expected_names = set(CONFIG["files"])
+        entries = manifest.get("files")
+        if manifest.get("version") != 1 or manifest.get("repoId") != CONFIG["repoId"] or manifest.get("revision") != CONFIG["revision"] or manifest.get("primaryFile") != CONFIG["primaryFile"]:
+            raise RuntimeError("manifest does not match the requested model")
+        if not isinstance(entries, list) or {entry.get("name") for entry in entries if isinstance(entry, dict)} != expected_names:
+            raise RuntimeError("manifest does not describe exactly the required GGUF files")
+        model_dir = MODEL_ROOT / CONFIG["repoId"].replace("/", "--")
+        model_dir.mkdir(parents=True, exist_ok=True)
+        allowed_prefix = persistent_uri("models", persistent_cache_key(CONFIG["repoId"]), persistent_cache_key(CONFIG["revision"])) + "/"
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise RuntimeError("manifest contains an invalid file entry")
+            name, uri, digest = entry.get("name"), entry.get("uri"), entry.get("sha256")
+            if not isinstance(name, str) or not isinstance(uri, str) or not isinstance(digest, str) or not uri.startswith(allowed_prefix):
+                raise RuntimeError("manifest contains an untrusted GCS artifact reference")
+            destination = model_dir / Path(name).name
+            if destination.is_file() and sha256_of(destination) == digest:
+                continue
+            destination.unlink(missing_ok=True)
+            progress(f"restoring {Path(name).name} from persistent GCS")
+            restore_persistent_file(uri, destination, digest)
+        model_path = model_dir / Path(primary_name).name
+        if not model_path.is_file() or not all((model_dir / Path(name).name).is_file() for name in required_names):
+            raise RuntimeError("persistent model restore did not produce every required GGUF file")
+        return model_path
+    except (OSError, subprocess.SubprocessError, ValueError, RuntimeError) as error:
+        progress(f"persistent model cache unavailable ({error}); falling back to Hugging Face")
+        return None
+
+
 def resolve_model_path(primary_name, required_names):
     # 1. Local VM storage cache (/content/ompk-models, /content/models)
     # 2. Google Drive FUSE mount (/content/drive/MyDrive/models, etc.)
@@ -1410,22 +1945,9 @@ def resolve_model_path(primary_name, required_names):
                 progress(f"reusing cached {primary_name} from {root}")
                 return candidate
 
-    # Check GCS bucket if OMPK_GCS_MODEL_BUCKET or GCS_BUCKET environment variable is defined
-    gcs_bucket = os.environ.get("OMPK_GCS_MODEL_BUCKET") or os.environ.get("GCS_BUCKET")
-    if gcs_bucket:
-        gcs_target_dir = MODEL_ROOT / CONFIG["repoId"].replace("/", "--")
-        gcs_target_dir.mkdir(parents=True, exist_ok=True)
-        progress(f"checking GCS bucket {gcs_bucket} for {primary_name}")
-        gcs_uri = f"{gcs_bucket.rstrip('/')}/{primary_name}"
-        try:
-            res = subprocess.run(["gsutil", "-q", "stat", gcs_uri], capture_output=True, timeout=10)
-            if res.returncode == 0:
-                progress(f"downloading {primary_name} from in-region GCS ({gcs_uri})")
-                dl_res = subprocess.run(["gsutil", "-m", "cp", gcs_uri, str(gcs_target_dir / primary_name)], capture_output=True, text=True, timeout=120)
-                if dl_res.returncode == 0 and (gcs_target_dir / primary_name).is_file():
-                    return gcs_target_dir / primary_name
-        except Exception as e:
-            progress(f"GCS check error ({e}); falling back to Hugging Face")
+    persistent_model = restore_persistent_model(primary_name, required_names)
+    if persistent_model is not None:
+        return persistent_model
     progress(f"downloading {CONFIG['repoId']} {CONFIG['quantization']}")
     try:
         from huggingface_hub import snapshot_download
@@ -1489,25 +2011,40 @@ def start_server(target, model_path, primary_name, base_url):
     alias = Path(primary_name).stem
     progress(f"loading {alias} on the GPU with {target.source} {runtime_label()}")
     log_handle = LOG_FILE.open("w", buffering=1)
-    server_args = [
-        str(target.server), "--model", str(model_path), "--alias", alias,
-        "--host", "127.0.0.1", "--port", str(CONFIG["remotePort"]),
-        "--ctx-size", str(CONFIG["contextWindow"]), "--n-gpu-layers", "99",
-        "--flash-attn", "on", "--jinja", "--parallel", "1", "--metrics",
-    ]
-    if MODEL_PROFILE.get("kvCacheType"):
-        server_args.extend(["--cache-type-k", MODEL_PROFILE["kvCacheType"], "--cache-type-v", MODEL_PROFILE["kvCacheType"]])
-    if MODEL_PROFILE.get("physicalMicrobatch"):
-        server_args.extend(["--ubatch-size", str(MODEL_PROFILE["physicalMicrobatch"])])
-    if MODEL_PROFILE.get("cachePrompt"):
-        server_args.append("--cache-prompt")
+    if RUNTIME["id"] == "diffusion":
+        # No diffusion llama-server exists (PR #24423 ships only the CLI), so
+        # serve an OpenAI-compatible wrapper that runs one CLI generation per
+        # request. Flash attention is unsupported in this tree and is omitted.
+        wrapper = Path("/content/ompk-diffusion-server.py")
+        wrapper.write_text(${JSON.stringify(DIFFUSION_SERVER_SOURCE)})
+        max_gen = MODEL_PROFILE.get("maxGenerationTokens") or CONFIG["contextWindow"]
+        server_args = [
+            sys.executable, str(wrapper),
+            "--host", "127.0.0.1", "--port", str(CONFIG["remotePort"]),
+            "--cli", str(target.server), "--model", str(model_path), "--alias", alias,
+            "--n-gpu-layers", "99",
+            "--max-gen", str(max_gen), "--timeout", str(inference_timeout_seconds()),
+        ]
+    else:
+        server_args = [
+            str(target.server), "--model", str(model_path), "--alias", alias,
+            "--host", "127.0.0.1", "--port", str(CONFIG["remotePort"]),
+            "--ctx-size", str(CONFIG["contextWindow"]), "--n-gpu-layers", "99",
+            "--flash-attn", "on", "--jinja", "--parallel", "1", "--metrics",
+        ]
+        if MODEL_PROFILE.get("kvCacheType"):
+            server_args.extend(["--cache-type-k", MODEL_PROFILE["kvCacheType"], "--cache-type-v", MODEL_PROFILE["kvCacheType"]])
+        if MODEL_PROFILE.get("physicalMicrobatch"):
+            server_args.extend(["--ubatch-size", str(MODEL_PROFILE["physicalMicrobatch"])])
+        if MODEL_PROFILE.get("cachePrompt"):
+            server_args.append("--cache-prompt")
     server_process = subprocess.Popen(server_args, env=library_env(target.server), stdout=log_handle, stderr=subprocess.STDOUT, start_new_session=True)
     PID_FILE.write_text(str(server_process.pid))
     for attempt in range(180):
         if server_process.poll() is not None:
             log_handle.close()
             tail = "\\n".join(LOG_FILE.read_text(errors="replace").splitlines()[-80:])
-            raise RuntimeError(f"llama-server exited with {server_process.returncode}:\\n{tail}")
+            raise RuntimeError(f"{runtime_binary_name()} exited with {server_process.returncode}:\\n{tail}")
         try:
             health = request_json(base_url + "/health", timeout=3)
             if health.get("status") == "ok":
@@ -1516,7 +2053,7 @@ def start_server(target, model_path, primary_name, base_url):
             pass
         time.sleep(5)
     server_process.terminate()
-    raise TimeoutError("llama-server did not become healthy within 15 minutes")
+    raise TimeoutError("the serving process did not become healthy within 15 minutes")
 
 
 def main():
@@ -1536,7 +2073,7 @@ def main():
     targets = validated_targets()
     if matching_id is not None:
         running = serving_process(CONFIG["remotePort"])
-        target = target_for_executable(targets, running[1]) if running else None
+        target = target_for_process(targets, running) if running else None
         if target is not None and served_model_matches(running[2], primary_name, required_names):
             progress(f"reusing running {Path(primary_name).stem} on validated {target.source} {runtime_label()}")
             PID_FILE.write_text(str(running[0]))
@@ -1756,6 +2293,19 @@ function liveColabModelName(modelId: string): string {
 		.replace(/\.gguf$/i, "");
 }
 
+/**
+ * Resolve the local Colab session name for a launch.
+ *
+ * The CLI tracks sessions by opaque server IDs and only knows the local
+ * nickname stored in `~/.config/colab-cli/sessions.json`. Every launch must
+ * therefore pin an explicit `--session` name or the local mapping is lost
+ * (server shows the VM as `[?]` and `stop`/`status` by name cannot reach it).
+ * Explicit names win, then `OMPK_COLAB_SESSION`, then the default.
+ */
+export function resolveColabSessionName(sessionName?: string): string {
+	return sessionName?.trim() || Bun.env.OMPK_COLAB_SESSION?.trim() || DEFAULT_SESSION_NAME;
+}
+
 export async function launchColabModel(
 	modelReference: string,
 	emit: StatusEmitter,
@@ -1764,7 +2314,7 @@ export async function launchColabModel(
 	const reference = parseHuggingFaceModelReference(modelReference);
 	await emit(`Colab: resolving ${reference.repoId}@${reference.revision}…`);
 	const entries = await fetchHuggingFaceGgufs(reference, options.fetch);
-	const sessionName = options.sessionName ?? (Bun.env.OMPK_COLAB_SESSION?.trim() || DEFAULT_SESSION_NAME);
+	const sessionName = resolveColabSessionName(options.sessionName);
 	const localPort = (() => {
 		const raw =
 			options.localPort ??
@@ -1788,7 +2338,7 @@ export async function launchColabModel(
 	const artifact = selectGgufArtifact(entries, reference, accelerator);
 	const modelProfile = getColabModelProfile(reference, artifact);
 	const contextWindow = modelProfile
-		? calculateColabContextWindow(accelerator, artifact, modelProfile)
+		? resolveColabContextWindow(accelerator, artifact, modelProfile)
 		: getColabAcceleratorProfile(accelerator).defaultContextWindow;
 	const runtime = selectColabRuntimeProfile(reference, artifact);
 	const prebuilt = selectColabPrebuiltRuntime(runtime, accelerator);
@@ -1796,9 +2346,8 @@ export async function launchColabModel(
 		`Colab: selected ${artifact.quantization} (${artifact.totalSize > 0 ? `${(artifact.totalSize / 1_000_000_000).toFixed(1)} GB` : "size unknown"}) for ${accelerator} on ${runtime.id} llama.cpp${runtime.pinnedTag ? ` ${runtime.pinnedTag}` : ""}${prebuilt ? ` (prebuilt CUDA ${prebuilt.cuda} release, source fallback)` : ""}.`,
 	);
 	if (modelProfile) {
-		await emit(
-			`Colab: ${modelProfile.id} context budget ${contextWindow.toLocaleString()} tokens; Q8 KV cache, ubatch ${modelProfile.physicalMicrobatch}.`,
-		);
+		const tuning = modelProfile.runtime === "diffusion" ? `generation cap ${modelProfile.maxGenerationTokens}` : `Q8 KV cache, ubatch ${modelProfile.physicalMicrobatch}`;
+		await emit(`Colab: ${modelProfile.id} context budget ${contextWindow.toLocaleString()} tokens; ${tuning}.`);
 	}
 	const setup = await runCommand(["exec", "--session", sessionName, "--timeout", "3600"], {
 		input: buildRemoteSetupScript({
@@ -1819,9 +2368,13 @@ export async function launchColabModel(
 		);
 	}
 	const ready = parseMarkedJson<RemoteReadyPayload>(setup.stdout, READY_PREFIX);
-	if (!ready?.modelId || !ready.port || ready.toolCallReady !== true) {
+	// The diffusion lane has no tool-calling probe: PR #24423's CLI cannot
+	// emit tool calls, so the wrapper validates with a generation warmup and
+	// reports toolCallReady: false. Everything else still requires the probe.
+	const requiresToolProbe = runtime.id !== "diffusion";
+	if (!ready?.modelId || !ready.port || (requiresToolProbe && ready.toolCallReady !== true)) {
 		throw new Error(
-			`Colab setup completed without a validated tool-call readiness probe: ${setup.stdout || setup.stderr}`,
+			`Colab setup completed without a validated readiness probe: ${setup.stdout || setup.stderr}`,
 		);
 	}
 	if (runtime.pinnedCommit && ready.runtimeCommit !== runtime.pinnedCommit) {
@@ -1855,7 +2408,7 @@ export async function launchColabModel(
 		chatTemplate: modelProfile?.chatTemplate,
 		reasoningDisableMode: modelProfile?.reasoningDisableMode,
 		qwenPreserveThinking: modelProfile?.qwenPreserveThinking,
-		maxTokens: Math.min(DEFAULT_MAX_TOKENS, effectiveContextWindow),
+		maxTokens: Math.min(DEFAULT_MAX_TOKENS, effectiveContextWindow, modelProfile?.maxGenerationTokens ?? DEFAULT_MAX_TOKENS),
 		modelId,
 		modelName: modelId === ready.modelId ? ready.modelName : liveColabModelName(modelId),
 		quantization: artifact.quantization,
@@ -1873,18 +2426,39 @@ export async function handleColabModelSlashCommand(
 ): Promise<{ consumed: true }> {
 	try {
 		const request = parseColabModelCommandArgs(args);
-		if (!request.modelReference) {
+		const setups = await loadColabSetups();
+		if (request.listSetups) {
+			await runtime.output(formatColabSetups(setups));
+			return { consumed: true };
+		}
+		const applied = applyColabSetup(request, setups);
+		if (applied.setup && applied.setup.launch !== "colab-model") {
+			const setup = applied.setup;
 			await runtime.output(
-				"Usage: /colab-model [--gpu T4|L4|A100|H100|G4] [--session <name>] [--port <number>] <owner/repository | huggingface.co model or GGUF URL>\nExample: /colab-model --gpu L4 unsloth/Qwen3.8-27B-GGUF\nExample: /colab-model --session ompk-colab-t4 --port 18083 unsloth/Qwen3-32B-GGUF",
+				[
+					`Colab setup "${setup.name}" [${setup.status}] is manual — /colab-model cannot provision it.`,
+					`Accelerator: ${setup.accelerator}${setup.session ? ` (last session: ${setup.session})` : ""}`,
+					setup.notes ?? "",
+				]
+					.filter(Boolean)
+					.join("\n"),
 			);
 			return { consumed: true };
 		}
-		const result = await launch(request.modelReference, message => runtime.output(message), {
-			accelerator: request.accelerator,
-			sessionName: request.sessionName,
-			localPort: request.localPort,
+		const resolved = applied.request;
+		if (!resolved.modelReference) {
+			await runtime.output(
+				"Usage: /colab-model [--gpu T4|L4|A100|H100|G4] [--session <name>] [--port <number>] [--setup <name> | --list-setups] <owner/repository | huggingface.co model or GGUF URL>\nExample: /colab-model --gpu L4 unsloth/Qwen3.8-27B-GGUF\nExample: /colab-model --session ompk-colab-t4 --port 18083 unsloth/Qwen3-32B-GGUF\nExample: /colab-model --list-setups",
+			);
+			return { consumed: true };
+		}
+		const result = await launch(resolved.modelReference, message => runtime.output(message), {
+			accelerator: resolved.accelerator,
+			sessionName: resolved.sessionName,
+			localPort: resolved.localPort,
 		});
-		if (result.toolCallReady !== true) {
+		const isDiffusion = result.runtime.id === "diffusion";
+		if (!isDiffusion && result.toolCallReady !== true) {
 			throw new Error("Colab model failed the tool-call readiness probe; refusing to register it as tool-capable.");
 		}
 		const liveId = await fetchLiveColabModelId(result.apiBaseUrl);
@@ -1895,20 +2469,27 @@ export async function handleColabModelSlashCommand(
 				baseUrl: result.apiBaseUrl,
 				apiKey: kNoAuth,
 				api: "openai-completions",
-				compat: {
-					thinkingFormat: result.chatTemplate ?? "qwen-chat-template",
-					reasoningDisableMode: result.reasoningDisableMode ?? "qwen-template-false",
-					qwenPreserveThinking: result.qwenPreserveThinking ?? true,
-				},
+				// Diffusion GGUFs have no qwen thinking lane; omit the compat
+				// override so the plain completions format applies.
+				...(isDiffusion
+					? {}
+					: {
+							compat: {
+								thinkingFormat: result.chatTemplate ?? "qwen-chat-template",
+								reasoningDisableMode: result.reasoningDisableMode ?? "qwen-template-false",
+								qwenPreserveThinking: result.qwenPreserveThinking ?? true,
+							},
+						}),
 				models: [
 					{
 						id: liveId,
 						name: `${modelName} · Colab ${result.accelerator}`,
 						reasoning:
 							result.reasoning ||
-							/qwen3(?:[._-]|$)|deepseek-r1|gpt-oss|reasoning|thinking/i.test(`${result.repoId}/${modelName}`),
+							(!isDiffusion &&
+								/qwen3(?:[._-]|$)|deepseek-r1|gpt-oss|reasoning|thinking/i.test(`${result.repoId}/${modelName}`)),
 						input: ["text"],
-						supportsTools: true,
+						supportsTools: !isDiffusion,
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 						contextWindow: result.contextWindow,
 						maxTokens: result.maxTokens,
@@ -1933,6 +2514,9 @@ export async function handleColabModelSlashCommand(
 					.trim(),
 				`OpenAI-compatible API: ${result.apiBaseUrl}`,
 				`Runtime: ${result.sessionName} (stop with: colab stop --session ${result.sessionName})`,
+				...(isDiffusion
+					? ["Tools: unavailable — the diffusion CLI cannot emit tool calls; this model answers chat only."]
+					: []),
 			].join("\n"),
 		);
 	} catch (error) {

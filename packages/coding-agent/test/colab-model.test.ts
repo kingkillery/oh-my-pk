@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@pk-nerdsaver-ai/pi-ai";
@@ -8,19 +8,25 @@ import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import { AuthStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/auth-storage";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/builtin-registry";
 import {
+	applyColabSetup,
 	buildColabCommand,
 	buildRemoteSetupScript,
 	COLAB_MODEL_PROFILES,
 	type ColabModelLaunchResult,
 	type ColabPrebuiltRuntime,
 	calculateColabContextWindow,
+	formatColabSetups,
 	getColabAcceleratorProfile,
 	getColabInferenceTimeoutSeconds,
 	getColabModelProfile,
+	isDiffusionGemmaModel,
 	type HuggingFaceTreeEntry,
 	handleColabModelSlashCommand,
+	loadColabSetups,
 	parseColabModelCommandArgs,
 	parseHuggingFaceModelReference,
+	resolveColabContextWindow,
+	resolveColabSessionName,
 	selectAutomaticColabAccelerators,
 	selectColabPrebuiltRuntime,
 	selectColabRuntimeProfile,
@@ -180,14 +186,26 @@ describe("/colab-model arguments", () => {
 		expect(parseColabModelCommandArgs("--gpu T4 owner/model")).toEqual({
 			accelerator: "T4",
 			modelReference: "owner/model",
+			sessionName: undefined,
+			localPort: undefined,
+			setupName: undefined,
+			listSetups: false,
 		});
 		expect(parseColabModelCommandArgs("owner/model --gpu=l4")).toEqual({
 			accelerator: "L4",
 			modelReference: "owner/model",
+			sessionName: undefined,
+			localPort: undefined,
+			setupName: undefined,
+			listSetups: false,
 		});
 		expect(parseColabModelCommandArgs("--gpu H100 owner/model")).toEqual({
 			accelerator: "H100",
 			modelReference: "owner/model",
+			sessionName: undefined,
+			localPort: undefined,
+			setupName: undefined,
+			listSetups: false,
 		});
 	});
 
@@ -202,18 +220,126 @@ describe("/colab-model arguments", () => {
 			modelReference: "owner/model",
 			sessionName: "ompk-colab-t4",
 			localPort: 18083,
+			setupName: undefined,
+			listSetups: false,
 		});
 		expect(parseColabModelCommandArgs("owner/model --session=ompk-colab-t4 --port=18083 --gpu T4")).toEqual({
 			accelerator: "T4",
 			modelReference: "owner/model",
 			sessionName: "ompk-colab-t4",
 			localPort: 18083,
+			setupName: undefined,
+			listSetups: false,
 		});
 		expect(parseColabModelCommandArgs("owner/model").sessionName).toBeUndefined();
 		expect(parseColabModelCommandArgs("owner/model").localPort).toBeUndefined();
 		expect(() => parseColabModelCommandArgs("--port 99999 owner/model")).toThrow("Invalid /colab-model port");
 		expect(() => parseColabModelCommandArgs("--session")).toThrow("--session requires a session name.");
 		expect(() => parseColabModelCommandArgs("--port")).toThrow("--port requires a port number");
+	});
+
+	test("every launch resolves a local session name", () => {
+		expect(resolveColabSessionName()).toBe("ompk-colab-model");
+		expect(resolveColabSessionName("")).toBe("ompk-colab-model");
+		expect(resolveColabSessionName("   ")).toBe("ompk-colab-model");
+		expect(resolveColabSessionName("ompk-colab-t4")).toBe("ompk-colab-t4");
+		const previous = Bun.env.OMPK_COLAB_SESSION;
+		try {
+			Bun.env.OMPK_COLAB_SESSION = "ompk-from-env";
+			expect(resolveColabSessionName()).toBe("ompk-from-env");
+			expect(resolveColabSessionName("explicit")).toBe("explicit");
+		} finally {
+			if (previous === undefined) delete Bun.env.OMPK_COLAB_SESSION;
+			else Bun.env.OMPK_COLAB_SESSION = previous;
+		}
+	});
+});
+
+describe("colab setups registry", () => {
+	test("parses --setup and --list-setups", () => {
+		expect(parseColabModelCommandArgs("--list-setups").listSetups).toBe(true);
+		expect(parseColabModelCommandArgs("--setup tpu-jax-flax-aqt").setupName).toBe("tpu-jax-flax-aqt");
+		expect(parseColabModelCommandArgs("--setup=tpu-jax-flax-aqt").setupName).toBe("tpu-jax-flax-aqt");
+		expect(() => parseColabModelCommandArgs("--setup")).toThrow("--setup requires a setup name");
+		expect(parseColabModelCommandArgs("owner/repo").setupName).toBeUndefined();
+		expect(parseColabModelCommandArgs("owner/repo").listSetups).toBe(false);
+	});
+
+	test("loader returns [] without a registry and validates what it finds", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "colab-setups-"));
+		try {
+			await expect(loadColabSetups(dir)).resolves.toEqual([]);
+			await mkdir(join(dir, ".ompk"), { recursive: true });
+			const file = join(dir, ".ompk", "colab-setups.json");
+			await writeFile(
+				file,
+				JSON.stringify({
+					setups: [
+						{ name: "demo", accelerator: "T4", model: "owner/repo", status: "verified", launch: "colab-model" },
+					],
+				}),
+			);
+			const setups = await loadColabSetups(dir);
+			expect(setups.map(entry => entry.name)).toEqual(["demo"]);
+			expect(formatColabSetups(setups)).toContain("demo [verified]");
+			expect(formatColabSetups([])).toContain("No Colab setups configured");
+			await writeFile(file, "{nope");
+			await expect(loadColabSetups(dir)).rejects.toThrow("Could not load Colab setups");
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("applyColabSetup fills from the setup and explicit flags win", () => {
+		const setups = [
+			{
+				name: "demo",
+				accelerator: "T4",
+				model: "owner/repo",
+				status: "verified" as const,
+				launch: "colab-model" as const,
+			},
+		];
+		const applied = applyColabSetup(parseColabModelCommandArgs("--setup demo"), setups);
+		expect(applied.setup?.name).toBe("demo");
+		expect(applied.request.modelReference).toBe("owner/repo");
+		expect(applied.request.accelerator).toBe("T4");
+		const explicit = applyColabSetup(parseColabModelCommandArgs("--setup demo --gpu L4 other/repo"), setups);
+		expect(explicit.request.accelerator).toBe("L4");
+		expect(explicit.request.modelReference).toBe("other/repo");
+		expect(() => applyColabSetup(parseColabModelCommandArgs("--setup missing"), setups)).toThrow(
+			'Unknown Colab setup "missing". Available: demo.',
+		);
+	});
+
+	test("--list-setups prints the registry without provisioning", async () => {
+		const outputs: string[] = [];
+		const runtime = { output: async (message: string) => void outputs.push(message) };
+		const launch: Parameters<typeof handleColabModelSlashCommand>[2] = async () => {
+			throw new Error("must not launch");
+		};
+		const result = await handleColabModelSlashCommand(
+			"--list-setups",
+			runtime as unknown as Parameters<typeof handleColabModelSlashCommand>[1],
+			launch,
+		);
+		expect(result).toEqual({ consumed: true });
+		expect(outputs.join("\n")).toContain("tpu-jax-flax-aqt");
+	});
+
+	test("--setup on a manual setup prints the runbook without provisioning", async () => {
+		const outputs: string[] = [];
+		const runtime = { output: async (message: string) => void outputs.push(message) };
+		const launch: Parameters<typeof handleColabModelSlashCommand>[2] = async () => {
+			throw new Error("must not launch");
+		};
+		const result = await handleColabModelSlashCommand(
+			"--setup tpu-jax-flax-aqt",
+			runtime as unknown as Parameters<typeof handleColabModelSlashCommand>[1],
+			launch,
+		);
+		expect(result).toEqual({ consumed: true });
+		expect(outputs.join("\n")).toContain("manual");
 	});
 });
 
@@ -258,9 +384,9 @@ describe("GGUF accelerator selection", () => {
 		expect(profile?.artifactFile).toBe("Huihui-Ornith-1.5-9B-abliterated.Q4_K_M.gguf");
 		expect(profile?.nCtxTrain).toBe(262_144);
 		expect(profile?.defaultContextWindow).toBe(131_072);
-		const l4Context = calculateColabContextWindow("L4", artifact, profile!);
+		const l4Context = resolveColabContextWindow("L4", artifact, profile!);
 		expect(l4Context).toBeGreaterThanOrEqual(profile!.defaultContextWindow);
-		expect(l4Context).toBeLessThanOrEqual(profile!.nCtxTrain);
+		expect(l4Context).toBeLessThanOrEqual(profile!.nCtxTrain!);
 		expect(selectAutomaticColabAccelerators(ORNITH_FILES, reference)).toEqual(["L4", "A100"]);
 		expect(getColabInferenceTimeoutSeconds(131_072)).toBe(376);
 		expect(getColabInferenceTimeoutSeconds(262_144)).toBe(632);
@@ -385,6 +511,7 @@ describe("llama.cpp runtime selection", () => {
 			repositoryUrl: "https://github.com/PrismML-Eng/llama.cpp.git",
 			pinnedCommit: "9a9394a895b96003ca842a6041cb28ac49a108f7",
 			pinnedTag: "prism-b10709-9a9394a",
+			fetchRef: null,
 			prebuilt:
 				selectColabPrebuiltRuntime(
 					selectColabRuntimeProfile(bonsai, {
@@ -409,7 +536,7 @@ describe("llama.cpp runtime selection", () => {
 		const source = buildRemoteSetupScript({
 			accelerator: "L4",
 			artifact,
-			contextWindow: calculateColabContextWindow("L4", artifact, profile!),
+			contextWindow: resolveColabContextWindow("L4", artifact, profile!),
 			modelProfile: profile,
 			reference,
 			remotePort: 8_081,
@@ -422,10 +549,50 @@ describe("llama.cpp runtime selection", () => {
 			chatTemplate: "qwen-chat-template",
 			id: "ornith-1.5-9b-abliterated",
 			kvCacheType: "q8_0",
+			maxGenerationTokens: null,
 			physicalMicrobatch: 1024,
 			qwenPreserveThinking: true,
 			reasoningDisableMode: "qwen-template-false",
+			runtime: null,
 		});
+	});
+
+	test("pins diffusion runtime and validates python syntax for DiffusionGemma", async () => {
+		const diffRef = {
+			repoId: "unsloth/diffusiongemma-26B-A4B-it-GGUF",
+			revision: "main",
+		};
+		const diffArtifact = {
+			primaryFile: "diffusiongemma-26B-A4B-it-Q4_K_M.gguf",
+			quantization: "Q4_K_M",
+			files: ["diffusiongemma-26B-A4B-it-Q4_K_M.gguf"],
+			totalSize: 16_800_000_000,
+		};
+		expect(isDiffusionGemmaModel(diffRef.repoId, diffArtifact.primaryFile)).toBe(true);
+		const runtime = selectColabRuntimeProfile(diffRef, diffArtifact);
+		expect(runtime.id).toBe("diffusion");
+		expect(runtime.pinnedCommit).toBe("12e0a9627d02c6395fd4bbf2aadff93d0d46a0e4");
+		expect(runtime.fetchRef).toBe("pull/24423/head");
+
+		const profile = getColabModelProfile(diffRef, diffArtifact);
+		expect(profile).toBeDefined();
+		expect(profile?.runtime).toBe("diffusion");
+		expect(profile?.defaultContextWindow).toBe(2_048);
+		expect(profile?.maxGenerationTokens).toBe(1_536);
+
+		const source = buildRemoteSetupScript({
+			accelerator: "L4",
+			artifact: diffArtifact,
+			contextWindow: resolveColabContextWindow("L4", diffArtifact, profile!),
+			modelProfile: profile,
+			reference: diffRef,
+			remotePort: 8_081,
+		});
+		const [config, compilation] = await Promise.all([readSetupConfig(source), compilePythonScript(source)]);
+		expect(compilation.exitCode, compilation.stderr).toBe(0);
+		expect(config.runtime.id).toBe("diffusion");
+		expect(config.runtime.fetchRef).toBe("pull/24423/head");
+		expect(config.modelProfile?.maxGenerationTokens).toBe(1_536);
 	});
 });
 
