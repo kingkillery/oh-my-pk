@@ -244,9 +244,9 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.thinking).toEqual({ type: "adaptive", display: "omitted" });
 		// Pin the verified upstream release independently of the implementation constants:
 		// comparing two values derived from the same stale pin missed the version rejection.
-		expect(capturedHeaders?.get("User-Agent")).toBe("claude-cli/2.1.273 (external, local-agent, agent-sdk/0.3.273)");
+		expect(capturedHeaders?.get("User-Agent")).toBe("claude-cli/2.1.280 (external, local-agent, agent-sdk/0.3.273)");
 		expect(payload.system[0].text).toMatch(
-			/^x-anthropic-billing-header: cc_version=2\.1\.273\.[0-9a-f]{3}; cc_entrypoint=local-agent; cch=[0-9a-f]{5};$/,
+			/^x-anthropic-billing-header: cc_version=2\.1\.280\.[0-9a-f]{3}; cc_entrypoint=local-agent; cch=[0-9a-f]{5};$/,
 		);
 		expect(payload.system[0].text).not.toContain("cch=00000");
 	});
