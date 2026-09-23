@@ -171,6 +171,9 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		_onUpdate?: AgentToolUpdateCallback<IrcDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<IrcDetails>> {
+		if (this.session.settings.get("task.simpleMode")) {
+			return errorResult("IRC is unavailable in simple mode.", { op: params.op });
+		}
 		if (this.session.ircEnabled && !this.session.ircEnabled()) {
 			return errorResult("IRC is disabled for this process.", { op: params.op });
 		}

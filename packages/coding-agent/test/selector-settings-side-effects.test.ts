@@ -55,4 +55,17 @@ describe("selector setting side effects", () => {
 		expect(updateEditorTopBorder).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
+	it("refreshes the system prompt when terminal routing changes", () => {
+		const refreshBaseSystemPrompt = vi.fn(async () => {});
+		const showError = vi.fn();
+		const controller = new SelectorController({
+			session: { refreshBaseSystemPrompt },
+			showError,
+		} as unknown as ConstructorParameters<typeof SelectorController>[0]);
+
+		controller.handleSettingChange("terminal.launchBackend", "system");
+
+		expect(refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+		expect(showError).not.toHaveBeenCalled();
+	});
 });

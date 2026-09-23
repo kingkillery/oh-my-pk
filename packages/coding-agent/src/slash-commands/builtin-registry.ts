@@ -39,6 +39,7 @@ import { HubError, HubService, parseHubLink } from "../session/hub-service";
 import { resolveResumableSession } from "../session/session-listing";
 import { SessionManager } from "../session/session-manager";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
+import { simpleAgentLimit } from "../task/simple-mode";
 import { clearSpeechHardStop, enableSpeechHardStop, isSpeechHardStopped } from "../tts/speech-hard-stop";
 import { vocalizer } from "../tts/vocalizer";
 import { urlHyperlinkAlways } from "../tui";
@@ -86,10 +87,75 @@ type ModelSlashCommandRuntime = Pick<
 	"session" | "settings" | "output" | "notifyTitleChanged" | "notifyConfigChanged"
 >;
 
+const simpleModeToolEligibility = new WeakMap<object, Set<string>>();
+
+async function handleSimpleSlashCommand(
+	command: ParsedSlashCommand,
+	runtime: SlashCommandRuntime,
+): Promise<SlashCommandResult> {
+	const input = command.args.trim().toLowerCase();
+	const wasSimple = runtime.settings.get("task.simpleMode");
+	if (!wasSimple && !simpleModeToolEligibility.has(runtime.session)) {
+		simpleModeToolEligibility.set(runtime.session, new Set(runtime.session.getActiveToolNames()));
+	}
+	if (input === "off") {
+		runtime.settings.set("task.simpleMode", false);
+		if (runtime.settings.get("task.simpleMode")) runtime.settings.override("task.simpleMode", false);
+	} else if (input === "on") {
+		runtime.settings.set("task.simpleMode", true);
+		if (!runtime.settings.get("task.simpleMode")) runtime.settings.override("task.simpleMode", true);
+	} else if (/^(0|[1-9]\d*)$/.test(input) && Number(input) <= 32) {
+		runtime.settings.set("task.simpleMaxAgents", Number(input));
+		if (runtime.settings.get("task.simpleMaxAgents") !== Number(input))
+			runtime.settings.override("task.simpleMaxAgents", Number(input));
+		runtime.settings.set("task.simpleMode", true);
+		if (!runtime.settings.get("task.simpleMode")) runtime.settings.override("task.simpleMode", true);
+	} else if (input && input !== "status") {
+		return usage("Usage: /simple [on | off | 0..32 | status]", runtime);
+	}
+	if (input && input !== "status") {
+		const active = runtime.session.getActiveToolNames().filter(name => name !== "irc" && name !== "task");
+		const eligible = simpleModeToolEligibility.get(runtime.session);
+		if (runtime.settings.get("task.simpleMode") && runtime.settings.get("task.simpleMaxAgents") > 0) {
+			if (eligible?.has("task")) active.push("task");
+		} else if (!runtime.settings.get("task.simpleMode")) {
+			if (eligible?.has("task")) active.push("task");
+			if (eligible?.has("irc")) active.push("irc");
+		}
+		await runtime.session.setActiveToolsByName(active);
+		await runtime.session.refreshBaseSystemPrompt();
+		await runtime.notifyConfigChanged?.();
+	}
+	const enabled = runtime.settings.get("task.simpleMode");
+	const count = simpleAgentLimit(runtime.settings);
+	const unavailable = enabled && count > 0 && !runtime.session.getActiveToolNames().includes("task");
+	await runtime.output(
+		enabled
+			? `Simple mode on; ${count === 0 ? "subagents off (running agents continue)" : `up to ${count} general subagent${count === 1 ? "" : "s"} at once`}.${unavailable ? " Task was excluded at launch; start a new session to make it available." : ""}`
+			: "Simple mode off; full agent routing restored.",
+	);
+	return commandConsumed();
+}
+
 async function handleModelSlashCommand(
 	command: ParsedSlashCommand,
 	runtime: ModelSlashCommandRuntime,
 ): Promise<SlashCommandResult> {
+	if (command.args.trim() === "reset-submodels") {
+		const { remainingRoles, remainingAgents } = runtime.settings.resetSubmodelAssignments();
+		const remaining = [
+			...remainingRoles.map(role => `role ${role}`),
+			...remainingAgents.map(agent => `agent ${agent}`),
+		];
+		await runtime.output(
+			remaining.length === 0
+				? "Submodel assignments cleared; default model preserved. Reassign roles in /model."
+				: `Saved submodel assignments cleared, but project/config overlays still assign: ${remaining.join(", ")}.`,
+		);
+		await runtime.notifyConfigChanged?.();
+		return commandConsumed();
+	}
+
 	if (command.args) {
 		const modelId = command.args.trim();
 		const availableModels = runtime.session.getAvailableModels?.() ?? [];
@@ -665,10 +731,18 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handle: async (command, runtime) => handleColabModelCacheSlashCommand(command.args, runtime),
 	},
 	{
+		name: "simple",
+		description: "Use one general subagent type and the current model, or turn subagents off",
+		allowArgs: true,
+		inlineHint: "[on | off | 0..32 | status]",
+		handle: handleSimpleSlashCommand,
+	},
+	{
 		name: "model",
 		aliases: ["models"],
 		description: "Switch model for this session",
 		allowArgs: true,
+		inlineHint: "[reset-submodels | model-id]",
 		acpDescription: "Show current model selection",
 		handle: handleModelSlashCommand,
 		handleTui: async (command, runtime) => {

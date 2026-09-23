@@ -633,6 +633,30 @@ export class Settings {
 	}
 
 	/**
+	 * Clear user-assigned submodels without changing the persisted default model.
+	 * Named profiles remain available but are deactivated; per-agent overrides
+	 * are cleared so newly spawned agents fall back to normal routing.
+	 * Returns assignments supplied by higher-priority project/config overlays.
+	 */
+	resetSubmodelAssignments(): { remainingRoles: string[]; remainingAgents: string[] } {
+		const defaultModel = this.getGlobal("modelRoles").default;
+		this.clearOverride("modelRoles");
+		this.clearOverride("agent.profile");
+		this.clearOverride("task.agentModelOverrides");
+		this.set("modelRoles", defaultModel ? { default: defaultModel } : {});
+		this.set("agent.profile", "");
+		this.set("task.agentModelOverrides", {});
+		return {
+			remainingRoles: Object.keys(this.getModelRoles()).filter(
+				role => role !== "default" && !!this.getModelRole(role),
+			),
+			remainingAgents: Object.entries(this.get("task.agentModelOverrides"))
+				.filter(([, model]) => !!model)
+				.map(([agent]) => agent),
+		};
+	}
+
+	/**
 	 * Role map from the active `agent.profile`, or empty when none is set.
 	 * Profiles seed defaults UNDER explicit `modelRoles` (per-role explicit wins).
 	 */

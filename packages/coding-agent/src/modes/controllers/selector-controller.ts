@@ -342,6 +342,11 @@ export class SelectorController {
 					this.ctx.showError(`Failed to apply personality: ${err}`);
 				});
 				break;
+			case "terminal.launchBackend":
+				void this.ctx.session.refreshBaseSystemPrompt().catch(err => {
+					this.ctx.showError(`Failed to apply terminal launch policy: ${err}`);
+				});
+				break;
 
 			case "autocompleteMaxVisible":
 				this.ctx.editor.setAutocompleteMaxVisible(typeof value === "number" ? value : Number(value));

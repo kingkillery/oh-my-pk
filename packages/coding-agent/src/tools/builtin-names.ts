@@ -5,6 +5,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"ast_grep",
 	"ast_edit",
 	"ask",
+	"terminal_launch",
 	"debug",
 	"eval",
 	"ssh",

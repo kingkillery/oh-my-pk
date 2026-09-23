@@ -72,6 +72,7 @@ import { reportFindingTool } from "./review";
 import { SearchTool } from "./search";
 import { SearchToolBm25Tool } from "./search-tool-bm25";
 import { loadSshTool } from "./ssh";
+import { createTerminalLaunchTool } from "./terminal-launch";
 import { type TodoPhase, TodoTool } from "./todo";
 import {
 	CONTROL_BUILTIN_NAMES,
@@ -121,6 +122,7 @@ export * from "./review";
 export { SearchTool } from "./search";
 export * from "./search-tool-bm25";
 export * from "./ssh";
+export * from "./terminal-launch";
 export * from "./todo";
 export * from "./tool-profiles";
 export * from "./tts";
@@ -557,6 +559,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	edit: s => new EditTool(s, s.toolProfile),
 	ast_grep: s => new AstGrepTool(s),
 	ast_edit: s => new AstEditTool(s),
+	terminal_launch: s => createTerminalLaunchTool(s),
 	ask: AskTool.createIf,
 	debug: DebugTool.createIf,
 	eval: s => new EvalTool(s),
@@ -737,6 +740,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");
 		if (name === "eval") return allowEval;
+		if (name === "terminal_launch") return (session.taskDepth ?? 0) === 0;
 		if (name === "debug") return session.settings.get("debug.enabled");
 		if (name === "todo") return !includeYield && session.settings.get("todo.enabled");
 		if (name === "glob") return session.settings.get("glob.enabled");
@@ -768,6 +772,8 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			);
 		}
 		if (name === "task") {
+			if (session.nativeTaskExecution) return true;
+			if (session.settings.get("task.simpleMode")) return (session.taskDepth ?? 0) === 0;
 			return canSpawnAtDepth(session.settings.get("task.maxRecursionDepth") ?? 2, session.taskDepth ?? 0);
 		}
 		return true;

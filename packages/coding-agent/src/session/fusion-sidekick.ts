@@ -65,7 +65,10 @@ export interface ReconcileResult {
 export async function ensureFusionSidekick(host: FusionSidekickHost, options: { force?: boolean } = {}): Promise<void> {
 	const { session, settings } = host;
 	try {
-		const fusionEnabled = settings.get("fusion.enabled") === true && settings.get("fusion.mode") !== "off";
+		const fusionEnabled =
+			!settings.get("task.simpleMode") &&
+			settings.get("fusion.enabled") === true &&
+			settings.get("fusion.mode") !== "off";
 		if (!fusionEnabled) {
 			if (options.force) session.setFusionSidekickId(undefined);
 			return;
@@ -119,7 +122,11 @@ export async function ensureFusionSidekick(host: FusionSidekickHost, options: { 
  */
 export async function reconcileFusionSidekickModel(host: FusionSidekickHost): Promise<ReconcileResult> {
 	const { session, settings } = host;
-	if (settings.get("fusion.enabled") !== true || settings.get("fusion.mode") === "off") {
+	if (
+		settings.get("task.simpleMode") ||
+		settings.get("fusion.enabled") !== true ||
+		settings.get("fusion.mode") === "off"
+	) {
 		return { note: "", sidekickLive: false };
 	}
 

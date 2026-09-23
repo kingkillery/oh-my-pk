@@ -439,6 +439,10 @@ export interface BuildSystemPromptOptions {
 	eagerTasksAlways?: boolean;
 	/** Whether `task.batch` is enabled; gates batch-call guidance in the Eager Tasks section. */
 	taskBatch?: boolean;
+	/** One general child using the current model, with no orchestration guidance. */
+	simpleMode?: boolean;
+	/** Route interactive terminal launches through the managed tool or fail closed. */
+	managedTerminalLaunches?: boolean;
 	/** Fusion cost mode: inject the sidekick-delegation policy (main agent only). */
 	fusionSidekick?: boolean;
 	/** Fusion `escalate` mode: add the cheap-first / escalate-hard-work guidance. */
@@ -508,6 +512,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		eagerTasks: initialEagerTasks = false,
 		eagerTasksAlways: initialEagerTasksAlways = false,
 		taskBatch = true,
+		simpleMode = false,
+		managedTerminalLaunches = false,
 		fusionSidekick = false,
 		fusionEscalate = false,
 		fusionTokenSavings = false,
@@ -783,6 +789,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		eagerTasks,
 		eagerTasksAlways,
 		taskBatch,
+		simpleMode,
+		managedTerminalLaunches,
 		fusionSidekick,
 		fusionEscalate,
 		fusionTokenSavings,

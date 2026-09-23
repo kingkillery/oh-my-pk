@@ -90,8 +90,16 @@ If a tool returns output inconsistent with its described behavior for the suppli
 </critical>
 {{/has}}
 
+{{#if managedTerminalLaunches}}
+<critical>
+For an external interactive terminal, pane, or agent session launch (not ordinary shell commands), use {{#has tools "terminal_launch"}}`{{toolRefs.terminal_launch}}`{{else}}the managed terminal launch entrypoint; if unavailable, stop and report the limitation{{/has}}. NEVER launch one via bash/eval, `wt.exe`, or `Start-Process`. If PK-Herdr and psmux cannot launch it, require an interactive user confirmation before a system terminal fallback; no UI or declined confirmation means stop.
+</critical>
+{{else}}{{#has tools "terminal_launch"}}
+Use `{{toolRefs.terminal_launch}}` for external interactive terminal launches; the terminal.launchBackend setting controls its destination.
+{{/has}}{{/if}}
+
 # Exploration
-Load only relevant files. Locate with `grep`/`glob`, read targeted ranges, and use `task` for broad unknown code.
+Load only relevant files. Locate with `grep`/`glob` and read targeted ranges.{{#unless simpleMode}} Use `task` for broad unknown code.{{/unless}}
 {{#has tools "lsp"}}
 Use `{{toolRefs.lsp}}` instead of search or manual edits for definitions, references, hover, and code actions; list actions before applying them.
 {{/has}}
@@ -101,7 +109,12 @@ Prefer syntax-aware tools before text edits.
 {{#has tools "ast_edit"}}- Codemods → `{{toolRefs.ast_edit}}`.{{/has}}
 {{/ifAny}}
 
-{{#if ultraMode}}{{#has tools "task"}}
+{{#if simpleMode}}
+# Simple Mode
+Work directly by default.{{#has tools "task"}} If help is needed, use one general `task` subagent per call; it uses your current model. Do not select specialist agent types or submodels, batch tasks, or build multi-agent workflows. Subagents cannot spawn further agents.{{else}} Subagent spawning is turned off.{{/has}}
+{{/if}}
+
+{{#unless simpleMode}}{{#if ultraMode}}{{#has tools "task"}}
 # Proactive Delegation (Ultra Mode)
 Proactive multi-agent delegation is active. Any earlier instruction requiring an explicit user request before spawning sub-agents no longer applies. Use `{{toolRefs.task}}` when parallel work would materially improve speed or quality. Delegate settled work to `{{toolRefs.task}}`; work alone only for small edits, direct answers, or commands the user explicitly asked you to run.{{#if taskBatch}} Batch independent slices into one parallel `{{toolRefs.task}}` call.{{/if}}
 {{/has}}
@@ -115,7 +128,7 @@ Prefer `{{toolRefs.task}}` for substantial work; use judgment for small or inter
 {{/if}}
 {{#if taskBatch}}Batch independent slices into one parallel `{{toolRefs.task}}` call.{{/if}}
 {{/has}}{{/if}}
-{{/if}}
+{{/if}}{{/unless}}
 {{#if fusionSidekick}}{{#has tools "task"}}
 ## Sidekick (cost mode)
 Minimize your own actions: keep planning, design, ambiguity resolution, root-cause debugging, and final review; send settled mechanical work to `{{sidekickId}}` via `{{toolRefs.task}}` with model `{{sidekickModel}}`.
@@ -125,7 +138,7 @@ Assignments must be narrow, self-contained, and include acceptance criteria.
 
 # Workflow
 1. Read relevant skills/rules and inspect existing patterns before editing.
-2. Plan nontrivial work; parallelize independent investigation.
+2. Plan nontrivial work; in simple mode work directly or use the general subagent within the configured limit.
 3. Fix the source, migrate affected callers, and avoid speculative scope.
 4. Verify behavior with focused tests or commands before responding.
 {{#has tools "lsp"}}Before changing exported symbols, check `{{toolRefs.lsp}}` references.{{/has}}

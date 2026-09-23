@@ -16,7 +16,7 @@ import {
 	Settings,
 } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import { AgentStorage } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-storage";
-import { getProjectAgentDir, TempDir } from "@pk-nerdsaver-ai/pi-utils";
+import { CONFIG_DIR_NAME, getProjectAgentDir, TempDir } from "@pk-nerdsaver-ai/pi-utils";
 import { YAML } from "bun";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
@@ -410,6 +410,182 @@ describe("Settings", () => {
 			settings.clearOverride("modelRoles");
 
 			expect(settings.getModelRole("default")).toBe("anthropic/claude-opus-4-5");
+		});
+	});
+
+	describe("resetSubmodelAssignments()", () => {
+		it("clears persisted non-default roles and agent overrides while keeping the default model", async () => {
+			await writeSettings({
+				modelRoles: {
+					default: "anthropic/claude-sonnet-4-5",
+					smol: "anthropic/claude-haiku-4-5",
+					slow: "anthropic/claude-opus-4-5",
+				},
+				task: {
+					agentModelOverrides: {
+						reviewer: "openai/gpt-5.2-codex",
+						explore: "anthropic/claude-haiku-4-5",
+					},
+					maxConcurrency: 4,
+				},
+				theme: { dark: "titanium" },
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.resetSubmodelAssignments()).toEqual({ remainingRoles: [], remainingAgents: [] });
+			await settings.flush();
+
+			expect(settings.getModelRole("default")).toBe("anthropic/claude-sonnet-4-5");
+			expect(settings.getModelRole("smol")).toBeUndefined();
+			expect(settings.getModelRole("slow")).toBeUndefined();
+			expect(settings.get("task.agentModelOverrides")).toEqual({});
+			expect(settings.get("task.maxConcurrency")).toBe(4);
+			expect(settings.get("theme.dark")).toBe("titanium");
+
+			const saved = await readSettings();
+			expect(saved.modelRoles).toEqual({ default: "anthropic/claude-sonnet-4-5" });
+			expect((saved.task as { agentModelOverrides?: unknown }).agentModelOverrides).toEqual({});
+			expect((saved.task as { maxConcurrency?: number }).maxConcurrency).toBe(4);
+			expect(saved.theme).toEqual({ dark: "titanium" });
+		});
+
+		it("deactivates the active agent profile without deleting named profiles", async () => {
+			await writeSettings({
+				modelRoles: { default: "anthropic/claude-sonnet-4-5" },
+				agent: {
+					profile: "frugal",
+					profiles: {
+						frugal: { smol: "nvidia/nemotron", slow: "openai/gpt-5.2-codex" },
+						frontier: { slow: "anthropic/claude-opus-4-5" },
+					},
+				},
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.getModelRole("smol")).toBe("nvidia/nemotron");
+
+			expect(settings.resetSubmodelAssignments()).toEqual({ remainingRoles: [], remainingAgents: [] });
+			await settings.flush();
+
+			expect(settings.get("agent.profile")).toBe("");
+			expect(settings.getModelRole("smol")).toBeUndefined();
+			expect(settings.get("agent.profiles")).toEqual({
+				frugal: { smol: "nvidia/nemotron", slow: "openai/gpt-5.2-codex" },
+				frontier: { slow: "anthropic/claude-opus-4-5" },
+			});
+
+			const saved = await readSettings();
+			expect((saved.agent as { profile?: string }).profile).toBe("");
+			expect((saved.agent as { profiles?: unknown }).profiles).toEqual({
+				frugal: { smol: "nvidia/nemotron", slow: "openai/gpt-5.2-codex" },
+				frontier: { slow: "anthropic/claude-opus-4-5" },
+			});
+		});
+
+		it("lets roles be assigned again with setModelRole and persists the new assignment", async () => {
+			await writeSettings({
+				modelRoles: {
+					default: "anthropic/claude-sonnet-4-5",
+					smol: "anthropic/claude-haiku-4-5",
+				},
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			settings.resetSubmodelAssignments();
+			settings.setModelRole("smol", "openai/gpt-5.2-codex");
+			await settings.flush();
+
+			expect(settings.getModelRole("default")).toBe("anthropic/claude-sonnet-4-5");
+			expect(settings.getModelRole("smol")).toBe("openai/gpt-5.2-codex");
+			expect(await readSettings()).toMatchObject({
+				modelRoles: {
+					default: "anthropic/claude-sonnet-4-5",
+					smol: "openai/gpt-5.2-codex",
+				},
+			});
+		});
+
+		it("drops runtime overrides and keeps the persisted default model", async () => {
+			await writeSettings({
+				modelRoles: { default: "anthropic/claude-sonnet-4-5", smol: "anthropic/claude-haiku-4-5" },
+				agent: { profile: "", profiles: { frugal: { slow: "openai/gpt-5.2-codex" } } },
+				task: { agentModelOverrides: { reviewer: "anthropic/claude-opus-4-5" } },
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			settings.overrideModelRoles({ default: "openai/gpt-5.2-codex", advisor: "anthropic/claude-opus-4-5" });
+			settings.override("agent.profile", "frugal");
+			settings.override("task.agentModelOverrides", {
+				reviewer: "nvidia/nemotron",
+				explore: "anthropic/claude-haiku-4-5",
+			});
+
+			expect(settings.getModelRole("default")).toBe("openai/gpt-5.2-codex");
+			expect(settings.getModelRole("advisor")).toBe("anthropic/claude-opus-4-5");
+			expect(settings.getModelRole("slow")).toBe("openai/gpt-5.2-codex");
+			expect(settings.get("task.agentModelOverrides").explore).toBe("anthropic/claude-haiku-4-5");
+
+			expect(settings.resetSubmodelAssignments()).toEqual({ remainingRoles: [], remainingAgents: [] });
+			await settings.flush();
+
+			// A temporary default override must not become the durable default.
+			expect(settings.getModelRole("default")).toBe("anthropic/claude-sonnet-4-5");
+			expect(settings.getModelRole("smol")).toBeUndefined();
+			expect(settings.getModelRole("advisor")).toBeUndefined();
+			expect(settings.getModelRole("slow")).toBeUndefined();
+			expect(settings.get("agent.profile")).toBe("");
+			expect(settings.get("task.agentModelOverrides")).toEqual({});
+			expect(settings.get("agent.profiles")).toEqual({ frugal: { slow: "openai/gpt-5.2-codex" } });
+			expect((await readSettings()).modelRoles).toEqual({ default: "anthropic/claude-sonnet-4-5" });
+		});
+
+		it("reports project overlay roles and agent overrides that reset cannot clear", async () => {
+			await writeSettings({
+				modelRoles: { default: "anthropic/claude-sonnet-4-5", smol: "anthropic/claude-haiku-4-5" },
+				task: { agentModelOverrides: { reviewer: "openai/gpt-5.2-codex" } },
+			});
+			const projectConfigDir = path.join(projectDir, CONFIG_DIR_NAME);
+			fs.mkdirSync(projectConfigDir, { recursive: true });
+			await Bun.write(
+				path.join(projectConfigDir, "config.yml"),
+				YAML.stringify(
+					{
+						modelRoles: { slow: "anthropic/claude-opus-4-5" },
+						task: { agentModelOverrides: { explore: "nvidia/nemotron" } },
+					},
+					null,
+					2,
+				),
+			);
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const remaining = settings.resetSubmodelAssignments();
+			await settings.flush();
+
+			expect(remaining.remainingRoles).toEqual(["slow"]);
+			expect(remaining.remainingAgents).toEqual(["explore"]);
+			expect(settings.getModelRole("default")).toBe("anthropic/claude-sonnet-4-5");
+			expect(settings.getModelRole("smol")).toBeUndefined();
+			expect(settings.getModelRole("slow")).toBe("anthropic/claude-opus-4-5");
+			expect(settings.get("task.agentModelOverrides")).toEqual({ explore: "nvidia/nemotron" });
+
+			const saved = await readSettings();
+			expect(saved.modelRoles).toEqual({ default: "anthropic/claude-sonnet-4-5" });
+			expect((saved.task as { agentModelOverrides?: unknown }).agentModelOverrides).toEqual({});
+		});
+		it("does not persist a project-only default model globally", async () => {
+			await writeSettings({ modelRoles: { smol: "anthropic/claude-haiku-4-5" } });
+			const projectConfigDir = path.join(projectDir, CONFIG_DIR_NAME);
+			fs.mkdirSync(projectConfigDir, { recursive: true });
+			await Bun.write(
+				path.join(projectConfigDir, "config.yml"),
+				YAML.stringify({ modelRoles: { default: "openai/gpt-5.2-codex" } }),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			settings.resetSubmodelAssignments();
+			await settings.flush();
+			expect(settings.getModelRole("default")).toBe("openai/gpt-5.2-codex");
+			expect((await readSettings()).modelRoles).toEqual({});
 		});
 	});
 

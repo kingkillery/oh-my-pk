@@ -185,6 +185,17 @@ export interface TaskItem {
 	recoveryAttempt?: RecoveryAttempt;
 }
 
+/** Simple mode exposes one general subagent without model or type selection. */
+export const simpleTaskSchema = type({
+	assignment: "string",
+	"id?": "string",
+	"description?": "string",
+	"role?": ROLE_INPUT_SCHEMA,
+	"isolated?": "boolean",
+	"cwd?": "string",
+	"+": "delete",
+});
+
 export const taskSchema = type({
 	agent: "string",
 	"id?": "string",
@@ -227,8 +238,9 @@ const taskSchemaBatchNoIsolation = type({
 	"+": "delete",
 });
 const ALL_TASK_SCHEMAS = [taskSchema, taskSchemaNoIsolation, taskSchemaBatch, taskSchemaBatchNoIsolation] as const;
+type SimpleTaskSchema = typeof simpleTaskSchema;
 
-type DynamicTaskSchema = (typeof ALL_TASK_SCHEMAS)[number];
+type DynamicTaskSchema = (typeof ALL_TASK_SCHEMAS)[number] | SimpleTaskSchema;
 export type TaskSchema = typeof taskSchema;
 /** Active task tool parameter schema for the current isolation / batch flags */
 export type TaskToolSchemaInstance = DynamicTaskSchema;

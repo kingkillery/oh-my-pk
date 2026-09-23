@@ -1092,6 +1092,23 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	// Images and terminal
+	"terminal.launchBackend": {
+		type: "enum",
+		values: ["managed", "system"] as const,
+		default: "managed",
+		ui: {
+			tab: "interaction",
+			group: "Terminal Launches",
+			label: "Interactive Terminal Launches",
+			description:
+				"Managed prefers the current PK-Herdr pane, then psmux; ask before using Windows Terminal. System launches Windows Terminal directly.",
+			options: [
+				{ value: "managed", label: "PK-Herdr → psmux → ask (default)" },
+				{ value: "system", label: "System terminal (no managed routing)" },
+			],
+		},
+	},
+
 	"terminal.showImages": {
 		type: "boolean",
 		default: true,
@@ -4402,6 +4419,35 @@ export const SETTINGS_SCHEMA = {
 			options: [
 				{ value: "generic", label: "Generic", description: "Static commit message" },
 				{ value: "ai", label: "AI", description: "AI-generated commit message from diff" },
+			],
+		},
+	},
+
+	"task.simpleMode": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Simple Mode",
+			description:
+				"Use a single general subagent type and the current model; disable specialized delegation and nested agents.",
+		},
+	},
+	"task.simpleMaxAgents": {
+		type: "number",
+		default: 1,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Simple Mode Agent Limit",
+			description: "Maximum simultaneous general subagents in simple mode; zero disables spawning.",
+			options: [
+				{ value: "0", label: "Off" },
+				{ value: "1", label: "1 agent" },
+				{ value: "2", label: "2 agents" },
+				{ value: "4", label: "4 agents" },
+				{ value: "8", label: "8 agents" },
 			],
 		},
 	},

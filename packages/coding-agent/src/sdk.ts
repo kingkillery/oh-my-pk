@@ -2149,7 +2149,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 			for (const selector of Object.values(settings.get("subagent.modelAliases"))) addRequiredSelector(selector);
 			for (const selector of Object.values(settings.get("task.agentModelOverrides"))) addRequiredSelector(selector);
-			if (settings.get("fusion.enabled")) {
+			if (settings.get("fusion.enabled") && !settings.get("task.simpleMode")) {
 				for (const selector of fusionPoolSelectors) addRequiredSelector(selector);
 				addRequiredSelector(settings.get("fusion.sidekickModel"));
 				addRequiredSelector(settings.get("fusion.sidekickStrongModel"));
@@ -2561,6 +2561,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// compaction routing, but no phantom IRC target in the prompt.
 			const sidekickId =
 				agentKind === "main" ? (session as AgentSession | undefined)?.getFusionSidekickId() : undefined;
+			const simpleMode = settings.get("task.simpleMode");
 			const defaultPrompt = await buildSystemPromptInternal({
 				cwd,
 				resolvedCustomPrompt: options.customSystemPrompt,
@@ -2578,28 +2579,34 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				mcpDiscoveryMode: hasDiscoverableTools,
 				mcpDiscoveryServerSummaries: discoverableToolSummary.servers.map(formatDiscoverableToolServerSummary),
 				xdevEnabled: settings.get("tools.xdev"),
-				ultraMode: isUltraModeActive(),
-				eagerTasks: isUltraModeActive() || settings.get("task.eager") !== "default",
-				eagerTasksAlways: isUltraModeActive() || settings.get("task.eager") === "always",
-				taskBatch: settings.get("task.batch"),
+				ultraMode: !simpleMode && isUltraModeActive(),
+				eagerTasks: !simpleMode && (isUltraModeActive() || settings.get("task.eager") !== "default"),
+				eagerTasksAlways: !simpleMode && (isUltraModeActive() || settings.get("task.eager") === "always"),
+				taskBatch: !simpleMode && settings.get("task.batch"),
+				simpleMode,
+				managedTerminalLaunches: settings.get("terminal.launchBackend") === "managed",
 				fusionSidekick:
 					agentKind === "main" &&
+					!simpleMode &&
 					settings.get("fusion.enabled") === true &&
 					settings.get("fusion.mode") !== "off" &&
 					sidekickId !== undefined,
 				fusionEscalate:
 					agentKind === "main" &&
+					!simpleMode &&
 					settings.get("fusion.enabled") === true &&
 					settings.get("fusion.mode") === "escalate" &&
 					sidekickId !== undefined,
 				fusionTokenSavings:
 					agentKind === "main" &&
+					!simpleMode &&
 					settings.get("fusion.enabled") === true &&
 					isTokenSavingsFusionMode(settings.get("fusion.mode")),
-				fusionIoDelegation: agentKind === "main" && isFusionIoDelegationActive(settings),
+				fusionIoDelegation: !simpleMode && agentKind === "main" && isFusionIoDelegationActive(settings),
 				fusionIoMinLines: getFusionIoMinLines(),
 				fusionAutonomous:
 					agentKind === "main" &&
+					!simpleMode &&
 					settings.get("fusion.enabled") === true &&
 					settings.get("fusion.mode") === "autonomous",
 				sidekickModel: settings.get("fusion.sidekickModel") || "pi/smol",
@@ -2742,9 +2749,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (settings.get("todo.eager") !== "default" && settings.get("todo.enabled") && toolRegistry.has("todo")) {
 				forceActive.add("todo");
 			}
-			if (settings.get("task.eager") !== "default" && toolRegistry.has("task")) {
+			if (
+				((settings.get("task.simpleMode") && settings.get("task.simpleMaxAgents") > 0) ||
+					(!settings.get("task.simpleMode") && settings.get("task.eager") !== "default")) &&
+				toolRegistry.has("task")
+			) {
 				forceActive.add("task");
 			}
+			if (toolRegistry.has("terminal_launch")) forceActive.add("terminal_launch");
 			initialToolNames = filterInitialToolsForDiscoveryAll(initialToolNames, {
 				loadModeOf: name => toolRegistry.get(name)?.loadMode,
 				essentialNames: new Set(computeEssentialBuiltinNames(settings)),
@@ -2765,6 +2777,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			});
 		}
 
+		if (settings.get("task.simpleMode")) {
+			initialToolNames = initialToolNames.filter(
+				name => name !== "irc" && (name !== "task" || settings.get("task.simpleMaxAgents") > 0),
+			);
+		}
 		// Pre-register in the global agent registry BEFORE building the system prompt,
 		// so that subagents launched in the same parallel batch can see each other in
 		// their initial `# IRC Peers` block (rendered inside `rebuildSystemPrompt`).

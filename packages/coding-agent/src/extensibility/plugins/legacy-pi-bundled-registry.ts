@@ -843,6 +843,7 @@ import * as bundledPiCodingAgentTaskRecoveryPolicy from "@pk-nerdsaver-ai/pi-cod
 import * as bundledPiCodingAgentTaskRender from "@pk-nerdsaver-ai/pi-coding-agent/task/render";
 import * as bundledPiCodingAgentTaskRepairArgs from "@pk-nerdsaver-ai/pi-coding-agent/task/repair-args";
 import * as bundledPiCodingAgentTaskRepoEvidence from "@pk-nerdsaver-ai/pi-coding-agent/task/repo-evidence";
+import * as bundledPiCodingAgentTaskSimpleMode from "@pk-nerdsaver-ai/pi-coding-agent/task/simple-mode";
 import * as bundledPiCodingAgentTaskSpawnPlan from "@pk-nerdsaver-ai/pi-coding-agent/task/spawn-plan";
 import * as bundledPiCodingAgentTaskSubprocessToolRegistry from "@pk-nerdsaver-ai/pi-coding-agent/task/subprocess-tool-registry";
 import * as bundledPiCodingAgentTaskTypes from "@pk-nerdsaver-ai/pi-coding-agent/task/types";
@@ -919,6 +920,7 @@ import * as bundledPiCodingAgentToolsSearch from "@pk-nerdsaver-ai/pi-coding-age
 import * as bundledPiCodingAgentToolsSearchToolBm25 from "@pk-nerdsaver-ai/pi-coding-agent/tools/search-tool-bm25";
 import * as bundledPiCodingAgentToolsSqliteReader from "@pk-nerdsaver-ai/pi-coding-agent/tools/sqlite-reader";
 import * as bundledPiCodingAgentToolsSsh from "@pk-nerdsaver-ai/pi-coding-agent/tools/ssh";
+import * as bundledPiCodingAgentToolsTerminalLaunch from "@pk-nerdsaver-ai/pi-coding-agent/tools/terminal-launch";
 import * as bundledPiCodingAgentToolsTodo from "@pk-nerdsaver-ai/pi-coding-agent/tools/todo";
 import * as bundledPiCodingAgentToolsToolErrors from "@pk-nerdsaver-ai/pi-coding-agent/tools/tool-errors";
 import * as bundledPiCodingAgentToolsToolProfiles from "@pk-nerdsaver-ai/pi-coding-agent/tools/tool-profiles";
@@ -3103,6 +3105,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@pk-nerdsaver-ai/pi-coding-agent/task/repo-evidence": bundledPiCodingAgentTaskRepoEvidence as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@pk-nerdsaver-ai/pi-coding-agent/task/simple-mode": bundledPiCodingAgentTaskSimpleMode as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@pk-nerdsaver-ai/pi-coding-agent/task/spawn-plan": bundledPiCodingAgentTaskSpawnPlan as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -3306,6 +3311,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@pk-nerdsaver-ai/pi-coding-agent/tools/ssh": bundledPiCodingAgentToolsSsh as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@pk-nerdsaver-ai/pi-coding-agent/tools/terminal-launch":
+		bundledPiCodingAgentToolsTerminalLaunch as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/tools/todo": bundledPiCodingAgentToolsTodo as unknown as Readonly<
 		Record<string, unknown>
 	>,

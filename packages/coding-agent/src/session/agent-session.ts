@@ -10582,6 +10582,7 @@ export class AgentSession {
 		// unexpected throw from model resolution/auth lookup must never mark a
 		// committed compaction as failed or stall auto-continue.
 		try {
+			if (this.settings.get("task.simpleMode")) return;
 			if (this.settings.get("fusion.enabled") !== true) return;
 			if (this.settings.get("fusion.mode") === "off") return;
 			const currentModel = this.model;
@@ -10740,6 +10741,7 @@ export class AgentSession {
 			const threshold = this.settings.get("fusion.escalateFailureStreak");
 			if (typeof threshold !== "number" || threshold <= 0) return;
 			if (this.#fusionToolFailureStreak < threshold) return;
+			if (this.settings.get("task.simpleMode")) return;
 			if (this.settings.get("fusion.enabled") !== true) return;
 			if (this.settings.get("fusion.mode") === "off") return;
 			if (this.#fusionRoutingDisabled) return;
@@ -10780,6 +10782,7 @@ export class AgentSession {
 		try {
 			if (signal?.aborted) return;
 			if (this.#agentKind !== "main") return;
+			if (this.settings.get("task.simpleMode")) return;
 			if (this.settings.get("fusion.enabled") !== true) return;
 			if (!isTokenSavingsFusionMode(this.settings.get("fusion.mode"))) return;
 			if (this.#fusionRoutingDisabled) return;

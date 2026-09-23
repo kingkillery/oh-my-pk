@@ -92,6 +92,7 @@ import {
 	type RecoveryCapsule,
 	type RecoveryFailureFacts,
 } from "./recovery-policy";
+import { simpleSpawnError } from "./simple-mode";
 import type { SpawnPlan, SpawnRouteCandidate } from "./spawn-plan";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import {
@@ -413,6 +414,8 @@ export interface ExecutorOptions {
 	detached?: boolean;
 	/** Internal marker for the persistent Fusion warm sidekick spawn. */
 	fusionSidekick?: boolean;
+	/** Marks a spawn routed through the generic task-tool policy in simple mode. */
+	simpleModeAuthorized?: boolean;
 	modelOverride?: string | string[];
 	/** Durable worker pin: no auth/model fallback or undeclared required tools. */
 	pinnedModel?: string;
@@ -2307,6 +2310,19 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	}
 
 	const settings = options.settings ?? Settings.isolated();
+	if (settings.get("task.simpleMode")) {
+		const blocked = simpleSpawnError(settings, options.taskDepth ?? 0);
+		if (blocked) throw new Error(blocked);
+		if (!options.simpleModeAuthorized || agent.name !== "task" || options.fusionSidekick) {
+			throw new Error("Simple mode only permits the general task tool to spawn subagents.");
+		}
+		if (
+			options.parentActiveModelPattern &&
+			!(Array.isArray(modelOverride) ? modelOverride : [modelOverride]).includes(options.parentActiveModelPattern)
+		) {
+			throw new Error("Simple mode subagents must use the parent's current model.");
+		}
+	}
 	// Stamp the subagent's service tier. An explicit `modelRoleTiers` entry for
 	// the spawn's difficulty role (smol/task/slow) wins outright — including a
 	// `"none"` entry, which suppresses the tier instead of deferring; otherwise

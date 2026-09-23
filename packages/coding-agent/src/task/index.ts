@@ -91,6 +91,7 @@ import {
 	type EvidenceDigestRequest,
 	getTaskSchema,
 	type SingleResult,
+	simpleTaskSchema,
 	type TaskItem,
 	type TaskParams,
 	type TaskToolDetails,
@@ -115,6 +116,7 @@ import type { RecoveryAttempt } from "./recovery-policy";
 import { renderResult, renderCall as renderTaskCall } from "./render";
 import { repairTaskParams } from "./repair-args";
 import { buildRepoEvidence, formatRepoEvidence } from "./repo-evidence";
+import { simpleSpawnError, withSimpleSpawnPermit } from "./simple-mode";
 import {
 	captureBaseline,
 	captureDeltaPatch,
@@ -761,9 +763,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	#spawnSemaphore: Semaphore | undefined;
 
 	get parameters(): TaskToolSchemaInstance {
+		if (this.session.settings.get("task.simpleMode")) return simpleTaskSchema;
 		// codeWrite may require isolation even when the ordinary default is none.
-		const isolationEnabled = true;
-		return getTaskSchema({ isolationEnabled, batchEnabled: this.#isBatchEnabled() });
+		return getTaskSchema({ isolationEnabled: true, batchEnabled: this.#isBatchEnabled() });
 	}
 
 	renderCall(args: unknown, options: Parameters<typeof renderTaskCall>[1], theme: Theme) {
@@ -772,6 +774,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 	/** Dynamic description that reflects current disabled-agent settings */
 	get description(): string {
+		if (this.session.settings.get("task.simpleMode")) {
+			return "Spawn one general subagent for an assignment. It uses your current model, shares this workspace unless isolated, and cannot spawn further agents. The /simple limit bounds simultaneous subagents.";
+		}
 		const disabledAgents = this.session.settings.get("task.disabledAgents") as string[];
 		const maxConcurrency = this.session.settings.get("task.maxConcurrency");
 		const isolationMode = this.session.settings.get("task.isolation.mode");
@@ -795,7 +800,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	}
 
 	#isBatchEnabled(): boolean {
-		return this.session.settings.get("task.batch");
+		return !this.session.settings.get("task.simpleMode") && this.session.settings.get("task.batch");
 	}
 
 	#getSpawnSemaphore(): Semaphore {
@@ -909,6 +914,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (
 			(codeWrite ||
 				(this.session.settings.get("fusion.enabled") === true &&
+					!this.session.settings.get("task.simpleMode") &&
 					this.session.settings.get("fusion.mode") === "autonomous" &&
 					!isReadOnlyAgent(effectiveAgent))) &&
 			params.isolated === false
@@ -923,9 +929,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 		const explicitModelSelector = params.model?.trim() || undefined;
 		const parentActiveModelPattern = this.session.getActiveModelString?.();
+		const simpleModel = this.session.settings.get("task.simpleMode")
+			? parentActiveModelPattern || this.session.getModelString?.() || this.session.settings.getModelRole("default")
+			: undefined;
+		if (this.session.settings.get("task.simpleMode") && !simpleModel)
+			return fail("Simple mode needs an active/default model before spawning a subagent.");
 		const routingResult = resolveSubagentModelRouting({
-			requestedModel: explicitModelSelector,
-			requestedDifficulty: params.difficulty,
+			requestedModel: simpleModel ?? explicitModelSelector,
+			requestedDifficulty: simpleModel ? undefined : params.difficulty,
 			taskKind: params.codeWrite ? "code-write" : params.evidenceDigest ? "evidence-digest" : undefined,
 			agentName,
 			agentModelDefault: effectiveAgent.model,
@@ -1185,6 +1196,29 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		let params = repairTaskParams(rawParams as TaskParams);
+		if (this.session.settings.get("task.simpleMode") && !this.session.nativeTaskExecution) {
+			const blocked = simpleSpawnError(this.session.settings, this.session.taskDepth ?? 0);
+			if (blocked) return createTaskModeError(blocked);
+			if (params.agent && params.agent !== "task")
+				return createTaskModeError("Simple mode only supports the general task subagent.");
+			if (
+				params.model ||
+				params.difficulty ||
+				params.tasks ||
+				params.context ||
+				params.fork ||
+				params.evidenceDigest ||
+				params.codeWrite ||
+				Object.hasOwn(params, "executionProfile") ||
+				Object.hasOwn(params, "toolProfile") ||
+				Object.hasOwn(params, "collaborationPolicy") ||
+				Object.hasOwn(params, "assignmentContract")
+			)
+				return createTaskModeError(
+					"Simple mode accepts only a general assignment, label, role, cwd, or isolation.",
+				);
+			params = { ...params, agent: "task" };
+		}
 		const nativeExecution = this.session.nativeTaskExecution !== undefined;
 		if (this.session.nativeTaskExecution !== undefined) {
 			const native = getNativeTaskRuntime(this.session.nativeTaskExecution);
@@ -1229,17 +1263,20 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const selectedAgent = this.#discoveredAgents.find(agent => agent.name === params.agent);
 		const asyncEnabled = !this.session.nativeTaskExecution && this.session.settings.get("async.enabled");
 		const manager = asyncEnabled ? this.session.asyncJobManager : undefined;
-		const depthCapacity = canSpawnAtDepth(
-			this.session.settings.get("task.maxRecursionDepth") ?? 2,
-			this.session.taskDepth ?? 0,
-		);
-		const ircEnabled = isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0);
+		const depthCapacity = this.session.settings.get("task.simpleMode")
+			? false
+			: canSpawnAtDepth(this.session.settings.get("task.maxRecursionDepth") ?? 2, this.session.taskDepth ?? 0);
+		const ircEnabled =
+			!this.session.settings.get("task.simpleMode") &&
+			isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0);
 		// Coordination only makes sense when the siblings keep running after this
 		// call returns (async). In the sync fallback they have already completed,
 		// so a "coordinate while they run" hint would misfire.
 		const willRunAsync = !!manager && selectedAgent?.blocking !== true;
 		const advisory =
-			this.session.suppressSpawnAdvisory || spawnItems.some(item => item.codeWrite || item.evidenceDigest)
+			this.session.settings.get("task.simpleMode") ||
+			this.session.suppressSpawnAdvisory ||
+			spawnItems.some(item => item.codeWrite || item.evidenceDigest)
 				? undefined
 				: composeSpawnAdvisory({
 						agentName: params.agent,
@@ -1821,6 +1858,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const spawnCwd = prepared.codeWrite?.workspaceRoot ?? path.resolve(this.session.cwd, params.cwd ?? ".");
 		const isAutonomous =
 			this.session.settings.get("fusion.enabled") === true &&
+			!this.session.settings.get("task.simpleMode") &&
 			this.session.settings.get("fusion.mode") === "autonomous";
 		const mandatoryIsolation = Boolean(prepared.codeWrite) || (isAutonomous && !isReadOnlyAgent(effectiveAgent));
 		if (mandatoryIsolation && params.isolated === false)
@@ -2145,6 +2183,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				parentToolCallId: toolCallId,
 				detached,
 				id: agentId,
+				simpleModeAuthorized: this.session.settings.get("task.simpleMode") && !nativeRuntime,
 				taskDepth,
 				delegatedIo: params.evidenceDigest ? { kind: "evidence-digest" as const } : undefined,
 				pinnedModel: nativeRuntime?.payload.effectiveModel,
@@ -2342,7 +2381,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				}
 			};
 
-			const result = await runTask();
+			const result = await withSimpleSpawnPermit(this.session.settings, runTask);
 			if (nativeRuntime) {
 				await nativeRuntime.complete(result, baseline, generatedReceipt);
 				return this.#buildResultPayload(

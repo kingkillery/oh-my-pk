@@ -242,6 +242,10 @@ export async function spawnSubagent(
 	state: SubagentWizardState,
 	agentName = "task",
 ): Promise<string> {
+	if (ctx.settings.get("task.simpleMode")) {
+		ctx.showError("/subagent model selection is unavailable in simple mode; use the general task tool.");
+		return "";
+	}
 	const agent = await loadTaskAgent(ctx, agentName);
 	if (!agent) {
 		ctx.showError(`Cannot spawn subagent: bundled ${agentName} agent is unavailable.`);
@@ -378,6 +382,10 @@ async function handleUsingForm(ctx: InteractiveModeContext, usingForm: ParsedUsi
 }
 
 export async function handleSubagentSlashCommand(args: string, ctx: InteractiveModeContext): Promise<void> {
+	if (ctx.settings.get("task.simpleMode")) {
+		ctx.showError("/subagent model selection is unavailable in simple mode; use the general task tool.");
+		return;
+	}
 	const usingForm = parseUsingForm(args);
 	if (usingForm) {
 		await handleUsingForm(ctx, usingForm);
