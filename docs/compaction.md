@@ -401,12 +401,21 @@ Post-navigation event exposing new/old leaf and optional summary entry.
   - threshold/idle paths emit `Auto-compaction failed: ...`
 - Branch summarization can be cancelled via abort signal (e.g., Escape), returning canceled/aborted navigation result.
 
+## Colab models with small context windows
+
+For providers ending in `(colab)` with a served context window of at most 32,768 tokens, session compaction caps the summary reserve at one eighth of the window and retained recent history at one fifth. The default trigger is 70% usage; explicit percentage or token thresholds still take priority. These budgets apply to manual, mid-turn, and automatic maintenance without changing saved settings. Existing persistence, safe tool-loop boundaries, queued input, and auto-continuation remain in use.
+
+In Context settings, **Compaction Model** (`compaction.model`) accepts `provider/model`. Selecting an API model authorizes sending summary input to that provider. It only generates the summary; the Colab model continues the task. An existing per-model `compactionModel` in `models.yml` also constitutes an explicit selection. With neither selection, Colab compaction uses only the active model and never silently tries other roles or the largest available API model. A missing selection target produces an actionable error.
+
+For example, the 8,192-token Orca setup resolves to a 5,734-token default trigger, a 1,024-token summary reserve, and at most 1,638 tokens of recent history. Required system instructions and tool schemas still occupy context: if they or a single tool result exceed the window, compaction cannot guarantee recovery. Select a larger summary model when local summarization cannot fit. Explicit context promotion and remote compaction endpoints remain separate user choices.
+
 ## Settings and defaults
 
 From `settings-schema.ts`:
 
 - `compaction.enabled` = `true`
-- `compaction.strategy` = `"snapcompact"` (`"context-full"`, `"handoff"`, `"shake"`, and `"off"` are also supported)
+- `compaction.strategy` = `"context-full"` (`"handoff"`, `"shake"`, and `"off"` are also supported)
+- `compaction.model` = `undefined` (optional explicitly selected summary model)
 - `compaction.reserveTokens` = `16384`
 - `compaction.keepRecentTokens` = `20000`
 - `compaction.autoContinue` = `true`

@@ -18,7 +18,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { isPromise } from "node:util/types";
-
 import type { InMemorySnapshotStore } from "@pk-nerdsaver-ai/hashline";
 import {
 	type AfterToolCallContext,
@@ -352,6 +351,7 @@ import {
 	shouldEvaluateCodexAutoRedeem,
 	shouldPromptCodexAutoRedeem,
 } from "./codex-auto-reset";
+import { isColabModel, resolveColabCompactionSettings } from "./colab-compaction";
 import { findCompactMode, SNAPCOMPACT_RETIREMENT_ERROR } from "./compact-modes";
 import { type DelegatedIo, getDelegatedIoToolBlockReason } from "./delegated-io";
 import { collectAutonomousTaskHandoffs } from "./fusion-autonomous-jobs";
@@ -2368,7 +2368,10 @@ export class AgentSession {
 		const advisor = this.#advisorAgent;
 		if (!advisor) return false;
 
-		const compactionSettings = this.settings.getGroup("compaction");
+		const compactionSettings = resolveColabCompactionSettings(
+			advisor.state.model,
+			this.settings.getGroup("compaction"),
+		);
 		if (compactionSettings.strategy === "off") return false;
 		if (!compactionSettings.enabled) return false;
 
@@ -8998,7 +9001,7 @@ export class AgentSession {
 				throw new Error("No model selected");
 			}
 
-			const compactionSettings = this.settings.getGroup("compaction");
+			const compactionSettings = this.#getCompactionSettings();
 			// The `/compact <mode>` override (resolved above) replaces the configured
 			// strategy/remote flags for this one invocation. Merged before
 			// prepareCompaction so the remote gating (preparation.settings.
@@ -9290,7 +9293,7 @@ export class AgentSession {
 		if (message.role !== "assistant") return;
 		const assistant = message as AssistantMessage;
 		if (assistant.stopReason === "aborted" || assistant.stopReason === "error") return;
-		const compactionSettings = this.settings.getGroup("compaction");
+		const compactionSettings = this.#getCompactionSettings();
 		if (!compactionSettings.enabled || !compactionSettings.midTurnEnabled || compactionSettings.strategy === "off") {
 			return;
 		}
@@ -9579,7 +9582,7 @@ export class AgentSession {
 		if (!model) return;
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return;
-		const compactionSettings = this.settings.getGroup("compaction");
+		const compactionSettings = this.#getCompactionSettings();
 		const contextTokens = this.#estimatePrePromptContextTokens(messages, contextWindow);
 		if (!shouldCompact(contextTokens, contextWindow, compactionSettings)) return;
 
@@ -9673,7 +9676,7 @@ export class AgentSession {
 			}
 
 			// No promotion target available fall through to compaction
-			const compactionSettings = this.settings.getGroup("compaction");
+			const compactionSettings = this.#getCompactionSettings();
 			if (compactionSettings.enabled && compactionSettings.strategy !== "off") {
 				return await this.#runAutoCompaction("overflow", true, false, allowDefer, { autoContinue });
 			}
@@ -9725,7 +9728,7 @@ export class AgentSession {
 		// setting.
 		const supersedeResult = await this.#pruneStaleToolResults();
 
-		const compactionSettings = this.settings.getGroup("compaction");
+		const compactionSettings = this.#getCompactionSettings();
 		if (!compactionSettings.enabled || compactionSettings.strategy === "off") return COMPACTION_CHECK_NONE;
 
 		// Case 4: Threshold - turn succeeded but context is getting large
@@ -9769,7 +9772,7 @@ export class AgentSession {
 
 	/** Cheap pre-check mirroring #checkCompaction's threshold gate (billed tokens). */
 	#isOverCompactionThreshold(assistantMessage: AssistantMessage): boolean {
-		const compactionSettings = this.settings.getGroup("compaction");
+		const compactionSettings = this.#getCompactionSettings();
 		if (!compactionSettings.enabled || compactionSettings.strategy === "off") return false;
 		const contextWindow = this.model?.contextWindow ?? 0;
 		return shouldCompact(calculateContextTokens(assistantMessage.usage), contextWindow, compactionSettings);
@@ -11205,6 +11208,10 @@ export class AgentSession {
 		return this.#resolveCompactionModelCandidates(this.model, availableModels);
 	}
 
+	#getCompactionSettings() {
+		return resolveColabCompactionSettings(this.model, this.settings.getGroup("compaction"));
+	}
+
 	#resolveCompactionModelCandidates(preferredModel: Model | null | undefined, availableModels: Model[]): Model[] {
 		const candidates: Model[] = [];
 		const seen = new Set<string>();
@@ -11219,6 +11226,8 @@ export class AgentSession {
 
 		addCandidate(this.#resolveConfiguredCompactionModel(preferredModel ?? undefined, availableModels));
 		addCandidate(preferredModel ?? undefined);
+		// Selecting a Colab worker does not authorize sending history to other providers.
+		if (isColabModel(preferredModel)) return candidates;
 		for (const role of MODEL_ROLE_IDS) {
 			addCandidate(this.#resolveRoleModelFull(role, availableModels, preferredModel ?? undefined).model);
 		}
@@ -11236,7 +11245,7 @@ export class AgentSession {
 
 	/** Resolve the model's `compactionModel` selector (model id or provider/id) against the registry. */
 	#resolveConfiguredCompactionModel(currentModel: Model | undefined, availableModels: Model[]): Model | undefined {
-		const configuredTarget = currentModel?.compactionModel?.trim();
+		const configuredTarget = this.settings.get("compaction.model")?.trim() || currentModel?.compactionModel?.trim();
 		if (!configuredTarget || !currentModel) return undefined;
 
 		const parsed = parseModelString(configuredTarget, {
@@ -11249,7 +11258,13 @@ export class AgentSession {
 			if (explicitModel) return explicitModel;
 		}
 
-		return availableModels.find(m => m.provider === currentModel.provider && m.id === configuredTarget);
+		const target = availableModels.find(m => m.provider === currentModel.provider && m.id === configuredTarget);
+		if (!target && isColabModel(currentModel)) {
+			throw new Error(
+				`Compaction model '${configuredTarget}' is unavailable. Choose an available provider/model in Context settings.`,
+			);
+		}
+		return target;
 	}
 
 	#isCompactionAuthFailure(error: unknown): boolean {
@@ -11267,6 +11282,12 @@ export class AgentSession {
 
 	#buildCompactionAuthError(): Error {
 		const currentModel = this.model;
+		if (isColabModel(currentModel)) {
+			return new Error(
+				"Colab compaction could not authenticate the active or selected summary model. " +
+					"Choose an authenticated Compaction Model in Context settings to allow API-assisted summaries.",
+			);
+		}
 		if (!currentModel) {
 			return new Error(
 				"Compaction requires a model with usable credentials, but no authenticated compaction model is available.",
@@ -11402,7 +11423,7 @@ export class AgentSession {
 		allowDefer = true,
 		options: { autoContinue?: boolean; forceInPlace?: boolean; triggerContextTokens?: number } = {},
 	): Promise<CompactionCheckResult> {
-		const compactionSettings = this.settings.getGroup("compaction");
+		const compactionSettings = this.#getCompactionSettings();
 		if (compactionSettings.strategy === "off") return COMPACTION_CHECK_NONE;
 		if (reason !== "idle" && !compactionSettings.enabled) return COMPACTION_CHECK_NONE;
 		const generation = this.#promptGeneration;
@@ -11888,7 +11909,7 @@ export class AgentSession {
 		if (contextWindow <= 0) return false;
 		const residualTokens = this.getContextUsage({ contextWindow })?.tokens;
 		if (residualTokens === undefined) return false;
-		const compactionSettings = this.settings.getGroup("compaction");
+		const compactionSettings = this.#getCompactionSettings();
 		if (willRetry) {
 			const reserveTokens = Math.min(
 				effectiveReserveTokens(contextWindow, compactionSettings),
@@ -11957,7 +11978,7 @@ export class AgentSession {
 			// add hysteresis (80% recovery band) so we don't oscillate at the boundary
 			// while shake keeps reclaiming a trickle of the previous turn's output.
 			const contextWindow = this.model?.contextWindow ?? 0;
-			const compactionSettings = this.settings.getGroup("compaction");
+			const compactionSettings = this.#getCompactionSettings();
 			let stillOverThreshold = false;
 			if (contextWindow > 0) {
 				if (typeof triggerContextTokens === "number" && Number.isFinite(triggerContextTokens)) {

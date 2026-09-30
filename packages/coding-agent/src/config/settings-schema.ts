@@ -2268,6 +2268,18 @@ export const SETTINGS_SCHEMA = {
 
 	"compaction.reserveTokens": { type: "number", default: 16384 },
 
+	"compaction.model": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "context",
+			group: "Compaction",
+			label: "Compaction Model",
+			description:
+				"Optional provider/model for summaries only. Choosing an API model allows sending conversation history to that provider. Empty uses the active model; Colab never falls back to unselected providers.",
+		},
+	},
+
 	"compaction.keepRecentTokens": { type: "number", default: 20000 },
 
 	"compaction.autoContinue": { type: "boolean", default: true },
@@ -5729,6 +5741,7 @@ export type Personality = SettingValue<"personality">;
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface CompactionSettings {
+	model: string | undefined;
 	enabled: boolean;
 	strategy: "context-full" | "handoff" | "shake" | "off";
 	thresholdPercent: number;

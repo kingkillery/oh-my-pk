@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Colab models with context windows up to 32K use proportional summary and recent-history budgets with an earlier default compaction trigger. Context settings now expose a Compaction Model for explicitly authorized API summaries; Colab compaction never silently falls back to unselected model roles or providers, and the selected Colab worker continues after summarization.
+
 ### Fixed
 
 - Colab streaming bridges wait for kernel acknowledgment and release the completed request before sending terminal SSE frames, so immediate tool-result and following requests do not race cleanup.
