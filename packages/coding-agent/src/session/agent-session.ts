@@ -219,6 +219,7 @@ import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
 import { GoalRuntime } from "../goals/runtime";
 import type { Goal, GoalModeState } from "../goals/state";
+import { ensureIngestDaemonRunning } from "../gopk-clips/ensure-daemon";
 import type { HindsightSessionState } from "../hindsight/state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath, type XdevWriteResult } from "../internal-urls";
 import { IrcBus, type IrcMessage } from "../irc/bus";
@@ -1973,11 +1974,9 @@ export class AgentSession {
 
 		if (this.settings.get("screenpipe.enabled") as boolean) this.#startScreenpipeBridge();
 
-		// Note: gopk-clips activity ingestion is deliberately NOT started here.
-		// The always-on `gopk-ingest` daemon is the single consumer of the
-		// journal-handoff queue and the single writer of the activity ledger;
-		// a session-scoped second consumer would race it on file deletion and
-		// contend for the SQLite write lock. Sessions read the ledger instead.
+		// Sessions only read the ledger. Ensure the detached singleton writer
+		// exists without reintroducing a session-scoped competing consumer.
+		if (this.settings.get("gopkClips.enabled")) void ensureIngestDaemonRunning();
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, hooks, auto-compaction, retry logic)

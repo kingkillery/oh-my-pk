@@ -103,6 +103,7 @@ const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
 // every ompk instance on the machine. Values mirror subprocess/worker-daemon.ts.
 const TINY_DAEMON_ARG = "__omp_daemon_tiny_inference";
 const MNEMOPI_EMBED_DAEMON_ARG = "__omp_daemon_mnemopi_embed";
+const GOPK_INGEST_ARG = "__omp_gopk_ingest";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === TINY_WORKER_ARG) {
@@ -320,6 +321,12 @@ export async function runCli(argv: string[]): Promise<void> {
 	// poison `workerHostEntry()` for the whole test process, forcing eval/stats/
 	// browser workers onto the same-realm inline fallback.
 	if (import.meta.main) declareWorkerHostEntry();
+
+	if (resolvedArgv[0] === GOPK_INGEST_ARG) {
+		const { runIngestDaemon } = await import("./gopk-clips/daemon");
+		await runIngestDaemon(resolvedArgv.slice(1));
+		return;
+	}
 
 	if (resolvedArgv[0] === "--smoke-test") {
 		await runSmokeTest();

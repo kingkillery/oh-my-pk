@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- Enabled Activity Memory sessions start the detached singleton ingest daemon when absent; atomic PID locking prevents competing ledger writers, including single-pass runs.
 - Jev bash judgments honor the command's requested working directory and tool cancellation. TypeSafe deadlines now cover retries, backoff, and response-body parsing, and replay caches separate directories, endpoints, models, and judgment rubrics while deduplicating identical inputs.
 - Colab streaming bridges wait for kernel acknowledgment and release the completed request before sending terminal SSE frames, so immediate tool-result and following requests do not race cleanup.
 - Colab model bridges recover failed transport connections for new requests on the same existing runtime and kernel, without replaying failed inference or restarting the model.

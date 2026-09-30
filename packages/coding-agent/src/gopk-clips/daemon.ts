@@ -18,8 +18,8 @@
  * `activity` tool); they never drain the queue. Do not reintroduce a second
  * caller of `createGopkClipsHost`.
  *
- * Nothing autostarts this yet — that gap is tracked separately. If it is not
- * running, the sampler keeps writing handoffs and the ledger stops growing.
+ * Enabled CLI sessions ensure this detached singleton is running. Sessions
+ * never ingest directly; the daemon remains the sole ledger writer.
  *
  * Single instance per ledger via an `ingest.pid` lock next to the capture
  * root; graceful shutdown on SIGINT/SIGTERM. Paths come from the shared
@@ -30,85 +30,47 @@
  *   --once  run a single poll+cleanup pass and exit (smoke test)
  */
 import * as fs from "node:fs";
-import * as path from "node:path";
 // Subpath import keeps the compiled gopk-ingest.exe free of the pi_natives
 // native addon (which the pi-utils barrel eagerly loads). See session-state.ts.
 import * as logger from "@pk-nerdsaver-ai/pi-utils/logger";
+import { claimIngestPidLock, ingestPidFilePath, readAliveIngestPid } from "./ingest-lock";
 import { resolveGopkClipsPaths, resolveSharedGopkClipsCapturePolicy } from "./paths";
 import { createGopkClipsHost, type GopkClipsHostState } from "./session-state";
 
 const POLL_INTERVAL_MS = 15_000;
 const CLEANUP_INTERVAL_MS = 600_000;
 
-function pidFilePath(captureRoot: string): string {
-	return path.join(captureRoot, "ingest.pid");
-}
-
-/**
- * On Windows, confirm the pid is a bun process (our daemon runs as `bun run`),
- * so a recycled pid from a stale lock after a reboot is not mistaken for a
- * live daemon and doesn't block restart. On other platforms, existence stands.
- */
-function isOurProcess(pid: number): boolean {
-	if (process.platform !== "win32") return true;
-	try {
-		const result = Bun.spawnSync(["tasklist", "/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], {
-			stdout: "pipe",
-			stderr: "ignore",
-		});
-		// bun.exe (dev) or gopk-ingest.exe / gopk-clips.exe (compiled).
-		const image = result.stdout.toString().toLowerCase();
-		return image.includes("bun.exe") || image.includes("gopk");
-	} catch {
-		return true;
-	}
-}
-
-/** The pid recorded in the lock when that process is still alive AND ours, else undefined. */
-function readAlivePid(pidPath: string): number | undefined {
-	let pid: number;
-	try {
-		pid = Number(fs.readFileSync(pidPath, "utf8").trim());
-	} catch {
-		return undefined;
-	}
-	if (!Number.isInteger(pid) || pid <= 0) return undefined;
-	try {
-		process.kill(pid, 0);
-	} catch {
-		return undefined;
-	}
-	return isOurProcess(pid) ? pid : undefined;
-}
-
-async function main(): Promise<void> {
-	const argv = process.argv.slice(2);
+export async function runIngestDaemon(argv: string[] = process.argv.slice(2)): Promise<void> {
 	const stop = argv.includes("--stop");
 	const once = argv.includes("--once");
 	// Absolute and `~`-expanded, so the pid lock below can never land somewhere
 	// other than the capture root the host itself resolves.
 	const { captureRoot, ledgerPath } = resolveGopkClipsPaths();
 	fs.mkdirSync(captureRoot, { recursive: true });
-	const pidPath = pidFilePath(captureRoot);
+	const pidPath = ingestPidFilePath(captureRoot);
 
 	if (stop) {
-		const running = readAlivePid(pidPath);
+		const running = readAliveIngestPid(pidPath);
 		if (running === undefined) {
-			console.log("ingest daemon: not running");
+			logger.info("ingest daemon: not running");
 			return;
 		}
 		process.kill(running, "SIGTERM");
-		console.log(`ingest daemon: stopped (pid ${running})`);
+		logger.info("ingest daemon: stopped", { pid: running });
 		return;
 	}
 
-	if (!once) {
-		const running = readAlivePid(pidPath);
-		if (running !== undefined) {
-			console.log(`ingest daemon: already running (pid ${running}); exiting`);
-			return;
-		}
+	if (!claimIngestPidLock(pidPath, process.pid)) {
+		logger.info("ingest daemon: already running; exiting", { pid: readAliveIngestPid(pidPath) });
+		return;
 	}
+	const cleanupPid = (): void => {
+		try {
+			if (fs.readFileSync(pidPath, "utf8").trim() === String(process.pid)) fs.unlinkSync(pidPath);
+		} catch {
+			// Already gone or owned by another process.
+		}
+	};
 
 	let host: GopkClipsHostState;
 	try {
@@ -120,27 +82,26 @@ async function main(): Promise<void> {
 			cleanupIntervalMs: CLEANUP_INTERVAL_MS,
 		});
 	} catch (error) {
+		cleanupPid();
 		logger.warn("ingest daemon: failed to start", { error: String(error) });
 		process.exitCode = 1;
 		return;
 	}
 
 	if (once) {
-		await host.pollOnce();
-		await host.cleanupOnce();
-		await host.dispose();
-		console.log("ingest daemon: single pass complete");
+		try {
+			await host.pollOnce();
+			await host.cleanupOnce();
+		} finally {
+			try {
+				await host.dispose();
+			} finally {
+				cleanupPid();
+			}
+		}
+		logger.info("ingest daemon: single pass complete");
 		return;
 	}
-
-	fs.writeFileSync(pidPath, String(process.pid));
-	const cleanupPid = (): void => {
-		try {
-			if (fs.readFileSync(pidPath, "utf8").trim() === String(process.pid)) fs.unlinkSync(pidPath);
-		} catch {
-			// already gone
-		}
-	};
 	let shuttingDown = false;
 	const shutdown = (): void => {
 		if (shuttingDown) return;
@@ -155,9 +116,8 @@ async function main(): Promise<void> {
 	process.on("exit", cleanupPid);
 
 	logger.info("ingest daemon: running", { captureRoot, ledgerPath, pollIntervalMs: POLL_INTERVAL_MS });
-	console.log(`ingest daemon: running (pid ${process.pid}) — ledger ${ledgerPath}`);
 	// Keep the event loop alive; the host's own timers drive the work.
-	await new Promise<void>(() => {});
+	await Promise.withResolvers<void>().promise;
 }
 
-await main();
+if (import.meta.main) await runIngestDaemon();

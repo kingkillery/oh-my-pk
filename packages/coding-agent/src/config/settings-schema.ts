@@ -4765,10 +4765,10 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	// Activity Memory — local-only, opt-in, READ-ONLY from this agent's side.
-	// Recording and ingestion belong entirely to the separate always-on
-	// Activity Memory app and its `gopk-ingest` daemon, which is the sole
-	// writer of the local ledger. This setting gates the `activity` tool, which
-	// only queries that ledger. Capture root, poll interval, and retention
+	// Recording belongs to the separate Activity Memory app; the detached
+	// `gopk-ingest` daemon remains the sole writer of the local ledger.
+	// Enabled sessions ensure that daemon is running and expose the read-only
+	// `activity` tool. Capture root, poll interval, and retention
 	// interval are the daemon's own configuration and are deliberately not
 	// settings here — it reads them from its config.json, so exposing them
 	// would have been a knob that changed nothing.
