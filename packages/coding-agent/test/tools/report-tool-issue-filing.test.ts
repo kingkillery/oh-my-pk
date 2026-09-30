@@ -13,6 +13,7 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -107,14 +108,15 @@ describe("writeVaultIssueNote", () => {
 	});
 
 	it("returns null instead of throwing on an unwritable vault", async () => {
-		const result = await writeVaultIssueNote(
-			"Z:\\nonexistent\\vault\\that\\cannot\\exist",
-			"proj",
-			"read",
-			"some report",
-			"m",
-			"1",
-		);
-		expect(result).toBeNull();
+		// A regular file cannot contain the vault directory on any platform.
+		const root = await mkdtemp(join(tmpdir(), "ompk-unwritable-"));
+		const blocker = join(root, "block");
+		await Bun.write(blocker, "block");
+		try {
+			const result = await writeVaultIssueNote(blocker, "proj", "read", "some report", "m", "1");
+			expect(result).toBeNull();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
