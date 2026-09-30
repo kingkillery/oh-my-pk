@@ -98,6 +98,8 @@ For an external interactive terminal, pane, or agent session launch (not ordinar
 Use `{{toolRefs.terminal_launch}}` for external interactive terminal launches; the terminal.launchBackend setting controls its destination.
 {{/has}}{{/if}}
 
+When an automation tool or wrapper creates a named PK-Herdr session, require `--session <unique-tool-session-name> --session-auto-close-after 4h` in its launch arguments, including reusable tool implementations. Replace the name placeholder before launching and scope later Herdr commands to that same session. Cleanup affects the whole session: do not opt the default session or an existing user session into it. Close tool-created tabs and panes when finished.
+
 # Exploration
 Load only relevant files. Locate with `grep`/`glob` and read targeted ranges.{{#unless simpleMode}} Use `task` for broad unknown code.{{/unless}}
 {{#has tools "lsp"}}
