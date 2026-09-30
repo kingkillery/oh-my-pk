@@ -7,6 +7,7 @@
 
 ### Fixed
 
+- Colab streaming bridges wait for kernel acknowledgment and release the completed request before sending terminal SSE frames, so immediate tool-result and following requests do not race cleanup.
 - Colab model bridges recover failed transport connections for new requests on the same existing runtime and kernel, without replaying failed inference or restarting the model.
 - Long-lived Colab model bridges refresh expired HTTP proxy credentials for cancellation uploads on the same existing runtime, without replaying generation or replacing its kernel.
 - Hook and reminder selectors now support single-digit quick-select (`1`–`9`), `Ctrl+P`/`Ctrl+N` cursor navigation, raw carriage return (`\r`), and explicit cancel keys (`Esc`/`Ctrl+C`/`Ctrl+G`), preventing degraded or dumb terminals from deadlocking prompt interaction.

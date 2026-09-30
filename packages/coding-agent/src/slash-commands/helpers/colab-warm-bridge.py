@@ -10,6 +10,7 @@ import base64
 import copy
 import json
 import os
+import re
 import select
 import socket
 import tempfile
@@ -107,10 +108,48 @@ class StreamRelay:
         self.write = write
         self.buffer = ""
         self.started = False
+        self.sse = False
+        self.pending = ''
+        self.terminal = ''
+        self.deferring_terminal = False
+
+    def payload(self, text):
+        if not self.sse:
+            self.write(text.encode())
+            return
+        self.pending += text
+        while True:
+            boundary = re.search(r'\r?\n\r?\n', self.pending)
+            if boundary is None:
+                if len(self.pending) > 1024 * 1024:raise ValueError('Oversized SSE frame')
+                return
+            frame, self.pending = self.pending[:boundary.end()], self.pending[boundary.end():]
+            for line in frame.splitlines():
+                if not line.startswith('data:'):continue
+                data = line[5:].strip()
+                if data == '[DONE]':self.deferring_terminal = True
+                else:
+                    try:chunk = json.loads(data)
+                    except ValueError:continue
+                    if any(choice.get('finish_reason') for choice in chunk.get('choices', [])):
+                        self.deferring_terminal = True
+            if self.deferring_terminal:
+                self.terminal += frame
+                if len(self.terminal) > 1024 * 1024:raise ValueError('Oversized terminal SSE payload')
+            else:self.write(frame.encode())
+
+    def validate_completion(self):
+        if self.sse and self.pending.strip():raise ValueError('Incomplete SSE frame')
+
+    def release_terminal(self):
+        # Clients may finish at finish_reason + usage, even before [DONE].
+        # Publish those bytes only after the kernel reply and request lock release.
+        if self.terminal:self.write(self.terminal.encode())
+        self.terminal = ''
 
     def feed(self, text):
         if self.started:
-            self.write(text.encode())
+            self.payload(text)
             return
         self.buffer += text
         boundary = self.buffer.find("\n")
@@ -130,9 +169,10 @@ class StreamRelay:
             raise ValueError("Invalid content type")
         self.start(status, content_type)
         self.started = True
+        self.sse = 'text/event-stream' in content_type
         self.buffer = ""
         if remainder:
-            self.write(remainder.encode())
+            self.payload(remainder)
 
 
 class WarmBridge:
@@ -184,6 +224,7 @@ class WarmBridge:
         )
         if reply.get("content", {}).get("status", reply.get("status")) != "ok" or not relay.started:
             raise RuntimeError("Remote response did not complete")
+        relay.validate_completion()
 
 
 def make_handler(bridge, allowed_hosts=frozenset({"127.0.0.1", "localhost"})):
@@ -285,6 +326,7 @@ def make_handler(bridge, allowed_hosts=frozenset({"127.0.0.1", "localhost"})):
                     mark_disconnected()
 
             relay = StreamRelay(start, write)
+            lock_released = False
             try:
                 self.connection.settimeout(30)
                 try:
@@ -310,8 +352,12 @@ def make_handler(bridge, allowed_hosts=frozenset({"127.0.0.1", "localhost"})):
                             pass
                     print(json.dumps({"event": "transport_failure", "type": type(error).__name__}), flush=True)
                 else:
+                    finished.set()
+                    bridge.lock.release()
+                    lock_released = True
                     if not disconnected.is_set():
                         try:
+                            relay.release_terminal()
                             self.wfile.write(b"0\r\n\r\n")
                             self.wfile.flush()
                         except OSError:
@@ -320,7 +366,7 @@ def make_handler(bridge, allowed_hosts=frozenset({"127.0.0.1", "localhost"})):
                 finished.set()
                 # A late upload carries a unique request path and cannot cancel
                 # a successor even if the file API completes after this request.
-                bridge.lock.release()
+                if not lock_released:bridge.lock.release()
     return Handler
 
 

@@ -180,10 +180,33 @@ class HttpContracts(unittest.TestCase):
         self.assertEqual(following.status, 200)
         following.read()
 
-    def test_close_after_done_before_terminal_chunk_recovers(self):
+    def test_terminal_frames_wait_for_kernel_ack_and_next_request_is_ready(self):
         self.runtime.mode = "terminal"
         connection = self.connect()
         response = self.post(connection)
+        self.assertIn(b'tool_calls',response.readline())
+        # The model finished its output, but the kernel acknowledgment is held.
+        # Neither terminal usage nor DONE may tell the client the slot is free yet.
+        self.assertTrue(self.runtime.started.wait(1))
+        observed=[]
+        reader=threading.Thread(target=lambda:observed.append(response.read()),daemon=True)
+        reader.start()
+        reader.join(.1)
+        self.assertTrue(reader.is_alive())
+        self.assertEqual(observed,[])
+        self.runtime.release.set()
+        reader.join(2)
+        self.assertIn(b'finish_reason',observed[0])
+        self.assertIn(b'[DONE]',observed[0])
+        self.runtime.mode='complete'
+        # No separate wait_released or retry; the first following leg must work.
+        following=self.post(self.connect())
+        self.assertEqual(following.status,200)
+        following.read()
+
+    def test_close_after_done_does_not_poison_following_request(self):
+        self.runtime.mode = 'complete'
+        connection=self.connect();response=self.post(connection)
         while True:
             line = response.readline()
             self.assertTrue(line)
@@ -373,6 +396,9 @@ class RemoteCodeContracts(unittest.TestCase):
         self.assertEqual(statuses, [])
         relay.feed(header[10:] + "data: first\n\n")
         relay.feed("data: [DONE]\n\n")
+        relay.validate_completion()
+        self.assertNotIn(b'[DONE]',b''.join(frames))
+        relay.release_terminal()
         self.assertEqual(statuses, [(200, "text/event-stream")])
         self.assertEqual(b"".join(frames), b"data: first\n\ndata: [DONE]\n\n")
         with self.assertRaises(ValueError):
