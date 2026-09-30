@@ -178,7 +178,8 @@ try {
 	const followup = await run(
 		"after_cancel",
 		{ messages: [{ role: "user", content: "Reply with the word READY only.", timestamp: Date.now() }] },
-		{ maxTokens: 32 },
+		// Include headroom for reasoning tokens before the visible one-word reply.
+		{ maxTokens: 128 },
 	);
 	const followupText = followup.result.content
 		.filter(block => block.type === "text")

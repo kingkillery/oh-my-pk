@@ -5,6 +5,7 @@ import json
 import socket
 import tempfile
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -60,6 +61,7 @@ class HttpContracts(unittest.TestCase):
     def setUp(self):
         self.runtime = RuntimeFixture()
         self.bridge = bridge.WarmBridge(self.runtime, 8081, self.runtime.abort)
+        self.bridge.queue_wait = 0.1
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), bridge.make_handler(self.bridge))
         self.server.daemon_threads = True
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -86,6 +88,73 @@ class HttpContracts(unittest.TestCase):
     def wait_released(self):
         self.assertTrue(self.bridge.lock.acquire(timeout=2), "owned request did not release")
         self.bridge.lock.release()
+
+    def wait_pending(self, count):
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            with self.bridge.queue_lock:
+                if len(self.bridge.pending) == count:
+                    return
+            time.sleep(0.01)
+        self.fail(f'Expected {count} pending requests')
+
+    def test_chat_waits_and_probe_yields_without_remote_execution(self):
+        self.bridge.queue_wait = 1
+        self.bridge.lock.acquire()
+        connection = self.connect()
+        connection.request('POST', '/v1/chat/completions', b'{"stream":true}')
+        self.wait_pending(1)
+        probe = self.connect()
+        probe.request('GET', '/v1/models')
+        response = probe.getresponse()
+        self.assertEqual(response.status, 429)
+        response.read()
+        self.assertEqual(self.runtime.requests, 0)
+        self.runtime.mode = 'complete'
+        self.bridge.lock.release()
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        response.read()
+        self.wait_released()
+        self.assertEqual(self.runtime.requests, 1)
+
+    def test_cancelled_waiter_never_executes(self):
+        self.bridge.queue_wait = 1
+        self.bridge.lock.acquire()
+        connection = self.connect()
+        connection.request('POST', '/v1/chat/completions', b'{"stream":true}')
+        self.wait_pending(1)
+        connection.sock.shutdown(socket.SHUT_RDWR)
+        connection.close()
+        self.wait_pending(0)
+        self.bridge.lock.release()
+        self.assertEqual(self.runtime.requests, 0)
+
+    def test_queue_is_bounded_and_fifo(self):
+        self.bridge.queue_wait = 1
+        self.bridge.queue_limit = 2
+        self.bridge.lock.acquire()
+        first, second = self.connect(), self.connect()
+        first.request('POST', '/v1/chat/completions', b'{"stream":true}')
+        self.wait_pending(1)
+        second.request('POST', '/v1/chat/completions', b'{"stream":true}')
+        self.wait_pending(2)
+        rejected = self.post(self.connect())
+        self.assertEqual(rejected.status, 429)
+        rejected.read()
+        self.bridge.lock.release()
+        response = first.getresponse()
+        self.assertEqual(response.status, 200)
+        response.readline()
+        self.assertEqual(self.runtime.requests, 1)
+        self.wait_pending(1)
+        self.runtime.release.set()
+        response.read()
+        following = second.getresponse()
+        self.assertEqual(following.status, 200)
+        following.read()
+        self.wait_released()
+        self.assertEqual(self.runtime.requests, 2)
 
     def test_next_request_reattaches_without_replaying_failed_inference(self):
         self.runtime.mode = 'failure'
@@ -134,7 +203,12 @@ class HttpContracts(unittest.TestCase):
         self.assertFalse(self.runtime.release.is_set(), "first delta must precede remote completion")
         other = self.post(self.connect())
         self.assertEqual(other.status, 429)
-        other.read()
+        self.assertEqual(other.getheader("Content-Type"), "application/json")
+        self.assertEqual(other.getheader("Retry-After"), "1")
+        self.assertEqual(other.getheader("Connection"), "close")
+        busy = json.loads(other.read())
+        self.assertEqual(busy["error"]["code"], "inference_slot_busy")
+        self.assertIn("not started", busy["error"]["message"])
         self.runtime.release.set()
         remainder = response.read()
         self.assertIn(b'"finish_reason":"tool_calls"', remainder)

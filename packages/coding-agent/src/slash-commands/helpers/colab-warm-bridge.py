@@ -180,11 +180,41 @@ class WarmBridge:
         self.runtime = runtime
         self.remote_port = remote_port
         self.lock = threading.Lock()
+        self.queue_lock = threading.Lock()
+        self.pending = []
+        self.queue_limit = 4
+        self.queue_wait = 5.0
         self.failed = False
         self._abort_uploader = abort_uploader
         self.remote_timeout = remote_timeout
         self._runtime_factory = runtime_factory
         self._last_reconnect = float('-inf')
+
+    def acquire_slot(self, chat, prepare, disconnected):
+        """Bounded FIFO chat admission; probes never jump ahead of waiting chat."""
+        ticket = object()
+        with self.queue_lock:
+            if not chat:
+                return 'acquired' if not self.pending and self.lock.acquire(False) else 'busy'
+            if len(self.pending) >= self.queue_limit:
+                return 'busy'
+            self.pending.append(ticket)
+        try:
+            if not prepare():
+                return 'disconnected'
+            deadline = time.monotonic() + self.queue_wait
+            while True:
+                if disconnected():
+                    return 'disconnected'
+                with self.queue_lock:
+                    if self.pending[0] is ticket and self.lock.acquire(False):
+                        return 'acquired'
+                if time.monotonic() >= deadline:
+                    return 'busy'
+                time.sleep(0.025)
+        finally:
+            with self.queue_lock:
+                self.pending.remove(ticket)
 
     def recover_connection(self):
         # Called under the request lock, only for a new request after failure.
@@ -260,8 +290,39 @@ def make_handler(bridge, allowed_hosts=frozenset({"127.0.0.1", "localhost"})):
             if not 0 <= length <= MAX_BODY:
                 self.send_error(413)
                 return
-            if not bridge.lock.acquire(blocking=False):
-                self.send_error(429, "Single inference slot busy; no queue")
+            body = None
+            def prepare_body():
+                nonlocal body
+                self.connection.settimeout(30)
+                try:
+                    body = self.rfile.read(length)
+                    return len(body) == length
+                except OSError:
+                    return False
+
+            def client_gone():
+                try:
+                    readable, _, exceptional = select.select([self.connection], [], [self.connection], 0)
+                    return bool(exceptional or (readable and self.connection.recv(1, socket.MSG_PEEK) == b''))
+                except OSError:
+                    return True
+
+            chat = self.command == 'POST' and self.path in {'/v1/chat/completions', '/v1/completions'}
+            admission = bridge.acquire_slot(chat, prepare_body, client_gone)
+            if admission == 'disconnected':
+                self.close_connection = True
+                return
+            if admission != 'acquired':
+                payload = json.dumps({"error": {"message": "The Colab connection is busy with another request. Wait for it to finish, then try again. This request was not started.", "type": "server_busy", "code": "inference_slot_busy"}}).encode()
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Retry-After", "1")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(payload)
+                # The rejected POST body remains unread; never reuse this socket.
+                self.close_connection = True
                 return
             if bridge.failed:
                 try:
@@ -330,7 +391,8 @@ def make_handler(bridge, allowed_hosts=frozenset({"127.0.0.1", "localhost"})):
             try:
                 self.connection.settimeout(30)
                 try:
-                    body = self.rfile.read(length)
+                    if body is None:
+                        body = self.rfile.read(length)
                 except OSError:
                     self.close_connection = True
                     return
