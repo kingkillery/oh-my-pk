@@ -14,6 +14,7 @@ import select
 import socket
 import tempfile
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -135,13 +136,32 @@ class StreamRelay:
 
 
 class WarmBridge:
-    def __init__(self, runtime, remote_port, abort_uploader=None, remote_timeout=DEFAULT_REMOTE_READ_TIMEOUT_S):
+    def __init__(self, runtime, remote_port, abort_uploader=None, remote_timeout=DEFAULT_REMOTE_READ_TIMEOUT_S, runtime_factory=None):
         self.runtime = runtime
         self.remote_port = remote_port
         self.lock = threading.Lock()
         self.failed = False
         self._abort_uploader = abort_uploader
         self.remote_timeout = remote_timeout
+        self._runtime_factory = runtime_factory
+        self._last_reconnect = float('-inf')
+
+    def recover_connection(self):
+        # Called under the request lock, only for a new request after failure.
+        # Never replay the failed request or interrupt the existing kernel.
+        if self._runtime_factory is None or time.monotonic() - self._last_reconnect < 2:
+            return False
+        self._last_reconnect = time.monotonic()
+        replacement = self._runtime_factory()
+        previous = self.runtime
+        self.runtime = replacement
+        self.failed = False
+        try:
+            previous.stop(shutdown_kernel=False)
+        except Exception:
+            pass
+        print(json.dumps({'event': 'transport_reconnected'}), flush=True)
+        return True
 
     def request_abort(self, rid):
         if self._abort_uploader is not None:
@@ -199,12 +219,19 @@ def make_handler(bridge, allowed_hosts=frozenset({"127.0.0.1", "localhost"})):
             if not 0 <= length <= MAX_BODY:
                 self.send_error(413)
                 return
-            if bridge.failed:
-                self.send_error(503, "Restart this bridge after transport failure; requests are never replayed")
-                return
             if not bridge.lock.acquire(blocking=False):
                 self.send_error(429, "Single inference slot busy; no queue")
                 return
+            if bridge.failed:
+                try:
+                    recovered = bridge.recover_connection()
+                except Exception as error:
+                    recovered = False
+                    print(json.dumps({'event':'reconnect_failed','type':type(error).__name__}), flush=True)
+                if not recovered:
+                    bridge.lock.release()
+                    self.send_error(503, "Existing Colab connection unavailable; requests are never replayed")
+                    return
             rid = uuid.uuid4().hex
             disconnected = threading.Event()
             finished = threading.Event()
@@ -335,6 +362,26 @@ def refresh_existing_proxy(session):
     return updated
 
 
+def make_runtime_factory(session, runtime_class):
+    # Capture identity once. An expired assignment is a failure, not permission
+    # to attach another assignment or silently create a new kernel.
+    endpoint, kernel_id = session.endpoint, session.kernel_id
+    if not isinstance(kernel_id, str) or not kernel_id:
+        raise RuntimeError('Existing kernel ID required')
+    def attach():
+        updated = refresh_existing_proxy(session)
+        if updated.endpoint != endpoint or updated.kernel_id != kernel_id:
+            raise RuntimeError('Existing runtime identity changed')
+        runtime = runtime_class(updated.url, updated.token, kernel_id=kernel_id, session_id=str(uuid.uuid4()))
+        try:
+            runtime.kernel_client
+        except Exception:
+            runtime.stop(shutdown_kernel=False)
+            raise
+        return runtime
+    return attach
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--session", required=True)
@@ -366,9 +413,9 @@ def main():
         kernel_id = session.kernel_id
         if not isinstance(kernel_id, str) or not kernel_id:
             raise RuntimeError("No stored kernel ID for this session; reconnect the existing session explicitly. The bridge never creates a kernel.")
-        runtime = ColabRuntime(session.url, session.token, kernel_id=kernel_id, session_id=str(uuid.uuid4()))
-        runtime.kernel_client
-        bridge = WarmBridge(runtime, args.remote_port, make_abort_uploader(session, abort_marker_path(args.remote_port), lambda: refresh_existing_proxy(session)), args.remote_timeout)
+        runtime_factory = make_runtime_factory(session, ColabRuntime)
+        runtime = runtime_factory()
+        bridge = WarmBridge(runtime, args.remote_port, make_abort_uploader(session, abort_marker_path(args.remote_port), lambda: refresh_existing_proxy(session)), args.remote_timeout, runtime_factory)
         allowed_hosts = frozenset({"127.0.0.1", "localhost", *args.allow_host})
         server.RequestHandlerClass = make_handler(bridge, allowed_hosts=allowed_hosts)
         print(json.dumps({"event": "ready", "port": args.port}), flush=True)

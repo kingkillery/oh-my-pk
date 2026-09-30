@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,6 +26,10 @@ class RuntimeFixture:
         self.aborted = threading.Event()
         self.mode = "stream"
         self.requests = 0
+        self.stops = []
+
+    def stop(self, shutdown_kernel=False):
+        self.stops.append(shutdown_kernel)
 
     def execute_interactive(self, code, output_hook, timeout, allow_stdin):
         self.requests += 1
@@ -81,6 +86,45 @@ class HttpContracts(unittest.TestCase):
     def wait_released(self):
         self.assertTrue(self.bridge.lock.acquire(timeout=2), "owned request did not release")
         self.bridge.lock.release()
+
+    def test_next_request_reattaches_without_replaying_failed_inference(self):
+        self.runtime.mode = 'failure'
+        replacement = RuntimeFixture()
+        replacement.mode = 'complete'
+        attaches = []
+        def attach():
+            attaches.append(True)
+            return replacement
+        self.bridge._runtime_factory = attach
+        first = self.post(self.connect())
+        self.assertEqual(first.status, 502)
+        first.read()
+        self.wait_released()
+        self.assertEqual(self.runtime.requests, 1)
+        self.assertEqual(attaches, [], 'Failed request must never be replayed')
+        following = self.post(self.connect())
+        self.assertEqual(following.status, 200)
+        following.read()
+        self.assertEqual(attaches, [True])
+        self.assertEqual(replacement.requests, 1, 'Only the new request executes')
+        self.assertEqual(self.runtime.stops, [False], 'Old connection closes without kernel shutdown')
+        self.assertFalse(self.bridge.failed)
+
+    def test_failed_reconnect_is_bounded_and_never_executes(self):
+        attaches = []
+        def attach():
+            attaches.append(True)
+            raise RuntimeError('Original assignment expired')
+        self.bridge.failed = True
+        self.bridge._runtime_factory = attach
+        for _ in range(2):
+            response = self.post(self.connect())
+            self.assertEqual(response.status, 503)
+            response.read()
+        self.assertEqual(attaches, [True], 'Immediate repeated requests must not cause a reconnect storm')
+        self.assertEqual(self.runtime.requests, 0)
+        self.assertTrue(self.bridge.failed)
+        self.wait_released()
 
     def test_incremental_tools_usage_finish_and_connection_reuse(self):
         connection = self.connect()
@@ -335,6 +379,28 @@ class RemoteCodeContracts(unittest.TestCase):
             bridge.StreamRelay(lambda *_: None, lambda *_: None).feed("x" * 32769 + "\n")
         with self.assertRaises(ValueError):
             bridge.StreamRelay(lambda *_: None, lambda *_: None).feed(bridge.PREFIX + '{"status":true}\n')
+
+
+class RuntimeIdentityContracts(unittest.TestCase):
+    def test_refresh_preserves_kernel_and_never_creates_replacement_assignment(self):
+        original = SimpleNamespace(endpoint='owned-runtime',kernel_id='owned-kernel',url='old-url',token='expired')
+        fresh = SimpleNamespace(endpoint='owned-runtime',kernel_id='owned-kernel',url='fresh-url',token='fresh')
+        constructed = []
+        class Attached:
+            def __init__(self,url,token,**kwargs):
+                constructed.append((url,token,kwargs))
+                self.kernel_client = self
+        with patch.object(bridge,'refresh_existing_proxy',return_value=fresh):
+            bridge.make_runtime_factory(original,Attached)()
+        self.assertEqual(constructed[0][0:2],('fresh-url','fresh'))
+        self.assertEqual(constructed[0][2]['kernel_id'],'owned-kernel')
+        self.assertTrue(constructed[0][2]['session_id'])
+        for changed in [SimpleNamespace(**{**fresh.__dict__,'endpoint':'different'}),SimpleNamespace(**{**fresh.__dict__,'kernel_id':'different'})]:
+            with patch.object(bridge,'refresh_existing_proxy',return_value=changed):
+                with self.assertRaises(RuntimeError):bridge.make_runtime_factory(original,Attached)()
+        with patch.object(bridge,'refresh_existing_proxy',side_effect=RuntimeError('Assignment expired')):
+            with self.assertRaises(RuntimeError):bridge.make_runtime_factory(original,Attached)()
+        self.assertEqual(len(constructed),1,'Changed or absent identity must never open another kernel')
 
 
 class AbortCredentialContracts(unittest.TestCase):
