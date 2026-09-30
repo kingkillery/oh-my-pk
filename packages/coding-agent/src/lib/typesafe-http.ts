@@ -19,6 +19,9 @@ import { $env, APP_NAME } from "@pk-nerdsaver-ai/pi-utils";
 
 export const TYPESAFE_DEFAULT_BASE_URL = "https://api.typesafe.ai/v1";
 export const TYPESAFE_DEFAULT_MODEL_ID = "jev-1.13.0";
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+// OpenRouter serves the same /v1/systemone route but names the model without the patch version.
+export const OPENROUTER_MODEL_ID = "jev-1.13";
 export const TYPESAFE_USER_AGENT = `${APP_NAME}/typesafe`;
 
 const RETRYABLE_STATUSES: Record<number, true> = { 429: true, 529: true };
@@ -40,7 +43,8 @@ export interface TypeSafeNoulQuestion {
 export interface TypeSafeChoiceQuestion {
 	type: "choice";
 	instructions: TypeSafeContent;
-	criteria: readonly TypeSafeContent[];
+	/** Option name → description; the API returns the winning name as `choice` (max 255 options). */
+	criteria: Record<string, TypeSafeContent>;
 }
 
 export interface TypeSafeScoreQuestion {
@@ -93,15 +97,40 @@ export class TypeSafeApiError extends Error {
 }
 
 /**
- * Resolve the TypeSafe API key from the environment. Returns `undefined` when
- * unset — callers should treat that as "TypeSafe unavailable" and fall back
+ * Resolve the judgment API key from the environment: `TYPESAFE_API_KEY` first,
+ * else `OPENROUTER_API_KEY` (OpenRouter proxies /v1/systemone). Returns
+ * `undefined` when neither is set — callers should treat that as "TypeSafe
+ * unavailable" and fall back.
  */
 export function resolveTypeSafeApiKey(): string | undefined {
-	return $env.TYPESAFE_API_KEY || undefined;
+	return $env.TYPESAFE_API_KEY || $env.OPENROUTER_API_KEY || undefined;
+}
+
+/** True when only an OpenRouter key is available, so requests go through OpenRouter. */
+function usesOpenRouter(): boolean {
+	return !$env.TYPESAFE_API_KEY && !!$env.OPENROUTER_API_KEY;
 }
 
 export function resolveTypeSafeBaseUrl(): string {
-	return $env.TYPESAFE_BASE_URL || TYPESAFE_DEFAULT_BASE_URL;
+	return $env.TYPESAFE_BASE_URL || (usesOpenRouter() ? OPENROUTER_BASE_URL : TYPESAFE_DEFAULT_BASE_URL);
+}
+
+export function resolveTypeSafeModelId(): string {
+	return usesOpenRouter() ? OPENROUTER_MODEL_ID : TYPESAFE_DEFAULT_MODEL_ID;
+}
+
+async function waitForRetry(signal: AbortSignal, milliseconds: number): Promise<void> {
+	signal.throwIfAborted();
+	const { promise, resolve, reject } = Promise.withResolvers<void>();
+	const onAbort = (): void => reject(signal.reason);
+	const timer = setTimeout(resolve, milliseconds);
+	signal.addEventListener("abort", onAbort, { once: true });
+	try {
+		await promise;
+	} finally {
+		clearTimeout(timer);
+		signal.removeEventListener("abort", onAbort);
+	}
 }
 
 /**
@@ -124,6 +153,7 @@ export async function withTypeSafeRequestTimeout<T>(
 	);
 
 	try {
+		controller.signal.throwIfAborted();
 		return await request(controller.signal);
 	} finally {
 		clearTimeout(timeout);
@@ -134,6 +164,7 @@ export async function withTypeSafeRequestTimeout<T>(
 export interface TypeSafeRequestOptions {
 	/** Defaults to `TYPESAFE_DEFAULT_MODEL_ID`. Pin a versioned id before tuning thresholds. */
 	model?: string;
+	/** Overall deadline, including retries, backoff, and response-body parsing. */
 	timeoutMs?: number;
 	signal?: AbortSignal;
 }
@@ -152,25 +183,22 @@ export async function systemOne(
 ): Promise<TypeSafeResponse> {
 	const apiKey = resolveTypeSafeApiKey();
 	if (!apiKey) {
-		throw new Error("TYPESAFE_API_KEY is not set; TypeSafe judgments are unavailable");
+		throw new Error("TYPESAFE_API_KEY (or OPENROUTER_API_KEY) is not set; TypeSafe judgments are unavailable");
 	}
 	const timeoutMs = options.timeoutMs ?? 30_000;
 	const body = JSON.stringify({
 		state,
-		model: options.model ?? TYPESAFE_DEFAULT_MODEL_ID,
+		model: options.model ?? resolveTypeSafeModelId(),
 		questions,
 	});
 
-	let lastError: unknown;
-	for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-		if (attempt > 0) {
-			const { promise, resolve } = Promise.withResolvers<void>();
-			setTimeout(resolve, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
-			await promise;
-		}
-		try {
-			const response = await withTypeSafeRequestTimeout(options.signal, timeoutMs, signal =>
-				fetch(`${resolveTypeSafeBaseUrl()}/systemone`, {
+	return withTypeSafeRequestTimeout(options.signal, timeoutMs, async signal => {
+		let lastError: unknown;
+		for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+			if (attempt > 0) await waitForRetry(signal, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+			signal.throwIfAborted();
+			try {
+				const response = await fetch(`${resolveTypeSafeBaseUrl()}/systemone`, {
 					method: "POST",
 					headers: {
 						Authorization: `Bearer ${apiKey}`,
@@ -179,18 +207,16 @@ export async function systemOne(
 					},
 					body,
 					signal,
-				}),
-			);
-			if (!response.ok) {
-				throw new TypeSafeApiError(response.status, await response.text());
+				});
+				if (!response.ok) throw new TypeSafeApiError(response.status, await response.text());
+				return (await response.json()) as TypeSafeResponse;
+			} catch (error) {
+				if (signal.aborted) throw signal.reason;
+				lastError = error;
+				const retryable = !(error instanceof TypeSafeApiError) || error.retryable;
+				if (!retryable) throw error;
 			}
-			return (await response.json()) as TypeSafeResponse;
-		} catch (error) {
-			lastError = error;
-			const retryable = !(error instanceof TypeSafeApiError) || error.retryable;
-			// A caller-initiated abort is not a transient failure — surface it.
-			if (!retryable || options.signal?.aborted) throw error;
 		}
-	}
-	throw lastError;
+		throw lastError;
+	});
 }

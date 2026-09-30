@@ -9,8 +9,13 @@
 
 - Colab models with context windows up to 32K use proportional summary and recent-history budgets with an earlier default compaction trigger. Context settings now expose a Compaction Model for explicitly authorized API summaries; Colab compaction never silently falls back to unselected model roles or providers, and the selected Colab worker continues after summarization.
 
+### Added
+
+- Opt-in Jev bash gate (`OMP_JEV_BASH_GATE=1` to enforce, `shadow` to only log verdicts; needs `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`; eval kit in `bench/jev-bash-gate/`): each bash command is classified by TypeSafe Jev before execution and blocked only on a confident destructive/out-of-scope verdict. Fails open on timeout, API error, or low confidence.
+
 ### Fixed
 
+- Jev bash judgments honor the command's requested working directory and tool cancellation. TypeSafe deadlines now cover retries, backoff, and response-body parsing, and replay caches separate directories, endpoints, models, and judgment rubrics while deduplicating identical inputs.
 - Colab streaming bridges wait for kernel acknowledgment and release the completed request before sending terminal SSE frames, so immediate tool-result and following requests do not race cleanup.
 - Colab model bridges recover failed transport connections for new requests on the same existing runtime and kernel, without replaying failed inference or restarting the model.
 - Long-lived Colab model bridges refresh expired HTTP proxy credentials for cancellation uploads on the same existing runtime, without replaying generation or replacing its kernel.

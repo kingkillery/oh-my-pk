@@ -64,6 +64,7 @@ import {
 	resolveBackgroundPackManifests,
 } from "./context/background-packs";
 import { CursorExecHandlers } from "./cursor";
+import { getJevBashToolBlockReason } from "./lib/jev-bash-gate";
 import type { AgentExecutionProfile } from "./orchestration/agent-execution-profile";
 import type { CollaborationPolicy } from "./orchestration/collaboration-policy";
 import { FastStreamRouter } from "./routing";
@@ -2979,11 +2980,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				disableReasoning: shouldDisableReasoning(effectiveThinkingLevel),
 				tools: initialTools,
 			},
-			beforeToolCall: async context => {
+			beforeToolCall: async (context, signal) => {
 				const reason =
 					getDelegatedIoToolBlockReason(options.delegatedIo, context.toolCall.name) ??
 					getAutonomousRootToolBlockReason(settings, agentKind, context.toolCall.name, context.args);
-				return reason ? { block: true, reason } : undefined;
+				if (reason) return { block: true, reason };
+				if (context.toolCall.name === "bash" && typeof context.args.command === "string") {
+					const jevReason = await getJevBashToolBlockReason(context.args, cwd, signal);
+					if (jevReason) return { block: true, reason: jevReason };
+				}
+				return undefined;
 			},
 			convertToLlm: convertToLlmFinal,
 			onPayload,

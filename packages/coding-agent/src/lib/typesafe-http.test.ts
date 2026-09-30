@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { systemOne, TypeSafeApiError, withTypeSafeRequestTimeout } from "./typesafe-http";
 
-const ENV_KEYS = ["TYPESAFE_API_KEY", "TYPESAFE_BASE_URL"] as const;
+const ENV_KEYS = ["TYPESAFE_API_KEY", "TYPESAFE_BASE_URL", "OPENROUTER_API_KEY"] as const;
 
 let savedEnv: Record<string, string | undefined>;
 let fetchSpy: ReturnType<typeof spyOn>;
@@ -35,6 +35,28 @@ afterEach(() => {
 });
 
 describe("systemOne", () => {
+	it("routes through OpenRouter with its model id when only OPENROUTER_API_KEY is set", async () => {
+		process.env.OPENROUTER_API_KEY = "or-key";
+		fetchSpy.mockImplementation(() => Promise.resolve(okResponse()));
+
+		await systemOne("s", { q: { type: "noul", instructions: "?" } });
+
+		const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe("https://openrouter.ai/api/v1/systemone");
+		expect((init.headers as Record<string, string>).Authorization).toBe("Bearer or-key");
+		expect(JSON.parse(init.body as string).model).toBe("jev-1.13");
+	});
+
+	it("prefers TYPESAFE_API_KEY over OPENROUTER_API_KEY", async () => {
+		process.env.TYPESAFE_API_KEY = "ts-key";
+		process.env.OPENROUTER_API_KEY = "or-key";
+		fetchSpy.mockImplementation(() => Promise.resolve(okResponse()));
+
+		await systemOne("s", {});
+
+		expect((fetchSpy.mock.calls[0] as [string])[0]).toBe("https://api.typesafe.ai/v1/systemone");
+	});
+
 	it("posts state, model, and questions with bearer auth", async () => {
 		process.env.TYPESAFE_API_KEY = "ts-key";
 		fetchSpy.mockImplementation(() => Promise.resolve(okResponse()));
