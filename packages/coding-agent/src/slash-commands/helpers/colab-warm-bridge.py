@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import json
 import os
 import select
@@ -296,19 +297,42 @@ def make_handler(bridge, allowed_hosts=frozenset({"127.0.0.1", "localhost"})):
     return Handler
 
 
-def make_abort_uploader(session, marker):
+def make_abort_uploader(session, marker, refresh_session=None):
     from colab_cli.contents import ContentsClient
     client = ContentsClient(session)
 
     def upload_abort(rid):
+        nonlocal client
         handle, temporary = tempfile.mkstemp(text=True)
         try:
             with os.fdopen(handle, "w") as file_handle:
                 file_handle.write(rid)
-            client.upload(temporary, marker + "-" + rid)
+            try:
+                client.upload(temporary, marker + "-" + rid)
+            except Exception as error:
+                status = 404 if isinstance(error, FileNotFoundError) else getattr(getattr(error, "response", None), "status_code", None)
+                if refresh_session is None or status not in {401, 403, 404}:
+                    raise
+                # An established kernel WebSocket can outlive its HTTP proxy
+                # credential. Refresh only that existing assignment, then retry
+                # this idempotent, request-specific marker once. Never replay
+                # inference or change the live kernel connection.
+                client = ContentsClient(refresh_session())
+                client.upload(temporary, marker + "-" + rid)
         finally:
             os.unlink(temporary)
     return upload_abort
+
+
+def refresh_existing_proxy(session):
+    from colab_cli.common import state
+    assignment = next((item for item in state.client.list_assignments() if item.endpoint == session.endpoint), None)
+    if assignment is None:
+        raise RuntimeError("Existing Colab assignment is no longer available; cancellation never provisions a replacement")
+    updated = copy.copy(session)
+    updated.url = assignment.runtime_proxy_info.url
+    updated.token = assignment.runtime_proxy_info.token
+    return updated
 
 
 def main():
@@ -344,7 +368,7 @@ def main():
             raise RuntimeError("No stored kernel ID for this session; reconnect the existing session explicitly. The bridge never creates a kernel.")
         runtime = ColabRuntime(session.url, session.token, kernel_id=kernel_id, session_id=str(uuid.uuid4()))
         runtime.kernel_client
-        bridge = WarmBridge(runtime, args.remote_port, make_abort_uploader(session, abort_marker_path(args.remote_port)), args.remote_timeout)
+        bridge = WarmBridge(runtime, args.remote_port, make_abort_uploader(session, abort_marker_path(args.remote_port), lambda: refresh_existing_proxy(session)), args.remote_timeout)
         allowed_hosts = frozenset({"127.0.0.1", "localhost", *args.allow_host})
         server.RequestHandlerClass = make_handler(bridge, allowed_hosts=allowed_hosts)
         print(json.dumps({"event": "ready", "port": args.port}), flush=True)

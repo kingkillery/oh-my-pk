@@ -101,3 +101,44 @@ print("DRIVE_CACHE_OK")
 		child.kill();
 	}
 }, 10_000);
+
+test("pinned model staging rejects same-named files from another revision and incomplete shards", async () => {
+	const python = Bun.which("python") ?? Bun.which("python3");
+	if (!python) throw new Error("Python 3 required");
+	const exercise = `import pathlib, sys, tempfile
+ns = {"__name__": "colab_exact_cache_test"}
+exec(compile(sys.stdin.read(), "<colab-setup>", "exec"), ns)
+with tempfile.TemporaryDirectory() as folder:
+    root = pathlib.Path(folder)
+    pinned = root / "pinned"
+    other = root / "other"
+    pinned.mkdir(); other.mkdir()
+    primary = "model-00001-of-00002.gguf"
+    required = [primary, "model-00002-of-00002.gguf"]
+    for name in required:
+        (pinned / name).write_bytes(b"pinned model")
+        (other / name).write_bytes(b"other revision")
+    ns["CONFIG"]["modelCacheDirectory"] = str(pinned)
+    assert ns["resolve_model_path"](primary, required) == pinned / primary
+    assert ns["served_model_matches"](["llama-server", "--model", str(pinned / primary)], primary, required)
+    assert not ns["served_model_matches"](["llama-server", "--model", str(other / primary)], primary, required)
+    (pinned / required[1]).unlink()
+    assert not ns["served_model_matches"](["llama-server", "--model", str(pinned / primary)], primary, required)
+    try:
+        ns["resolve_model_path"](primary, required)
+        raise AssertionError("incomplete pinned cache was accepted")
+    except RuntimeError as error:
+        assert "incomplete" in str(error)
+print("EXACT_CACHE_OK")
+`;
+	const child = Bun.spawn([python, "-c", exercise], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+	child.stdin.write(setup);
+	child.stdin.end();
+	const [exitCode, stdout, stderr] = await Promise.all([
+		child.exited,
+		new Response(child.stdout).text(),
+		new Response(child.stderr).text(),
+	]);
+	expect(exitCode, stderr).toBe(0);
+	expect(stdout).toContain("EXACT_CACHE_OK");
+}, 10_000);

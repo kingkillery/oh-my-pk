@@ -7,6 +7,7 @@
 
 ### Fixed
 
+- Long-lived Colab model bridges refresh expired HTTP proxy credentials for cancellation uploads on the same existing runtime, without replaying generation or replacing its kernel.
 - Hook and reminder selectors now support single-digit quick-select (`1`–`9`), `Ctrl+P`/`Ctrl+N` cursor navigation, raw carriage return (`\r`), and explicit cancel keys (`Esc`/`Ctrl+C`/`Ctrl+G`), preventing degraded or dumb terminals from deadlocking prompt interaction.
 - Shared inference daemons now use renewable client leases, request deadlines, six-hour rotation, a 4 GiB Windows private-commit ceiling, and a single-active-model pipeline cache with explicit disposal so phantom sockets or leaking native inference cannot exhaust machine commit; callers recover on the next request without replaying failed work.
 

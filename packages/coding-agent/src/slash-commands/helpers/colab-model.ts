@@ -434,6 +434,8 @@ interface ColabModelLaunchOptions {
 	fetch?: typeof globalThis.fetch;
 	sessionName?: string;
 	localPort?: number;
+	/** Stage a verified cache after session acquisition, returning its exact VM directory. */
+	prepareModelCache?: () => Promise<string>;
 }
 
 type StatusEmitter = (message: string) => Promise<void> | void;
@@ -1218,12 +1220,14 @@ export function buildRemoteSetupScript(config: {
 	remotePort: number;
 	runtime?: ColabRuntimeProfile;
 	modelProfile?: ColabModelProfile;
+	modelCacheDirectory?: string;
 }): string {
 	const runtime = config.runtime ?? selectColabRuntimeProfile(config.reference, config.artifact);
 	const prebuilt = selectColabPrebuiltRuntime(runtime, config.accelerator);
 	const modelProfile = config.modelProfile ?? getColabModelProfile(config.reference, config.artifact);
 	const persistentCacheBucket = Bun.env.OMPK_GCS_MODEL_BUCKET?.trim() || Bun.env.GCS_BUCKET?.trim();
 	const payload = {
+		modelCacheDirectory: config.modelCacheDirectory ?? null,
 		accelerator: config.accelerator,
 		cmakeArchitecture: getColabAcceleratorProfile(config.accelerator).cmakeArchitecture,
 		contextWindow: config.contextWindow,
@@ -1764,6 +1768,8 @@ def served_model_matches(argv, primary_name, required_names):
     if not model:
         return False
     model_path = Path(model)
+    if CONFIG.get("modelCacheDirectory") and model_path.parent.resolve() != Path(CONFIG["modelCacheDirectory"]).resolve():
+        return False
     return model_path.name == primary_name and model_path.is_file() and all((model_path.parent / name).is_file() for name in required_names)
 
 
@@ -1927,6 +1933,12 @@ def restore_persistent_model(primary_name, required_names):
 
 
 def resolve_model_path(primary_name, required_names):
+    if CONFIG.get("modelCacheDirectory"):
+        directory = Path(CONFIG["modelCacheDirectory"])
+        if not all((directory / name).is_file() for name in required_names):
+            raise RuntimeError("The pinned model cache is incomplete; stage it again before launch.")
+        progress(f"using verified pinned cache {directory}")
+        return directory / primary_name
     # 1. Local VM storage cache (/content/ompk-models, /content/models)
     # 2. Google Drive FUSE mount (/content/drive/MyDrive/models, etc.)
     # 3. In-region Google Cloud Storage (gsutil copy)
@@ -2056,6 +2068,28 @@ def start_server(target, model_path, primary_name, base_url):
     raise TimeoutError("the serving process did not become healthy within 15 minutes")
 
 
+def record_runtime_manifest(target, primary_name):
+    manifest = Path("/content/cache/MANIFEST.txt")
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    begin = "# BEGIN OMPK MODEL RUNTIME"
+    end = "# END OMPK MODEL RUNTIME"
+    previous = manifest.read_text(errors="replace") if manifest.exists() else ""
+    if begin in previous and end in previous:
+        previous = previous.split(begin, 1)[0] + previous.split(end, 1)[1]
+    archive = str(prebuilt_paths()[1]) if PREBUILT and target.source == "prebuilt" else "source build"
+    flags = f"--ctx-size {CONFIG['contextWindow']} --n-gpu-layers 99 --flash-attn on --jinja --parallel 1 --metrics"
+    lines = [begin,
+        f"runtime: {RUNTIME['id']}",
+        f"pinned_commit: {RUNTIME.get('pinnedCommit') or target.commit or 'unknown'}",
+        f"cuda_arch: {CONFIG['cmakeArchitecture']}",
+        f"binary_target: {runtime_binary_name()}",
+        f"server: {target.server}",
+        f"cached_archive: {archive}",
+        f"validated_model: {primary_name}",
+        f"validated_flags: {flags}", end]
+    manifest.write_text(previous.rstrip() + chr(10) + chr(10).join(lines) + chr(10))
+
+
 def main():
     progress("checking CUDA runtime")
     run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
@@ -2077,9 +2111,11 @@ def main():
         if target is not None and served_model_matches(running[2], primary_name, required_names):
             progress(f"reusing running {Path(primary_name).stem} on validated {target.source} {runtime_label()}")
             PID_FILE.write_text(str(running[0]))
+            record_runtime_manifest(target, primary_name)
             announce_ready(matching_id, primary_name, base_url, target)
             return
-        raise RuntimeError("Running model is not served by the validated runtime; it was left running and was not replaced.")
+        if target is None or not CONFIG.get("modelCacheDirectory"):
+            raise RuntimeError("Running model is not served by the validated runtime; it was left running and was not replaced.")
 
     stop_prior_server()
     assert_port_unused()
@@ -2094,6 +2130,7 @@ def main():
     model_items = models_payload.get("data", [])
     if not model_items or not isinstance(model_items[0], dict) or not model_items[0].get("id"):
         raise RuntimeError("llama-server did not advertise a model id")
+    record_runtime_manifest(target, primary_name)
     announce_ready(model_items[0]["id"], primary_name, base_url, target)
 
 
@@ -2335,6 +2372,7 @@ export async function launchColabModel(
 		);
 	}
 	const accelerator = await ensureColabSession(sessionName, acquisitionCandidates, options.accelerator, emit);
+	const modelCacheDirectory = await options.prepareModelCache?.();
 	const artifact = selectGgufArtifact(entries, reference, accelerator);
 	const modelProfile = getColabModelProfile(reference, artifact);
 	const contextWindow = modelProfile
@@ -2351,6 +2389,7 @@ export async function launchColabModel(
 	}
 	const setup = await runCommand(["exec", "--session", sessionName, "--timeout", "3600"], {
 		input: buildRemoteSetupScript({
+			modelCacheDirectory,
 			accelerator,
 			artifact,
 			contextWindow,
@@ -2388,7 +2427,14 @@ export async function launchColabModel(
 		remotePort: ready.port,
 		modelId: ready.modelId,
 		localPort,
-		remoteTimeoutSeconds: getColabInferenceTimeoutSeconds(contextWindow),
+		// Bonsai's full 8K-token replies take longer than the generic 300-second
+		// bridge deadline on L4 (~31 tok/s) and especially on T4 (~15 tok/s).
+		remoteTimeoutSeconds:
+			reference.repoId.toLowerCase() === "prism-ml/ternary-bonsai-2-27b-gguf"
+				? accelerator === "T4"
+					? 900
+					: 600
+				: getColabInferenceTimeoutSeconds(contextWindow),
 	});
 	const apiBaseUrl = bridge.apiBaseUrl;
 	let modelId = ready.modelId;

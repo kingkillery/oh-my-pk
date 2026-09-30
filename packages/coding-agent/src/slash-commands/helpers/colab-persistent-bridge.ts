@@ -209,7 +209,9 @@ export async function startPersistentColabBridge(
 		if (!exited) child.kill();
 	};
 	const deadline = Promise.withResolvers<never>();
-	const startupTimer = setTimeout(() => deadline.reject(new Error("Colab bridge startup timed out")), 20_000);
+	// A fresh Colab allocation can make the first WSL/CLI attach noticeably
+	// slower than an already warm session, even after remote model readiness.
+	const startupTimer = setTimeout(() => deadline.reject(new Error("Colab bridge startup timed out")), 60_000);
 	try {
 		await Promise.race([ready, deadline.promise]);
 		void (async () => {

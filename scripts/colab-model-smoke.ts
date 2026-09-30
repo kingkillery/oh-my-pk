@@ -126,6 +126,19 @@ try {
 			.join("");
 		if (!answerText.includes(receipt) || answer.metrics.textDeltas < 1)
 			throw new Error("Tool result/final visible answer contract failed");
+		// The following cancellation probe needs an idle slot. A just-finished
+		// tool response can still be releasing its remote stream/bridge slot.
+		const idleDeadline = performance.now() + 2_000;
+		for (;;) {
+			const response = await fetch(new URL("models", `${model.baseUrl.replace(/\/$/, "")}/`), {
+				signal: AbortSignal.timeout(2_000),
+			});
+			await response.arrayBuffer();
+			if (response.ok) break;
+			if (response.status !== 429 || performance.now() >= idleDeadline)
+				throw new Error(`Pre-cancellation slot did not clear: HTTP ${response.status}`);
+			await Bun.sleep(100);
+		}
 	}
 	const cancelled = await run(
 		"cancel",

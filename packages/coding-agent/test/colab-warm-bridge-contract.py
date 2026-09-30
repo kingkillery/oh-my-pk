@@ -6,6 +6,8 @@ import socket
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -333,6 +335,67 @@ class RemoteCodeContracts(unittest.TestCase):
             bridge.StreamRelay(lambda *_: None, lambda *_: None).feed("x" * 32769 + "\n")
         with self.assertRaises(ValueError):
             bridge.StreamRelay(lambda *_: None, lambda *_: None).feed(bridge.PREFIX + '{"status":true}\n')
+
+
+class AbortCredentialContracts(unittest.TestCase):
+    def test_expired_proxy_is_refreshed_for_only_the_same_abort_marker(self):
+        attempts = []
+        uploads = []
+        refreshes = []
+
+        class ContentsHandler(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_PUT(self):
+                parsed = urlparse(self.path)
+                token = parse_qs(parsed.query).get('colab-runtime-proxy-token', [''])[0]
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                attempts.append((token, parsed.path))
+                if parsed.path.endswith('-server-error'):
+                    self.send_response(500)
+                    payload = b'{"error":"fixture server failure"}'
+                elif token != 'fixture-fresh':
+                    self.send_response(401)
+                    payload = b'{"error":"expired fixture credential"}'
+                else:
+                    uploads.append(body)
+                    self.send_response(200)
+                    payload = b'{}'
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), ContentsHandler)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        session = SimpleNamespace(url=f'http://127.0.0.1:{server.server_port}', token='fixture-expired')
+
+        def refresh():
+            refreshes.append(True)
+            return SimpleNamespace(url=session.url, token='fixture-fresh')
+
+        try:
+            upload = bridge.make_abort_uploader(session, '/content/owned-abort', refresh_session=refresh)
+            upload('request-a')
+            upload('request-b')
+            self.assertEqual(refreshes, [True])
+            self.assertEqual(attempts, [
+                ('fixture-expired', '/api/contents/content/owned-abort-request-a'),
+                ('fixture-fresh', '/api/contents/content/owned-abort-request-a'),
+                ('fixture-fresh', '/api/contents/content/owned-abort-request-b'),
+            ])
+            self.assertEqual([bridge.base64.b64decode(item['content']).decode() for item in uploads], ['request-a', 'request-b'])
+            with self.assertRaises(Exception) as failure:
+                upload('server-error')
+            self.assertEqual(failure.exception.response.status_code, 500)
+            self.assertEqual(refreshes, [True], 'Server failures must not trigger cancellation retries')
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
 
 
 if __name__ == "__main__":
