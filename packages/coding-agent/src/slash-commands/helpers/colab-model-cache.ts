@@ -6,6 +6,7 @@ import {
 	type GgufArtifact,
 	type HuggingFaceModelReference,
 	type HuggingFaceTreeEntry,
+	parseColabSessionAccelerator,
 	parseHuggingFaceModelReference,
 	selectColabPrebuiltRuntime,
 	selectColabRuntimeProfile,
@@ -219,11 +220,10 @@ async function runColab(
 	}
 }
 
+/** GPU of a session, or undefined for a CPU (or unrecognised) runtime. */
 function parseAccelerator(output: string): ColabAccelerator | undefined {
-	for (const accelerator of ["T4", "L4", "A100", "H100", "G4"] as const) {
-		if (new RegExp(`\\b${accelerator}\\b`, "i").test(output)) return accelerator;
-	}
-	return undefined;
+	const accelerator = parseColabSessionAccelerator(output);
+	return accelerator === "CPU" ? undefined : accelerator;
 }
 
 export async function ensureCpuColabSession(
