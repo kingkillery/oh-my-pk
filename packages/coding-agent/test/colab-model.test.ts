@@ -14,6 +14,7 @@ import {
 	COLAB_MODEL_PROFILES,
 	type ColabModelLaunchResult,
 	type ColabPrebuiltRuntime,
+	colabNewSessionArgs,
 	formatColabSetups,
 	getColabAcceleratorProfile,
 	getColabInferenceTimeoutSeconds,
@@ -23,6 +24,7 @@ import {
 	isDiffusionGemmaModel,
 	loadColabSetups,
 	parseColabModelCommandArgs,
+	parseColabSessionAccelerator,
 	parseHuggingFaceModelReference,
 	resolveColabContextWindow,
 	resolveColabSessionName,
@@ -209,6 +211,38 @@ describe("/colab-model arguments", () => {
 			setupName: undefined,
 			listSetups: false,
 		});
+	});
+
+	test("selects the CPU runtime via --cpu, --accelerator, or --gpu", () => {
+		for (const args of [
+			"--cpu owner/model",
+			"--accelerator cpu owner/model",
+			"--accelerator=CPU owner/model",
+			"--gpu=cpu owner/model",
+		]) {
+			expect(parseColabModelCommandArgs(args).accelerator).toBe("CPU");
+		}
+		expect(parseColabModelCommandArgs("--accelerator L4 owner/model").accelerator).toBe("L4");
+	});
+
+	test("CPU sessions omit --gpu, have no prebuilt, and are never chosen automatically", () => {
+		expect(colabNewSessionArgs("s", "CPU")).toEqual(["new", "--session", "s"]);
+		expect(colabNewSessionArgs("s", "L4")).toEqual(["new", "--session", "s", "--gpu", "L4"]);
+		const reference = parseHuggingFaceModelReference("unsloth/Qwen3.8-27B-GGUF");
+		expect(selectAutomaticColabAccelerators(QWEN_FILES, reference)).not.toContain("CPU");
+		const artifact = { files: ["m-Q4_0.gguf"], primaryFile: "m-Q4_0.gguf", quantization: "Q4_0", totalSize: 1 };
+		expect(selectColabPrebuiltRuntime(selectColabRuntimeProfile(reference, artifact), "CPU")).toBeUndefined();
+	});
+
+	test("reads session hardware from the status field before scanning free text", () => {
+		const line = (name: string, hardware: string) =>
+			`[${name}] https://x | Hardware: ${hardware} | Shape: Standard | Variant: GPU`;
+		expect(parseColabSessionAccelerator(line("ompk-colab-t4", "CPU"))).toBe("CPU");
+		expect(parseColabSessionAccelerator(line("ompk-colab-t4", "L4"))).toBe("L4");
+		expect(parseColabSessionAccelerator("Accelerator: NONE")).toBe("CPU");
+		expect(parseColabSessionAccelerator(line("tpu", "V5E1"))).toBeUndefined();
+		expect(parseColabSessionAccelerator("[colab] Session 'x' is running (gpu=A100).")).toBe("A100");
+		expect(parseColabSessionAccelerator("no CPU quota left")).toBeUndefined();
 	});
 
 	test("rejects unknown GPUs and options", () => {
@@ -653,6 +687,28 @@ describe("/colab-model command", () => {
 		expect(script).toContain('function.get("name") != "ompk_tool_readiness_probe"');
 		expect(script).toContain('"toolCallReady": True');
 
+		const compilation = await compilePythonScript(script);
+		expect(compilation.exitCode, compilation.stderr).toBe(0);
+	});
+
+	test("compiles a CPU setup that builds without CUDA and offloads no layers", async () => {
+		const reference = parseHuggingFaceModelReference("unsloth/Qwen3.8-27B-GGUF");
+		const artifact = {
+			files: ["m-Q4_0.gguf"],
+			primaryFile: "m-Q4_0.gguf",
+			quantization: "Q4_0",
+			totalSize: 4_000_000_000,
+		};
+		const script = buildRemoteSetupScript({
+			accelerator: "CPU",
+			artifact,
+			contextWindow: 8_192,
+			reference,
+			remotePort: 8_081,
+		});
+		expect(script).toContain('CPU_ONLY = CONFIG["accelerator"] == "CPU"');
+		expect(script).toContain('["-DGGML_CUDA=OFF"] if CPU_ONLY');
+		expect(script).toContain('"--n-gpu-layers", GPU_LAYERS');
 		const compilation = await compilePythonScript(script);
 		expect(compilation.exitCode, compilation.stderr).toBe(0);
 	});

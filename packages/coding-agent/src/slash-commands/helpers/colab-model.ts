@@ -19,7 +19,8 @@ const TOOL_READINESS_FUNCTION = "ompk_tool_readiness_probe";
 const TOOL_READINESS_DECOY_FUNCTION = "ompk_decoy_probe";
 const MAX_COMMAND_OUTPUT = 2 * 1024 * 1024;
 
-export type ColabAccelerator = "T4" | "L4" | "A100" | "H100" | "G4";
+/** Colab runtime hardware. `CPU` is the no-accelerator runtime (`colab new` without `--gpu`). */
+export type ColabAccelerator = "T4" | "L4" | "A100" | "H100" | "G4" | "CPU";
 
 export interface ColabAcceleratorProfile {
 	cmakeArchitecture: string;
@@ -66,7 +67,18 @@ const ACCELERATOR_PROFILES: Record<ColabAccelerator, ColabAcceleratorProfile> = 
 		preferredQuantizations: ["Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q4_K_M"],
 		vramBytes: 96 * 1024 ** 3,
 	},
+	// Standard CPU runtime: ~12.7 GB system RAM, 2 vCPUs. `vramBytes` is RAM here.
+	// Opt-in only (never automatic); prefill is slow, so keep the context modest.
+	CPU: {
+		cmakeArchitecture: "cpu",
+		defaultContextWindow: 8_192,
+		modelSizeBudget: 8_000_000_000,
+		preferredQuantizations: ["Q4_0", "Q4_K_M", "Q4_K_S", "IQ4_XS", "Q3_K_M"],
+		vramBytes: 12 * 1024 ** 3,
+	},
 };
+
+const ACCELERATOR_CHOICES = "T4, L4, A100, H100, G4, or CPU";
 
 export interface ColabModelProfile {
 	id: string;
@@ -565,7 +577,7 @@ export function parseHuggingFaceModelReference(input: string): HuggingFaceModelR
 function normalizeAccelerator(value: string): ColabAccelerator {
 	const normalized = value.toUpperCase();
 	if (normalized in ACCELERATOR_PROFILES) return normalized as ColabAccelerator;
-	throw new Error(`Unsupported Colab GPU "${value}". Choose T4, L4, A100, H100, or G4.`);
+	throw new Error(`Unsupported Colab GPU "${value}". Choose ${ACCELERATOR_CHOICES}.`);
 }
 
 export function parseColabModelCommandArgs(input: string): ColabModelCommandRequest {
@@ -586,15 +598,20 @@ export function parseColabModelCommandArgs(input: string): ColabModelCommandRequ
 	};
 	for (let index = 0; index < tokens.length; index += 1) {
 		const token = tokens[index];
-		if (token === "--gpu") {
+		// `--accelerator` is the canonical name; `--gpu` stays as an alias; `--cpu` is shorthand.
+		if (token === "--gpu" || token === "--accelerator") {
 			const value = tokens[index + 1];
-			if (!value) throw new Error("--gpu requires T4, L4, A100, H100, or G4.");
+			if (!value) throw new Error(`${token} requires ${ACCELERATOR_CHOICES}.`);
 			accelerator = normalizeAccelerator(value);
 			index += 1;
 			continue;
 		}
-		if (token.startsWith("--gpu=")) {
-			accelerator = normalizeAccelerator(token.slice("--gpu=".length));
+		if (token.startsWith("--gpu=") || token.startsWith("--accelerator=")) {
+			accelerator = normalizeAccelerator(token.slice(token.indexOf("=") + 1));
+			continue;
+		}
+		if (token === "--cpu") {
+			accelerator = "CPU";
 			continue;
 		}
 		if (token === "--session") {
@@ -1058,11 +1075,32 @@ async function runCommand(
 	}
 }
 
-function parseAccelerator(output: string): ColabAccelerator | undefined {
+/**
+ * Hardware of a session from `colab status`/`colab new` output.
+ *
+ * The CLI prints `[name] endpoint | Hardware: X | …` (`CPU` for the
+ * no-accelerator runtime); that field wins. Without it, fall back to a GPU-name
+ * scan of the text. CPU is only ever read from the field: free text such as an
+ * error message can mention "CPU" without describing the runtime. Returns
+ * undefined for TPU or unrecognised hardware.
+ */
+export function parseColabSessionAccelerator(output: string): ColabAccelerator | undefined {
+	const field = /\b(?:Hardware|Accelerator):\s*([A-Za-z0-9]+)/i.exec(output)?.[1]?.toUpperCase();
+	if (field) {
+		const hardware = field === "NONE" ? "CPU" : field;
+		return hardware in ACCELERATOR_PROFILES ? (hardware as ColabAccelerator) : undefined;
+	}
 	for (const accelerator of Object.keys(ACCELERATOR_PROFILES) as ColabAccelerator[]) {
-		if (new RegExp(`\\b${accelerator}\\b`, "i").test(output)) return accelerator;
+		if (accelerator !== "CPU" && new RegExp(`\\b${accelerator}\\b`, "i").test(output)) return accelerator;
 	}
 	return undefined;
+}
+
+const parseAccelerator = parseColabSessionAccelerator;
+
+/** `colab new` arguments; omitting `--gpu` is how the CLI allocates a CPU runtime. */
+export function colabNewSessionArgs(sessionName: string, accelerator: ColabAccelerator): string[] {
+	return ["new", "--session", sessionName, ...(accelerator === "CPU" ? [] : ["--gpu", accelerator])];
 }
 
 async function ensureColabSession(
@@ -1081,6 +1119,12 @@ async function ensureColabSession(
 				`${sessionName} is already using ${existingAccelerator}; stop it before requesting ${requestedAccelerator}.`,
 			);
 		}
+		// Automatic selection only ever means a GPU; never silently serve from a CPU runtime.
+		if (!requestedAccelerator && existingAccelerator === "CPU") {
+			throw new Error(
+				`${sessionName} is a CPU runtime; pass --accelerator CPU to reuse it, or stop it to launch on a GPU.`,
+			);
+		}
 		await emit(`Colab: reusing ${sessionName} on ${existingAccelerator}.`);
 		return existingAccelerator;
 	}
@@ -1088,7 +1132,7 @@ async function ensureColabSession(
 	let lastFailure = "";
 	for (const accelerator of accelerators) {
 		await emit(`Colab: requesting ${accelerator} runtime…`);
-		const launch = await runCommand(["new", "--session", sessionName, "--gpu", accelerator], {
+		const launch = await runCommand(colabNewSessionArgs(sessionName, accelerator), {
 			cliCommand,
 			timeoutMs: 5 * 60_000,
 		});
@@ -1360,6 +1404,9 @@ TRACE_STARTED = time.perf_counter()
 RUNTIME = CONFIG["runtime"]
 MODEL_PROFILE = CONFIG.get("modelProfile") or {}
 PREBUILT = RUNTIME["prebuilt"]
+# CPU runtimes have no CUDA: build GGML_CUDA=OFF and offload zero layers.
+CPU_ONLY = CONFIG["accelerator"] == "CPU"
+GPU_LAYERS = "0" if CPU_ONLY else "99"
 PERSISTENT_CACHE = CONFIG.get("persistentCache") or {}
 LLAMA_DIR = Path(RUNTIME["directory"])
 MODEL_ROOT = Path("/content/ompk-models")
@@ -1449,7 +1496,7 @@ def source_binary_is_valid():
     """Reuse a compiled llama-server only when its build is keyed to this runtime: pinned commit, CUDA arch, Release."""
     if not source_server_path().is_file():
         return False
-    expected = {
+    expected = {"CMAKE_BUILD_TYPE": "Release", "GGML_CUDA": "OFF"} if CPU_ONLY else {
         "CMAKE_CUDA_ARCHITECTURES": CONFIG["cmakeArchitecture"],
         "CMAKE_BUILD_TYPE": "Release",
         "GGML_CUDA": "ON",
@@ -1521,12 +1568,13 @@ def build_source_runtime():
         progress(f"discarding unvalidated {RUNTIME['id']} llama.cpp build")
         shutil.rmtree(build_dir)
     binary = runtime_binary_name()
-    progress(f"building CUDA {binary} from {runtime_label()}")
+    progress(f"building {'CPU' if CPU_ONLY else 'CUDA'} {binary} from {runtime_label()}")
     configure = [
         "cmake", "-S", str(LLAMA_DIR), "-B", str(build_dir),
-        "-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={CONFIG['cmakeArchitecture']}",
         "-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_CURL=OFF",
-    ]
+    ] + (["-DGGML_CUDA=OFF"] if CPU_ONLY else [
+        "-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={CONFIG['cmakeArchitecture']}",
+    ])
     if shutil.which("ninja"):
         configure.extend(["-G", "Ninja"])
     run(configure)
@@ -2139,7 +2187,7 @@ def assert_port_unused():
 @measured("load-compile")
 def start_server(target, model_path, primary_name, base_url):
     alias = Path(primary_name).stem
-    progress(f"loading {alias} on the GPU with {target.source} {runtime_label()}")
+    progress(f"loading {alias} on the {'CPU' if CPU_ONLY else 'GPU'} with {target.source} {runtime_label()}")
     log_handle = LOG_FILE.open("w", buffering=1)
     if RUNTIME["id"] == "diffusion":
         # No diffusion llama-server exists (PR #24423 ships only the CLI), so
@@ -2152,14 +2200,14 @@ def start_server(target, model_path, primary_name, base_url):
             sys.executable, str(wrapper),
             "--host", "127.0.0.1", "--port", str(CONFIG["remotePort"]),
             "--cli", str(target.server), "--model", str(model_path), "--alias", alias,
-            "--n-gpu-layers", "99",
+            "--n-gpu-layers", GPU_LAYERS,
             "--max-gen", str(max_gen), "--timeout", str(inference_timeout_seconds()),
         ]
     else:
         server_args = [
             str(target.server), "--model", str(model_path), "--alias", alias,
             "--host", "127.0.0.1", "--port", str(CONFIG["remotePort"]),
-            "--ctx-size", str(CONFIG["contextWindow"]), "--n-gpu-layers", "99",
+            "--ctx-size", str(CONFIG["contextWindow"]), "--n-gpu-layers", GPU_LAYERS,
             "--flash-attn", "on", "--jinja", "--parallel", "1", "--metrics",
         ]
         if MODEL_PROFILE.get("kvCacheType"):
@@ -2195,7 +2243,7 @@ def record_runtime_manifest(target, primary_name):
     if begin in previous and end in previous:
         previous = previous.split(begin, 1)[0] + previous.split(end, 1)[1]
     archive = str(prebuilt_paths()[1]) if PREBUILT and target.source == "prebuilt" else "source build"
-    flags = f"--ctx-size {CONFIG['contextWindow']} --n-gpu-layers 99 --flash-attn on --jinja --parallel 1 --metrics"
+    flags = f"--ctx-size {CONFIG['contextWindow']} --n-gpu-layers {GPU_LAYERS} --flash-attn on --jinja --parallel 1 --metrics"
     lines = [begin,
         f"runtime: {RUNTIME['id']}",
         f"pinned_commit: {RUNTIME.get('pinnedCommit') or target.commit or 'unknown'}",
@@ -2209,8 +2257,11 @@ def record_runtime_manifest(target, primary_name):
 
 
 def main():
-    progress("checking CUDA runtime")
-    run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    if CPU_ONLY:
+        progress(f"CPU runtime: {os.cpu_count()} cores, no GPU offload")
+    else:
+        progress("checking CUDA runtime")
+        run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
     primary_name = Path(CONFIG["primaryFile"]).name
     required_names = [Path(name).name for name in CONFIG["files"]]
     base_url = f"http://127.0.0.1:{CONFIG['remotePort']}"
@@ -2596,12 +2647,15 @@ export async function launchColabModel(
 			localPort,
 			// Bonsai's full 8K-token replies take longer than the generic 300-second
 			// bridge deadline on L4 (~31 tok/s) and especially on T4 (~15 tok/s).
+			// CPU decode is several times slower than T4, so it gets the longest deadline.
 			remoteTimeoutSeconds:
-				reference.repoId.toLowerCase() === "prism-ml/ternary-bonsai-2-27b-gguf"
-					? accelerator === "T4"
-						? 900
-						: 600
-					: getColabInferenceTimeoutSeconds(contextWindow),
+				accelerator === "CPU"
+					? 900
+					: reference.repoId.toLowerCase() === "prism-ml/ternary-bonsai-2-27b-gguf"
+						? accelerator === "T4"
+							? 900
+							: 600
+						: getColabInferenceTimeoutSeconds(contextWindow),
 		}),
 	);
 	const apiBaseUrl = bridge.apiBaseUrl;
@@ -2668,7 +2722,7 @@ export async function handleColabModelSlashCommand(
 		const resolved = applied.request;
 		if (!resolved.modelReference) {
 			await runtime.output(
-				"Usage: /colab-model [--gpu T4|L4|A100|H100|G4] [--session <name>] [--port <number>] [--setup <name> | --list-setups] <owner/repository | huggingface.co model or GGUF URL>\nExample: /colab-model --gpu L4 unsloth/Qwen3.8-27B-GGUF\nExample: /colab-model --session ompk-colab-t4 --port 18083 unsloth/Qwen3-32B-GGUF\nExample: /colab-model --list-setups",
+				"Usage: /colab-model [--accelerator T4|L4|A100|H100|G4|CPU | --cpu] [--session <name>] [--port <number>] [--setup <name> | --list-setups] <owner/repository | huggingface.co model or GGUF URL>\nExample: /colab-model --gpu L4 unsloth/Qwen3.8-27B-GGUF\nExample: /colab-model --session ompk-colab-t4 --port 18083 unsloth/Qwen3-32B-GGUF\nExample: /colab-model --list-setups",
 			);
 			return { consumed: true };
 		}
