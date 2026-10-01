@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+## [16.4.28] - 2026-09-30
+
+### Fixed
+
+- Embedding provider types accept typed-array vectors already supported by the runtime.
+
 > **Note on `.omp` paths below.** The configuration directory was renamed to
 > `~/.ompk` (and project-local `.omp/` to `.ompk/`). Entries dated before that
 > rename still say `.omp` because that is what those releases actually shipped;

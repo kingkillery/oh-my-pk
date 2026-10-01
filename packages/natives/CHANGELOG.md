@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+## [16.4.28] - 2026-09-30
+
+### Fixed
+
+- Apple Silicon native builds target the Apple M1 baseline so hosted Mac builds do not depend on unreliable host CPU detection.
+
 ### Added
 
 - Embedded sidecar packaging: `embed-native.ts` bundles `ompk-collector` into `embedded-addons.<platform>.tar.gz` with sidecar metadata, and `loader-state.js` unpacks it to `~/.ompk/natives/<version>/` on startup using size-idempotent extraction and path traversal safety. Exported `resolveBundledCollectorPath()` from `./native/loader-state.js`.

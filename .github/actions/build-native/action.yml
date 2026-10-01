@@ -145,6 +145,7 @@ runs:
         if: inputs.target == ''
         shell: bash
         env:
+           TARGET_PLATFORM: ${{ inputs.platform }}
            TARGET_ARCH: ${{ inputs.arch }}
            TARGET_VARIANT: ${{ inputs.variant }}
         run: |
@@ -164,7 +165,11 @@ runs:
                  echo "Using caller-provided RUSTFLAGS=$RUSTFLAGS"
                  exit 0
                fi
-               rustflags="-C target-cpu=native"
+               if [ "$TARGET_PLATFORM:$TARGET_ARCH" = "darwin:arm64" ]; then
+                 rustflags="-C target-cpu=apple-m1"
+               else
+                 rustflags="-C target-cpu=native"
+               fi
                ;;
            esac
 

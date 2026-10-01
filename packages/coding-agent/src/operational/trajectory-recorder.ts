@@ -7,7 +7,6 @@
  */
 import type { AgentMessage, AgentRunSummary } from "@pk-nerdsaver-ai/pi-agent-core";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
-import type { LaunchAuthorityRefV1 } from "../task/launch-contract";
 import type { OperationalStore } from "./store";
 import type { JsonObject, JsonValue, TrajectoryEventKind } from "./types";
 
@@ -90,6 +89,17 @@ export interface RecordOutcomeInput {
 	readonly telemetry?: Readonly<Record<string, JsonValue>>;
 }
 
+/** Structural attribution recorded by the operational ledger. */
+export interface TrajectoryLaunchAuthority {
+	readonly bindingId: string;
+	readonly principalId: string;
+	readonly attemptId: string;
+	readonly contractId: string;
+	readonly contractRevision: number;
+	readonly contractDigest: string;
+	readonly policyEpoch: number;
+}
+
 export interface OperationalTrajectoryRecorderOptions {
 	readonly store: OperationalStore;
 	readonly sessionId?: string | null;
@@ -101,7 +111,7 @@ export interface OperationalTrajectoryRecorderOptions {
 	 * every event payload so trajectory rows name the admitting authority,
 	 * not only a session or job id.
 	 */
-	readonly launchAuthority?: LaunchAuthorityRefV1 | null;
+	readonly launchAuthority?: TrajectoryLaunchAuthority | null;
 }
 
 interface PendingToolCall {
@@ -127,7 +137,7 @@ export class OperationalTrajectoryRecorder {
 	readonly #jobId: string | null;
 	readonly #now: TrajectoryClock;
 	readonly #onError: ((error: unknown) => void) | undefined;
-	readonly #launchAuthority: LaunchAuthorityRefV1 | null;
+	readonly #launchAuthority: TrajectoryLaunchAuthority | null;
 	readonly #pending = new Map<string, PendingToolCall>();
 	#unsubscribe: (() => void) | undefined;
 	#disposed = false;

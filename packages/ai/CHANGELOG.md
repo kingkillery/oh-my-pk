@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [16.4.28] - 2026-09-30
+
 ### Fixed
 
 - Updated the Anthropic OAuth Claude Code identity to 2.1.280 so models requiring that minimum client version are accepted.

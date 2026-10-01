@@ -20,7 +20,7 @@ export type MnemopiLlmCompletion = (
  * rows; each row is one number per dimension. Yield the whole matrix as a single batch when not
  * streaming: `async *embed(texts) { yield texts.map(embedOne); }`.
  */
-export type EmbeddingOutput = AsyncIterable<number[][]>;
+export type EmbeddingOutput = AsyncIterable<readonly ArrayLike<number>[]>;
 
 export interface MnemopiEmbeddingProvider {
 	embed(texts: readonly string[]): EmbeddingOutput | Promise<EmbeddingOutput>;

@@ -66,7 +66,7 @@ const baseTargets: BaseTarget[] = [
 		id: "win32-x64",
 		platform: "win32",
 		arch: "x64",
-		target: "bun-windows-x64-modern",
+		target: "bun-windows-x64-baseline",
 		outfile: "packages/coding-agent/binaries/omp-windows-x64.exe",
 	},
 ];
@@ -252,11 +252,15 @@ async function buildCollector(target: BinaryTarget): Promise<void> {
 
 async function generateBundle(): Promise<void> {
 	if (isDryRun) {
+		console.log("DRY RUN bun run build-tool-views");
+		console.log("DRY RUN bun scripts/generate-legacy-pi-bundled-registry.ts --generate");
 		console.log("DRY RUN bun run gen:stats");
 		console.log("DRY RUN bun run gen:docs");
 		console.log("DRY RUN bun run gen:mupdf");
 		return;
 	}
+	await runCommand(["bun", "run", "build-tool-views"], repoRoot);
+	await runCommand(["bun", "scripts/generate-legacy-pi-bundled-registry.ts", "--generate"], codingAgentDir);
 	await runCommand(["bun", "run", "gen:stats"], statsDir);
 	await runCommand(["bun", "run", "gen:docs"], codingAgentDir);
 	await runCommand(["bun", "run", "gen:mupdf"], codingAgentDir);

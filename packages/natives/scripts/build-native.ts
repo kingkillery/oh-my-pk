@@ -122,6 +122,8 @@ if (!isCrossCompile && !Bun.env.RUSTFLAGS) {
 		Bun.env.RUSTFLAGS = "-C target-cpu=x86-64-v3";
 	} else if (effectiveVariant === "baseline") {
 		Bun.env.RUSTFLAGS = "-C target-cpu=x86-64-v2";
+	} else if (targetPlatform === "darwin" && targetArch === "arm64") {
+		Bun.env.RUSTFLAGS = "-C target-cpu=apple-m1";
 	} else {
 		Bun.env.RUSTFLAGS = "-C target-cpu=native";
 	}

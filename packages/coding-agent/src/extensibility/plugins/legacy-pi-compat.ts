@@ -1010,6 +1010,12 @@ function resolveLegacyPiSpecifier(args: { path: string; importer: string }): { p
 		return undefined;
 	}
 
+	// Canonical subpaths already have native package resolution. Re-resolving
+	// them inside this hook recursively re-enters Bun's resolver on Linux.
+	if (args.path === remappedSpecifier && !LEGACY_PI_PACKAGE_ROOT_OVERRIDES[remappedSpecifier]) {
+		return undefined;
+	}
+
 	// Primary: resolve the canonical @pk-nerdsaver-ai/* specifier from the host binary
 	// location. Works in dev mode and in source-link installs.
 	try {

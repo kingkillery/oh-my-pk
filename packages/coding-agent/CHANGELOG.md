@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [16.4.28] - 2026-09-30
+
 ### Changed
 
 - Colab models with context windows up to 32K use proportional summary and recent-history budgets with an earlier default compaction trigger. Context settings now expose a Compaction Model for explicitly authorized API summaries; Colab compaction never silently falls back to unselected model roles or providers, and the selected Colab worker continues after summarization.
@@ -14,6 +16,9 @@
 - Opt-in Jev bash gate (`OMP_JEV_BASH_GATE=1` to enforce, `shadow` to only log verdicts; needs `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`; eval kit in `bench/jev-bash-gate/`): each bash command is classified by TypeSafe Jev before execution and blocked only on a confident destructive/out-of-scope verdict. Fails open on timeout, API error, or low confidence.
 
 ### Fixed
+
+- Fixed recursive canonical native subpath resolution in the legacy import hook on Linux, restored package type checks, and rebuilt Windows executables with the matching native addon.
+- The persisted Gemma 2 2B profile uses its 8K context window and a 1K generation cap.
 
 - Enabled Activity Memory sessions start the detached singleton ingest daemon when absent; atomic PID locking prevents competing ledger writers, including single-pass runs.
 - Colab bridge chat requests use a bounded FIFO admission queue; probes yield to waiting chats, disconnected waiters never start inference, and busy responses explain that the rejected request was not started.

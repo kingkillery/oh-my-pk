@@ -1,18 +1,25 @@
 import { expect, test } from "bun:test";
+import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/builtin-registry";
+import { buildRemoteSetupScript } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/helpers/colab-model";
 import {
 	buildColabModelCacheStageScript,
 	ensureCpuColabSession,
 	parseColabModelCacheCommandArgs,
 	resolveImmutableHuggingFaceRevision,
 } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/helpers/colab-model-cache";
-import { buildRemoteSetupScript } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/helpers/colab-model";
-import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/builtin-registry";
 
-async function runPythonScript(source: string, exercise: string): Promise<{ exitCode: number; stderr: string; stdout: string }> {
+async function runPythonScript(
+	source: string,
+	exercise: string,
+): Promise<{ exitCode: number; stderr: string; stdout: string }> {
 	const python = Bun.which("python") ?? Bun.which("python3");
 	if (!python) throw new Error("Python 3 is required to exercise the Colab cache staging script");
 	const processHandle = Bun.spawn(
-		[python, "-c", `import sys\nns = {"__name__": "colab_cache_test"}\nexec(compile(sys.stdin.read(), "<colab-model-cache-stage>", "exec"), ns)\n${exercise}`],
+		[
+			python,
+			"-c",
+			`import sys\nns = {"__name__": "colab_cache_test"}\nexec(compile(sys.stdin.read(), "<colab-model-cache-stage>", "exec"), ns)\n${exercise}`,
+		],
 		{ stdin: "pipe", stdout: "pipe", stderr: "pipe" },
 	);
 	processHandle.stdin.write(source);
@@ -26,14 +33,18 @@ async function runPythonScript(source: string, exercise: string): Promise<{ exit
 }
 
 test("/colab-model-cache stage requires an explicit GGUF and defaults its target runtime to L4", () => {
-	expect(parseColabModelCacheCommandArgs("stage --file Qwen3.5-4B-Base-Q4_K_M.gguf owner/Qwen3.5-4B-Base-GGUF")).toEqual({
+	expect(
+		parseColabModelCacheCommandArgs("stage --file Qwen3.5-4B-Base-Q4_K_M.gguf owner/Qwen3.5-4B-Base-GGUF"),
+	).toEqual({
 		accelerator: "L4",
 		file: "Qwen3.5-4B-Base-Q4_K_M.gguf",
 		modelReference: "owner/Qwen3.5-4B-Base-GGUF",
 		sessionName: undefined,
 	});
 	expect(() => parseColabModelCacheCommandArgs("stage owner/Qwen3.5-4B-Base-GGUF")).toThrow("--file is required");
-	expect(() => parseColabModelCacheCommandArgs("stage --gpu V100 --file model.gguf owner/model")).toThrow("Unsupported Colab GPU");
+	expect(() => parseColabModelCacheCommandArgs("stage --gpu V100 --file model.gguf owner/model")).toThrow(
+		"Unsupported Colab GPU",
+	);
 	expect(BUILTIN_SLASH_COMMAND_RESERVED_NAMES.has("colab-model-cache")).toBe(true);
 });
 
@@ -70,19 +81,24 @@ function colabSessionFixture(steps: readonly ColabCommandStep[]) {
 		async stage() {
 			await ensureCpuColabSession(
 				"cache-contract",
-				message => { messages.push(message); },
+				message => {
+					messages.push(message);
+				},
 				async (args, options) => {
 					const step = steps[calls.length];
 					calls.push([...args]);
 					if (!step) throw new Error(`Unexpected Colab command: ${args.join(" ")}`);
 					expect(args).toEqual([step.command, "--session", "cache-contract"]);
 					expect(options.timeoutMs).toBe(step.command === "new" ? 5 * 60_000 : 60_000);
-					const child = Bun.spawn([
-						process.execPath,
-						"--eval",
-						'const result = JSON.parse(process.argv[1]); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode = result.exitCode;',
-						JSON.stringify(step),
-					], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 5_000 });
+					const child = Bun.spawn(
+						[
+							process.execPath,
+							"--eval",
+							"const result = JSON.parse(process.argv[1]); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode = result.exitCode;",
+							JSON.stringify(step),
+						],
+						{ stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 5_000 },
+					);
 					const [exitCode, stdout, stderr] = await Promise.all([
 						child.exited,
 						new Response(child.stdout).text(),
@@ -96,7 +112,12 @@ function colabSessionFixture(steps: readonly ColabCommandStep[]) {
 	};
 }
 
-const missingCacheSession: ColabCommandStep = { command: "status", exitCode: 1, stdout: "", stderr: "No active session" };
+const missingCacheSession: ColabCommandStep = {
+	command: "status",
+	exitCode: 1,
+	stdout: "",
+	stderr: "No active session",
+};
 const launchedCacheSession: ColabCommandStep = { command: "new", exitCode: 0, stdout: "Session ready", stderr: "" };
 const cpuCacheSession: ColabCommandStep = { command: "status", exitCode: 0, stdout: "Accelerator: CPU", stderr: "" };
 
@@ -129,7 +150,9 @@ for (const stream of ["stdout", "stderr"] as const) {
 			const fixture = colabSessionFixture([
 				{ command: "status", exitCode: 0, stdout: "", stderr: "", [stream]: `Accelerator: ${accelerator}` },
 			]);
-			await expect(fixture.stage()).rejects.toThrow(`cache-contract is already using ${accelerator}; cache staging refuses to reuse a GPU runtime.`);
+			await expect(fixture.stage()).rejects.toThrow(
+				`cache-contract is already using ${accelerator}; cache staging refuses to reuse a GPU runtime.`,
+			);
 			expect(fixture.calls).toEqual([["status", "--session", "cache-contract"]]);
 			expect(fixture.messages).toEqual([]);
 			expect(fixture.staged).toBe(false);
@@ -140,7 +163,9 @@ for (const stream of ["stdout", "stderr"] as const) {
 				missingCacheSession,
 				{ ...launchedCacheSession, [stream]: `Accelerator: ${accelerator}` },
 			]);
-			await expect(fixture.stage()).rejects.toThrow(`cache-contract launched with ${accelerator}; cache staging refuses to use a GPU runtime.`);
+			await expect(fixture.stage()).rejects.toThrow(
+				`cache-contract launched with ${accelerator}; cache staging refuses to use a GPU runtime.`,
+			);
 			expect(fixture.calls.map(args => args[0])).toEqual(["status", "new"]);
 			expect(fixture.messages).toEqual(["Colab cache: requesting CPU session cache-contract…"]);
 			expect(fixture.staged).toBe(false);
@@ -152,7 +177,9 @@ for (const stream of ["stdout", "stderr"] as const) {
 				launchedCacheSession,
 				{ command: "status", exitCode: 0, stdout: "", stderr: "", [stream]: `Accelerator: ${accelerator}` },
 			]);
-			await expect(fixture.stage()).rejects.toThrow(`cache-contract launched with ${accelerator}; cache staging refuses to use a GPU runtime.`);
+			await expect(fixture.stage()).rejects.toThrow(
+				`cache-contract launched with ${accelerator}; cache staging refuses to use a GPU runtime.`,
+			);
 			expect(fixture.calls.map(args => args[0])).toEqual(["status", "new", "status"]);
 			expect(fixture.messages).toEqual(["Colab cache: requesting CPU session cache-contract…"]);
 			expect(fixture.staged).toBe(false);
@@ -165,7 +192,9 @@ test("cache staging stops when CPU session launch fails", async () => {
 		missingCacheSession,
 		{ ...launchedCacheSession, exitCode: 1, stdout: "", stderr: "Allocation failed" },
 	]);
-	await expect(fixture.stage()).rejects.toThrow("Could not acquire CPU Colab session cache-contract: Allocation failed");
+	await expect(fixture.stage()).rejects.toThrow(
+		"Could not acquire CPU Colab session cache-contract: Allocation failed",
+	);
 	expect(fixture.calls.map(args => args[0])).toEqual(["status", "new"]);
 	expect(fixture.staged).toBe(false);
 });
@@ -176,7 +205,9 @@ test("cache staging fails closed when post-launch status cannot verify the runti
 		launchedCacheSession,
 		{ ...cpuCacheSession, exitCode: 1, stderr: "Status unavailable" },
 	]);
-	await expect(fixture.stage()).rejects.toThrow("Could not verify CPU Colab session cache-contract: Status unavailable");
+	await expect(fixture.stage()).rejects.toThrow(
+		"Could not verify CPU Colab session cache-contract: Status unavailable",
+	);
 	expect(fixture.calls.map(args => args[0])).toEqual(["status", "new", "status"]);
 	expect(fixture.messages).toEqual(["Colab cache: requesting CPU session cache-contract…"]);
 	expect(fixture.staged).toBe(false);

@@ -14,14 +14,13 @@ import {
 	COLAB_MODEL_PROFILES,
 	type ColabModelLaunchResult,
 	type ColabPrebuiltRuntime,
-	calculateColabContextWindow,
 	formatColabSetups,
 	getColabAcceleratorProfile,
 	getColabInferenceTimeoutSeconds,
 	getColabModelProfile,
-	isDiffusionGemmaModel,
 	type HuggingFaceTreeEntry,
 	handleColabModelSlashCommand,
+	isDiffusionGemmaModel,
 	loadColabSetups,
 	parseColabModelCommandArgs,
 	parseHuggingFaceModelReference,
@@ -107,6 +106,8 @@ interface RemoteSetupConfig {
 		chatTemplate: string;
 		id: string;
 		kvCacheType: string;
+		maxGenerationTokens: number | null;
+		runtime: string | null;
 		physicalMicrobatch: number;
 		qwenPreserveThinking: boolean;
 		reasoningDisableMode: string;
@@ -117,6 +118,7 @@ interface RemoteSetupConfig {
 		repositoryUrl: string;
 		pinnedCommit: string | null;
 		pinnedTag: string | null;
+		fetchRef: string | null;
 		prebuilt: ColabPrebuiltRuntime | null;
 	};
 }

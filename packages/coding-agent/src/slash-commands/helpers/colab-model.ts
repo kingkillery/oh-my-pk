@@ -98,6 +98,14 @@ export interface ColabModelProfile {
 /** Persisted launch manifest for models with validated serving parameters. */
 export const COLAB_MODEL_PROFILES: readonly ColabModelProfile[] = [
 	{
+		// Gemma 2 was trained for 8K context; do not inherit the L4 64K default.
+		id: "gemma2-2b-it",
+		repoId: "bartowski/gemma-2-2b-it-GGUF",
+		artifactFile: "gemma-2-2b-it-Q4_K_M.gguf",
+		defaultContextWindow: 8_192,
+		maxGenerationTokens: 1_024,
+	},
+	{
 		id: "ornith-1.5-9b-abliterated",
 		repoId: "mradermacher/Huihui-Ornith-1.5-9B-abliterated-GGUF",
 		artifactFile: "Huihui-Ornith-1.5-9B-abliterated.Q4_K_M.gguf",
@@ -170,7 +178,11 @@ export function resolveColabContextWindow(
 	if (profile.kvBytesPerToken === undefined || profile.nCtxTrain === undefined) {
 		return profile.defaultContextWindow;
 	}
-	return calculateColabContextWindow(accelerator, artifact, profile as ColabModelProfile & { kvBytesPerToken: number; nCtxTrain: number });
+	return calculateColabContextWindow(
+		accelerator,
+		artifact,
+		profile as ColabModelProfile & { kvBytesPerToken: number; nCtxTrain: number },
+	);
 }
 
 export function getColabInferenceTimeoutSeconds(contextWindow: number): number {
@@ -2384,7 +2396,9 @@ export async function launchColabModel(
 		`Colab: selected ${artifact.quantization} (${artifact.totalSize > 0 ? `${(artifact.totalSize / 1_000_000_000).toFixed(1)} GB` : "size unknown"}) for ${accelerator} on ${runtime.id} llama.cpp${runtime.pinnedTag ? ` ${runtime.pinnedTag}` : ""}${prebuilt ? ` (prebuilt CUDA ${prebuilt.cuda} release, source fallback)` : ""}.`,
 	);
 	if (modelProfile) {
-		const tuning = modelProfile.runtime === "diffusion" ? `generation cap ${modelProfile.maxGenerationTokens}` : `Q8 KV cache, ubatch ${modelProfile.physicalMicrobatch}`;
+		const tuning = modelProfile.kvCacheType
+			? `Q8 KV cache, ubatch ${modelProfile.physicalMicrobatch}`
+			: `generation cap ${modelProfile.maxGenerationTokens ?? DEFAULT_MAX_TOKENS}`;
 		await emit(`Colab: ${modelProfile.id} context budget ${contextWindow.toLocaleString()} tokens; ${tuning}.`);
 	}
 	const setup = await runCommand(["exec", "--session", sessionName, "--timeout", "3600"], {
@@ -2412,9 +2426,7 @@ export async function launchColabModel(
 	// reports toolCallReady: false. Everything else still requires the probe.
 	const requiresToolProbe = runtime.id !== "diffusion";
 	if (!ready?.modelId || !ready.port || (requiresToolProbe && ready.toolCallReady !== true)) {
-		throw new Error(
-			`Colab setup completed without a validated readiness probe: ${setup.stdout || setup.stderr}`,
-		);
+		throw new Error(`Colab setup completed without a validated readiness probe: ${setup.stdout || setup.stderr}`);
 	}
 	if (runtime.pinnedCommit && ready.runtimeCommit !== runtime.pinnedCommit) {
 		throw new Error(
@@ -2454,7 +2466,11 @@ export async function launchColabModel(
 		chatTemplate: modelProfile?.chatTemplate,
 		reasoningDisableMode: modelProfile?.reasoningDisableMode,
 		qwenPreserveThinking: modelProfile?.qwenPreserveThinking,
-		maxTokens: Math.min(DEFAULT_MAX_TOKENS, effectiveContextWindow, modelProfile?.maxGenerationTokens ?? DEFAULT_MAX_TOKENS),
+		maxTokens: Math.min(
+			DEFAULT_MAX_TOKENS,
+			effectiveContextWindow,
+			modelProfile?.maxGenerationTokens ?? DEFAULT_MAX_TOKENS,
+		),
 		modelId,
 		modelName: modelId === ready.modelId ? ready.modelName : liveColabModelName(modelId),
 		quantization: artifact.quantization,
@@ -2533,7 +2549,9 @@ export async function handleColabModelSlashCommand(
 						reasoning:
 							result.reasoning ||
 							(!isDiffusion &&
-								/qwen3(?:[._-]|$)|deepseek-r1|gpt-oss|reasoning|thinking/i.test(`${result.repoId}/${modelName}`)),
+								/qwen3(?:[._-]|$)|deepseek-r1|gpt-oss|reasoning|thinking/i.test(
+									`${result.repoId}/${modelName}`,
+								)),
 						input: ["text"],
 						supportsTools: !isDiffusion,
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

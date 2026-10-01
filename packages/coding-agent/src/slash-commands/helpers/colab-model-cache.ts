@@ -1,16 +1,16 @@
-import { errorMessage } from "./parse";
+import type { SlashCommandRuntime } from "../types";
 import {
 	buildColabCommand,
-	fetchHuggingFaceGgufs,
-	parseHuggingFaceModelReference,
-	selectColabPrebuiltRuntime,
-	selectColabRuntimeProfile,
 	type ColabAccelerator,
+	fetchHuggingFaceGgufs,
 	type GgufArtifact,
 	type HuggingFaceModelReference,
 	type HuggingFaceTreeEntry,
+	parseHuggingFaceModelReference,
+	selectColabPrebuiltRuntime,
+	selectColabRuntimeProfile,
 } from "./colab-model";
-import type { SlashCommandRuntime } from "../types";
+import { errorMessage } from "./parse";
 
 const DEFAULT_CACHE_SESSION_NAME = "colab-pkherdr";
 const CACHE_PREFIX = "ompk-colab-cache/v1";
@@ -46,7 +46,13 @@ type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 function normalizeAccelerator(value: string): ColabAccelerator {
 	const normalized = value.toUpperCase();
-	if (normalized === "T4" || normalized === "L4" || normalized === "A100" || normalized === "H100" || normalized === "G4") {
+	if (
+		normalized === "T4" ||
+		normalized === "L4" ||
+		normalized === "A100" ||
+		normalized === "H100" ||
+		normalized === "G4"
+	) {
 		return normalized;
 	}
 	throw new Error(`Unsupported Colab GPU "${value}". Choose T4, L4, A100, H100, or G4.`);
@@ -102,7 +108,11 @@ export function parseColabModelCacheCommandArgs(input: string): ColabModelCacheR
 	return { accelerator, file, modelReference: modelTokens[0], sessionName };
 }
 
-function artifactForFile(entries: readonly HuggingFaceTreeEntry[], reference: HuggingFaceModelReference, file: string): GgufArtifact {
+function artifactForFile(
+	entries: readonly HuggingFaceTreeEntry[],
+	reference: HuggingFaceModelReference,
+	file: string,
+): GgufArtifact {
 	const exact = entries.find(entry => entry.path === file);
 	if (!exact) throw new Error(`${file} was not found in ${reference.repoId}@${reference.revision}.`);
 	const groupKey = file.replace(/-\d{5}-of-\d{5}(?=\.gguf$)/i, "-SPLIT");
@@ -113,7 +123,9 @@ function artifactForFile(entries: readonly HuggingFaceTreeEntry[], reference: Hu
 	if (!primaryFile) throw new Error(`No GGUF artifact group was found for ${file}.`);
 	const leafNames = new Set(grouped.map(entry => entry.path.split("/").at(-1)!));
 	if (leafNames.size !== grouped.length) throw new Error(`GGUF split group ${file} has ambiguous file names.`);
-	const quantization = primaryFile.toUpperCase().match(/(?:^|[-_.])((?:IQ|PTQ|PQ|Q)\d(?:_[A-Z0-9]+)+|BF16|F16)(?:[-_.]|$)/)?.[1] ?? "UNKNOWN";
+	const quantization =
+		primaryFile.toUpperCase().match(/(?:^|[-_.])((?:IQ|PTQ|PQ|Q)\d(?:_[A-Z0-9]+)+|BF16|F16)(?:[-_.]|$)/)?.[1] ??
+		"UNKNOWN";
 	return {
 		files: grouped.map(entry => entry.path),
 		primaryFile,
@@ -134,20 +146,37 @@ export async function resolveImmutableHuggingFaceRevision(
 	reference: HuggingFaceModelReference,
 	fetchImpl: FetchLike = globalThis.fetch,
 ): Promise<HuggingFaceModelReference> {
-	const repoPath = reference.repoId.split("/").map(segment => encodeURIComponent(segment)).join("/");
+	const repoPath = reference.repoId
+		.split("/")
+		.map(segment => encodeURIComponent(segment))
+		.join("/");
 	const response = await fetchImpl(
 		`https://huggingface.co/api/models/${repoPath}/revision/${encodeURIComponent(reference.revision)}`,
 		{ headers: { Accept: "application/json" }, signal: AbortSignal.timeout(30_000) },
 	);
-	if (!response.ok) throw new Error(`Hugging Face returned ${response.status} while resolving ${reference.repoId}@${reference.revision}.`);
+	if (!response.ok)
+		throw new Error(
+			`Hugging Face returned ${response.status} while resolving ${reference.repoId}@${reference.revision}.`,
+		);
 	const payload: unknown = await response.json();
-	if (!payload || typeof payload !== "object" || !("sha" in payload) || typeof payload.sha !== "string" || !/^[a-f0-9]{40}$/i.test(payload.sha)) {
-		throw new Error(`Hugging Face did not return an immutable revision for ${reference.repoId}@${reference.revision}.`);
+	if (
+		!payload ||
+		typeof payload !== "object" ||
+		!("sha" in payload) ||
+		typeof payload.sha !== "string" ||
+		!/^[a-f0-9]{40}$/i.test(payload.sha)
+	) {
+		throw new Error(
+			`Hugging Face did not return an immutable revision for ${reference.repoId}@${reference.revision}.`,
+		);
 	}
 	return { ...reference, revision: payload.sha };
 }
 
-async function readCommandStream(stream: ReadableStream<Uint8Array>, onChunk?: (chunk: string) => Promise<void> | void): Promise<string> {
+async function readCommandStream(
+	stream: ReadableStream<Uint8Array>,
+	onChunk?: (chunk: string) => Promise<void> | void,
+): Promise<string> {
 	const decoder = new TextDecoder();
 	const reader = stream.getReader();
 	let output = "";
@@ -161,7 +190,10 @@ async function readCommandStream(stream: ReadableStream<Uint8Array>, onChunk?: (
 	return output + decoder.decode();
 }
 
-async function runColab(args: readonly string[], options: { input?: string; onStdout?: (chunk: string) => Promise<void> | void; timeoutMs: number }): Promise<CommandResult> {
+async function runColab(
+	args: readonly string[],
+	options: { input?: string; onStdout?: (chunk: string) => Promise<void> | void; timeoutMs: number },
+): Promise<CommandResult> {
 	const processHandle = Bun.spawn({
 		cmd: buildColabCommand(args),
 		stdin: options.input === undefined ? "ignore" : "pipe",
@@ -202,25 +234,35 @@ export async function ensureCpuColabSession(
 	const status = await runCommand(["status", "--session", sessionName], { timeoutMs: 60_000 });
 	if (status.exitCode === 0) {
 		const accelerator = parseAccelerator(`${status.stdout}\n${status.stderr}`);
-		if (accelerator) throw new Error(`${sessionName} is already using ${accelerator}; cache staging refuses to reuse a GPU runtime.`);
+		if (accelerator)
+			throw new Error(
+				`${sessionName} is already using ${accelerator}; cache staging refuses to reuse a GPU runtime.`,
+			);
 		await emit(`Colab cache: reusing CPU session ${sessionName}.`);
 		return;
 	}
 	await emit(`Colab cache: requesting CPU session ${sessionName}…`);
 	const launch = await runCommand(["new", "--session", sessionName], { timeoutMs: 5 * 60_000 });
-	if (launch.exitCode !== 0) throw new Error(`Could not acquire CPU Colab session ${sessionName}: ${launch.stderr || launch.stdout}`);
+	if (launch.exitCode !== 0)
+		throw new Error(`Could not acquire CPU Colab session ${sessionName}: ${launch.stderr || launch.stdout}`);
 	const launchedAccelerator = parseAccelerator(`${launch.stdout}\n${launch.stderr}`);
 	if (launchedAccelerator) {
-		throw new Error(`${sessionName} launched with ${launchedAccelerator}; cache staging refuses to use a GPU runtime.`);
+		throw new Error(
+			`${sessionName} launched with ${launchedAccelerator}; cache staging refuses to use a GPU runtime.`,
+		);
 	}
 	// A successful launch without --gpu does not prove that Colab allocated a CPU runtime.
 	const acquiredStatus = await runCommand(["status", "--session", sessionName], { timeoutMs: 60_000 });
 	if (acquiredStatus.exitCode !== 0) {
-		throw new Error(`Could not verify CPU Colab session ${sessionName}: ${acquiredStatus.stderr || acquiredStatus.stdout}`);
+		throw new Error(
+			`Could not verify CPU Colab session ${sessionName}: ${acquiredStatus.stderr || acquiredStatus.stdout}`,
+		);
 	}
 	const acquiredAccelerator = parseAccelerator(`${acquiredStatus.stdout}\n${acquiredStatus.stderr}`);
 	if (acquiredAccelerator) {
-		throw new Error(`${sessionName} launched with ${acquiredAccelerator}; cache staging refuses to use a GPU runtime.`);
+		throw new Error(
+			`${sessionName} launched with ${acquiredAccelerator}; cache staging refuses to use a GPU runtime.`,
+		);
 	}
 	await emit(`Colab cache: acquired CPU session ${sessionName}.`);
 }
@@ -371,7 +413,11 @@ if __name__ == "__main__":
 `;
 }
 
-export async function stageColabModelCache(modelReference: string, emit: StatusEmitter, options: Omit<ColabModelCacheRequest, "modelReference">): Promise<ColabModelCacheResult> {
+export async function stageColabModelCache(
+	modelReference: string,
+	emit: StatusEmitter,
+	options: Omit<ColabModelCacheRequest, "modelReference">,
+): Promise<ColabModelCacheResult> {
 	const requestedReference = parseHuggingFaceModelReference(modelReference);
 	if (requestedReference.file && requestedReference.file !== options.file) {
 		throw new Error("The GGUF URL and --file must identify the same artifact.");
@@ -381,7 +427,10 @@ export async function stageColabModelCache(modelReference: string, emit: StatusE
 	const artifact = artifactForFile(entries, reference, options.file);
 	const runtime = selectColabRuntimeProfile(reference, artifact);
 	const prebuilt = selectColabPrebuiltRuntime(runtime, options.accelerator);
-	if (!prebuilt) throw new Error(`${options.accelerator} has no verified prebuilt ${runtime.id} llama.cpp archive to stage; choose T4 or L4.`);
+	if (!prebuilt)
+		throw new Error(
+			`${options.accelerator} has no verified prebuilt ${runtime.id} llama.cpp archive to stage; choose T4 or L4.`,
+		);
 	const bucket = cacheBucket();
 	const sessionName = options.sessionName ?? (Bun.env.OMPK_COLAB_CACHE_SESSION?.trim() || DEFAULT_CACHE_SESSION_NAME);
 	await ensureCpuColabSession(sessionName, emit);
@@ -397,7 +446,8 @@ export async function stageColabModelCache(modelReference: string, emit: StatusE
 		timeoutMs: 2 * 60 * 60_000,
 	});
 	if (result.exitCode !== 0) throw new Error(`Colab cache staging failed: ${result.stderr || result.stdout}`);
-	if (!parseMarkedJson(result.stdout, READY_PREFIX)) throw new Error(`Colab cache staging completed without a verified manifest: ${result.stdout || result.stderr}`);
+	if (!parseMarkedJson(result.stdout, READY_PREFIX))
+		throw new Error(`Colab cache staging completed without a verified manifest: ${result.stdout || result.stderr}`);
 	return {
 		artifact,
 		bucket,
@@ -409,19 +459,24 @@ export async function stageColabModelCache(modelReference: string, emit: StatusE
 	};
 }
 
-export async function handleColabModelCacheSlashCommand(args: string, runtime: SlashCommandRuntime): Promise<{ consumed: true }> {
+export async function handleColabModelCacheSlashCommand(
+	args: string,
+	runtime: SlashCommandRuntime,
+): Promise<{ consumed: true }> {
 	try {
 		const request = parseColabModelCacheCommandArgs(args);
 		const result = await stageColabModelCache(request.modelReference, message => runtime.output(message), request);
-		await runtime.output([
-			"Colab cache staging complete.",
-			`${result.repoId} ${result.artifact.primaryFile} (${result.artifact.quantization})`,
-			`Pinned model revision: ${result.revision}`,
-			`Warm with: /colab-model --gpu ${request.accelerator} ${result.repoId}@${result.revision}`,
-			`Verified runtime archive: ${result.runtimeArchive}`,
-			`Persistent bucket: ${result.bucket}`,
-			`CPU session: ${result.sessionName}`,
-		].join("\n"));
+		await runtime.output(
+			[
+				"Colab cache staging complete.",
+				`${result.repoId} ${result.artifact.primaryFile} (${result.artifact.quantization})`,
+				`Pinned model revision: ${result.revision}`,
+				`Warm with: /colab-model --gpu ${request.accelerator} ${result.repoId}@${result.revision}`,
+				`Verified runtime archive: ${result.runtimeArchive}`,
+				`Persistent bucket: ${result.bucket}`,
+				`CPU session: ${result.sessionName}`,
+			].join("\n"),
+		);
 	} catch (error) {
 		await runtime.output(`Colab cache staging failed: ${errorMessage(error)}`);
 	}
