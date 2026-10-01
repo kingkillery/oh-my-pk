@@ -4,14 +4,13 @@ import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/mo
 import { executeBuiltinSlashCommand } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/builtin-registry";
 
 test("/model reset-submodels keeps the default and allows picker role reassignment", async () => {
-	const settings = Settings.isolated({
-		modelRoles: {
-			default: "anthropic/claude-sonnet-4-5",
-			smol: "openai/gpt-4o-mini",
-			slow: "anthropic/claude-opus-4-5",
-		},
-		"task.agentModelOverrides": { explore: "openai/gpt-4o" },
+	const settings = Settings.isolated();
+	settings.set("modelRoles", {
+		default: "anthropic/claude-sonnet-4-5",
+		smol: "openai/gpt-4o-mini",
+		slow: "anthropic/claude-opus-4-5",
 	});
+	settings.set("task.agentModelOverrides", { explore: "openai/gpt-4o" });
 	const showStatus = vi.fn();
 	const setText = vi.fn();
 	const session = { model: { provider: "anthropic", id: "claude-sonnet-4-5" } };
