@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep wrapped session deletion dialogs within the terminal viewport.
+- Allow Julia cold-start compilation up to 60 seconds, capped by the execution deadline.
+
 ## [16.4.28] - 2026-09-30
 
 ### Changed

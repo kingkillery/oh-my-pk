@@ -48,7 +48,9 @@ async function ensureRunnerScript(): Promise<string> {
 }
 
 const SHUTDOWN_GRACE_MS = 1_000;
-const STARTUP_TIMEOUT_MS = 15_000; // Julia compile/warmup can be slightly slower
+// A fresh Julia depot can spend tens of seconds compiling the runner and prelude.
+// Explicit execution deadlines still cap this allowance.
+const STARTUP_TIMEOUT_MS = 60_000;
 const INTERRUPT_ESCALATION_MS = 5_000;
 
 export interface KernelExecuteOptions {

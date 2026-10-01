@@ -679,8 +679,8 @@ export class SessionSelectorComponent extends Container {
 	 *
 	 * In fill-height mode the body is padded (or, on a cramped terminal, trimmed)
 	 * to leave exactly enough room for the footer at the screen bottom, so the
-	 * footer is always visible and never drifts as the list window resizes. The
-	 * in-editor selector just appends the footer directly.
+	 * footer is always visible and never drifts as the list window resizes. Both
+	 * modes trim overflow so a wrapped dialog cannot push the frame into scrollback.
 	 */
 	render(width: number): readonly string[] {
 		const lines: string[] = [];
@@ -690,10 +690,10 @@ export class SessionSelectorComponent extends Container {
 			for (const line of childLines) lines.push(line);
 		}
 		const footer = this.#footerLines(width);
-		if (this.#fillHeight) {
-			const target = Math.max(0, this.#getTerminalRows() - footer.length);
-			if (lines.length > target) lines.length = target;
-			else for (let i = lines.length; i < target; i++) lines.push("");
+		const target = Math.max(0, this.#getTerminalRows() - footer.length);
+		if (lines.length > target) lines.length = target;
+		else if (this.#fillHeight) {
+			for (let i = lines.length; i < target; i++) lines.push("");
 		}
 		this.#footerStart = lines.length;
 		for (const line of footer) lines.push(line);

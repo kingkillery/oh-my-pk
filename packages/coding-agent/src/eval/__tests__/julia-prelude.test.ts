@@ -49,7 +49,7 @@ nothing
 				},
 			);
 
-			expect(result.exitCode).toBe(0);
+			expect(result.exitCode, result.output).toBe(0);
 			expect(result.output).toContain("RANGE=two|three");
 			expect(result.output).toContain('QUERY="b"');
 			expect(result.output).toContain("STRIPPED=red");
