@@ -149,3 +149,4 @@ packages/coding-agent/dist/
 # ~/.ompk/agent/sessions; published to the HF dataset, never to this public repo
 /interconnection_dash_traces*.jsonl
 evals/typesafe-jev/corpus.jsonl
+packages/natives/native/*.node.previous-release-*
