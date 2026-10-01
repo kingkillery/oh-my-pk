@@ -14,6 +14,8 @@ export interface PersistentColabBridgeOptions {
 	localPort?: number;
 	/** Remote read deadline, scaled for cold prefill context. */
 	remoteTimeoutSeconds?: number;
+	/** Explicit Python launcher argv, e.g. an identity-verified account wrapper. */
+	pythonCommand?: readonly string[];
 }
 
 /**
@@ -139,17 +141,26 @@ export async function startPersistentColabBridge(
 		const probe = await probeBridge(candidate, options.modelId);
 		// Never take over a port that answered us: fail instead of racing it.
 		if (probe.kind === "rejected") throw new Error(probe.reason);
-		if (probe.kind === "match") return { apiBaseUrl: candidate, reused: true, async stop() {} };
+		if (probe.kind === "match") {
+			if (options.pythonCommand)
+				throw new Error(
+					"Existing bridge account identity cannot be verified; explicit account launch requires a free port.",
+				);
+			return { apiBaseUrl: candidate, reused: true, async stop() {} };
+		}
 	}
 	const python =
 		Bun.env.OMPK_COLAB_PYTHON?.trim() || (process.platform === "win32" ? "/opt/colab-cli/bin/python" : "python3");
+	const pythonCommand = options.pythonCommand ?? [python];
+	if (!pythonCommand.length || pythonCommand.some(value => !value || value.includes("\0")))
+		throw new Error("Invalid explicit Python launcher");
 	const sourceBytes = new TextEncoder().encode(bridgeSource);
 	// Keep stdin open after sending the length-delimited source. EOF is an
 	// ownership lease: parent exit/stop closes ONLY this Python bridge process.
 	const bootstrap =
 		"import sys,threading,os\nsource=sys.stdin.buffer.read(int(sys.argv.pop(1)))\ndef owner_closed():\n os.read(sys.stdin.fileno(),1)\n os._exit(0)\nthreading.Thread(target=owner_closed,daemon=True).start()\nexec(compile(source,'ompk-colab-warm-bridge.py','exec'))";
 	const args = [
-		python,
+		...pythonCommand,
 		"-u",
 		"-c",
 		bootstrap,

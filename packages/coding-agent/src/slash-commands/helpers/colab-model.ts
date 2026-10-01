@@ -12,6 +12,7 @@ const DEFAULT_REMOTE_PORT = 8_081;
 const RUNTIME_PROVIDER = "llama.cpp (colab)";
 const RUNTIME_SOURCE_ID = "builtin://colab-model";
 const PROGRESS_PREFIX = "__OMPK_COLAB_PROGRESS__";
+const TIMING_PREFIX = "__OMPK_COLAB_TIMING__";
 const READY_PREFIX = "__OMPK_COLAB_READY__";
 const HTTP_PREFIX = "__OMPK_COLAB_HTTP__";
 const TOOL_READINESS_FUNCTION = "ompk_tool_readiness_probe";
@@ -448,6 +449,32 @@ interface ColabModelLaunchOptions {
 	localPort?: number;
 	/** Stage a verified cache after session acquisition, returning its exact VM directory. */
 	prepareModelCache?: () => Promise<string>;
+	/** Opt-in timing evidence. Remote elapsed times use a separate monotonic clock. */
+	onStage?: (event: ColabLaunchStageEvent) => Promise<void> | void;
+	/** Explicit argv routes keep account isolation local to this launch. */
+	cliCommand?: readonly string[];
+	pythonCommand?: readonly string[];
+}
+
+export interface ColabLaunchStageEvent {
+	stage: string;
+	event: "begin" | "end" | "error";
+	source: "local" | "remote";
+	durationMs?: number;
+	remoteElapsedMs?: number;
+}
+
+async function measureLaunchStage<T>(stage: string, emit: ColabModelLaunchOptions["onStage"], run: () => Promise<T>) {
+	const started = performance.now();
+	await emit?.({ stage, event: "begin", source: "local" });
+	try {
+		const result = await run();
+		await emit?.({ stage, event: "end", source: "local", durationMs: performance.now() - started });
+		return result;
+	} catch (error) {
+		await emit?.({ stage, event: "error", source: "local", durationMs: performance.now() - started });
+		throw error;
+	}
 }
 
 type StatusEmitter = (message: string) => Promise<void> | void;
@@ -951,7 +978,16 @@ function summarizeRuntime(
 	};
 }
 
-export function buildColabCommand(args: readonly string[], platform = process.platform): string[] {
+export function buildColabCommand(
+	args: readonly string[],
+	platform = process.platform,
+	command?: readonly string[],
+): string[] {
+	if (command) {
+		if (!command.length || command.some(value => !value || value.includes("\0")))
+			throw new Error("Invalid explicit Colab CLI command");
+		return [...command, ...args];
+	}
 	const override = Bun.env.OMPK_COLAB_CLI?.trim();
 	if (override) return [override, ...args];
 	return platform === "win32" ? ["wsl", "colab", ...args] : ["colab", ...args];
@@ -985,10 +1021,11 @@ async function runCommand(
 		input?: string;
 		onStdout?: (chunk: string) => Promise<void> | void;
 		timeoutMs: number;
+		cliCommand?: readonly string[];
 	},
 ): Promise<CommandResult> {
 	const processHandle = Bun.spawn({
-		cmd: buildColabCommand(args),
+		cmd: buildColabCommand(args, process.platform, options.cliCommand),
 		stdin: options.input === undefined ? "ignore" : "pipe",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -1024,8 +1061,9 @@ async function ensureColabSession(
 	accelerators: readonly ColabAccelerator[],
 	requestedAccelerator: ColabAccelerator | undefined,
 	emit: StatusEmitter,
+	cliCommand?: readonly string[],
 ): Promise<ColabAccelerator> {
-	const status = await runCommand(["status", "--session", sessionName], { timeoutMs: 60_000 });
+	const status = await runCommand(["status", "--session", sessionName], { timeoutMs: 60_000, cliCommand });
 	const existingAccelerator =
 		status.exitCode === 0 ? parseAccelerator(`${status.stdout}\n${status.stderr}`) : undefined;
 	if (existingAccelerator) {
@@ -1042,11 +1080,12 @@ async function ensureColabSession(
 	for (const accelerator of accelerators) {
 		await emit(`Colab: requesting ${accelerator} runtime…`);
 		const launch = await runCommand(["new", "--session", sessionName, "--gpu", accelerator], {
+			cliCommand,
 			timeoutMs: 5 * 60_000,
 		});
 		if (launch.exitCode === 0) return parseAccelerator(`${launch.stdout}\n${launch.stderr}`) ?? accelerator;
 		lastFailure = launch.stderr || launch.stdout;
-		const recoveredStatus = await runCommand(["status", "--session", sessionName], { timeoutMs: 60_000 });
+		const recoveredStatus = await runCommand(["status", "--session", sessionName], { timeoutMs: 60_000, cliCommand });
 		const recoveredAccelerator =
 			recoveredStatus.exitCode === 0
 				? parseAccelerator(`${recoveredStatus.stdout}\n${recoveredStatus.stderr}`)
@@ -1304,6 +1343,8 @@ from pathlib import Path
 CONFIG = json.loads(${pythonJson(payload)})
 PROGRESS_PREFIX = ${JSON.stringify(PROGRESS_PREFIX)}
 READY_PREFIX = ${JSON.stringify(READY_PREFIX)}
+TIMING_PREFIX = ${JSON.stringify(TIMING_PREFIX)}
+TRACE_STARTED = time.perf_counter()
 RUNTIME = CONFIG["runtime"]
 MODEL_PROFILE = CONFIG.get("modelProfile") or {}
 PREBUILT = RUNTIME["prebuilt"]
@@ -1329,6 +1370,27 @@ class PrebuiltCompatibilityError(RuntimeError):
 
 def progress(message):
     print(PROGRESS_PREFIX + json.dumps({"message": message}), flush=True)
+
+
+def measured(stage):
+    def decorate(function):
+        def call(*args, **kwargs):
+            started = time.perf_counter()
+            def event(kind):
+                now = time.perf_counter()
+                print(TIMING_PREFIX + json.dumps({"stage": stage, "event": kind,
+                    "source": "remote", "remoteElapsedMs": (now - TRACE_STARTED) * 1000,
+                    "durationMs": (now - started) * 1000}), flush=True)
+            event("begin")
+            try:
+                result = function(*args, **kwargs)
+            except BaseException:
+                event("error")
+                raise
+            event("end")
+            return result
+        return call
+    return decorate
 
 
 def run(args, cwd=None):
@@ -1399,6 +1461,7 @@ def source_target():
     return RuntimeTarget("source", source_server_path(), git_output(["rev-parse", "HEAD"]) or None)
 
 
+@measured("runtime-source")
 def prepare_runtime_source():
     pinned = RUNTIME["pinnedCommit"]
     if not (LLAMA_DIR / ".git").is_dir():
@@ -1435,6 +1498,7 @@ def prepare_runtime_source():
         raise RuntimeError(f"{LLAMA_DIR} is at {head or 'an unknown commit'}, expected pinned {pinned}")
 
 
+@measured("dependencies-build")
 def build_source_runtime():
     """Compile the runtime binary from the checkout; the result must pass the same validation as a reused build."""
     build_dir = LLAMA_DIR / "build"
@@ -1583,6 +1647,7 @@ def restore_persistent_file(uri, destination, expected_sha256):
             part.unlink()
 
 
+@measured("runtime-transfer-verify")
 def ensure_prebuilt_archive(archive):
     """Keep the cached archive only when it hashes to the pinned digest; otherwise download and verify a fresh copy."""
     if archive.is_file():
@@ -1719,6 +1784,7 @@ def validated_targets():
     return targets
 
 
+@measured("runtime-prepare")
 def prepare_runtime_target(targets):
     """Pick a validated server, restoring the pinned release when possible and compiling only as a last resort."""
     if targets:
@@ -1793,6 +1859,7 @@ def request_json(url, payload=None, timeout=30):
         return json.loads(response.read())
 
 
+@measured("remote-readiness-probe")
 def announce_ready(model_id, primary_name, base_url, target):
     context_window = CONFIG["contextWindow"]
     try:
@@ -1944,6 +2011,7 @@ def restore_persistent_model(primary_name, required_names):
         return None
 
 
+@measured("model-transfer-verify")
 def resolve_model_path(primary_name, required_names):
     if CONFIG.get("modelCacheDirectory"):
         directory = Path(CONFIG["modelCacheDirectory"])
@@ -2031,6 +2099,7 @@ def assert_port_unused():
             raise RuntimeError("Existing server is not a validated reusable match. It was left running; stop it explicitly only after checking ownership and activity.")
 
 
+@measured("load-compile")
 def start_server(target, model_path, primary_name, base_url):
     alias = Path(primary_name).stem
     progress(f"loading {alias} on the GPU with {target.source} {runtime_label()}")
@@ -2163,13 +2232,35 @@ function parseMarkedJson<T>(output: string, prefix: string): T | undefined {
 	return undefined;
 }
 
-function createProgressParser(emit: StatusEmitter): (chunk: string) => Promise<void> {
+export function createProgressParser(
+	emit: StatusEmitter,
+	onStage?: ColabModelLaunchOptions["onStage"],
+): (chunk: string) => Promise<void> {
 	let buffered = "";
 	return async chunk => {
 		buffered += chunk;
 		const lines = buffered.split(/\r?\n/);
 		buffered = lines.pop() ?? "";
 		for (const line of lines) {
+			const timing = parseMarkedJson<ColabLaunchStageEvent>(line, TIMING_PREFIX);
+			if (
+				timing &&
+				/^[a-z][a-z-]{0,63}$/.test(timing.stage) &&
+				["begin", "end", "error"].includes(timing.event) &&
+				timing.source === "remote" &&
+				Number.isFinite(timing.remoteElapsedMs) &&
+				(timing.remoteElapsedMs ?? -1) >= 0 &&
+				Number.isFinite(timing.durationMs) &&
+				(timing.durationMs ?? -1) >= 0
+			) {
+				await onStage?.({
+					stage: timing.stage,
+					event: timing.event,
+					source: "remote",
+					remoteElapsedMs: timing.remoteElapsedMs,
+					durationMs: timing.durationMs,
+				});
+			}
 			const payload = parseMarkedJson<{ message?: string }>(line, PROGRESS_PREFIX);
 			if (payload?.message) await emit(`Colab: ${payload.message}…`);
 		}
@@ -2362,7 +2453,9 @@ export async function launchColabModel(
 ): Promise<ColabModelLaunchResult> {
 	const reference = parseHuggingFaceModelReference(modelReference);
 	await emit(`Colab: resolving ${reference.repoId}@${reference.revision}…`);
-	const entries = await fetchHuggingFaceGgufs(reference, options.fetch);
+	const entries = await measureLaunchStage("discovery-auth", options.onStage, () =>
+		fetchHuggingFaceGgufs(reference, options.fetch),
+	);
 	const sessionName = resolveColabSessionName(options.sessionName);
 	const localPort = (() => {
 		const raw =
@@ -2383,8 +2476,12 @@ export async function launchColabModel(
 			`No GGUF in ${reference.repoId} fits an automatic T4, L4, or A100 launch. Pass --gpu H100 or --gpu G4, or use a smaller GGUF.`,
 		);
 	}
-	const accelerator = await ensureColabSession(sessionName, acquisitionCandidates, options.accelerator, emit);
-	const modelCacheDirectory = await options.prepareModelCache?.();
+	const accelerator = await measureLaunchStage("allocation", options.onStage, () =>
+		ensureColabSession(sessionName, acquisitionCandidates, options.accelerator, emit, options.cliCommand),
+	);
+	const modelCacheDirectory = options.prepareModelCache
+		? await measureLaunchStage("cache-staging", options.onStage, options.prepareModelCache)
+		: undefined;
 	const artifact = selectGgufArtifact(entries, reference, accelerator);
 	const modelProfile = getColabModelProfile(reference, artifact);
 	const contextWindow = modelProfile
@@ -2402,6 +2499,7 @@ export async function launchColabModel(
 		await emit(`Colab: ${modelProfile.id} context budget ${contextWindow.toLocaleString()} tokens; ${tuning}.`);
 	}
 	const setup = await runCommand(["exec", "--session", sessionName, "--timeout", "3600"], {
+		cliCommand: options.cliCommand,
 		input: buildRemoteSetupScript({
 			modelCacheDirectory,
 			accelerator,
@@ -2412,7 +2510,7 @@ export async function launchColabModel(
 			remotePort: DEFAULT_REMOTE_PORT,
 			runtime,
 		}),
-		onStdout: createProgressParser(emit),
+		onStdout: createProgressParser(emit, options.onStage),
 		timeoutMs: 60 * 60_000,
 	});
 	if (setup.exitCode !== 0) {
@@ -2434,20 +2532,23 @@ export async function launchColabModel(
 		);
 	}
 	await emit("Colab: opening private localhost API bridge…");
-	const bridge = await startPersistentColabBridge({
-		sessionName,
-		remotePort: ready.port,
-		modelId: ready.modelId,
-		localPort,
-		// Bonsai's full 8K-token replies take longer than the generic 300-second
-		// bridge deadline on L4 (~31 tok/s) and especially on T4 (~15 tok/s).
-		remoteTimeoutSeconds:
-			reference.repoId.toLowerCase() === "prism-ml/ternary-bonsai-2-27b-gguf"
-				? accelerator === "T4"
-					? 900
-					: 600
-				: getColabInferenceTimeoutSeconds(contextWindow),
-	});
+	const bridge = await measureLaunchStage("bridge-register", options.onStage, () =>
+		startPersistentColabBridge({
+			pythonCommand: options.pythonCommand,
+			sessionName,
+			remotePort: ready.port,
+			modelId: ready.modelId,
+			localPort,
+			// Bonsai's full 8K-token replies take longer than the generic 300-second
+			// bridge deadline on L4 (~31 tok/s) and especially on T4 (~15 tok/s).
+			remoteTimeoutSeconds:
+				reference.repoId.toLowerCase() === "prism-ml/ternary-bonsai-2-27b-gguf"
+					? accelerator === "T4"
+						? 900
+						: 600
+					: getColabInferenceTimeoutSeconds(contextWindow),
+		}),
+	);
 	const apiBaseUrl = bridge.apiBaseUrl;
 	let modelId = ready.modelId;
 	try {

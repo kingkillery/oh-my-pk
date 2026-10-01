@@ -30,6 +30,28 @@ describe("persistent Colab bridge ownership", () => {
 		}
 	});
 
+	test("an explicit account refuses reuse of a matching model listener", async () => {
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: () => Response.json({ data: [{ id: "bonsai" }] }),
+		});
+		try {
+			await expect(
+				startPersistentColabBridge({
+					sessionName: "unused",
+					modelId: "bonsai",
+					remotePort: 8081,
+					localPort: server.port,
+					pythonCommand: ["identity-check-must-not-be-skipped"],
+				}),
+			).rejects.toThrow("account identity cannot be verified");
+			expect((await fetch(`http://127.0.0.1:${server.port}/health`)).status).toBe(200);
+		} finally {
+			server.stop(true);
+		}
+	});
+
 	test("a different model is rejected without replacing the listener", async () => {
 		const server = Bun.serve({
 			hostname: "127.0.0.1",

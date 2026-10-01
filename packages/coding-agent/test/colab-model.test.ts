@@ -375,6 +375,19 @@ describe("GGUF accelerator selection", () => {
 		expect(getColabAcceleratorProfile("G4").defaultContextWindow).toBe(131_072);
 	});
 
+	test("keeps Gemma 2 within its trained context and generation budget", () => {
+		const reference = { repoId: "bartowski/gemma-2-2b-it-GGUF", revision: "main" };
+		const artifact = selectGgufArtifact(
+			[{ type: "file", path: "gemma-2-2b-it-Q4_K_M.gguf", size: 1_500_000_000 }],
+			reference,
+			"L4",
+		);
+		const profile = getColabModelProfile(reference, artifact);
+		expect(profile?.id).toBe("gemma2-2b-it");
+		expect(profile?.maxGenerationTokens).toBe(1_024);
+		expect(resolveColabContextWindow("L4", artifact, profile!)).toBe(8_192);
+	});
+
 	test("uses the Ornith manifest for dynamic context and cache timing", () => {
 		const reference = {
 			repoId: "mradermacher/Huihui-Ornith-1.5-9B-abliterated-GGUF",
@@ -382,7 +395,7 @@ describe("GGUF accelerator selection", () => {
 		};
 		const artifact = selectGgufArtifact(ORNITH_FILES, reference, "L4");
 		const profile = getColabModelProfile(reference, artifact);
-		expect(profile).toEqual(COLAB_MODEL_PROFILES[0]);
+		expect(profile).toEqual(COLAB_MODEL_PROFILES.find(candidate => candidate.id === "ornith-1.5-9b-abliterated"));
 		expect(profile?.artifactFile).toBe("Huihui-Ornith-1.5-9B-abliterated.Q4_K_M.gguf");
 		expect(profile?.nCtxTrain).toBe(262_144);
 		expect(profile?.defaultContextWindow).toBe(131_072);
