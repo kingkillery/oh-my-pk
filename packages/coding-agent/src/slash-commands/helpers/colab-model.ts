@@ -409,6 +409,9 @@ export interface ColabModelLaunchResult {
 	sessionName: string;
 	/** True only after the remote runtime emitted a valid synthetic tool call. */
 	toolCallReady: boolean;
+	/** Chat mode verifies visible generation without checking tool support. */
+	readinessMode?: ColabReadinessMode;
+	chatReady?: boolean;
 }
 export interface ColabModelCommandRequest {
 	accelerator?: ColabAccelerator;
@@ -436,12 +439,16 @@ interface RemoteReadyPayload {
 	runtimeServer?: string;
 	runtimeSource?: ColabRuntimeSource;
 	toolCallReady: boolean;
+	readinessMode?: ColabReadinessMode;
+	chatReady?: boolean;
 }
 
 interface HttpMetadata {
 	headers?: Record<string, string>;
 	status: number;
 }
+export type ColabReadinessMode = "tools" | "chat";
+
 interface ColabModelLaunchOptions {
 	accelerator?: ColabAccelerator;
 	fetch?: typeof globalThis.fetch;
@@ -454,6 +461,8 @@ interface ColabModelLaunchOptions {
 	/** Explicit argv routes keep account isolation local to this launch. */
 	cliCommand?: readonly string[];
 	pythonCommand?: readonly string[];
+	/** Explicit visible-chat warmup; tool readiness remains unverified in this mode. */
+	readinessMode?: ColabReadinessMode;
 }
 
 export interface ColabLaunchStageEvent {
@@ -1272,12 +1281,15 @@ export function buildRemoteSetupScript(config: {
 	runtime?: ColabRuntimeProfile;
 	modelProfile?: ColabModelProfile;
 	modelCacheDirectory?: string;
+	readinessMode?: ColabReadinessMode;
 }): string {
+	const readinessMode = resolveColabReadinessMode(config.readinessMode);
 	const runtime = config.runtime ?? selectColabRuntimeProfile(config.reference, config.artifact);
 	const prebuilt = selectColabPrebuiltRuntime(runtime, config.accelerator);
 	const modelProfile = config.modelProfile ?? getColabModelProfile(config.reference, config.artifact);
 	const persistentCacheBucket = Bun.env.OMPK_GCS_MODEL_BUCKET?.trim() || Bun.env.GCS_BUCKET?.trim();
 	const payload = {
+		readinessMode,
 		modelCacheDirectory: config.modelCacheDirectory ?? null,
 		accelerator: config.accelerator,
 		cmakeArchitecture: getColabAcceleratorProfile(config.accelerator).cmakeArchitecture,
@@ -1878,6 +1890,29 @@ def announce_ready(model_id, primary_name, base_url, target):
     }, timeout=inference_timeout_seconds())
     if not isinstance(warmup.get("choices"), list) or not warmup["choices"]:
         raise RuntimeError("Warmup request returned no completion choices")
+    if CONFIG["readinessMode"] == "chat":
+        health = request_json(base_url + "/health")
+        if not isinstance(health, dict) or health.get("status") != "ok":
+            raise RuntimeError("Chat readiness requires a healthy model API")
+        choice = warmup["choices"][0] if len(warmup["choices"]) == 1 else None
+        message = choice.get("message") if isinstance(choice, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("Chat warmup returned no visible completion text")
+        progress("chat warmup complete; tool support has not been checked")
+        print(READY_PREFIX + json.dumps({
+            "contextWindow": context_window,
+            "modelId": model_id,
+            "modelName": Path(primary_name).stem,
+            "port": CONFIG["remotePort"],
+            "runtimeCommit": target.commit,
+            "runtimeServer": str(target.server),
+            "runtimeSource": target.source,
+            "readinessMode": "chat",
+            "chatReady": True,
+            "toolCallReady": False,
+        }), flush=True)
+        return
     if RUNTIME["id"] == "diffusion":
         # PR #24423's CLI cannot emit tool calls; the generation warmup above
         # is the whole readiness contract for this lane.
@@ -1891,6 +1926,7 @@ def announce_ready(model_id, primary_name, base_url, target):
             "runtimeServer": str(target.server),
             "runtimeSource": target.source,
             "toolCallReady": False,
+            "readinessMode": CONFIG["readinessMode"],
         }), flush=True)
         return
 
@@ -1960,6 +1996,7 @@ def announce_ready(model_id, primary_name, base_url, target):
         "runtimeServer": str(target.server),
         "runtimeSource": target.source,
         "toolCallReady": True,
+        "readinessMode": CONFIG["readinessMode"],
     }), flush=True)
 
 
@@ -2446,11 +2483,34 @@ export function resolveColabSessionName(sessionName?: string): string {
 	return sessionName?.trim() || Bun.env.OMPK_COLAB_SESSION?.trim() || DEFAULT_SESSION_NAME;
 }
 
+function resolveColabReadinessMode(mode?: ColabReadinessMode): ColabReadinessMode {
+	const value = mode ?? "tools";
+	if (value !== "tools" && value !== "chat") throw new Error("Invalid Colab readiness mode; expected tools or chat.");
+	return value;
+}
+
+export function assertColabModelReadiness(
+	ready: RemoteReadyPayload | undefined,
+	runtimeId: ColabRuntimeProfile["id"],
+	mode: ColabReadinessMode = "tools",
+): asserts ready is RemoteReadyPayload {
+	const readinessMode = resolveColabReadinessMode(mode);
+	if (!ready?.modelId || !ready.port) throw new Error("Colab setup completed without a validated readiness probe.");
+	if (readinessMode === "chat") {
+		if (ready.readinessMode !== "chat" || ready.chatReady !== true || ready.toolCallReady !== false) {
+			throw new Error("Colab setup did not verify visible chat readiness; tool support remains unverified.");
+		}
+	} else if (runtimeId !== "diffusion" && ready.toolCallReady !== true) {
+		throw new Error("Colab setup completed without a validated tool-call readiness probe.");
+	}
+}
+
 export async function launchColabModel(
 	modelReference: string,
 	emit: StatusEmitter,
 	options: ColabModelLaunchOptions = {},
 ): Promise<ColabModelLaunchResult> {
+	const readinessMode = resolveColabReadinessMode(options.readinessMode);
 	const reference = parseHuggingFaceModelReference(modelReference);
 	await emit(`Colab: resolving ${reference.repoId}@${reference.revision}…`);
 	const entries = await measureLaunchStage("discovery-auth", options.onStage, () =>
@@ -2501,6 +2561,7 @@ export async function launchColabModel(
 	const setup = await runCommand(["exec", "--session", sessionName, "--timeout", "3600"], {
 		cliCommand: options.cliCommand,
 		input: buildRemoteSetupScript({
+			readinessMode,
 			modelCacheDirectory,
 			accelerator,
 			artifact,
@@ -2519,13 +2580,7 @@ export async function launchColabModel(
 		);
 	}
 	const ready = parseMarkedJson<RemoteReadyPayload>(setup.stdout, READY_PREFIX);
-	// The diffusion lane has no tool-calling probe: PR #24423's CLI cannot
-	// emit tool calls, so the wrapper validates with a generation warmup and
-	// reports toolCallReady: false. Everything else still requires the probe.
-	const requiresToolProbe = runtime.id !== "diffusion";
-	if (!ready?.modelId || !ready.port || (requiresToolProbe && ready.toolCallReady !== true)) {
-		throw new Error(`Colab setup completed without a validated readiness probe: ${setup.stdout || setup.stderr}`);
-	}
+	assertColabModelReadiness(ready, runtime.id, readinessMode);
 	if (runtime.pinnedCommit && ready.runtimeCommit !== runtime.pinnedCommit) {
 		throw new Error(
 			`Colab runtime reported commit ${ready.runtimeCommit ?? "unknown"}; expected pinned ${runtime.pinnedTag ?? runtime.pinnedCommit}.`,
@@ -2562,6 +2617,8 @@ export async function launchColabModel(
 	return {
 		accelerator,
 		toolCallReady: ready.toolCallReady,
+		readinessMode,
+		chatReady: ready.chatReady === true,
 		apiBaseUrl,
 		contextWindow: effectiveContextWindow,
 		chatTemplate: modelProfile?.chatTemplate,
