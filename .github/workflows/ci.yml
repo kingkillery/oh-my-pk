@@ -468,7 +468,18 @@ jobs:
               merge-multiple: true
               run-id: ${{ steps.source.outputs.artifact-run-id }}
               github-token: ${{ secrets.GITHUB_TOKEN }}
+         - name: Set up interpreter for offline Colab SDK contracts
+           id: colab-python
+           uses: actions/setup-python@v6
+           with:
+              python-version: "3.12"
+              update-environment: false
+         - name: Install offline Colab SDK test dependency
+           run: |
+              "${{ steps.colab-python.outputs.python-path }}" -m pip install --disable-pip-version-check google-colab-cli==0.6.0
          - name: Test coding-agent native/unit bucket
+           env:
+              OMPK_COLAB_CONTRACT_PYTHON: ${{ steps.colab-python.outputs.python-path }}
            run: bun run ci:test:coding-agent:native --keep-going
 
    test_smoke:

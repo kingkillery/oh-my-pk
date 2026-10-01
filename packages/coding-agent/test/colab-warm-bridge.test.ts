@@ -2,8 +2,11 @@ import { expect, test } from "bun:test";
 
 test("persistent Colab bridge HTTP streaming, cancellation isolation, and recovery", async () => {
 	const pathname = decodeURIComponent(new URL("./colab-warm-bridge-contract.py", import.meta.url).pathname);
-	const command =
-		process.platform === "win32"
+	const interpreter = process.env.OMPK_COLAB_CONTRACT_PYTHON?.trim();
+	const localPath = process.platform === "win32" ? pathname.replace(/^\/([A-Za-z]:\/)/, "$1") : pathname;
+	const command = interpreter
+		? [interpreter, localPath]
+		: process.platform === "win32"
 			? [
 					"wsl.exe",
 					"-d",
