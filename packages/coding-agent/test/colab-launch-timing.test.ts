@@ -56,7 +56,7 @@ test("invalid timing cannot enter evidence and ordinary progress still arrives",
 		{ stage: "secret?token=value" },
 		{ event: "retry" },
 	]) {
-		await parser(prefix + JSON.stringify({ ...valid, ...changed }) + "\n");
+		await parser(`${prefix}${JSON.stringify({ ...valid, ...changed })}\n`);
 	}
 	await parser('__OMPK_COLAB_PROGRESS__{"message":"loading model"}\n');
 	expect(events).toHaveLength(0);

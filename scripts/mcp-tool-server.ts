@@ -28,7 +28,10 @@ const session: ToolSession = {
 };
 
 const tools = new Map<string, any>();
-for (const name of (process.env.OMPK_MCP_TOOLS ?? DEFAULT_TOOLS).split(",").map(s => s.trim()).filter(Boolean)) {
+for (const name of (process.env.OMPK_MCP_TOOLS ?? DEFAULT_TOOLS)
+	.split(",")
+	.map(s => s.trim())
+	.filter(Boolean)) {
 	const factory = (BUILTIN_TOOLS as Record<string, (s: ToolSession) => unknown>)[name];
 	const tool = factory ? await factory(session) : null;
 	if (tool) tools.set(name, tool);
@@ -45,7 +48,11 @@ async function callTool(params: any): Promise<unknown> {
 	const cwd = params?._meta?.cwd;
 	if (typeof cwd === "string" && cwd) session.cwd = cwd;
 	try {
-		const result = await tool.execute(crypto.randomUUID(), params.arguments ?? {}, AbortSignal.timeout(TOOL_TIMEOUT_MS));
+		const result = await tool.execute(
+			crypto.randomUUID(),
+			params.arguments ?? {},
+			AbortSignal.timeout(TOOL_TIMEOUT_MS),
+		);
 		const content = (result?.content ?? []).map((block: any) =>
 			block.type === "image"
 				? { type: "image", data: block.data, mimeType: block.mimeType }
@@ -53,7 +60,10 @@ async function callTool(params: any): Promise<unknown> {
 		);
 		return { content, isError: result?.isError === true };
 	} catch (error) {
-		return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true };
+		return {
+			content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+			isError: true,
+		};
 	}
 }
 
@@ -98,7 +108,11 @@ for await (const line of console) {
 		try {
 			send({ jsonrpc: "2.0", id: message.id, result: await handle(message) });
 		} catch (error: any) {
-			send({ jsonrpc: "2.0", id: message.id, error: { code: error?.code ?? -32603, message: String(error?.message ?? error) } });
+			send({
+				jsonrpc: "2.0",
+				id: message.id,
+				error: { code: error?.code ?? -32603, message: String(error?.message ?? error) },
+			});
 		}
 	});
 }
