@@ -1318,13 +1318,17 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// No-progress detection: when the reflection repeats unchanged across
 		// consecutive iterations the loop is stuck — stop instead of burning turns.
+		// An empty reflection is no-progress too: composeSpiralPrompt returns the
+		// objective unchanged for it, so each iteration re-submits a byte-identical
+		// prompt. It must compare and be stored like any other value, otherwise it
+		// resets the counter every turn and the loop never terminates.
 		const normalized = result.reflection.trim();
-		if (normalized && normalized === this.#loopSpiralLastReflection) {
+		if (normalized === this.#loopSpiralLastReflection) {
 			this.#loopSpiralStallCount += 1;
 		} else {
 			this.#loopSpiralStallCount = 0;
 		}
-		this.#loopSpiralLastReflection = normalized || undefined;
+		this.#loopSpiralLastReflection = normalized;
 		if (this.#loopSpiralStallCount >= 2) {
 			this.disableLoopMode("Loop made no progress across iterations. Loop mode disabled.");
 			return;

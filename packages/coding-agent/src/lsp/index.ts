@@ -1451,8 +1451,16 @@ async function flushWritethroughBatch(
 				onDeferredDiagnostics: bundle.onDeferredDiagnostics,
 				signal: bundle.signal,
 			} as const);
-		const diag = await runLspWritethrough(entry.dst, entry.content, cwd, options, signal, entry.file, deferredInner);
-		bundle?.finalize(diag);
+		let diag: FileDiagnosticsResult | undefined;
+		try {
+			diag = await runLspWritethrough(entry.dst, entry.content, cwd, options, signal, entry.file, deferredInner);
+		} finally {
+			// Release the deferred handle even when the writethrough rejects: the
+			// rejection can fire after the deferred fetch was armed, and skipping
+			// finalize would leave the AbortController unregistered and the fetch
+			// uncancellable.
+			bundle?.finalize(diag);
+		}
 		results.push(diag);
 	}
 	return mergeDiagnostics(results, options);
@@ -1484,8 +1492,16 @@ export function createLspWritethrough(cwd: string, options?: WritethroughOptions
 					onDeferredDiagnostics: bundle.onDeferredDiagnostics,
 					signal: bundle.signal,
 				} as const);
-			const diagnostics = await runLspWritethrough(dst, content, cwd, resolvedOptions, signal, file, deferredInner);
-			bundle?.finalize(diagnostics);
+			let diagnostics: FileDiagnosticsResult | undefined;
+			try {
+				diagnostics = await runLspWritethrough(dst, content, cwd, resolvedOptions, signal, file, deferredInner);
+			} finally {
+				// Release the deferred handle even when the writethrough rejects: the
+				// rejection can fire after the deferred fetch was armed, and skipping
+				// finalize would leave the AbortController unregistered and the fetch
+				// uncancellable.
+				bundle?.finalize(diagnostics);
+			}
 			return diagnostics;
 		}
 

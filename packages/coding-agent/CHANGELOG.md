@@ -1,8 +1,5 @@
 # Changelog
 
-## [16.4.27] - 2026-09-21
-
-
 ## [Unreleased]
 
 ### Fixed
@@ -10,6 +7,13 @@
 - Keep wrapped session deletion dialogs within the terminal viewport.
 - Register the Terminal Launches section in the Interaction settings layout.
 - Allow Julia cold-start compilation up to 60 seconds, capped by the execution deadline.
+- Stop `/loop --spiral` from iterating forever when the synthesizer returns an empty reflection. An empty reflection re-submits a byte-identical prompt, so it now counts toward no-progress detection instead of resetting the stall counter; with no iteration limit the loop previously had no reachable terminal stop.
+- Release the per-file deferred diagnostics handle when an LSP writethrough rejects. `finalize()` now runs in a `finally` around the writethrough call, so a failed write no longer leaks an `AbortController` that was neither aborted nor registered for cleanup, which left an uncancellable background fetch able to inject stale diagnostics for a write that never landed.
+- Stop a malformed agent file from dumping its entire contents into the log. Agent parsing embedded the whole file body in the thrown error, and discovery logs that error on every startup, so one file under `.ompk/agents/` without valid frontmatter produced a ~70 KB log line with the body duplicated across `message`, `stack`, and `cause`. The error now names the file and the reason only.
+
+### Documentation
+
+- Correct the `contextPromotion.enabled` default in `docs/settings.md` from `true` to the schema's actual `false`, and describe the real mechanism (promoting to a larger-context model on overflow instead of compacting). Also drop `snapcompact` from the documented `compaction.strategy` values, since it is a legacy value only accepted via the backward-compatibility migration.
 
 ## [16.4.28] - 2026-09-30
 
@@ -39,6 +43,8 @@
 
 - Wired `findCollectorBinary()` to discover the bundled `ompk-collector` sidecar unpacked by `pi-natives` into the per-version native cache, enabling standalone single-binary distributions to run the local collector without PATH or sibling executable dependencies.
 - Added System 1 Watchdog: an out-of-band sentinel supervising System 2 worker subagents via TypeSafe Jev (direct, OpenRouter, or AI Gateway) evaluating compact external execution telemetry (~120-150 tokens) with zero output tokens and deterministic arbitration (silent pass, non-interrupting hint, or tripwire abort), with a fail-silent zero-breakage fallback when unconfigured.
+
+## [16.4.27] - 2026-09-21
 
 ## [16.4.26] - 2026-09-20
 

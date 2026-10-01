@@ -562,11 +562,11 @@ read:
 
 ```yaml
 contextPromotion:
-  enabled: true
+  enabled: false
 
 compaction:
   enabled: true
-  strategy: context-full     # context-full, handoff, shake, snapcompact, off
+  strategy: context-full     # context-full, handoff, shake, off
   thresholdPercent: -1       # -1 = default reserve-based behavior
   thresholdTokens: -1        # fixed token limit when > 0
   remoteEnabled: true
@@ -577,9 +577,9 @@ memory:
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `contextPromotion.enabled` | boolean | `true` | Promote relevant earlier context. |
+| `contextPromotion.enabled` | boolean | `false` | Promote to a larger-context model on context overflow instead of compacting. |
 | `compaction.enabled` | boolean | `true` | Automatic conversation compaction. |
-| `compaction.strategy` | enum | `context-full` | `context-full`, `handoff`, `shake`, `snapcompact`, `off`. |
+| `compaction.strategy` | enum | `context-full` | `context-full`, `handoff`, `shake`, `off`. The legacy `snapcompact` value is no longer part of the enum; settings that still use it are rewritten to `context-full` by the backward-compat migration. |
 | `compaction.thresholdPercent` | number | `-1` | Percent-of-context trigger; `-1` = reserve-based default. |
 | `compaction.thresholdTokens` | number | `-1` | Fixed token trigger when `> 0`. |
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for the next turn. |

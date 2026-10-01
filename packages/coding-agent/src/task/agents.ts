@@ -141,7 +141,11 @@ export function parseAgent(
 	});
 	const fields = parseAgentFields(frontmatter);
 	if (!fields) {
-		throw new AgentParsingError(new Error(`Invalid agent field: ${filePath}\n${content}`), filePath);
+		// Report the file and the reason only. Embedding `content` here put the whole
+		// agent body into the error message, and agent discovery logs that error on
+		// every startup, so one malformed multi-thousand-line prompt produced a ~70 KB
+		// log line with the full file duplicated across `message`, `stack`, and `cause`.
+		throw new AgentParsingError(new Error(`Invalid agent field: ${filePath}`), filePath);
 	}
 	return {
 		...fields,

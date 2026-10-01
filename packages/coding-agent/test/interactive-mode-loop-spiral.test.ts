@@ -135,6 +135,30 @@ describe("InteractiveMode spiral loop mode", () => {
 		expect(mode.loopModeEnabled).toBe(false);
 	});
 
+	it("stops the loop when the synthesizer keeps returning an empty reflection", async () => {
+		vi.useFakeTimers();
+		// An empty reflection is a first-class synthesizer output, not a pathological
+		// one: parseSynthesisPayload coerces a missing or non-string reflection to "",
+		// and RESPOND_TOOL is non-strict so `reflection` is advisory. Because
+		// composeSpiralPrompt returns the objective unchanged for it, each iteration
+		// re-submits a byte-identical prompt: that is a no-progress signal.
+		vi.spyOn(loopSynthesis, "runLoopSynthesis").mockResolvedValue({ complete: false, reflection: "" });
+
+		mode.loopModeEnabled = true;
+		mode.loopPrompt = "Finish the migration.";
+
+		// Iterations 1 and 2 still submit (stall count 0 then 1).
+		expect(await runIteration()).toBeDefined();
+		expect(mode.loopModeEnabled).toBe(true);
+		expect(await runIteration()).toBeDefined();
+		expect(mode.loopModeEnabled).toBe(true);
+
+		// Third consecutive empty reflection trips the no-progress guard: loop stops.
+		const third = await runIteration();
+		expect(third).toBeUndefined();
+		expect(mode.loopModeEnabled).toBe(false);
+	});
+
 	it("degrades to a plain re-submit when synthesis fails", async () => {
 		vi.useFakeTimers();
 		vi.spyOn(loopSynthesis, "runLoopSynthesis").mockRejectedValue(new Error("no api key"));
