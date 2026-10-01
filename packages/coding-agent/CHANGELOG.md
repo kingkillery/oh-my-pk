@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Reject CPU runtime recovery after a failed automatic GPU allocation; CPU reuse still requires explicit opt-in.
 - Keep wrapped session deletion dialogs within the terminal viewport.
 - Register the Terminal Launches section in the Interaction settings layout.
 - Allow Julia cold-start compilation up to 60 seconds, capped by the execution deadline.
