@@ -1103,6 +1103,24 @@ export function colabNewSessionArgs(sessionName: string, accelerator: ColabAccel
 	return ["new", "--session", sessionName, ...(accelerator === "CPU" ? [] : ["--gpu", accelerator])];
 }
 
+function assertColabSessionAccelerator(
+	sessionName: string,
+	accelerator: ColabAccelerator,
+	requestedAccelerator: ColabAccelerator | undefined,
+): void {
+	if (requestedAccelerator && accelerator !== requestedAccelerator) {
+		throw new Error(
+			`${sessionName} is already using ${accelerator}; stop it before requesting ${requestedAccelerator}.`,
+		);
+	}
+	// Automatic selection only ever means a GPU; never silently serve from a CPU runtime.
+	if (!requestedAccelerator && accelerator === "CPU") {
+		throw new Error(
+			`${sessionName} is a CPU runtime; pass --accelerator CPU to reuse it, or stop it to launch on a GPU.`,
+		);
+	}
+}
+
 async function ensureColabSession(
 	sessionName: string,
 	accelerators: readonly ColabAccelerator[],
@@ -1114,17 +1132,7 @@ async function ensureColabSession(
 	const existingAccelerator =
 		status.exitCode === 0 ? parseAccelerator(`${status.stdout}\n${status.stderr}`) : undefined;
 	if (existingAccelerator) {
-		if (requestedAccelerator && existingAccelerator !== requestedAccelerator) {
-			throw new Error(
-				`${sessionName} is already using ${existingAccelerator}; stop it before requesting ${requestedAccelerator}.`,
-			);
-		}
-		// Automatic selection only ever means a GPU; never silently serve from a CPU runtime.
-		if (!requestedAccelerator && existingAccelerator === "CPU") {
-			throw new Error(
-				`${sessionName} is a CPU runtime; pass --accelerator CPU to reuse it, or stop it to launch on a GPU.`,
-			);
-		}
+		assertColabSessionAccelerator(sessionName, existingAccelerator, requestedAccelerator);
 		await emit(`Colab: reusing ${sessionName} on ${existingAccelerator}.`);
 		return existingAccelerator;
 	}
@@ -1144,11 +1152,7 @@ async function ensureColabSession(
 				? parseAccelerator(`${recoveredStatus.stdout}\n${recoveredStatus.stderr}`)
 				: undefined;
 		if (recoveredAccelerator) {
-			if (requestedAccelerator && recoveredAccelerator !== requestedAccelerator) {
-				throw new Error(
-					`${sessionName} is already using ${recoveredAccelerator}; stop it before requesting ${requestedAccelerator}.`,
-				);
-			}
+			assertColabSessionAccelerator(sessionName, recoveredAccelerator, requestedAccelerator);
 			return recoveredAccelerator;
 		}
 	}
