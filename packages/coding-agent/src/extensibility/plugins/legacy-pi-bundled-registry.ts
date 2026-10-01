@@ -767,6 +767,7 @@ import * as bundledPiCodingAgentSessionAuthStorage from "@pk-nerdsaver-ai/pi-cod
 import * as bundledPiCodingAgentSessionBlobStore from "@pk-nerdsaver-ai/pi-coding-agent/session/blob-store";
 import * as bundledPiCodingAgentSessionClientBridge from "@pk-nerdsaver-ai/pi-coding-agent/session/client-bridge";
 import * as bundledPiCodingAgentSessionCodexAutoReset from "@pk-nerdsaver-ai/pi-coding-agent/session/codex-auto-reset";
+import * as bundledPiCodingAgentSessionColabCompaction from "@pk-nerdsaver-ai/pi-coding-agent/session/colab-compaction";
 import * as bundledPiCodingAgentSessionCompactModes from "@pk-nerdsaver-ai/pi-coding-agent/session/compact-modes";
 import * as bundledPiCodingAgentSessionDelegatedIo from "@pk-nerdsaver-ai/pi-coding-agent/session/delegated-io";
 import * as bundledPiCodingAgentSessionFusionAutonomousJobs from "@pk-nerdsaver-ai/pi-coding-agent/session/fusion-autonomous-jobs";
@@ -2925,6 +2926,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		bundledPiCodingAgentSessionClientBridge as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/session/codex-auto-reset":
 		bundledPiCodingAgentSessionCodexAutoReset as unknown as Readonly<Record<string, unknown>>,
+	"@pk-nerdsaver-ai/pi-coding-agent/session/colab-compaction":
+		bundledPiCodingAgentSessionColabCompaction as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/session/compact-modes":
 		bundledPiCodingAgentSessionCompactModes as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/session/delegated-io":

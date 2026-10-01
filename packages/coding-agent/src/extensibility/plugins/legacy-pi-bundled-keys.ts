@@ -769,6 +769,7 @@ export const BUNDLED_PI_REGISTRY_KEYS: ReadonlySet<string> = new Set([
 	"@pk-nerdsaver-ai/pi-coding-agent/session/blob-store",
 	"@pk-nerdsaver-ai/pi-coding-agent/session/client-bridge",
 	"@pk-nerdsaver-ai/pi-coding-agent/session/codex-auto-reset",
+	"@pk-nerdsaver-ai/pi-coding-agent/session/colab-compaction",
 	"@pk-nerdsaver-ai/pi-coding-agent/session/compact-modes",
 	"@pk-nerdsaver-ai/pi-coding-agent/session/delegated-io",
 	"@pk-nerdsaver-ai/pi-coding-agent/session/fusion-autonomous-jobs",
