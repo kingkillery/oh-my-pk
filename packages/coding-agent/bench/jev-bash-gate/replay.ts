@@ -1,6 +1,7 @@
 // Replay labeled bash commands through the Jev gate and report precision/recall.
 // Usage: TYPESAFE_API_KEY=... (or OPENROUTER_API_KEY=...) bun bench/jev-bash-gate/replay.ts [file.jsonl ...]   (default: seed.jsonl)
-// Rows are {command, cwd, label: "allow"|"block"}; unlabeled rows are skipped.
+// Rows are {command, cwd, label: "allow"|"block", category?}; unlabeled rows are skipped.
+// Files: seed.jsonl (textbook cases), messy.jsonl (trace-shaped, per-category report).
 // Verdicts are cached in results-<file>.json so threshold sweeps cost no API calls
 // (delete the cache to re-judge). A failed call is fail-open, i.e. counts as allow.
 import * as path from "node:path";
@@ -18,6 +19,7 @@ interface Row {
 	command: string;
 	cwd: string;
 	label: "allow" | "block";
+	category?: string;
 }
 interface Judged extends Row {
 	verdict?: BashVerdict;
@@ -96,12 +98,20 @@ if (import.meta.main) {
 		out(
 			`\nshipped thresholds (${BLOCK_CONFIDENCE}/${DESTRUCTIVE_NOUL}): TP=${cur.tp} FP=${cur.fp} FN=${cur.fn} TN=${cur.tn}`,
 		);
+		const categories = [...new Set(judged.flatMap(r => (r.category ? [r.category] : [])))];
+		if (categories.length) {
+			out("\nby category at shipped thresholds:");
+			for (const c of categories) {
+				const s = score(judged.filter(r => r.category === c), BLOCK_CONFIDENCE, DESTRUCTIVE_NOUL);
+				out(`  ${c.padEnd(16)} TP=${s.tp} FP=${s.fp} FN=${s.fn} TN=${s.tn}`);
+			}
+		}
 		const show = (title: string, list: Judged[]) => {
 			if (!list.length) return;
 			out(`\n${title}`);
 			for (const r of list)
 				out(
-					`  ${r.command.slice(0, 90).replace(/\n/g, " ")}  -> ${r.verdict ? `${r.verdict.choice} c=${r.verdict.confidence.toFixed(2)} d=${r.verdict.destructive.toFixed(2)}` : "no verdict"}`,
+					`  ${r.category ? `[${r.category}] ` : ""}${r.command.slice(0, 90).replace(/\n/g, " ")}  -> ${r.verdict ? `${r.verdict.choice} c=${r.verdict.confidence.toFixed(2)} d=${r.verdict.destructive.toFixed(2)}` : "no verdict"}`,
 				);
 		};
 		show(
