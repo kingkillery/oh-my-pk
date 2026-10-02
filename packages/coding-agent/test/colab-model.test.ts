@@ -691,28 +691,6 @@ describe("/colab-model command", () => {
 		expect(compilation.exitCode, compilation.stderr).toBe(0);
 	});
 
-	test("compiles a CPU setup that builds without CUDA and offloads no layers", async () => {
-		const reference = parseHuggingFaceModelReference("unsloth/Qwen3.8-27B-GGUF");
-		const artifact = {
-			files: ["m-Q4_0.gguf"],
-			primaryFile: "m-Q4_0.gguf",
-			quantization: "Q4_0",
-			totalSize: 4_000_000_000,
-		};
-		const script = buildRemoteSetupScript({
-			accelerator: "CPU",
-			artifact,
-			contextWindow: 8_192,
-			reference,
-			remotePort: 8_081,
-		});
-		expect(script).toContain('CPU_ONLY = CONFIG["accelerator"] == "CPU"');
-		expect(script).toContain('["-DGGML_CUDA=OFF"] if CPU_ONLY');
-		expect(script).toContain('"--n-gpu-layers", GPU_LAYERS');
-		const compilation = await compilePythonScript(script);
-		expect(compilation.exitCode, compilation.stderr).toBe(0);
-	});
-
 	test("registers the warmed endpoint and selects the runtime model", async () => {
 		const output = vi.fn();
 		const registerProvider = vi.fn();

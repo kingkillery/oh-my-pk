@@ -112,11 +112,12 @@ function colabSessionFixture(steps: readonly ColabCommandStep[]) {
 	};
 }
 
+// The real CLI reports a missing session on stdout and still exits 0.
 const missingCacheSession: ColabCommandStep = {
 	command: "status",
-	exitCode: 1,
-	stdout: "",
-	stderr: "No active session",
+	exitCode: 0,
+	stdout: "[colab] Session 'cache-contract' not found.",
+	stderr: "",
 };
 const launchedCacheSession: ColabCommandStep = { command: "new", exitCode: 0, stdout: "Session ready", stderr: "" };
 const cpuCacheSession: ColabCommandStep = { command: "status", exitCode: 0, stdout: "Accelerator: CPU", stderr: "" };
@@ -296,3 +297,57 @@ print("PERSISTENT_MODEL_RESTORE_OK")`,
 	expect(exercised.exitCode, exercised.stderr).toBe(0);
 	expect(exercised.stdout).toContain("PERSISTENT_MODEL_RESTORE_OK");
 });
+
+for (const [accelerator, cuda, layers] of [
+	["CPU", "OFF", "0"],
+	["L4", "ON", "99"],
+] as const) {
+	test(`${accelerator} setup builds llama.cpp with GGML_CUDA=${cuda} and serves ${layers} GPU layers`, async () => {
+		const source = buildRemoteSetupScript({
+			accelerator,
+			artifact: { files: ["m-Q4_0.gguf"], primaryFile: "m-Q4_0.gguf", quantization: "Q4_0", totalSize: 1 },
+			contextWindow: 8_192,
+			remotePort: 8_081,
+			reference: { repoId: "owner/model-GGUF", revision: "main" },
+		});
+		// Run the real build and server-start functions; only process launches are stubbed.
+		const exercised = await runPythonScript(
+			source,
+			`import json, pathlib, tempfile
+with tempfile.TemporaryDirectory() as folder:
+    root = pathlib.Path(folder)
+    ns["LLAMA_DIR"] = root / "llama.cpp"
+    ns["LOG_FILE"] = root / "server.log"
+    ns["PID_FILE"] = root / "server.pid"
+    commands = []
+    ns["run"] = lambda args, cwd=None: commands.append(list(args))
+    ns["prepare_runtime_source"] = lambda: None
+    ns["source_binary_is_valid"] = lambda: True
+    ns["source_target"] = lambda: ns["RuntimeTarget"]("source", root / "llama-server", None)
+    target = ns["build_source_runtime"]()
+    launched = []
+    class Process:
+        pid = 1
+        def poll(self): return None
+    def popen(args, **kwargs):
+        launched.append(list(args))
+        return Process()
+    ns["subprocess"].Popen = popen
+    ns["request_json"] = lambda url, payload=None, timeout=30: {"status": "ok"}
+    ns["start_server"](target, root / "m-Q4_0.gguf", "m-Q4_0.gguf", "http://127.0.0.1:8081")
+    configure = next(command for command in commands if "-S" in command)
+    server = launched[0]
+    print(json.dumps({
+        "cuda": [arg for arg in configure if arg.startswith("-DGGML_CUDA=")],
+        "cudaArchitecture": any(arg.startswith("-DCMAKE_CUDA_ARCHITECTURES=") for arg in configure),
+        "layers": server[server.index("--n-gpu-layers") + 1],
+    }))`,
+		);
+		expect(exercised.exitCode, exercised.stderr).toBe(0);
+		expect(JSON.parse(exercised.stdout.trim().split("\n").at(-1) ?? "")).toEqual({
+			cuda: [`-DGGML_CUDA=${cuda}`],
+			cudaArchitecture: accelerator !== "CPU",
+			layers,
+		});
+	});
+}

@@ -6,6 +6,7 @@ import {
 	type GgufArtifact,
 	type HuggingFaceModelReference,
 	type HuggingFaceTreeEntry,
+	isColabSessionMissing,
 	parseColabSessionAccelerator,
 	parseHuggingFaceModelReference,
 	selectColabPrebuiltRuntime,
@@ -232,8 +233,10 @@ export async function ensureCpuColabSession(
 	runCommand: typeof runColab = runColab,
 ): Promise<void> {
 	const status = await runCommand(["status", "--session", sessionName], { timeoutMs: 60_000 });
-	if (status.exitCode === 0) {
-		const accelerator = parseAccelerator(`${status.stdout}\n${status.stderr}`);
+	const statusText = `${status.stdout}\n${status.stderr}`;
+	// The CLI exits 0 for a missing session, so exit status alone does not mean it exists.
+	if (status.exitCode === 0 && !isColabSessionMissing(statusText)) {
+		const accelerator = parseAccelerator(statusText);
 		if (accelerator)
 			throw new Error(
 				`${sessionName} is already using ${accelerator}; cache staging refuses to reuse a GPU runtime.`,
@@ -253,7 +256,7 @@ export async function ensureCpuColabSession(
 	}
 	// A successful launch without --gpu does not prove that Colab allocated a CPU runtime.
 	const acquiredStatus = await runCommand(["status", "--session", sessionName], { timeoutMs: 60_000 });
-	if (acquiredStatus.exitCode !== 0) {
+	if (acquiredStatus.exitCode !== 0 || isColabSessionMissing(`${acquiredStatus.stdout}\n${acquiredStatus.stderr}`)) {
 		throw new Error(
 			`Could not verify CPU Colab session ${sessionName}: ${acquiredStatus.stderr || acquiredStatus.stdout}`,
 		);
