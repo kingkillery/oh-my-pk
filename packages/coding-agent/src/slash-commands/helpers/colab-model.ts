@@ -29,6 +29,8 @@ export interface ColabAcceleratorProfile {
 	preferredQuantizations: readonly string[];
 	/** Total accelerator memory used by model-aware context sizing. */
 	vramBytes: number;
+	/** Ceiling on model-aware context sizing, for hardware where memory is not the binding limit. */
+	maxContextWindow?: number;
 }
 
 const ACCELERATOR_PROFILES: Record<ColabAccelerator, ColabAcceleratorProfile> = {
@@ -67,14 +69,16 @@ const ACCELERATOR_PROFILES: Record<ColabAccelerator, ColabAcceleratorProfile> = 
 		preferredQuantizations: ["Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q4_K_M"],
 		vramBytes: 96 * 1024 ** 3,
 	},
-	// Standard CPU runtime: ~12.7 GB system RAM, 2 vCPUs. `vramBytes` is RAM here.
-	// Opt-in only (never automatic); prefill is slow, so keep the context modest.
+	// Standard CPU runtime: ~12.7 GB system RAM, 2 vCPUs. `vramBytes` is the RAM left
+	// for model + KV after the OS, Python and server buffers. Opt-in only (never
+	// automatic); prefill is slow, so model profiles are capped at the 8K default too.
 	CPU: {
 		cmakeArchitecture: "cpu",
 		defaultContextWindow: 8_192,
+		maxContextWindow: 8_192,
 		modelSizeBudget: 8_000_000_000,
 		preferredQuantizations: ["Q4_0", "Q4_K_M", "Q4_K_S", "IQ4_XS", "Q3_K_M"],
-		vramBytes: 12 * 1024 ** 3,
+		vramBytes: 10 * 1024 ** 3,
 	},
 };
 
@@ -170,12 +174,13 @@ export function calculateColabContextWindow(
 	artifact: Pick<GgufArtifact, "totalSize">,
 	profile: ColabModelProfile & { kvBytesPerToken: number; nCtxTrain: number },
 ): number {
-	const availableBytes = getColabAcceleratorProfile(accelerator).vramBytes * 0.85 - artifact.totalSize;
+	const hardware = getColabAcceleratorProfile(accelerator);
+	const availableBytes = hardware.vramBytes * 0.85 - artifact.totalSize;
 	const calculated = Math.floor(availableBytes / profile.kvBytesPerToken);
 	if (calculated < 1_024) {
 		throw new Error(`The ${accelerator} does not have enough reserved VRAM for ${profile.id} context.`);
 	}
-	return Math.min(profile.nCtxTrain, calculated);
+	return Math.min(profile.nCtxTrain, calculated, hardware.maxContextWindow ?? Number.POSITIVE_INFINITY);
 }
 
 /**
@@ -1082,9 +1087,12 @@ async function runCommand(
  * no-accelerator runtime); that field wins. Without it, fall back to a GPU-name
  * scan of the text. CPU is only ever read from the field: free text such as an
  * error message can mention "CPU" without describing the runtime. Returns
- * undefined for TPU or unrecognised hardware.
+ * undefined for TPU or unrecognised hardware, and for a missing session.
  */
 export function parseColabSessionAccelerator(output: string): ColabAccelerator | undefined {
+	// `colab status` exits 0 for a missing session; its message must not be scanned,
+	// or a name such as `ompk-colab-t4` reads as a T4.
+	if (isColabSessionMissing(output)) return undefined;
 	const field = /\b(?:Hardware|Accelerator):\s*([A-Za-z0-9]+)/i.exec(output)?.[1]?.toUpperCase();
 	if (field) {
 		const hardware = field === "NONE" ? "CPU" : field;
@@ -1096,7 +1104,10 @@ export function parseColabSessionAccelerator(output: string): ColabAccelerator |
 	return undefined;
 }
 
-const parseAccelerator = parseColabSessionAccelerator;
+/** `colab status --session X` prints `[colab] Session 'X' not found.` and exits 0 when X does not exist. */
+export function isColabSessionMissing(output: string): boolean {
+	return /\bSession '[^']*' not found\b/i.test(output);
+}
 
 /** `colab new` arguments; omitting `--gpu` is how the CLI allocates a CPU runtime. */
 export function colabNewSessionArgs(sessionName: string, accelerator: ColabAccelerator): string[] {
@@ -1130,7 +1141,7 @@ async function ensureColabSession(
 ): Promise<ColabAccelerator> {
 	const status = await runCommand(["status", "--session", sessionName], { timeoutMs: 60_000, cliCommand });
 	const existingAccelerator =
-		status.exitCode === 0 ? parseAccelerator(`${status.stdout}\n${status.stderr}`) : undefined;
+		status.exitCode === 0 ? parseColabSessionAccelerator(`${status.stdout}\n${status.stderr}`) : undefined;
 	if (existingAccelerator) {
 		assertColabSessionAccelerator(sessionName, existingAccelerator, requestedAccelerator);
 		await emit(`Colab: reusing ${sessionName} on ${existingAccelerator}.`);
@@ -1144,12 +1155,13 @@ async function ensureColabSession(
 			cliCommand,
 			timeoutMs: 5 * 60_000,
 		});
-		if (launch.exitCode === 0) return parseAccelerator(`${launch.stdout}\n${launch.stderr}`) ?? accelerator;
+		if (launch.exitCode === 0)
+			return parseColabSessionAccelerator(`${launch.stdout}\n${launch.stderr}`) ?? accelerator;
 		lastFailure = launch.stderr || launch.stdout;
 		const recoveredStatus = await runCommand(["status", "--session", sessionName], { timeoutMs: 60_000, cliCommand });
 		const recoveredAccelerator =
 			recoveredStatus.exitCode === 0
-				? parseAccelerator(`${recoveredStatus.stdout}\n${recoveredStatus.stderr}`)
+				? parseColabSessionAccelerator(`${recoveredStatus.stdout}\n${recoveredStatus.stderr}`)
 				: undefined;
 		if (recoveredAccelerator) {
 			assertColabSessionAccelerator(sessionName, recoveredAccelerator, requestedAccelerator);
