@@ -94,11 +94,7 @@ export async function evaluateAgentTelemetry(
 				stallSeverity: severity?.type === "score" ? severity.score : 0,
 				blockerType: (blocker?.type === "choice" ? blocker.choice : "none") as BlockerType,
 				confidence:
-					severity?.type === "score"
-						? severity.confidence
-						: blocker?.type === "choice"
-							? blocker.confidence
-							: 1,
+					severity?.type === "score" ? severity.confidence : blocker?.type === "choice" ? blocker.confidence : 1,
 				latencyMs: Math.round(performance.now() - startMs),
 				provider: /(^|\/)clef(?:-|$)/i.test(data.model)
 					? "clef"

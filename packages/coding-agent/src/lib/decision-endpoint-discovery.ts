@@ -119,9 +119,7 @@ async function readTailscaleStatus(): Promise<unknown> {
 			if (outcome.code !== 0) continue;
 			const stdout = await new Response(child.stdout).text();
 			return JSON.parse(stdout) as unknown;
-		} catch {
-			continue;
-		}
+		} catch {}
 	}
 	return undefined;
 }
@@ -192,7 +190,10 @@ async function probeDecisionEndpoint(
 	const abortFromParent = (): void => controller.abort(signal?.reason);
 	if (signal?.aborted) abortFromParent();
 	else signal?.addEventListener("abort", abortFromParent, { once: true });
-	const timer = setTimeout(() => controller.abort(new Error("decision endpoint health probe timed out")), HEALTH_TIMEOUT_MS);
+	const timer = setTimeout(
+		() => controller.abort(new Error("decision endpoint health probe timed out")),
+		HEALTH_TIMEOUT_MS,
+	);
 	try {
 		const response = await fetchImpl(healthUrl, { signal: controller.signal });
 		if (!response.ok) return undefined;

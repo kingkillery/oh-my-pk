@@ -16,9 +16,9 @@
 
 import { $env, APP_NAME } from "@pk-nerdsaver-ai/pi-utils";
 import {
+	type DecisionEndpoint,
 	discoverDecisionEndpoint,
 	invalidateDecisionEndpoint,
-	type DecisionEndpoint,
 } from "./decision-endpoint-discovery";
 
 export const TYPESAFE_DEFAULT_BASE_URL = "https://api.typesafe.ai/v1";

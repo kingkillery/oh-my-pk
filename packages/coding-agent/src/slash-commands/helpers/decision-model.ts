@@ -4,8 +4,8 @@ import * as path from "node:path";
 import { $env, logger } from "@pk-nerdsaver-ai/pi-utils";
 import {
 	clearDecisionEndpointCache,
-	discoverDecisionEndpoint,
 	type DecisionEndpoint,
+	discoverDecisionEndpoint,
 } from "../../lib/decision-endpoint-discovery";
 import type { SlashCommandRuntime } from "../types";
 import clefServerSource from "./clef-server.py" with { type: "text" };
@@ -42,10 +42,7 @@ export interface DecisionModelStopRequest {
 	sessionName: string;
 }
 
-export type DecisionModelRequest =
-	| DecisionModelLaunchRequest
-	| DecisionModelStatusRequest
-	| DecisionModelStopRequest;
+export type DecisionModelRequest = DecisionModelLaunchRequest | DecisionModelStatusRequest | DecisionModelStopRequest;
 
 interface CommandResult {
 	exitCode: number;
@@ -239,7 +236,9 @@ async function cancelCutoff(taskName: string): Promise<void> {
 
 async function armWindowsCutoff(sessionName: string, ttlMinutes: number): Promise<CutoffReceipt> {
 	if (process.platform !== "win32") {
-		throw new Error("Safe Clef launch currently requires the Windows host so OMPK can verify an OS-level scheduled cutoff.");
+		throw new Error(
+			"Safe Clef launch currently requires the Windows host so OMPK can verify an OS-level scheduled cutoff.",
+		);
 	}
 	await fs.mkdir(stateDirectory(), { recursive: true });
 	const safe = safeSessionName(sessionName);
@@ -251,9 +250,9 @@ async function armWindowsCutoff(sessionName: string, ttlMinutes: number): Promis
 	const stopInvocation = customCli
 		? `& ${psLiteral(customCli)} stop --session ${psLiteral(sessionName)} *> ${psLiteral(logPath)}`
 		: [
-			"$wsl = Join-Path $env:WINDIR 'System32\\wsl.exe'",
-			`& $wsl colab stop --session ${psLiteral(sessionName)} *> ${psLiteral(logPath)}`,
-		].join("\r\n");
+				"$wsl = Join-Path $env:WINDIR 'System32\\wsl.exe'",
+				`& $wsl colab stop --session ${psLiteral(sessionName)} *> ${psLiteral(logPath)}`,
+			].join("\r\n");
 	const stopScript = [
 		"$ErrorActionPreference = 'Continue'",
 		stopInvocation,
@@ -274,12 +273,13 @@ async function armWindowsCutoff(sessionName: string, ttlMinutes: number): Promis
 		`$task=Get-ScheduledTask -TaskName ${psLiteral(taskName)} -ErrorAction Stop`,
 		`if ($task.TaskName -ne ${psLiteral(taskName)}) { throw 'Cutoff task verification failed.' }`,
 	].join(";");
-	const result = await runCommand(
-		[powershell, "-NoProfile", "-NonInteractive", "-Command", registration],
-		{ timeoutMs: 30_000 },
-	);
+	const result = await runCommand([powershell, "-NoProfile", "-NonInteractive", "-Command", registration], {
+		timeoutMs: 30_000,
+	});
 	if (result.exitCode !== 0) {
-		throw new Error(`Could not arm Clef cutoff: ${(result.stderr || result.stdout).trim() || `exit ${result.exitCode}`}`);
+		throw new Error(
+			`Could not arm Clef cutoff: ${(result.stderr || result.stdout).trim() || `exit ${result.exitCode}`}`,
+		);
 	}
 	return { cutoffAt, scriptPath, taskName };
 }
@@ -318,16 +318,16 @@ export function buildClefRemoteBootstrap(request: DecisionModelLaunchRequest, cr
 		"mkdir -p /var/run/tailscale",
 		"if ! tailscale status --json >/dev/null 2>&1; then nohup tailscaled --state=mem: --tun=userspace-networking >/tmp/ompk-tailscaled.log 2>&1 & fi",
 		"for i in $(seq 1 80); do [ -S /var/run/tailscale/tailscaled.sock ] && break; sleep 0.25; done",
-		"NODE_AUTH=\"$TS_AUTHKEY\"",
+		'NODE_AUTH="$TS_AUTHKEY"',
 		"if [[ \"$TS_AUTHKEY\" == tskey-api-* ]]; then NODE_AUTH=$(TS_API=\"$TS_AUTHKEY\" python - <<'PY'\nimport os, requests\npayload={'capabilities':{'devices':{'create':{'reusable':False,'ephemeral':True,'preauthorized':True,'tags':[]}}},'expirySeconds':3600,'description':'ompk-clef-ephemeral'}\nr=requests.post('https://api.tailscale.com/api/v2/tailnet/-/keys',auth=(os.environ['TS_API'],''),json=payload,timeout=30)\nr.raise_for_status()\nprint(r.json()['key'])\nPY\n); fi",
-		`tailscale up --auth-key=\"$NODE_AUTH\" --hostname=${shellQuote(request.hostname)} --accept-routes=false`,
+		`tailscale up --auth-key="$NODE_AUTH" --hostname=${shellQuote(request.hostname)} --accept-routes=false`,
 		"unset TS_AUTHKEY NODE_AUTH",
-		"if [ -f /tmp/ompk-clef-server.pid ]; then old=$(cat /tmp/ompk-clef-server.pid); kill \"$old\" 2>/dev/null || true; fi",
+		'if [ -f /tmp/ompk-clef-server.pid ]; then old=$(cat /tmp/ompk-clef-server.pid); kill "$old" 2>/dev/null || true; fi',
 		`printf '%s' ${shellQuote(serverSource)} | base64 -d > /tmp/ompk-clef-server.py`,
-		"nohup env HF_XET_HIGH_PERFORMANCE=1 OMPK_CLEF_MODEL_ID=\"$OMPK_CLEF_MODEL_ID\" OMPK_CLEF_PORT=\"$OMPK_CLEF_PORT\" python /tmp/ompk-clef-server.py >/tmp/ompk-clef-server.log 2>&1 & echo $! >/tmp/ompk-clef-server.pid",
-		"healthy=0; for i in $(seq 1 1800); do if curl -fsS http://127.0.0.1:$OMPK_CLEF_PORT/healthz >/tmp/ompk-clef-health.json 2>/dev/null; then healthy=1; break; fi; sleep 1; done; [ \"$healthy\" = 1 ] || { tail -100 /tmp/ompk-clef-server.log >&2; exit 1; }",
+		'nohup env HF_XET_HIGH_PERFORMANCE=1 OMPK_CLEF_MODEL_ID="$OMPK_CLEF_MODEL_ID" OMPK_CLEF_PORT="$OMPK_CLEF_PORT" python /tmp/ompk-clef-server.py >/tmp/ompk-clef-server.log 2>&1 & echo $! >/tmp/ompk-clef-server.pid',
+		'healthy=0; for i in $(seq 1 1800); do if curl -fsS http://127.0.0.1:$OMPK_CLEF_PORT/healthz >/tmp/ompk-clef-health.json 2>/dev/null; then healthy=1; break; fi; sleep 1; done; [ "$healthy" = 1 ] || { tail -100 /tmp/ompk-clef-server.log >&2; exit 1; }',
 		"tailscale serve reset >/dev/null 2>&1 || true",
-		"if tailscale serve --bg --yes \"$OMPK_CLEF_PORT\" >/tmp/ompk-clef-serve.log 2>&1; then SERVE_MODE=https; else tailscale serve --bg --yes --tcp \"$OMPK_CLEF_PORT\" \"$OMPK_CLEF_PORT\" >/tmp/ompk-clef-serve.log 2>&1; SERVE_MODE=tcp; fi",
+		'if tailscale serve --bg --yes "$OMPK_CLEF_PORT" >/tmp/ompk-clef-serve.log 2>&1; then SERVE_MODE=https; else tailscale serve --bg --yes --tcp "$OMPK_CLEF_PORT" "$OMPK_CLEF_PORT" >/tmp/ompk-clef-serve.log 2>&1; SERVE_MODE=tcp; fi',
 		`echo '__OMPK_CLEF_READY__{"model":"${request.model}","port":${REMOTE_PORT},"serve":"'$SERVE_MODE'"}'`,
 	].join("\n");
 }
@@ -437,19 +437,18 @@ export async function launchClefDecisionModel(
 	let allocated = false;
 	try {
 		if (!before.active) {
-			const created = await run(
-				["new", "--session", request.sessionName, "--gpu", request.accelerator],
-				{ timeoutMs: 5 * 60_000 },
-			);
+			const created = await run(["new", "--session", request.sessionName, "--gpu", request.accelerator], {
+				timeoutMs: 5 * 60_000,
+			});
 			if (created.exitCode !== 0) {
 				throw new Error(`Colab allocation failed: ${(created.stderr || created.stdout).trim()}`);
 			}
 			allocated = true;
 		}
-		const bootstrap = await run(
-			["exec", "--session", request.sessionName, "--timeout", "3600"],
-			{ input: buildClefRemoteBootstrap(request, credential), timeoutMs: STARTUP_TIMEOUT_MS },
-		);
+		const bootstrap = await run(["exec", "--session", request.sessionName, "--timeout", "3600"], {
+			input: buildClefRemoteBootstrap(request, credential),
+			timeoutMs: STARTUP_TIMEOUT_MS,
+		});
 		if (bootstrap.exitCode !== 0 || !bootstrap.stdout.includes("__OMPK_CLEF_READY__")) {
 			throw new Error(
 				`Clef bootstrap failed: ${(bootstrap.stderr || bootstrap.stdout).trim().slice(-4000) || `exit ${bootstrap.exitCode}`}`,
@@ -478,10 +477,13 @@ export async function launchClefDecisionModel(
 			await deleteState(request.sessionName);
 			clearDecisionEndpointCache();
 		} else {
-			logger.error("[DecisionModel] launch failed and immediate Colab release was not confirmed; cutoff remains armed", {
-				cutoffAt: cutoff.cutoffAt,
-				sessionName: request.sessionName,
-			});
+			logger.error(
+				"[DecisionModel] launch failed and immediate Colab release was not confirmed; cutoff remains armed",
+				{
+					cutoffAt: cutoff.cutoffAt,
+					sessionName: request.sessionName,
+				},
+			);
 		}
 		throw error;
 	}
@@ -528,7 +530,9 @@ export async function stopClefDecisionModel(
 	const state = await loadState(sessionName);
 	const before = await sessionIsActive(sessionName, run);
 	if (!state && before.active) {
-		throw new Error(`${sessionName} is active but is not owned by the OMPK decision-model launcher; refusing to stop it.`);
+		throw new Error(
+			`${sessionName} is active but is not owned by the OMPK decision-model launcher; refusing to stop it.`,
+		);
 	}
 	if (!before.active) {
 		if (state) await cancel(state.taskName);

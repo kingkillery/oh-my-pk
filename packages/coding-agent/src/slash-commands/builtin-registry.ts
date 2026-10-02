@@ -50,8 +50,8 @@ import { handleColabModelSlashCommand } from "./helpers/colab-model";
 import { handleColabModelCacheSlashCommand } from "./helpers/colab-model-cache";
 import { CollabQrCodeComponent } from "./helpers/collab-qrcode";
 import { buildContextReportText } from "./helpers/context-report";
-import { handleDelegateSlashCommand } from "./helpers/delegate";
 import { handleDecisionModelSlashCommand } from "./helpers/decision-model";
+import { handleDelegateSlashCommand } from "./helpers/delegate";
 import { formatDuration } from "./helpers/format";
 import { handleFusionCommand, handleFusionPoolArgs } from "./helpers/fusion";
 import { handleFusionCommandTui, showFusionMenu } from "./helpers/fusion-tui";
@@ -726,7 +726,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "decision-model",
-		description: "Launch, inspect, or stop the tailnet Clef SystemOne decision service with an automatic compute cutoff",
+		description:
+			"Launch, inspect, or stop the tailnet Clef SystemOne decision service with an automatic compute cutoff",
 		inlineHint: "[launch|status|stop] [--ttl 60m] [--gpu T4|L4|A100|H100|G4] [--model clef-flash|clef]",
 		allowArgs: true,
 		handle: async (command, runtime) => handleDecisionModelSlashCommand(command.args, runtime),

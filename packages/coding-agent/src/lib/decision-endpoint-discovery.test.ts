@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import {
-	clearDecisionEndpointCache,
-	discoverDecisionEndpoint,
-} from "./decision-endpoint-discovery";
+import { clearDecisionEndpointCache, discoverDecisionEndpoint } from "./decision-endpoint-discovery";
 
 const ENV_KEYS = [
 	"OMP_DECISION_DISCOVERY",
@@ -49,10 +46,13 @@ describe("discoverDecisionEndpoint", () => {
 					},
 				},
 			}),
-			fetch: (async input => {
-				seen.push(String(input));
-				return health();
-			}) as typeof fetch,
+			fetch: Object.assign(
+				async (input: Parameters<typeof fetch>[0]) => {
+					seen.push(String(input));
+					return health();
+				},
+				{ preconnect: () => {} },
+			),
 		});
 
 		expect(endpoint).toMatchObject({
@@ -71,7 +71,7 @@ describe("discoverDecisionEndpoint", () => {
 			readTailscaleStatus: async () => {
 				throw new Error("should not inspect Tailscale");
 			},
-			fetch: (async () => health("clef-flash")) as typeof fetch,
+			fetch: Object.assign(async () => health("clef-flash"), { preconnect: () => {} }),
 		});
 
 		expect(endpoint).toMatchObject({
@@ -93,10 +93,13 @@ describe("discoverDecisionEndpoint", () => {
 					},
 				},
 			}),
-			fetch: (async () => {
-				probes++;
-				return health();
-			}) as typeof fetch,
+			fetch: Object.assign(
+				async () => {
+					probes++;
+					return health();
+				},
+				{ preconnect: () => {} },
+			),
 		});
 
 		expect(endpoint).toBeUndefined();

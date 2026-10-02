@@ -1,12 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { getJevBashBlockReason } from "./jev-bash-gate";
 
-const ENV_KEYS = [
-	"TYPESAFE_API_KEY",
-	"OPENROUTER_API_KEY",
-	"OMP_JEV_BASH_GATE",
-	"OMP_DECISION_DISCOVERY",
-] as const;
+const ENV_KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "OMP_JEV_BASH_GATE", "OMP_DECISION_DISCOVERY"] as const;
 let savedEnv: Record<string, string | undefined>;
 let fetchSpy: ReturnType<typeof spyOn>;
 

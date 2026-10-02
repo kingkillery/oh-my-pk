@@ -100,7 +100,7 @@ describe("systemOne", () => {
 		process.env.OMP_DECISION_ENDPOINT = "http://clef-inference:8000";
 		process.env.OMP_DECISION_MODEL = "clef-flash";
 		clearDecisionEndpointCache();
-		fetchSpy.mockImplementation(input =>
+		fetchSpy.mockImplementation((input: Parameters<typeof fetch>[0]) =>
 			Promise.resolve(String(input).endsWith("/healthz") ? healthResponse() : okResponse("clef-flash")),
 		);
 

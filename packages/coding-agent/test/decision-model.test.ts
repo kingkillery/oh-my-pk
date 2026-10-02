@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
 	buildClefRemoteBootstrap,
+	type DecisionModelLaunchRequest,
 	launchClefDecisionModel,
 	parseDecisionModelArgs,
-	type DecisionModelLaunchRequest,
 } from "../src/slash-commands/helpers/decision-model";
 
 const SESSION = "ompk-clef-decision";
@@ -53,7 +53,9 @@ describe("decision-model command parsing", () => {
 describe("Clef bootstrap", () => {
 	it("uses native SystemOne, private Tailscale Serve, and the Pillow repair", () => {
 		const script = buildClefRemoteBootstrap(request(), "tskey-api-test");
-		expect(script).toContain("/v1/systemone");
+		const serverSource = /printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d/.exec(script);
+		expect(serverSource).not.toBeNull();
+		expect(Buffer.from(serverSource?.[1] ?? "", "base64").toString("utf8")).toContain("/v1/systemone");
 		expect(script).toContain("tailscale serve");
 		expect(script).toContain("pillow==12.3.0");
 		expect(script).toContain("api.tailscale.com/api/v2/tailnet/-/keys");
