@@ -670,6 +670,29 @@ describe("/colab-model command", () => {
 		expect(buildColabCommand(["sessions"], "linux")).toEqual(["colab", "sessions"]);
 	});
 
+	test("refuses to create any runtime without an explicit Colab CLI", () => {
+		const previousOverride = Bun.env.OMPK_COLAB_CLI;
+		Bun.env.OMPK_COLAB_CLI = "/usr/bin/colab";
+		try {
+			for (const accelerator of ["T4", "CPU"] as const) {
+				const args = colabNewSessionArgs("guarded", accelerator);
+				expect(() => buildColabCommand(args, "win32")).toThrow(
+					"launch through the mesh-inference dashboard (http://127.0.0.1:18084/)",
+				);
+				expect(buildColabCommand(args, "win32", ["budget-cli", "--"])).toEqual(["budget-cli", "--", ...args]);
+			}
+			expect(buildColabCommand(["status", "--session", "new"], "linux")).toEqual([
+				"/usr/bin/colab",
+				"status",
+				"--session",
+				"new",
+			]);
+		} finally {
+			if (previousOverride === undefined) delete Bun.env.OMPK_COLAB_CLI;
+			else Bun.env.OMPK_COLAB_CLI = previousOverride;
+		}
+	});
+
 	test("compiles the setup probe and verifies target selection among tools", async () => {
 		const reference = parseHuggingFaceModelReference("unsloth/Qwen3.8-27B-GGUF");
 		const artifact = selectGgufArtifact(QWEN_FILES, reference, "A100");
