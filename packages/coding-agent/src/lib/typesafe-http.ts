@@ -3,10 +3,9 @@
 // It is intentionally NOT registered in the shared ModelRegistry/AuthStorage
 // catalog: every `KnownApi` transport in pi-catalog is a message/streaming
 // shape, and a judgment endpoint behind a chat role would imply conversation,
-// streaming, and tool-call support it does not have. Credential resolution is
-// scoped and deliberately simple — environment variable only, matching the
-// ElevenLabs precedent in this directory (no settings-stored key, nothing
-// written to a config file that might be synced or committed).
+// streaming, and tool-call support it does not have. Remote credentials remain
+// environment-only; a live tailnet decision endpoint can also be auto-discovered
+// without a credential. Nothing is written to a synced provider config file.
 //
 // Intended seam: bounded semantic judgments behind existing lanes — e.g. a
 // `noul` gate ("does this DOM state satisfy the goal?") verifying browser-lane
@@ -16,6 +15,11 @@
 // or tool output as trusted directives.
 
 import { $env, APP_NAME } from "@pk-nerdsaver-ai/pi-utils";
+import {
+	discoverDecisionEndpoint,
+	invalidateDecisionEndpoint,
+	type DecisionEndpoint,
+} from "./decision-endpoint-discovery";
 
 export const TYPESAFE_DEFAULT_BASE_URL = "https://api.typesafe.ai/v1";
 export const TYPESAFE_DEFAULT_MODEL_ID = "jev-1.13.0";
@@ -176,45 +180,89 @@ export interface TypeSafeRequestOptions {
  * Retries 429/529 and network failures with backoff; throws TypeSafeApiError
  * for other statuses.
  */
+interface SystemOneTarget {
+	readonly apiKey?: string;
+	readonly baseUrl: string;
+	readonly decisionEndpoint?: DecisionEndpoint;
+	readonly model: string;
+}
+
+function canFailOverDecisionEndpoint(error: unknown): boolean {
+	if (!(error instanceof TypeSafeApiError)) return true;
+	return error.status === 404 || error.status === 408 || error.status === 429 || error.status >= 500;
+}
+
+async function requestSystemOneTarget(
+	target: SystemOneTarget,
+	state: TypeSafeState,
+	questions: Record<string, TypeSafeQuestion>,
+	model: string,
+	signal: AbortSignal,
+): Promise<TypeSafeResponse> {
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+		"User-Agent": TYPESAFE_USER_AGENT,
+	};
+	if (target.apiKey) headers.Authorization = `Bearer ${target.apiKey}`;
+	const response = await fetch(`${target.baseUrl}/systemone`, {
+		method: "POST",
+		headers,
+		body: JSON.stringify({ state, model, questions }),
+		signal,
+	});
+	if (!response.ok) throw new TypeSafeApiError(response.status, await response.text());
+	return (await response.json()) as TypeSafeResponse;
+}
+
 export async function systemOne(
 	state: TypeSafeState,
 	questions: Record<string, TypeSafeQuestion>,
 	options: TypeSafeRequestOptions = {},
 ): Promise<TypeSafeResponse> {
-	const apiKey = resolveTypeSafeApiKey();
-	if (!apiKey) {
-		throw new Error("TYPESAFE_API_KEY (or OPENROUTER_API_KEY) is not set; TypeSafe judgments are unavailable");
-	}
 	const timeoutMs = options.timeoutMs ?? 30_000;
-	const body = JSON.stringify({
-		state,
-		model: options.model ?? resolveTypeSafeModelId(),
-		questions,
-	});
-
 	return withTypeSafeRequestTimeout(options.signal, timeoutMs, async signal => {
+		const decisionEndpoint = options.model ? undefined : await discoverDecisionEndpoint({ signal });
+		const apiKey = resolveTypeSafeApiKey();
+		const targets: SystemOneTarget[] = [];
+		if (decisionEndpoint) {
+			targets.push({
+				baseUrl: decisionEndpoint.baseUrl,
+				decisionEndpoint,
+				model: decisionEndpoint.model,
+			});
+		}
+		if (apiKey) {
+			targets.push({
+				apiKey,
+				baseUrl: resolveTypeSafeBaseUrl(),
+				model: options.model ?? resolveTypeSafeModelId(),
+			});
+		}
+		if (targets.length === 0) {
+			throw new Error(
+				"TYPESAFE_API_KEY (or OPENROUTER_API_KEY) is not set and no live OMP decision endpoint was discovered",
+			);
+		}
+
 		let lastError: unknown;
-		for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-			if (attempt > 0) await waitForRetry(signal, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
-			signal.throwIfAborted();
-			try {
-				const response = await fetch(`${resolveTypeSafeBaseUrl()}/systemone`, {
-					method: "POST",
-					headers: {
-						Authorization: `Bearer ${apiKey}`,
-						"Content-Type": "application/json",
-						"User-Agent": TYPESAFE_USER_AGENT,
-					},
-					body,
-					signal,
-				});
-				if (!response.ok) throw new TypeSafeApiError(response.status, await response.text());
-				return (await response.json()) as TypeSafeResponse;
-			} catch (error) {
-				if (signal.aborted) throw signal.reason;
-				lastError = error;
-				const retryable = !(error instanceof TypeSafeApiError) || error.retryable;
-				if (!retryable) throw error;
+		for (const target of targets) {
+			const attempts = target.decisionEndpoint ? 1 : MAX_ATTEMPTS;
+			for (let attempt = 0; attempt < attempts; attempt++) {
+				if (attempt > 0) await waitForRetry(signal, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+				signal.throwIfAborted();
+				try {
+					return await requestSystemOneTarget(target, state, questions, target.model, signal);
+				} catch (error) {
+					if (signal.aborted) throw signal.reason;
+					lastError = error;
+					const retryable = !(error instanceof TypeSafeApiError) || error.retryable;
+					if (target.decisionEndpoint) {
+						invalidateDecisionEndpoint(target.decisionEndpoint);
+						if (!canFailOverDecisionEndpoint(error)) throw error;
+						break;
+					}
+					if (!retryable) throw error;
+				}
 			}
 		}
 		throw lastError;

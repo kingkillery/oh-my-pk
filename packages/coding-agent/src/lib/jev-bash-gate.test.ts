@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { getJevBashBlockReason } from "./jev-bash-gate";
 
-const ENV_KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "OMP_JEV_BASH_GATE"] as const;
+const ENV_KEYS = [
+	"TYPESAFE_API_KEY",
+	"OPENROUTER_API_KEY",
+	"OMP_JEV_BASH_GATE",
+	"OMP_DECISION_DISCOVERY",
+] as const;
 let savedEnv: Record<string, string | undefined>;
 let fetchSpy: ReturnType<typeof spyOn>;
 
@@ -29,6 +34,7 @@ beforeEach(() => {
 		savedEnv[key] = process.env[key];
 		delete process.env[key];
 	}
+	process.env.OMP_DECISION_DISCOVERY = "off";
 	fetchSpy = spyOn(globalThis, "fetch");
 });
 
@@ -41,7 +47,7 @@ afterEach(() => {
 });
 
 describe("getJevBashBlockReason", () => {
-	it("makes no request unless opted in with a key", async () => {
+	it("makes no request while disabled and fails open when enabled without a decision backend", async () => {
 		expect(await getJevBashBlockReason("rm -rf /", "/repo")).toBeUndefined();
 		process.env.OMP_JEV_BASH_GATE = "1";
 		expect(await getJevBashBlockReason("rm -rf /", "/repo")).toBeUndefined();

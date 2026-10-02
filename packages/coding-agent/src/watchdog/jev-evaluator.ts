@@ -9,6 +9,7 @@
  */
 
 import { logger } from "@pk-nerdsaver-ai/pi-utils";
+import { systemOne, type TypeSafeQuestion } from "../lib/typesafe-http";
 import type { BlockerType, WatchdogConfig, WatchdogEvaluation } from "./types";
 
 interface JevApiResponse {
@@ -33,6 +34,35 @@ interface JevApiResponse {
 	readonly model?: string;
 }
 
+const WATCHDOG_QUESTIONS = {
+	is_thrashing: {
+		type: "noul",
+		instructions:
+			"The agent is repeating failed actions, cycling between the same files or errors, or making no observable progress towards the objective.",
+	},
+	stall_severity: {
+		type: "score",
+		instructions: "Assess the severity of the agent stalling or wedging.",
+		criteria: [
+			"nominal: normal forward progress or standard exploration",
+			"hesitant: single error recovery or small exploratory detour",
+			"looping: repeated failures on the same target or syntax/tag thrashing for 2-3 actions",
+			"fatal: completely wedged in an infinite loop, repeating identical failed commands, or unrecoverable error",
+		],
+	},
+	blocker_type: {
+		type: "choice",
+		instructions: "Primary failure mode if the agent is struggling.",
+		criteria: {
+			none: "Agent is progressing normally",
+			syntax_or_tag_mismatch: "Repeated edit snapshot tag mismatches or syntax parse failures",
+			command_failure_loop: "Bash command failing repeatedly with the same exit code or error output",
+			missing_dependency_or_path: "Attempting to access non-existent files or uninstalled packages repeatedly",
+			semantic_confusion: "Drifting off task or misunderstanding tool expectations",
+		},
+	},
+} satisfies Record<string, TypeSafeQuestion>;
+
 export async function evaluateAgentTelemetry(
 	state: string,
 	config: WatchdogConfig = {},
@@ -45,6 +75,43 @@ export async function evaluateAgentTelemetry(
 	// 2. Check for mock provider (used for zero-network testing)
 	if (config.provider === "mock") {
 		return undefined;
+	}
+
+	const timeoutMs = config.timeoutMs ?? 2500;
+	const startMs = performance.now();
+
+	// Prefer the shared SystemOne client when no explicit watchdog transport was
+	// requested. It auto-discovers a live Clef decision endpoint on Tailscale,
+	// then falls back to TypeSafe/OpenRouter when configured.
+	if (!config.baseUrl && !config.apiKey && !config.provider) {
+		try {
+			const data = await systemOne(state, WATCHDOG_QUESTIONS, { timeoutMs });
+			const thrashing = data.answers.is_thrashing;
+			const severity = data.answers.stall_severity;
+			const blocker = data.answers.blocker_type;
+			return {
+				isThrashing: thrashing?.type === "noul" ? thrashing.noul : 0,
+				stallSeverity: severity?.type === "score" ? severity.score : 0,
+				blockerType: (blocker?.type === "choice" ? blocker.choice : "none") as BlockerType,
+				confidence:
+					severity?.type === "score"
+						? severity.confidence
+						: blocker?.type === "choice"
+							? blocker.confidence
+							: 1,
+				latencyMs: Math.round(performance.now() - startMs),
+				provider: /(^|\/)clef(?:-|$)/i.test(data.model)
+					? "clef"
+					: process.env.OPENROUTER_API_KEY && !process.env.TYPESAFE_API_KEY
+						? "openrouter"
+						: "typesafe",
+			};
+		} catch (error) {
+			logger.debug(
+				`[Watchdog] Shared SystemOne path unavailable: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			if (!process.env.AI_GATEWAY_API_KEY) return undefined;
+		}
 	}
 
 	// 3. Resolve API key and endpoint
@@ -81,40 +148,11 @@ export async function evaluateAgentTelemetry(
 	const requestBody = {
 		model,
 		state,
-		questions: {
-			is_thrashing: {
-				type: "noul",
-				instructions:
-					"The agent is repeating failed actions, cycling between the same files or errors, or making no observable progress towards the objective.",
-			},
-			stall_severity: {
-				type: "score",
-				instructions: "Assess the severity of the agent stalling or wedging.",
-				criteria: [
-					"nominal: normal forward progress or standard exploration",
-					"hesitant: single error recovery or small exploratory detour",
-					"looping: repeated failures on the same target or syntax/tag thrashing for 2-3 actions",
-					"fatal: completely wedged in an infinite loop, repeating identical failed commands, or unrecoverable error",
-				],
-			},
-			blocker_type: {
-				type: "choice",
-				instructions: "Primary failure mode if the agent is struggling.",
-				criteria: {
-					none: "Agent is progressing normally",
-					syntax_or_tag_mismatch: "Repeated edit snapshot tag mismatches or syntax parse failures",
-					command_failure_loop: "Bash command failing repeatedly with the same exit code or error output",
-					missing_dependency_or_path: "Attempting to access non-existent files or uninstalled packages repeatedly",
-					semantic_confusion: "Drifting off task or misunderstanding tool expectations",
-				},
-			},
-		},
+		questions: WATCHDOG_QUESTIONS,
 	};
 
-	const timeoutMs = config.timeoutMs ?? 2500;
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
-	const startMs = performance.now();
 
 	try {
 		const headers: Record<string, string> = {

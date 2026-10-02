@@ -1,20 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { clearDecisionEndpointCache } from "./decision-endpoint-discovery";
 import { systemOne, TypeSafeApiError, withTypeSafeRequestTimeout } from "./typesafe-http";
 
-const ENV_KEYS = ["TYPESAFE_API_KEY", "TYPESAFE_BASE_URL", "OPENROUTER_API_KEY"] as const;
+const ENV_KEYS = [
+	"TYPESAFE_API_KEY",
+	"TYPESAFE_BASE_URL",
+	"OPENROUTER_API_KEY",
+	"OMP_DECISION_DISCOVERY",
+	"OMP_DECISION_ENDPOINT",
+	"OMP_DECISION_MODEL",
+] as const;
 
 let savedEnv: Record<string, string | undefined>;
 let fetchSpy: ReturnType<typeof spyOn>;
 
-function okResponse(): Response {
+function okResponse(model = "jev-1.13.0"): Response {
 	return new Response(
 		JSON.stringify({
-			model: "jev-1.13.0",
+			model,
 			answers: { goal_met: { type: "noul", noul: 0.91 } },
 			usage: { input_tokens: 120, output_tokens: 4 },
 		}),
 		{ status: 200, headers: { "Content-Type": "application/json" } },
 	);
+}
+
+function healthResponse(model = "clef-flash"): Response {
+	return Response.json({ status: "ok", model, model_id: `Cloudflare/${model}`, tailnet_only: true });
 }
 
 beforeEach(() => {
@@ -23,11 +35,14 @@ beforeEach(() => {
 		savedEnv[key] = process.env[key];
 		delete process.env[key];
 	}
+	process.env.OMP_DECISION_DISCOVERY = "off";
+	clearDecisionEndpointCache();
 	fetchSpy = spyOn(globalThis, "fetch");
 });
 
 afterEach(() => {
 	fetchSpy.mockRestore();
+	clearDecisionEndpointCache();
 	for (const key of ENV_KEYS) {
 		if (savedEnv[key] === undefined) delete process.env[key];
 		else process.env[key] = savedEnv[key];
@@ -79,6 +94,40 @@ describe("systemOne", () => {
 		expect(body.model).toBe("jev-1.13.0");
 		expect(body.questions.goal_met.type).toBe("noul");
 		expect(result.answers.goal_met).toEqual({ type: "noul", noul: 0.91 });
+	});
+
+	it("uses a live explicit decision endpoint without an API key", async () => {
+		process.env.OMP_DECISION_ENDPOINT = "http://clef-inference:8000";
+		process.env.OMP_DECISION_MODEL = "clef-flash";
+		clearDecisionEndpointCache();
+		fetchSpy.mockImplementation(input =>
+			Promise.resolve(String(input).endsWith("/healthz") ? healthResponse() : okResponse("clef-flash")),
+		);
+
+		const result = await systemOne("state", { goal_met: { type: "noul", instructions: "Done?" } });
+
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+		const [url, init] = fetchSpy.mock.calls[1] as [string, RequestInit];
+		expect(url).toBe("http://clef-inference:8000/v1/systemone");
+		expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+		expect(JSON.parse(init.body as string).model).toBe("clef-flash");
+		expect(result.model).toBe("clef-flash");
+	});
+
+	it("falls back to TypeSafe when a discovered decision endpoint disappears", async () => {
+		process.env.OMP_DECISION_ENDPOINT = "http://clef-inference:8000";
+		process.env.TYPESAFE_API_KEY = "ts-key";
+		clearDecisionEndpointCache();
+		fetchSpy
+			.mockImplementationOnce(() => Promise.resolve(healthResponse()))
+			.mockImplementationOnce(() => Promise.reject(new Error("connection reset")))
+			.mockImplementationOnce(() => Promise.resolve(okResponse()));
+
+		const result = await systemOne("state", { goal_met: { type: "noul", instructions: "Done?" } });
+
+		expect(fetchSpy).toHaveBeenCalledTimes(3);
+		expect((fetchSpy.mock.calls[2] as [string])[0]).toBe("https://api.typesafe.ai/v1/systemone");
+		expect(result.model).toBe("jev-1.13.0");
 	});
 
 	it("throws without calling fetch when TYPESAFE_API_KEY is unset", async () => {

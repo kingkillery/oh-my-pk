@@ -88,6 +88,25 @@ These are consumed via `getEnvApiKey()` (`packages/ai/src/stream.ts`) unless not
 | `WAFER_SERVERLESS_API_KEY`      | Wafer Serverless auth                            | Using `wafer-serverless` provider                              | Pay-as-you-go Wafer SKU; validated against `https://pass.wafer.ai/v1/models`                        |
 | `GITLAB_TOKEN`                  | GitLab Duo auth                                  | Using `gitlab-duo` provider                                    |                                                                                                     |
 
+### Decision-model endpoints
+
+SystemOne decision services are separate from chat/model providers. OMPK prefers a live local/tailnet decision endpoint for unpinned SystemOne calls, then falls back to TypeSafe/OpenRouter when configured.
+
+| Variable | Behavior |
+| --- | --- |
+| `TYPESAFE_API_KEY` | Direct TypeSafe SystemOne auth. Used after no live OMP decision endpoint is available. |
+| `TYPESAFE_BASE_URL` | Overrides the direct TypeSafe SystemOne base URL (default `https://api.typesafe.ai/v1`). |
+| `TS_AUTHKEY` | Preferred Tailscale credential for `/decision-model launch`; accepts `tskey-auth-*` or `tskey-api-*`. |
+| `TAILSCALE_AUTHKEY` | Alias used by the Clef launcher when `TS_AUTHKEY` is unset. |
+| `OMP_DECISION_ENDPOINT` | Explicit decision-service origin or `/v1` base URL. OMPK health-checks `/healthz` before routing decisions to it. |
+| `OMP_DECISION_MODEL` | Overrides the model id reported by the discovered decision service. Normally omitted so Clef reports `clef` / `clef-flash`. |
+| `OMP_DECISION_DISCOVERY` | Tailnet auto-discovery toggle. Enabled by default; `0`, `false`, or `off` disables it. |
+| `OMP_DECISION_HOSTNAME` | MagicDNS/Tailscale hostname to discover (default `clef-inference`). |
+| `OMP_DECISION_PORT` | HTTP fallback port when Tailscale Serve HTTPS is unavailable (default `8000`). |
+| `TAILSCALE_CLI` | Optional explicit path to the Tailscale CLI when it is not available on `PATH`. Common Windows/macOS/Linux install paths are also probed automatically. |
+
+Tailnet discovery reads local `tailscale status --json`, accepts an online peer matching the configured hostname (including Tailscale's numeric duplicate-name suffixes), then probes the peer's `/healthz`. It does not open an inbound OMPK webhook listener or persist transient Colab endpoints.
+
 ### GitHub/Copilot tokens
 
 | Variable               | Used for                                         | Notes                                      |
@@ -429,6 +448,7 @@ These are read as runtime signals; they are usually set by the terminal/OS rathe
 Treat these as secrets; do not log or commit them:
 
 - Provider/API keys and OAuth/bearer credentials (all `*_API_KEY`, `*_TOKEN`, OAuth access/refresh tokens)
+- Tailscale node/API credentials (`TS_AUTHKEY`, `TAILSCALE_AUTHKEY`)
 - Cloud credentials (`AWS_*`, `GOOGLE_APPLICATION_CREDENTIALS` path may expose service-account material)
 - Search/provider auth vars (`EXA_API_KEY`, `BRAVE_API_KEY`, `PERPLEXITY_API_KEY`, Anthropic search keys)
 - Foundry mTLS material (`CLAUDE_CODE_CLIENT_CERT`, `CLAUDE_CODE_CLIENT_KEY`, `NODE_EXTRA_CA_CERTS` when it points to private CA bundles)
