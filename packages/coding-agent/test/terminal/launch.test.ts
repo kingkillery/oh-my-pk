@@ -234,8 +234,9 @@ describe("PK-Herdr-only terminal lifecycle", () => {
 		f.deps.waitForReady = async () => {
 			throw new Error("not ready");
 		};
-		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("not ready");
-		expect(f.calls.at(-1)).toEqual(["pk-herdr", "session", "stop", name, "--json"]);
+		// The original failure surfaces; a stop against a never-ready server would fail and mask it.
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow(/^not ready$/);
+		expect(f.calls.some(args => args.includes("stop"))).toBe(false);
 		expect(f.events).toEqual(["spawn", "kill", "release"]);
 	});
 	it("propagates pane failure and failed cleanup without launching another backend", async () => {
@@ -278,10 +279,41 @@ describe("PK-Herdr-only terminal lifecycle", () => {
 		const blocked = Promise.withResolvers<void>();
 		f.deps.waitForReady = () => blocked.promise;
 		f.exit.resolve(1);
-		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("exited during startup");
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow(
+			/^PK-Herdr owned server exited during startup/,
+		);
+		expect(f.calls.some(args => args.includes("stop"))).toBe(false);
 		expect(f.events).toContain("kill");
 		blocked.resolve();
 	});
+	it("keeps the owned server running after the launching process exits", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "ompk-herdr-detach-"));
+		const marker = join(directory, "alive");
+		try {
+			const module = Bun.pathToFileURL(join(import.meta.dir, "../../src/terminal/launch.ts")).href;
+			const server = [
+				process.execPath,
+				"--eval",
+				"await Bun.sleep(1000); await Bun.write(process.argv[1], 'alive');",
+				marker,
+			];
+			const launcher = Bun.spawn(
+				[
+					process.execPath,
+					"--eval",
+					`const { startServer } = await import(${JSON.stringify(module)});
+(await startServer(${JSON.stringify(server)}, ${JSON.stringify(tmpdir())})).release();`,
+				],
+				{ stdout: "ignore", stderr: "pipe" },
+			);
+			expect(await launcher.exited, await new Response(launcher.stderr).text()).toBe(0);
+			// The launcher is gone; only a detached server is still alive to write its marker.
+			for (let attempt = 0; attempt < 100 && !(await Bun.file(marker).exists()); attempt++) await Bun.sleep(100);
+			expect(await Bun.file(marker).exists()).toBe(true);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	}, 20_000);
 	for (const cancelled of [false, true]) {
 		it(`reconciles a committed caller tab after a lost receipt (cancelled=${cancelled})`, async () => {
 			const f = fixture(caller);

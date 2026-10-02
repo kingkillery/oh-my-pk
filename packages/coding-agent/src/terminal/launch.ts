@@ -53,8 +53,10 @@ export interface TerminalLaunchDependencies {
 
 // Node's windowsHide uses CREATE_NO_WINDOW, as in gopk-clips/ensure-daemon.ts.
 // Unlike a shell/terminal launch, this executes the headless native server directly.
-async function startServer(args: string[], cwd: string): Promise<OwnedTerminalServer> {
-	const child = spawn(args[0]!, args.slice(1), { cwd, windowsHide: true, stdio: "ignore" });
+// Detached: on Windows an attached child is killed when OMPK (or the launch script) exits,
+// taking the owned session with it; the session must live until stopped or idle-closed.
+export async function startServer(args: string[], cwd: string): Promise<OwnedTerminalServer> {
+	const child = spawn(args[0]!, args.slice(1), { cwd, detached: true, windowsHide: true, stdio: "ignore" });
 	const started = Promise.withResolvers<void>();
 	const exited = Promise.withResolvers<number>();
 	child.once("spawn", () => started.resolve());
@@ -289,7 +291,8 @@ export async function launchInteractiveTerminal(
 		try {
 			if (caller && creationAttempted && !tabId)
 				tabId = await reconcileCallerTab(env.HERDR_WORKSPACE_ID!, callerLabel, cwd, run);
-			if (sessionName && server)
+			// A server that never became ready has no reachable session to stop; kill its handle below instead.
+			if (sessionName && server && ready)
 				cleanup = await run(["pk-herdr", "session", "stop", sessionName, "--json"], cwd, { timeoutMs: 20_000 });
 			else if (tabId) cleanup = await run([...prefix, "tab", "close", tabId], cwd);
 		} catch (cleanupError) {
