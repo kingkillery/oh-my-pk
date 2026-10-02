@@ -12,6 +12,10 @@
 - Release the per-file deferred diagnostics handle when an LSP writethrough rejects. `finalize()` now runs in a `finally` around the writethrough call, so a failed write no longer leaks an `AbortController` that was neither aborted nor registered for cleanup, which left an uncancellable background fetch able to inject stale diagnostics for a write that never landed.
 - Stop a malformed agent file from dumping its entire contents into the log. Agent parsing embedded the whole file body in the thrown error, and discovery logs that error on every startup, so one file under `.ompk/agents/` without valid frontmatter produced a ~70 KB log line with the body duplicated across `message`, `stack`, and `cause`. The error now names the file and the reason only.
 
+### Changed
+
+- Require the installed PK-Herdr skill for interactive terminal creation and control, expose its instructions before invocation, and fail closed when it is missing, unreadable, disabled, or changed. Terminal launches use the caller's Herdr workspace or a unique tool-owned headless session with four-hour idle cleanup; psmux and system-terminal fallbacks are removed, and legacy terminal backend preferences migrate to PK-Herdr. Failed or cancelled launches close only their owned resources.
+
 ### Documentation
 
 - Correct the `contextPromotion.enabled` default in `docs/settings.md` from `true` to the schema's actual `false`, and describe the real mechanism (promoting to a larger-context model on overflow instead of compacting). Also drop `snapcompact` from the documented `compaction.strategy` values, since it is a legacy value only accepted via the backward-compatibility migration.

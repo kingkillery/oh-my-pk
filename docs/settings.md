@@ -609,6 +609,7 @@ statusLine:
   showHookStatus: true
 
 terminal:
+  launchBackend: pk-herdr     # required; no external terminal fallback
   showImages: true
 images:
   autoResize: true
@@ -629,12 +630,17 @@ tui:
 | `statusLine.sessionAccent` | boolean | `true` | Tint the editor border with the session color. |
 | `statusLine.transparent` | boolean | `false` | Use the terminal background for the status line. |
 | `statusLine.showHookStatus` | boolean | `true` | Show hook status messages. |
+| `terminal.launchBackend` | enum | `pk-herdr` | PK-Herdr is required for interactive terminals; legacy `managed` and `system` preferences are migrated. |
 | `terminal.showImages` | boolean | `true` | Render images inline (when the terminal supports it). |
 | `images.autoResize` | boolean | `true` | Resize large images for model compatibility. |
 | `images.blockImages` | boolean | `false` | Never send images to providers. |
 | `tui.hyperlinks` | enum | `auto` | `off`, `auto`, `always`. |
 
 For a custom status line, set `statusLine.preset: custom` and configure `statusLine.leftSegments`, `statusLine.rightSegments`, and `statusLine.segmentOptions`.
+
+Interactive terminal creation and control follow the `pk-herdr` skill. Inside an existing Herdr workspace, OMPK creates a background tab without changing focus. Outside Herdr, it starts a unique tool-owned headless session with `--session-auto-close-after 4h` and creates a workspace with `--origin tool --no-focus`. All later operations use that session name and returned IDs. If the server cannot start without opening a window, OMPK stops and asks the user to start it inside a managed pane; it never falls back to psmux or Windows Terminal. Ordinary non-interactive shell commands are unaffected. Cleanup closes only the tool-created tab/pane or exact owned session, never the user's existing session.
+
+The terminal tool exposes the session's canonical installed `pk-herdr` skill instructions before invocation. Missing, unreadable, disabled, or changed skill files block launches before any Herdr process starts; reload the terminal tool after changing its skill. The older CLI-bundled `herdr` skill does not substitute for the required installed skill.
 
 ### Interaction
 
@@ -743,6 +749,7 @@ Applied whenever raw settings are loaded (global, project, overlays, and runtime
 | `ask.timeout` in milliseconds (value `> 1000`) | seconds (divided by 1000) |
 | flat `theme: "<name>"` string | `theme.dark` / `theme.light` (slot chosen by luminance; built-in `light`/`dark` are dropped to use defaults) |
 | `task.isolation.enabled: true/false` | `task.isolation.mode: auto/none` |
+| `terminal.launchBackend: managed/system` | `terminal.launchBackend: pk-herdr` (including dotted-key configuration) |
 | `task.simple` | removed |
 | legacy `task.isolation.mode` (`worktree`, `fuse-overlay`, `fuse-projfs`) | `rcopy`, `overlayfs`, `projfs` |
 | `lastChangelogVersion` | moved to a marker file and stripped from `config.yml` |

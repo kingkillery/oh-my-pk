@@ -1,6 +1,7 @@
-import { createInterface } from "node:readline/promises";
 import { Settings } from "../src/config/settings";
+import { loadSkills } from "../src/extensibility/skills";
 import { launchInteractiveTerminal } from "../src/terminal/launch";
+import { resolveTerminalLaunchSkill } from "../src/tools/terminal-skill";
 
 function argumentValue(args: string[], flag: string): string | undefined {
 	const index = args.indexOf(flag);
@@ -18,22 +19,24 @@ if (!command?.trim()) {
 	const cwd = argumentValue(args, "--cwd") ?? process.cwd();
 	const settings = await Settings.loadReadOnly({ cwd });
 	try {
+		const { skills } = await loadSkills({
+			...settings.getGroup("skills"),
+			disabledExtensions: settings.get("disabledExtensions"),
+			cwd,
+		});
+		const skill = await resolveTerminalLaunchSkill(skills);
 		const result = await launchInteractiveTerminal(
-			{ command, cwd, title: argumentValue(args, "--title"), backend: settings.get("terminal.launchBackend") },
 			{
-				confirmFallback: process.stdin.isTTY
-					? async reason => {
-							const input = createInterface({ input: process.stdin, output: process.stdout });
-							try {
-								return (await input.question(`${reason}\nType YES to continue: `)).trim() === "YES";
-							} finally {
-								input.close();
-							}
-						}
-					: undefined,
+				command,
+				cwd,
+				title: argumentValue(args, "--title"),
+				backend: settings.get("terminal.launchBackend"),
 			},
+			{ skill },
 		);
-		process.stdout.write(`Launched in ${result.backend}${result.id ? ` (${result.id})` : ""}.\n`);
+		process.stdout.write(
+			`Launched in PK-Herdr${result.sessionName ? ` session ${result.sessionName}` : ""}, tab ${result.tabId} (pane ${result.paneId}).\n`,
+		);
 	} catch (error) {
 		process.stderr.write(`Terminal launch failed: ${error instanceof Error ? error.message : String(error)}\n`);
 		process.exitCode = 1;

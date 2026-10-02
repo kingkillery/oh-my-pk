@@ -437,6 +437,9 @@ export class Settings {
 	 * Triggers hooks for settings that have side effects.
 	 */
 	set<P extends SettingPath>(path: P, value: SettingValue<P>): void {
+		if (path === "terminal.launchBackend" && value !== "pk-herdr") {
+			throw new Error("Interactive terminals require PK-Herdr; other backends are no longer supported.");
+		}
 		const prev = this.get(path);
 		const segments = path.split(".");
 		setByPath(this.#global, segments, value);
@@ -457,6 +460,9 @@ export class Settings {
 	 * Apply runtime overrides (not persisted).
 	 */
 	override<P extends SettingPath>(path: P, value: SettingValue<P>): void {
+		if (path === "terminal.launchBackend" && value !== "pk-herdr") {
+			throw new Error("Interactive terminals require PK-Herdr; other backends are no longer supported.");
+		}
 		const prev = this.get(path);
 		const segments = path.split(".");
 		setByPath(this.#overrides, segments, value);
@@ -927,6 +933,18 @@ export class Settings {
 	}
 
 	#migrateRawSettings(raw: RawSettings): RawSettings {
+		// Retire legacy terminal opt-outs without breaking existing configuration layers.
+		const terminalObj = raw.terminal;
+		if (
+			isRecord(terminalObj) &&
+			(terminalObj.launchBackend === "managed" || terminalObj.launchBackend === "system")
+		) {
+			terminalObj.launchBackend = "pk-herdr";
+		}
+		if (raw["terminal.launchBackend"] === "managed" || raw["terminal.launchBackend"] === "system") {
+			raw["terminal.launchBackend"] = "pk-herdr";
+		}
+
 		// queueMode -> steeringMode
 		if ("queueMode" in raw && !("steeringMode" in raw)) {
 			raw.steeringMode = raw.queueMode;

@@ -90,13 +90,11 @@ If a tool returns output inconsistent with its described behavior for the suppli
 </critical>
 {{/has}}
 
-{{#if managedTerminalLaunches}}
 <critical>
-For an external interactive terminal, pane, or agent session launch (not ordinary shell commands), use {{#has tools "terminal_launch"}}`{{toolRefs.terminal_launch}}`{{else}}the managed terminal launch entrypoint; if unavailable, stop and report the limitation{{/has}}. NEVER launch one via bash/eval, `wt.exe`, or `Start-Process`. If PK-Herdr and psmux cannot launch it, require an interactive user confirmation before a system terminal fallback; no UI or declined confirmation means stop.
+Before creating, attaching to, controlling, inspecting, or closing an interactive terminal, pane, or agent session, MUST read and follow `skill://pk-herdr`. If the skill URI is unavailable, locate and read the installed `pk-herdr/SKILL.md` in the configured skill roots; if it is unavailable, stop and report the missing skill. Use the skill for terminal operations even when no new terminal is needed. The installed CLI's relevant `--help` is the syntax authority, not a substitute for the required skill.
+For an external interactive terminal, pane, or agent session launch (not ordinary shell commands), use {{#has tools "terminal_launch"}}`{{toolRefs.terminal_launch}}`{{else}}the managed terminal launch entrypoint; if unavailable, stop and report the limitation{{/has}}. NEVER launch one via bash/eval, `wt.exe`, or `Start-Process`. Never fall back to psmux, Windows Terminal, or another external console. If a named Herdr server cannot be started without opening a window, ask the user to start it inside a managed pane instead.
+Use genuine injected Herdr context and returned resource IDs. Outside Herdr, use only a unique tool-owned named session; do not forge context, operate on an unrelated focused pane, or control the default session.
 </critical>
-{{else}}{{#has tools "terminal_launch"}}
-Use `{{toolRefs.terminal_launch}}` for external interactive terminal launches; the terminal.launchBackend setting controls its destination.
-{{/has}}{{/if}}
 
 When an automation tool or wrapper creates a named PK-Herdr session, require `--session <unique-tool-session-name> --session-auto-close-after 4h` in its launch arguments, including reusable tool implementations. Replace the name placeholder before launching and scope later Herdr commands to that same session. Cleanup affects the whole session: do not opt the default session or an existing user session into it. Close tool-created tabs and panes when finished.
 

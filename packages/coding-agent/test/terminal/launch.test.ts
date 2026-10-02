@@ -1,320 +1,361 @@
-import { describe, expect, it, vi } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
-import { buildSystemPrompt } from "@pk-nerdsaver-ai/pi-coding-agent/system-prompt";
 import {
 	launchInteractiveTerminal,
+	type TerminalLaunchDependencies,
 	type TerminalLaunchRequest,
+	type TerminalLaunchSkill,
 } from "@pk-nerdsaver-ai/pi-coding-agent/terminal/launch";
 
-type CommandResult = { exitCode: number; stdout: string; stderr: string };
-const ok: CommandResult = { exitCode: 0, stdout: "", stderr: "" };
-const herdTab = (tabId = "w1:t2", paneId = "w1:p2"): CommandResult => ({
-	...ok,
-	stdout: JSON.stringify({ result: { tab: { tab_id: tabId }, root_pane: { pane_id: paneId } } }),
+let skillRoot: string;
+let skill: TerminalLaunchSkill;
+beforeAll(async () => {
+	skillRoot = await mkdtemp(join(tmpdir(), "ompk-herdr-launch-"));
+	skill = {
+		name: "pk-herdr",
+		filePath: join(skillRoot, "SKILL.md"),
+		content:
+			"---\nname: pk-herdr\ndescription: Scoped terminal operations\n---\nUse returned IDs and close only owned resources.\n",
+	};
+	await Bun.write(skill.filePath, skill.content);
+});
+afterAll(async () => {
+	await rm(skillRoot, { recursive: true, force: true });
 });
 const request: TerminalLaunchRequest = {
-	command: "& 'C:/Users/prest/bin/ompk.exe'",
+	command: "echo hello",
 	cwd: process.cwd(),
 	title: "New agent",
-	backend: "managed",
+	backend: "pk-herdr",
 };
+const ok = { exitCode: 0, stdout: "", stderr: "" };
+const created = {
+	...ok,
+	stdout: JSON.stringify({
+		result: {
+			workspace: { workspace_id: "w1" },
+			tab: { workspace_id: "w1", tab_id: "w1:t2" },
+			root_pane: { pane_id: "w1:p2" },
+		},
+	}),
+};
+const caller = { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "w1", HERDR_PANE_ID: "w1:p1" };
+function fixture(environment = {}) {
+	const calls: string[][] = [];
+	const events: string[] = [];
+	const exit = Promise.withResolvers<number>();
+	const deps: TerminalLaunchDependencies = {
+		skill,
+		environment,
+		newId: () => "unique-123",
+		startServer: async args => {
+			calls.push(args);
+			events.push("spawn");
+			return {
+				exited: exit.promise,
+				kill: () => {
+					events.push("kill");
+				},
+				release: () => {
+					events.push("release");
+				},
+			};
+		},
+		waitForReady: async (name, _cwd, run) => {
+			events.push("ready");
+			await run(["pk-herdr", "--session", name, "status", "server", "--json"], request.cwd);
+		},
+		run: async args => {
+			calls.push(args);
+			return args.includes("create") ? created : ok;
+		},
+	};
+	return { calls, events, deps, exit };
+}
+const name = "ompk-terminal-unique-123";
+const scope = ["pk-herdr", "--session", name];
 
-describe("managed interactive terminal launch", () => {
-	it("opens a background PK-Herdr tab in the caller's workspace and returns its IDs", async () => {
-		const calls: string[][] = [];
-		const confirmFallback = vi.fn(async (_reason: string): Promise<boolean> => true);
-		const result = await launchInteractiveTerminal(request, {
-			environment: { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_WORKSPACE_ID: "w1" },
-			platform: "win32",
-			confirmFallback,
-			run: async args => {
-				calls.push(args);
-				return args[1] === "tab" ? herdTab() : ok;
-			},
+describe("PK-Herdr-only terminal lifecycle", () => {
+	it("rejects an untyped caller without the required skill before any Herdr process", async () => {
+		const f = fixture();
+		const missing = { ...f.deps, skill: undefined } as unknown as TerminalLaunchDependencies;
+		await expect(launchInteractiveTerminal(request, missing)).rejects.toThrow("installed pk-herdr skill");
+		expect(f.calls).toEqual([]);
+		expect(f.events).toEqual([]);
+	});
+	it("rejects an unreadable installed skill before any Herdr process", async () => {
+		const f = fixture();
+		f.deps.skill = { ...skill, filePath: join(skillRoot, "missing.md") };
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("skill unavailable");
+		expect(f.calls).toEqual([]);
+		expect(f.events).toEqual([]);
+	});
+	it("rejects instructions changed since they were exposed before any Herdr process", async () => {
+		const f = fixture();
+		const filePath = join(skillRoot, "changed.md");
+		await Bun.write(filePath, skill.content);
+		f.deps.skill = { ...skill, filePath };
+		await Bun.write(filePath, `${skill.content}\nChanged after tool construction.\n`);
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("instructions changed");
+		expect(f.calls).toEqual([]);
+		expect(f.events).toEqual([]);
+	});
+	it("creates only a no-focus caller tab without opting its session into cleanup", async () => {
+		const f = fixture(caller);
+		expect(await launchInteractiveTerminal(request, f.deps)).toEqual({
+			backend: "pk-herdr",
+			id: "w1:p2",
+			paneId: "w1:p2",
+			tabId: "w1:t2",
+			workspaceId: "w1",
 		});
-		expect(result).toEqual({ backend: "pk-herdr", id: "w1:p2", tabId: "w1:t2" });
-		expect(calls).toEqual([
-			["pk-herdr", "tab", "create", "--workspace", "w1", "--cwd", request.cwd, "--label", "New agent", "--no-focus"],
+		expect(f.calls).toEqual([
+			[
+				"pk-herdr",
+				"tab",
+				"create",
+				"--workspace",
+				"w1",
+				"--cwd",
+				request.cwd,
+				"--label",
+				"New agent [ompk-owned:unique-123]",
+				"--no-focus",
+			],
 			["pk-herdr", "pane", "run", "w1:p2", request.command],
 		]);
-		expect(confirmFallback).not.toHaveBeenCalled();
+		expect(f.events).toEqual([]);
 	});
-
-	it("closes a created tab without a root pane before trying psmux", async () => {
-		const calls: string[][] = [];
-		const result = await launchInteractiveTerminal(request, {
-			environment: { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_WORKSPACE_ID: "w1" },
-			platform: "win32",
-			newId: () => "12345678-abcd",
-			run: async args => {
-				calls.push(args);
-				return args[2] === "create" ? { ...ok, stdout: '{"result":{"tab":{"tab_id":"w1:t2"}}}' } : ok;
-			},
-		});
-		expect(result.backend).toBe("psmux");
-		expect(calls[1]).toEqual(["pk-herdr", "tab", "close", "w1:t2"]);
-		expect(calls[2]?.[0]).toBe("psmux");
-	});
-
-	it("closes a failed PK-Herdr tab and verifies the psmux fallback", async () => {
-		const calls: string[][] = [];
-		const result = await launchInteractiveTerminal(request, {
-			environment: { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_WORKSPACE_ID: "w1" },
-			platform: "win32",
-			newId: () => "12345678-abcd",
-			run: async args => {
-				calls.push(args);
-				if (args[2] === "create") return herdTab("w1:t3", "w1:p3");
-				if (args[2] === "run") return { exitCode: 1, stdout: "", stderr: "busy pane" };
-				return ok;
-			},
-		});
-		expect(result).toEqual({ backend: "psmux", id: "ompk-new-agent-12345678" });
-		expect(calls[2]).toEqual(["pk-herdr", "tab", "close", "w1:t3"]);
-		expect(calls[3]?.slice(0, 6)).toEqual(["psmux", "new-session", "-d", "-s", "ompk-new-agent-12345678", "--"]);
-		expect(calls[4]).toEqual(["psmux", "has-session", "-t", "ompk-new-agent-12345678"]);
-	});
-
-	it("refuses another terminal when a failed Herdr tab cannot be closed", async () => {
-		const calls: string[][] = [];
-		await expect(
-			launchInteractiveTerminal(request, {
-				environment: { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_WORKSPACE_ID: "w1" },
-				platform: "win32",
-				run: async args => {
-					calls.push(args);
-					if (args[2] === "create") return herdTab("w1:t4", "w1:p4");
-					return { exitCode: 1, stdout: "", stderr: "tab unavailable" };
-				},
-			}),
-		).rejects.toThrow("could not be closed");
-		expect(calls.map(args => args[0])).toEqual(["pk-herdr", "pk-herdr", "pk-herdr"]);
-	});
-
-	it("closes its new tab when cancelled before running the command", async () => {
-		const controller = new AbortController();
-		const calls: string[][] = [];
-		await expect(
-			launchInteractiveTerminal(request, {
-				environment: { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_WORKSPACE_ID: "w1" },
-				platform: "win32",
-				signal: controller.signal,
-				run: async args => {
-					calls.push(args);
-					if (args[2] === "create") {
-						controller.abort();
-						return herdTab();
-					}
-					return ok;
-				},
-			}),
-		).rejects.toThrow("cancelled");
-		expect(calls).toEqual([
-			["pk-herdr", "tab", "create", "--workspace", "w1", "--cwd", request.cwd, "--label", "New agent", "--no-focus"],
-			["pk-herdr", "tab", "close", "w1:t2"],
+	it("owns a named headless server, waits before creation, scopes controls and returns IDs", async () => {
+		const f = fixture();
+		expect((await launchInteractiveTerminal(request, f.deps)).sessionName).toBe(name);
+		expect(f.calls).toEqual([
+			[...scope, "--session-auto-close-after", "4h", "server"],
+			[...scope, "status", "server", "--json"],
+			[
+				...scope,
+				"workspace",
+				"create",
+				"--origin",
+				"tool",
+				"--cwd",
+				request.cwd,
+				"--label",
+				"New agent",
+				"--no-focus",
+			],
+			[...scope, "pane", "run", "w1:p2", request.command],
 		]);
+		expect(f.events).toEqual(["spawn", "ready", "release"]);
 	});
-
-	it("does not start another terminal when a successful tab creation lacks its ID", async () => {
-		const calls: string[][] = [];
-		await expect(
-			launchInteractiveTerminal(request, {
-				environment: { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_WORKSPACE_ID: "w1" },
-				platform: "win32",
-				run: async args => {
-					calls.push(args);
-					return args[2] === "create" ? { ...ok, stdout: '{"result":{}}' } : ok;
-				},
-			}),
-		).rejects.toThrow("without a usable tab ID");
-		expect(calls).toHaveLength(1);
-	});
-
-	it("does not inspect an unrelated focused Herdr pane from outside Herdr", async () => {
-		const calls: string[][] = [];
-		const result = await launchInteractiveTerminal(request, {
-			environment: {},
-			platform: "win32",
-			newId: () => "12345678-abcd",
-			run: async args => {
-				calls.push(args);
-				return ok;
-			},
-		});
-		expect(result.backend).toBe("psmux");
-		expect(calls.every(args => args[0] === "psmux")).toBe(true);
-	});
-
-	it("fails closed when neither manager works and no interactive approval exists", async () => {
-		const calls: string[][] = [];
-		await expect(
-			launchInteractiveTerminal(request, {
-				environment: {},
-				platform: "win32",
-				run: async args => {
-					calls.push(args);
-					return { exitCode: 1, stdout: "", stderr: "psmux unavailable" };
-				},
-			}),
-		).rejects.toThrow("without an approved fallback");
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.[0]).toBe("psmux");
-	});
-
-	it("cleans up a psmux session that cannot be verified", async () => {
-		const calls: string[][] = [];
-		await expect(
-			launchInteractiveTerminal(request, {
-				environment: {},
-				platform: "win32",
-				newId: () => "12345678-abcd",
-				run: async args => {
-					calls.push(args);
-					return args[1] === "has-session" ? { exitCode: 1, stdout: "", stderr: "missing session" } : ok;
-				},
-			}),
-		).rejects.toThrow("without an approved fallback");
-		expect(calls.filter(args => args[1] === "has-session")).toHaveLength(2);
-		expect(calls.at(-1)).toEqual(["psmux", "kill-session", "-t", "ompk-new-agent-12345678"]);
-	});
-
-	it("kills a psmux session when cancelled during verification", async () => {
-		const controller = new AbortController();
-		const calls: string[][] = [];
-		await expect(
-			launchInteractiveTerminal(request, {
-				environment: {},
-				platform: "win32",
-				signal: controller.signal,
-				newId: () => "12345678-abcd",
-				run: async args => {
-					calls.push(args);
-					if (args[1] === "has-session") controller.abort();
-					return ok;
-				},
-			}),
-		).rejects.toThrow("Terminal launch was cancelled");
-		expect(calls.at(-1)).toEqual(["psmux", "kill-session", "-t", "ompk-new-agent-12345678"]);
-	});
-
-	it("prompts before system fallback and honors refusal", async () => {
-		const calls: string[][] = [];
-		const confirmFallback = vi.fn(async (_reason: string): Promise<boolean> => false);
-		const run = async (args: string[]) => {
-			calls.push(args);
-			return args[0] === "psmux" ? { exitCode: 1, stdout: "", stderr: "not running" } : ok;
-		};
-		await expect(
-			launchInteractiveTerminal(request, {
-				environment: {},
-				platform: "win32",
-				run,
-				confirmFallback,
-			}),
-		).rejects.toThrow("without an approved fallback");
-		expect(confirmFallback).toHaveBeenCalledTimes(1);
-		expect(confirmFallback.mock.calls[0]?.[0]).toContain("psmux launch failed");
-		expect(calls).toHaveLength(1);
-		confirmFallback.mockResolvedValue(true);
-		expect(
-			await launchInteractiveTerminal(request, {
-				environment: {},
-				platform: "win32",
-				run,
-				confirmFallback,
-			}),
-		).toEqual({ backend: "system" });
-		expect(calls.at(-1)?.[0]).toBe("powershell.exe");
-		expect(calls.at(-1)?.join(" ")).toContain("Start-Process");
-	});
-
-	it("does not launch after a tool call is cancelled during confirmation", async () => {
-		const controller = new AbortController();
-		const calls: string[][] = [];
-		await expect(
-			launchInteractiveTerminal(request, {
-				environment: {},
-				platform: "win32",
-				signal: controller.signal,
-				confirmFallback: async () => {
-					controller.abort();
-					return true;
-				},
-				run: async args => {
-					calls.push(args);
-					return { exitCode: 1, stdout: "", stderr: "psmux unavailable" };
-				},
-			}),
-		).rejects.toThrow("cancelled");
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.[0]).toBe("psmux");
-	});
-
-	it("uses the system terminal directly only when the setting opts out", async () => {
-		const calls: string[][] = [];
-		const confirmFallback = vi.fn(async (_reason: string): Promise<boolean> => false);
-		const result = await launchInteractiveTerminal(
-			{ ...request, backend: "system" },
-			{
-				environment: { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1" },
-				platform: "win32",
-				confirmFallback,
-				run: async args => {
-					calls.push(args);
-					return ok;
-				},
-			},
-		);
-		expect(result.backend).toBe("system");
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.[0]).toBe("powershell.exe");
-		expect(confirmFallback).not.toHaveBeenCalled();
-	});
-	it("quotes spaced and apostrophe-containing paths without changing command text", async () => {
-		const cwd = await mkdtemp(join(tmpdir(), "ompk's terminal "));
-		try {
-			const calls: string[][] = [];
-			await launchInteractiveTerminal(
-				{ ...request, cwd, backend: "system", command: "Write-Output 'hello world'" },
-				{
-					platform: "win32",
-					run: async args => {
-						calls.push(args);
-						return ok;
-					},
-				},
-			);
-			const script = calls[0]?.[4] ?? "";
-			expect(script).toContain(`-WorkingDirectory '${cwd.replaceAll("'", "''")}'`);
-			const encoded = script.match(/"-EncodedCommand" "([A-Za-z0-9+/=]+)"/)?.[1];
-			expect(encoded).toBeDefined();
-			expect(Buffer.from(encoded ?? "", "base64").toString("utf16le")).toContain("Write-Output 'hello world'");
-		} finally {
-			await rm(cwd, { recursive: true, force: true });
+	it("does not treat forged or incomplete context as caller ownership", async () => {
+		for (const environment of [
+			{ ...caller, HERDR_ENV: "0" },
+			{ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "w1" },
+		]) {
+			const f = fixture(environment);
+			await launchInteractiveTerminal(request, f.deps);
+			expect(f.calls[0]).toEqual([...scope, "--session-auto-close-after", "4h", "server"]);
 		}
 	});
-});
-
-it("defaults to managed launches and renders the supported boundary", async () => {
-	const settings = Settings.isolated();
-	expect(settings.get("terminal.launchBackend")).toBe("managed");
-	settings.set("terminal.launchBackend", "system");
-	expect(settings.get("terminal.launchBackend")).toBe("system");
-	const { systemPrompt } = await buildSystemPrompt({
-		cwd: process.cwd(),
-		contextFiles: [],
-		skills: [],
-		rules: [],
-		toolNames: ["terminal_launch"],
-		workspaceTree: { rootPath: process.cwd(), rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
-		activeRepoContext: null,
-		managedTerminalLaunches: true,
+	it("normalizes both legacy API backends without any fallback", async () => {
+		for (const backend of ["managed", "system"] as const) {
+			const f = fixture(caller);
+			expect((await launchInteractiveTerminal({ ...request, backend }, f.deps)).backend).toBe("pk-herdr");
+			expect(f.calls.every(args => args[0] === "pk-herdr")).toBe(true);
+		}
 	});
-	const rendered = systemPrompt.join("\n");
-	expect(rendered).toContain("For an external interactive terminal");
-	expect(rendered).toContain("terminal_launch");
-	expect(rendered).toContain("NEVER launch one via bash/eval");
+	for (const environment of [caller, {}]) {
+		for (const phase of ["before-run", "during-run"] as const) {
+			it(`cleans only owned resources when cancelled ${phase} (${environment === caller ? "caller" : "owned"})`, async () => {
+				const f = fixture(environment);
+				const controller = new AbortController();
+				f.deps.signal = controller.signal;
+				const run = f.deps.run!;
+				f.deps.run = async (args, cwd, options) => {
+					const result = await run(args, cwd, options);
+					if (args.includes(phase === "before-run" ? "create" : "run")) controller.abort();
+					return result;
+				};
+				await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("cancelled");
+				expect(f.calls.at(-1)).toEqual(
+					environment === caller
+						? ["pk-herdr", "tab", "close", "w1:t2"]
+						: ["pk-herdr", "session", "stop", name, "--json"],
+				);
+				expect(f.calls.filter(args => args.includes("create"))).toHaveLength(1);
+			});
+		}
+	}
+	it("does nothing when already cancelled", async () => {
+		const f = fixture();
+		const controller = new AbortController();
+		controller.abort();
+		f.deps.signal = controller.signal;
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("cancelled");
+		expect(f.calls).toEqual([]);
+	});
+	it("fails closed and closes a known caller tab on missing pane IDs", async () => {
+		const f = fixture(caller);
+		const run = f.deps.run!;
+		f.deps.run = async (args, cwd, options) => {
+			if (!args.includes("create")) return run(args, cwd, options);
+			f.calls.push(args);
+			return { ...ok, stdout: '{"result":{"tab":{"tab_id":"w1:t2"}}}' };
+		};
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("malformed resource IDs");
+		expect(f.calls.at(-1)).toEqual(["pk-herdr", "tab", "close", "w1:t2"]);
+	});
+	it("never closes a tab in another caller workspace on malformed IDs", async () => {
+		const f = fixture(caller);
+		f.deps.run = async args => {
+			f.calls.push(args);
+			return { ...ok, stdout: '{"result":{"tab":{"tab_id":"w2:t2"},"root_pane":{"pane_id":"w2:p2"}}}' };
+		};
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("refusing another launch");
+		expect(f.calls.filter(args => args.includes("create"))).toHaveLength(1);
+		expect(f.calls.some(args => args.includes("close"))).toBe(false);
+	});
+	it("stops exact owned session after malformed creation, never default", async () => {
+		const f = fixture();
+		const run = f.deps.run!;
+		f.deps.run = async (args, cwd, options) => {
+			if (!args.includes("create")) return run(args, cwd, options);
+			f.calls.push(args);
+			return { ...ok, stdout: "{}" };
+		};
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("malformed");
+		expect(f.calls.at(-1)).toEqual(["pk-herdr", "session", "stop", name, "--json"]);
+	});
+	it("kills only direct startup handle if readiness fails", async () => {
+		const f = fixture();
+		f.deps.waitForReady = async () => {
+			throw new Error("not ready");
+		};
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("not ready");
+		expect(f.calls.at(-1)).toEqual(["pk-herdr", "session", "stop", name, "--json"]);
+		expect(f.events).toEqual(["spawn", "kill", "release"]);
+	});
+	it("propagates pane failure and failed cleanup without launching another backend", async () => {
+		const f = fixture();
+		const run = f.deps.run!;
+		f.deps.run = async (args, cwd, options) => {
+			if (args.includes("run") || args.includes("stop")) {
+				f.calls.push(args);
+				return { ...ok, exitCode: 1, stderr: "unavailable" };
+			}
+			return run(args, cwd, options);
+		};
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow(
+			"cleanup failed; refusing another launch",
+		);
+		expect(f.calls.filter(args => args.includes("server") && !args.includes("status"))).toHaveLength(1);
+		expect(f.events).not.toContain("kill");
+	});
+	it("uses bounded production readiness against the exact named server", async () => {
+		const f = fixture();
+		delete f.deps.waitForReady;
+		let polls = 0;
+		const run = f.deps.run!;
+		f.deps.run = async (args, cwd, options) => {
+			if (args.includes("status")) {
+				f.calls.push(args);
+				polls++;
+				return { ...ok, stdout: JSON.stringify({ running: true, session: polls === 1 ? "default" : name }) };
+			}
+			return run(args, cwd, options);
+		};
+		await launchInteractiveTerminal(request, f.deps);
+		expect(polls).toBe(2);
+		expect(f.calls.filter(args => args.includes("status"))).toEqual(
+			Array(2).fill([...scope, "status", "server", "--json"]),
+		);
+	});
+	it("detects a server exit during startup with no sleeping test", async () => {
+		const f = fixture();
+		const blocked = Promise.withResolvers<void>();
+		f.deps.waitForReady = () => blocked.promise;
+		f.exit.resolve(1);
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("exited during startup");
+		expect(f.events).toContain("kill");
+		blocked.resolve();
+	});
+	for (const cancelled of [false, true]) {
+		it(`reconciles a committed caller tab after a lost receipt (cancelled=${cancelled})`, async () => {
+			const f = fixture(caller);
+			const controller = new AbortController();
+			f.deps.signal = controller.signal;
+			let label = "";
+			let polls = 0;
+			f.deps.run = async (args, cwd, options) => {
+				expect(cwd).toBe(request.cwd);
+				f.calls.push(args);
+				if (args.includes("create")) {
+					label = args[args.indexOf("--label") + 1]!;
+					if (cancelled) controller.abort();
+					throw new Error("creation receipt timed out");
+				}
+				if (args.includes("list")) {
+					expect(options?.timeoutMs).toBe(2_000);
+					polls++;
+					return {
+						...ok,
+						stdout: JSON.stringify({
+							id: "cli:tab:list",
+							result: {
+								type: "tab_list",
+								tabs: [
+									{ workspace_id: "w1", tab_id: "w1:t1", label: "User tab" },
+									{ workspace_id: "w2", tab_id: "w2:t3", label },
+									...(polls > 1 ? [{ workspace_id: "w1", tab_id: "w1:t7", label }] : []),
+								],
+							},
+						}),
+					};
+				}
+				return ok;
+			};
+			await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("receipt timed out");
+			expect(f.calls.filter(args => args.includes("create"))).toHaveLength(1);
+			expect(f.calls.filter(args => args.includes("close"))).toEqual([["pk-herdr", "tab", "close", "w1:t7"]]);
+			expect(polls).toBe(2);
+		});
+	}
+	it("reports unreconciled ownership with its marker without closing unrelated tabs", async () => {
+		const f = fixture(caller);
+		f.deps.run = async args => {
+			f.calls.push(args);
+			return {
+				...ok,
+				stdout: args.includes("list")
+					? JSON.stringify({
+							result: { type: "tab_list", tabs: [{ workspace_id: "w1", tab_id: "w1:t1", label: "User tab" }] },
+						})
+					: "{}",
+			};
+		};
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("ompk-owned:unique-123");
+		expect(f.calls.filter(args => args.includes("list"))).toHaveLength(5);
+		expect(f.calls.some(args => args.includes("close") || args.includes("stop"))).toBe(false);
+	});
+	it("separates bounded readiness probes from controls and the full stop protocol", async () => {
+		const f = fixture();
+		delete f.deps.waitForReady;
+		const run = f.deps.run!;
+		const budgets: Array<{ args: string[]; timeoutMs: number | undefined }> = [];
+		f.deps.run = async (args, cwd, options) => {
+			budgets.push({ args, timeoutMs: options?.timeoutMs });
+			if (args.includes("status")) return { ...ok, stdout: JSON.stringify({ running: true, session: name }) };
+			if (args.includes("run")) return { ...ok, exitCode: 1 };
+			return run(args, cwd, options);
+		};
+		await expect(launchInteractiveTerminal(request, f.deps)).rejects.toThrow("pane launch failed");
+		expect(budgets.find(entry => entry.args.includes("status"))?.timeoutMs).toBe(2_000);
+		expect(budgets.filter(entry => !entry.args.includes("status")).every(entry => entry.timeoutMs === 20_000)).toBe(
+			true,
+		);
+		expect(budgets.at(-1)?.args).toEqual(["pk-herdr", "session", "stop", name, "--json"]);
+	});
 });
