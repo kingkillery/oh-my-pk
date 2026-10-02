@@ -63,7 +63,7 @@ describe("selector setting side effects", () => {
 			showError,
 		} as unknown as ConstructorParameters<typeof SelectorController>[0]);
 
-		controller.handleSettingChange("terminal.launchBackend", "system");
+		controller.handleSettingChange("terminal.launchBackend", "pk-herdr");
 
 		expect(refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
 		expect(showError).not.toHaveBeenCalled();

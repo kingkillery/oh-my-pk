@@ -1095,18 +1095,15 @@ export const SETTINGS_SCHEMA = {
 	// Images and terminal
 	"terminal.launchBackend": {
 		type: "enum",
-		values: ["managed", "system"] as const,
-		default: "managed",
+		values: ["pk-herdr"] as const,
+		default: "pk-herdr",
 		ui: {
 			tab: "interaction",
 			group: "Terminal Launches",
 			label: "Interactive Terminal Launches",
 			description:
-				"Managed prefers the current PK-Herdr pane, then psmux; ask before using Windows Terminal. System launches Windows Terminal directly.",
-			options: [
-				{ value: "managed", label: "PK-Herdr → psmux → ask (default)" },
-				{ value: "system", label: "System terminal (no managed routing)" },
-			],
+				"Required PK-Herdr routing: use a background tab in the caller's workspace or a tool-owned named session. No external terminal fallback.",
+			options: [{ value: "pk-herdr", label: "PK-Herdr (required)" }],
 		},
 	},
 

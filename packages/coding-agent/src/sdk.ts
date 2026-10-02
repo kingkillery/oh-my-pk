@@ -2585,7 +2585,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				eagerTasksAlways: !simpleMode && (isUltraModeActive() || settings.get("task.eager") === "always"),
 				taskBatch: !simpleMode && settings.get("task.batch"),
 				simpleMode,
-				managedTerminalLaunches: settings.get("terminal.launchBackend") === "managed",
+				managedTerminalLaunches: true,
 				fusionSidekick:
 					agentKind === "main" &&
 					!simpleMode &&
