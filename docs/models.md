@@ -290,7 +290,7 @@ Use the built-in command with a public Hugging Face GGUF repository or a direct 
 The command owns the interactive lifecycle:
 
 1. Resolve the repository and choose a GGUF that fits the accelerator. Automatic launches try the cheapest viable T4, L4, then A100 runtime; `--gpu T4|L4|A100|H100|G4` requests a specific accelerator. A direct file URL overrides automatic quantization selection.
-2. Create or reuse a Colab CLI session. Set `OMPK_COLAB_SESSION` before starting OMPK to choose a reusable session name. On Windows, OMPK invokes the Colab CLI through WSL; on Linux it invokes `colab` directly. An explicit `--gpu` request never replaces a working session on a different accelerator.
+2. Reuse an existing Colab CLI session. Set `OMPK_COLAB_SESSION` before starting OMPK to choose a reusable session name. On Windows, OMPK invokes the Colab CLI through WSL; on Linux it invokes `colab` directly. An explicit `--gpu` request never replaces a working session on a different accelerator. `/colab-model` never creates a runtime (GPU or CPU): with no session it fails and directs you to arm a session cutoff and launch through the mesh-inference dashboard (`http://127.0.0.1:18084/`), whose budget-wrapping CLI is the only path allowed to run `colab new`.
 3. Reuse a healthy server or existing build when possible. On a cold runtime, download the model while building CUDA-enabled llama.cpp with native-only GPU code, then start `llama-server` and run a warmup completion.
 4. Open a loopback-only OpenAI Chat Completions bridge, register the warmed model under the existing `llama.cpp` provider, select it, and print the local `/v1` base URL. No Colab runtime token or public unauthenticated tunnel is exposed.
 

@@ -1019,6 +1019,13 @@ export function buildColabCommand(
 			throw new Error("Invalid explicit Colab CLI command");
 		return [...command, ...args];
 	}
+	// Every spawn routes here, so this one check covers GPU, --accelerator and CPU `new`
+	// from /colab-model and cache staging. Only an explicit (budget-wrapping) CLI may allocate.
+	if (args[0] === "new") {
+		throw new Error(
+			`Refusing \`colab ${args.join(" ")}\`: a new Colab runtime needs an armed session cutoff. Arm one and launch through the mesh-inference dashboard (http://127.0.0.1:18084/).`,
+		);
+	}
 	const override = Bun.env.OMPK_COLAB_CLI?.trim();
 	if (override) return [override, ...args];
 	return platform === "win32" ? ["wsl", "colab", ...args] : ["colab", ...args];
