@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Refuse to create a Colab runtime (`colab new` on any GPU or CPU, from `/colab-model` or cache staging) unless the caller supplies an explicit Colab CLI command; unbudgeted launches had no armed session cutoff. Reusing an existing session still works. Launch new runtimes through the mesh-inference dashboard after arming a cutoff.
 - Reject CPU runtime recovery after a failed automatic GPU allocation; CPU reuse still requires explicit opt-in.
 - Keep wrapped session deletion dialogs within the terminal viewport.
 - Register the Terminal Launches section in the Interaction settings layout.

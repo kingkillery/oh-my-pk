@@ -133,3 +133,16 @@ for (const accelerator of ["CPU", "T4"] as const) {
 		expect(result.cacheReached).toBe(false);
 	});
 }
+
+test("a missing session whose name contains a GPU is allocated, not reused", async () => {
+	// The real CLI exits 0 for a missing session; the name must not be read as its hardware.
+	const result = await exerciseSession(
+		[
+			{ args: statusArgs, exitCode: 0, stdout: "[colab] Session 'ompk-colab-t4' not found." },
+			{ args: ["new", "--session", sessionName, "--gpu", "L4"], exitCode: 0, stdout: "Hardware: L4" },
+		],
+		"L4",
+	);
+	expect(result.failure).toBe(cacheBoundary);
+	expect(result.cacheReached).toBe(true);
+});
