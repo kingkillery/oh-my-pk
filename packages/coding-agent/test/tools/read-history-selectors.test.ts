@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import { InternalUrlRouter } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls";
+import { historyUrl } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls/history-url";
 import { AgentRegistry, type AgentStatus } from "@pk-nerdsaver-ai/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@pk-nerdsaver-ai/pi-coding-agent/session/agent-session";
 import { CURRENT_SESSION_VERSION } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-entries";
@@ -160,6 +161,19 @@ describe("read history:// selectors", () => {
 			await expect(read(`history://hiddenadvisor:${selector}`)).rejects.toThrow("Unknown agent: hiddenadvisor\n");
 		}
 		expect((await read("history://:raw")).text).not.toContain("HiddenAdvisor");
+	});
+
+	it("keeps system-printed history URLs readable for colon-bearing agent ids", async () => {
+		AgentRegistry.global().register({
+			id: "background:1",
+			displayName: "background",
+			kind: "sub",
+			session: { messages: [{ role: "user", content: "background work", timestamp: 1 }] } as unknown as AgentSession,
+		});
+		expect(historyUrl("Parent.Child")).toBe("history://Parent.Child");
+		const uri = historyUrl("background:1");
+		expect((await read(uri)).text).toContain("# background:1");
+		expect((await read(`${uri}:raw`)).text).toContain("background work");
 	});
 
 	it("preserves encoded literal selector tails and unrelated URI grammars", async () => {

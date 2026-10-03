@@ -6,6 +6,7 @@
  * candidate remaining and the failed child has a typed terminal outcome.
  */
 
+import { historyUrl } from "../internal-urls/history-url";
 import type { AgentTier, WorkClass } from "../orchestration/agent-execution-profile";
 import type { SpawnRouteCandidate } from "./spawn-plan";
 
@@ -176,7 +177,7 @@ function buildCapsule(input: RecoveryPolicyInput, failure: RecoveryFailureFacts)
 		profileSnapshotRefs: uniqueFrozen(input.profileSnapshotRefs),
 		artifactRefs: uniqueFrozen(input.verifiedArtifactRefs),
 		patchRefs: uniqueFrozen(input.verifiedPatchRefs),
-		historyRef: `history://${childId}`,
+		historyRef: historyUrl(childId),
 	});
 }
 
