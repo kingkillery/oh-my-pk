@@ -1,15 +1,45 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, type Mock, spyOn, test } from "bun:test";
+import { clearDecisionEndpointCache } from "../../src/lib/decision-endpoint-discovery";
 import type { AgentSession } from "../../src/session/agent-session";
-import { createSubagentRunMonitor } from "../../src/task/executor";
+import { createSubagentRunMonitor, type SubagentRunMonitor } from "../../src/task/executor";
 import type { AgentDefinition } from "../../src/task/types";
 
+const ENV_KEYS = [
+	"TYPESAFE_API_KEY",
+	"TYPESAFE_BASE_URL",
+	"OPENROUTER_API_KEY",
+	"AI_GATEWAY_API_KEY",
+	"OMP_DECISION_DISCOVERY",
+	"OMP_DECISION_ENDPOINT",
+	"OMP_DECISION_MODEL",
+] as const;
+
 describe("SubagentRunMonitor Watchdog Integration", () => {
-	const originalEnv = { ...process.env };
-	const originalFetch = globalThis.fetch;
+	let monitor: SubagentRunMonitor | undefined;
+	let savedEnv: Record<string, string | undefined>;
+	let fetchSpy: Mock<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>;
+
+	beforeEach(() => {
+		savedEnv = {};
+		for (const key of ENV_KEYS) {
+			savedEnv[key] = process.env[key];
+			delete process.env[key];
+		}
+		process.env.OMP_DECISION_DISCOVERY = "off";
+		clearDecisionEndpointCache();
+		fetchSpy = spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected watchdog request"));
+	});
 
 	afterEach(() => {
-		process.env = { ...originalEnv };
-		globalThis.fetch = originalFetch;
+		monitor?.finish();
+		monitor = undefined;
+		fetchSpy.mockRestore();
+		clearDecisionEndpointCache();
+		// Preserve the environment object captured by the shared SystemOne client.
+		for (const key of ENV_KEYS) {
+			if (savedEnv[key] === undefined) delete process.env[key];
+			else process.env[key] = savedEnv[key];
+		}
 	});
 
 	const mockAgent: AgentDefinition = {
@@ -23,6 +53,7 @@ describe("SubagentRunMonitor Watchdog Integration", () => {
 		const listeners: Array<(event: unknown) => void> = [];
 		const steeredMessages: unknown[] = [];
 		let aborted = false;
+		const { promise: whenAborted, resolve: markAborted } = Promise.withResolvers<void>();
 
 		const session = {
 			subscribe(fn: (event: unknown) => void) {
@@ -39,6 +70,7 @@ describe("SubagentRunMonitor Watchdog Integration", () => {
 			},
 			abort() {
 				aborted = true;
+				markAborted();
 				return Promise.resolve();
 			},
 			getLastAssistantMessage() {
@@ -48,6 +80,7 @@ describe("SubagentRunMonitor Watchdog Integration", () => {
 
 		return {
 			session,
+			whenAborted,
 			steeredMessages,
 			emit(event: unknown) {
 				for (const listener of listeners) {
@@ -59,11 +92,7 @@ describe("SubagentRunMonitor Watchdog Integration", () => {
 	}
 
 	test("operates unhindered when unconfigured (zero breakage)", async () => {
-		delete process.env.TYPESAFE_API_KEY;
-		delete process.env.OPENROUTER_API_KEY;
-		delete process.env.AI_GATEWAY_API_KEY;
-
-		const monitor = createSubagentRunMonitor({
+		monitor = createSubagentRunMonitor({
 			index: 0,
 			id: "sub-1",
 			agent: mockAgent,
@@ -120,19 +149,15 @@ describe("SubagentRunMonitor Watchdog Integration", () => {
 			},
 		};
 
-		const { promise: evalResolved, resolve: markEvalDone } = Promise.withResolvers<void>();
+		const { promise: requested, resolve: markRequested } = Promise.withResolvers<void>();
+		const { promise: response, resolve: respond } = Promise.withResolvers<Response>();
 
-		globalThis.fetch = (() => {
-			markEvalDone();
-			return Promise.resolve(
-				new Response(JSON.stringify(mockJevResponse), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				}),
-			);
-		}) as unknown as typeof fetch;
+		fetchSpy.mockImplementation(() => {
+			markRequested();
+			return response;
+		});
 
-		const monitor = createSubagentRunMonitor({
+		monitor = createSubagentRunMonitor({
 			index: 0,
 			id: "sub-2",
 			agent: mockAgent,
@@ -162,11 +187,15 @@ describe("SubagentRunMonitor Watchdog Integration", () => {
 			});
 		}
 
-		// Await the evaluator call and reaction
-		await evalResolved;
-		// Await microtasks for arbitrator response
-		await Promise.resolve();
-		await Promise.resolve();
+		await requested;
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(fetchSpy.mock.calls[0][0]).toBe("https://api.typesafe.ai/v1/systemone");
+		expect(monitor.isWatchdogAborted()).toBe(false);
+		expect(mock.isSessionAborted()).toBe(false);
+
+		respond(Response.json(mockJevResponse));
+		// Observe the lifecycle transition, not the number of internal await hops.
+		await mock.whenAborted;
 
 		expect(monitor.isWatchdogAborted()).toBe(true);
 		expect(monitor.abortSignal.aborted).toBe(true);
