@@ -331,3 +331,31 @@ def test_close_issue_propagates_error() -> None:
     with pytest.raises(GitHubError) as exc:
         _run_async(client.close_issue("octo/widget", 42))
     assert exc.value.status == 404
+
+
+def test_search_issues_keeps_scope_pinned_to_repo() -> None:
+    seen: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req.url.params["q"])
+        item = {"title": "t", "state": "open", "user": {"login": "a"}, "labels": []}
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {**item, "number": 1, "repository_url": "https://api.github.com/repos/octo/widget"},
+                    {**item, "number": 2, "repository_url": "https://api.github.com/repos/other/private"},
+                    {**item, "number": 3},
+                ]
+            },
+        )
+
+    client = GitHubClient("tok", transport=httpx.MockTransport(handler))
+    found = _run_async(client.search_issues("octo/widget", "crash or hang"))
+    # A lower-case "or" is a keyword; only results from the pinned repo survive.
+    assert seen == ["repo:octo/widget crash or hang"]
+    assert [s.number for s in found] == [1]
+    for widening in ("org:other crash", "user:other crash", "Owner:other crash", "crash OR hang"):
+        with pytest.raises(GitHubError, match="repository scope is fixed"):
+            _run_async(client.search_issues("octo/widget", widening))
+    assert len(seen) == 1

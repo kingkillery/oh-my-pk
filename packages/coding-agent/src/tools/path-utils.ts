@@ -30,10 +30,13 @@ const INTERNAL_URL_SELECTOR_PART_RE = new RegExp(
 // is included despite an optional `:port`; `splitInternalUrlSel` skips the peel
 // for an `ssh://host:port` that has no `/path`, so the port colon is never
 // mistaken for a selector (a real ssh selector trails the `/path`, e.g.
-// `ssh://h/f:1-5`).
+// `ssh://h/f:1-5`). `agent://` and `history://` ids may contain `:` (e.g.
+// `background:<name>`); such ids must percent-encode it (`historyUrl()`) when
+// the tail would otherwise look like a selector.
 const INTERNAL_SCHEMES_WITH_SELECTORS: Record<string, true> = {
 	agent: true,
 	artifact: true,
+	history: true,
 	issue: true,
 	local: true,
 	memory: true,

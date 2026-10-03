@@ -11,6 +11,7 @@
  */
 
 import { logger } from "@pk-nerdsaver-ai/pi-utils";
+import { historyUrl } from "../internal-urls/history-url";
 import type { AgentSession } from "../session/agent-session";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID, type RegistryEvent } from "./agent-registry";
 
@@ -163,7 +164,7 @@ export class AgentLifecycleManager {
 			const ref = this.#registry.get(id);
 			if (!ref) {
 				throw new Error(
-					`Unknown agent "${id}" — it was never registered or has been released. If a transcript exists, read history://${id}.`,
+					`Unknown agent "${id}" — it was never registered or has been released. If a transcript exists, read ${historyUrl(id)}.`,
 				);
 			}
 			if (ref.session) return ref.session;
@@ -190,7 +191,7 @@ export class AgentLifecycleManager {
 		}
 		if (ref.status !== "parked" || !revive) {
 			throw new Error(
-				`Agent "${id}" is ${ref.status} and cannot be revived${revive ? "" : " (no reviver registered)"}. Its transcript remains readable at history://${id}.`,
+				`Agent "${id}" is ${ref.status} and cannot be revived${revive ? "" : " (no reviver registered)"}. Its transcript remains readable at ${historyUrl(id)}.`,
 			);
 		}
 		// A persisted factory hydrates ref.collaborationPolicy before returning its

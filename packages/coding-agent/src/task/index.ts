@@ -22,6 +22,7 @@ import { $env, getAgentDir, logger, prompt, Snowflake } from "@pk-nerdsaver-ai/p
 import type { ToolSession } from "..";
 import { resolveModelOverride } from "../config/model-resolver";
 import type { ExtensionRunner } from "../extensibility/extensions/runner";
+import { historyUrl } from "../internal-urls/history-url";
 import { MCPManager } from "../mcp/manager";
 import type { Theme } from "../modes/theme/theme";
 import {
@@ -1535,10 +1536,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const buildFollowUpHint = (aborted: boolean): string => {
 			if (spawnParams.codeWrite || spawnParams.evidenceDigest) return "";
 			if (aborted) {
-				return `\n\n${agentId} was aborted — transcript at history://${agentId}`;
+				return `\n\n${agentId} was aborted — transcript at ${historyUrl(agentId)}`;
 			}
 			const followUp = ircEnabled ? "message it via `irc` to follow up; " : "";
-			return `\n\n${agentId} is now idle — ${followUp}transcript at history://${agentId}`;
+			return `\n\n${agentId} is now idle — ${followUp}transcript at ${historyUrl(agentId)}`;
 		};
 		return manager.register(
 			"task",

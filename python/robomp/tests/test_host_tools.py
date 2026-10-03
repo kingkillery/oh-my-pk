@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
+import os
+import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +17,9 @@ import pytest
 from omp_rpc import HostToolContext, RpcCommandError
 
 from robomp import host_tools
+from robomp.config import Settings
 from robomp.db import Database
-from robomp.github_client import GitHubClient, IssueInfo, RepoInfo
+from robomp.github_client import GitHubClient, IssueIndexEntry, IssueInfo, RepoInfo
 from robomp.host_tools import AbortController, ToolBindings, build
 from robomp.sandbox import LocalGitTransport, Workspace
 
@@ -1302,7 +1307,9 @@ def test_impl_gate_allows_later_authorized_event_to_reach_repo_commands(
     assert calls
 
 
-def test_impl_gate_ignores_skipped_authorized_event(db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_impl_gate_ignores_skipped_authorized_event(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     calls: list[list[str] | tuple[str, ...]] = []
 
     def record_repo_command(_bindings: ToolBindings, cmd: list[str] | tuple[str, ...], *, timeout: float | None = None):
@@ -2040,6 +2047,69 @@ def test_gh_open_pr_refuses_failed_bun_check_before_push_or_pr(
     row = db._conn.execute("SELECT error FROM tool_calls WHERE tool='gh_open_pr' ORDER BY id DESC LIMIT 1").fetchone()
     assert row is not None
     assert "TypeError: property missing" in row["error"]
+
+
+def test_gh_open_pr_refuses_failed_bun_run_test_before_push_or_pr(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A red suite aborts PR creation: `bun run test` runs after `bun check`,
+    and its failure output comes back to the agent instead of becoming a PR."""
+    import os
+
+    opened_pr = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal opened_pr
+        opened_pr = True
+        return httpx.Response(
+            201,
+            json={
+                "number": 7,
+                "html_url": "https://github.com/octo/widget/pull/7",
+                "head": {"ref": "farm/abc12345/some-issue"},
+                "base": {"ref": "main"},
+            },
+        )
+
+    bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(handler))
+    db.set_issue_classification(bindings.issue_key, "bug")
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    fake_bun = fakebin / "bun"
+    fake_bun.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "check" ]; then exit 0; fi\n'
+        'if [ "$1" = "run" ] && [ "$2" = "test" ]; then\n'
+        '    printf "1 fail\\nexpect(received).toBe(expected)\\n" >&2\n'
+        "    exit 1\n"
+        "fi\n"
+        'printf "unexpected bun call: %s\\n" "$*" >&2\n'
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    fake_bun.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fakebin}{os.pathsep}{os.environ['PATH']}")
+    (bindings.workspace.repo_dir / "package.json").write_text(
+        json.dumps({"scripts": {"check": "tsc --noEmit", "test": "bun test"}}) + "\n",
+        encoding="utf-8",
+    )
+
+    try:
+        tool = next(x for x in build(bindings) if x.name == "gh_open_pr")
+        body = "## Repro\nrepro\n\n## Cause\ncause\n\n## Fix\nfix\n\n## Verification\nran tests\n\nFixes #42\n"
+        with pytest.raises(RpcCommandError) as exc:
+            tool.execute({"title": "fix: x", "body": body}, _ctx())
+    finally:
+        _stop_loop(loop, t)
+
+    msg = str(exc.value)
+    assert "refusing to open PR" in msg
+    assert "`bun run test` failed before open PR" in msg
+    assert "expect(received).toBe(expected)" in msg
+    assert not opened_pr
+    row = db._conn.execute("SELECT error FROM tool_calls WHERE tool='gh_open_pr' ORDER BY id DESC LIMIT 1").fetchone()
+    assert row is not None
+    assert "expect(received).toBe(expected)" in row["error"]
 
 
 def test_gh_push_branch_rejects_dirty_worktree(db: Database, tmp_path: Path) -> None:
@@ -3108,6 +3178,169 @@ def test_gh_open_pr_runs_fix_then_check_and_commits_fixup(
     assert f"refs/heads/{ws.branch}" in refs.stdout.splitlines()
 
 
+@pytest.mark.parametrize("skip", [True, False])
+def test_gh_open_pr_skip_checks_bypasses_failing_bun_run_test(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skip: bool
+) -> None:
+    """`skip_checks=true` bypasses the suite alongside fix/check.
+
+    Models pre-existing breakage on `main`: every bun stage would fail, yet the
+    PR opens and each skipped gate is recorded in the audit trail.
+    """
+    import os
+    import subprocess
+
+    bare = tmp_path / "upstream.git"
+    bare.mkdir()
+    subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(bare)], check=True, capture_output=True)
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    env = os.environ | {
+        "GIT_AUTHOR_NAME": "robomp-bot",
+        "GIT_AUTHOR_EMAIL": "robomp-bot@example.invalid",
+        "GIT_COMMITTER_NAME": "robomp-bot",
+        "GIT_COMMITTER_EMAIL": "robomp-bot@example.invalid",
+    }
+    subprocess.run(["git", "init", "--initial-branch=main", str(seed)], check=True, capture_output=True)
+    (seed / "README.md").write_text("init\n")
+    for cmd in (
+        ["git", "-C", str(seed), "add", "."],
+        [
+            "git",
+            "-C",
+            str(seed),
+            "-c",
+            "user.email=robomp-bot@example.invalid",
+            "-c",
+            "user.name=robomp-bot",
+            "commit",
+            "-m",
+            "init",
+        ],
+        ["git", "-C", str(seed), "remote", "add", "origin", str(bare)],
+        ["git", "-C", str(seed), "push", "origin", "main"],
+    ):
+        subprocess.run(cmd, check=True, capture_output=True, env=env)
+
+    from robomp.sandbox import SandboxManager
+
+    mgr = SandboxManager(tmp_path / "workspaces")
+    ws = mgr.ensure_workspace(
+        repo="octo/widget",
+        number=42,
+        title="skip checks bypasses tests",
+        clone_url=str(bare),
+        default_branch="main",
+        author_name="robomp-bot",
+        author_email="robomp-bot@example.invalid",
+    )
+
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    bun_invocations = fakebin / "bun.log"
+    fake_bun = fakebin / "bun"
+    fake_bun.write_text(f'#!/bin/sh\necho "$@" >> "{bun_invocations}"\nexit {1 if skip else 0}\n', encoding="utf-8")
+    fake_bun.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fakebin}{os.pathsep}{os.environ['PATH']}")
+
+    (ws.repo_dir / "package.json").write_text(
+        json.dumps({"scripts": {"fix": "biome", "check": "tsc --noEmit", "test": "bun test"}}) + "\n",
+        encoding="utf-8",
+    )
+    (ws.repo_dir / "feature.txt").write_text("feature\n")
+    subprocess.run(
+        ["git", "-C", str(ws.repo_dir), "add", "package.json", "feature.txt"], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(ws.repo_dir),
+            "-c",
+            "user.email=robomp-bot@example.invalid",
+            "-c",
+            "user.name=robomp-bot",
+            "commit",
+            "-m",
+            "fix: something",
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+
+    captured = {}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(_request.content))
+        return httpx.Response(
+            201,
+            json={
+                "number": 7,
+                "html_url": "https://github.com/octo/widget/pull/7",
+                "head": {"ref": ws.branch},
+                "base": {"ref": "main"},
+                "state": "open",
+            },
+        )
+
+    github = GitHubClient("tok", transport=httpx.MockTransport(handler))
+    loop, thread = _make_loop_in_background()
+    try:
+        bindings = ToolBindings(
+            db=db,
+            github=github,
+            git_transport=LocalGitTransport(token=None),
+            repo=_stub_repo(),
+            issue=IssueInfo(
+                repo="octo/widget",
+                number=42,
+                title="t",
+                body="",
+                state="open",
+                author="alice",
+                labels=(),
+                is_pull_request=False,
+            ),
+            workspace=ws,
+            loop=loop,
+            author_name="robomp-bot",
+            author_email="robomp-bot@example.invalid",
+        )
+        db.upsert_issue(
+            key=bindings.issue_key,
+            repo="octo/widget",
+            number=42,
+            state="reproducing",
+            branch=ws.branch,
+            session_dir=str(ws.session_dir),
+        )
+        db.set_issue_classification(bindings.issue_key, "bug")
+        tool = next(x for x in build(bindings) if x.name == "gh_open_pr")
+        body = "## Repro\nrepro\n\n## Cause\ncause\n\n## Fix\nfix\n\n## Verification\n`bun run test` red on main\n\nFixes #42\n"
+        result = tool.execute({"title": "fix: x", "body": body, "skip_checks": skip}, _ctx())
+    finally:
+        _stop_loop(loop, thread)
+
+    assert "opened #7" in result
+    # No bun stage ran at all — fix, check and test were all short-circuited.
+    if skip:
+        assert not bun_invocations.exists()
+        assert "Pre-publish checks SKIPPED" in captured["body"]
+        assert "not a passing check result" in captured["body"]
+    else:
+        assert bun_invocations.read_text().splitlines() == ["run fix", "check", "run test"]
+        assert "Pre-publish checks SKIPPED" not in captured["body"]
+    rows = db._conn.execute("SELECT result_json FROM tool_calls WHERE tool='gh_open_pr' ORDER BY id").fetchall()
+    skipped = [json.loads(r["result_json"] or "{}") for r in rows]
+    assert any(s.get("checks_skipped") is skip for s in skipped)
+    if not skip:
+        return
+    assert any(s.get("skipped") == "bun_run_fix" for s in skipped)
+    assert any(s.get("skipped") == "bun_check" for s in skipped)
+    assert any(s.get("skipped") == "bun_run_test" for s in skipped)
+
+
 def test_gh_open_pr_refuses_dirty_worktree_before_fix(
     db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3593,3 +3826,252 @@ def test_gh_post_comment_skips_suffix_when_feature_disabled(db: Database, tmp_pa
 
     assert captured["body"] == {"body": "Here's the answer"}
     assert db.get_pending_closure(bindings.issue_key) is None
+
+
+def test_gh_search_issues_scopes_repo_and_renders_matches(db: Database, tmp_path: Path) -> None:
+    """Search auto-prefixes the repo scope, surfaces PR/state_reason so triage can
+    spot prior fixes and not-planned precedents, and filters the inbound issue."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/search/issues":
+            return httpx.Response(503)
+        captured["q"] = request.url.params["q"]
+        return httpx.Response(
+            200,
+            json={
+                "total_count": 3,
+                "items": [
+                    {
+                        "number": 42,  # the inbound issue itself — must be filtered
+                        "title": "boom",
+                        "state": "open",
+                        "user": {"login": "alice"},
+                        "labels": [],
+                        "comments": 0,
+                        "updated_at": "2026-07-01T00:00:00Z",
+                        "created_at": "2026-07-01T00:00:00Z",
+                        "html_url": "https://example/42",
+                        "repository_url": "https://api.github.com/repos/octo/widget",
+                    },
+                    {
+                        "number": 30,
+                        "title": "same crash on resize",
+                        "state": "closed",
+                        "state_reason": "not_planned",
+                        "user": {"login": "bob"},
+                        "labels": [{"name": "wontfix"}],
+                        "comments": 3,
+                        "updated_at": "2026-06-01T00:00:00Z",
+                        "created_at": "2026-05-01T00:00:00Z",
+                        "html_url": "https://example/30",
+                        "repository_url": "https://api.github.com/repos/octo/widget",
+                    },
+                    {
+                        "number": 31,
+                        "title": "fix: resize crash",
+                        "state": "closed",
+                        "state_reason": "completed",
+                        "user": {"login": "bot"},
+                        "labels": [],
+                        "comments": 1,
+                        "updated_at": "2026-06-02T00:00:00Z",
+                        "created_at": "2026-06-02T00:00:00Z",
+                        "html_url": "https://example/pull/31",
+                        "repository_url": "https://api.github.com/repos/Octo/Widget",
+                        "pull_request": {"url": "https://example/pull/31"},
+                    },
+                    {
+                        "number": 77,  # another repository's hit — must never be attributed here
+                        "title": "private resize crash",
+                        "state": "open",
+                        "user": {"login": "mallory"},
+                        "labels": [],
+                        "comments": 0,
+                        "updated_at": "2026-06-03T00:00:00Z",
+                        "created_at": "2026-06-03T00:00:00Z",
+                        "html_url": "https://example/other/77",
+                        "repository_url": "https://api.github.com/repos/other/private",
+                    },
+                ],
+            },
+        )
+
+    bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(handler))
+    try:
+        tool = next(x for x in build(bindings) if x.name == "gh_search_issues")
+        result = tool.execute({"query": "resize crash"}, _ctx())
+    finally:
+        _stop_loop(loop, t)
+    assert captured["q"] == "repo:octo/widget resize crash"
+    assert "#42" not in result  # inbound issue filtered out
+    assert "#30 (issue, closed (not_planned))" in result
+    assert "#31 (PR, closed (completed))" in result
+    assert "#77" not in result and "private resize crash" not in result
+
+
+def test_gh_search_issues_rejects_repo_qualifier_and_empty_query(db: Database, tmp_path: Path) -> None:
+    bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(lambda r: httpx.Response(500)))
+    try:
+        tool = next(x for x in build(bindings) if x.name == "gh_search_issues")
+        for widening in ("repo:evil/elsewhere secrets", "org:evil secrets", "USER:evil secrets", "owner: evil x"):
+            with pytest.raises(RpcCommandError):
+                tool.execute({"query": widening}, _ctx())
+        with pytest.raises(RpcCommandError):
+            tool.execute({"query": "crash OR secrets"}, _ctx())
+        with pytest.raises(RpcCommandError):
+            tool.execute({"query": "   "}, _ctx())
+    finally:
+        _stop_loop(loop, t)
+
+
+def test_gh_search_issues_serves_from_local_index_once_synced(db: Database, tmp_path: Path) -> None:
+    """With a sync watermark present the tool answers from SQLite: qualifiers
+    become filters, merged PRs render as `merged`, and NO GitHub call happens."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("local-index search must not call GitHub")
+
+    bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(handler))
+    from datetime import UTC, datetime
+
+    db.set_issue_index_watermark("octo/widget", datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    db.upsert_issue_index(
+        IssueIndexEntry(
+            repo="octo/widget",
+            number=31,
+            is_pull_request=True,
+            title="fix: resize crash",
+            body="handles narrow terminals",
+            state="closed",
+            state_reason="",
+            merged_at="2026-06-02T00:00:00Z",
+            author="bot",
+            labels=(),
+            comments=1,
+            created_at="2026-06-02T00:00:00Z",
+            updated_at="2026-06-02T00:00:00Z",
+            html_url="https://example/pull/31",
+        )
+    )
+    db.upsert_issue_index(
+        IssueIndexEntry(
+            repo="octo/widget",
+            number=30,
+            is_pull_request=False,
+            title="resize crash report",
+            body="",
+            state="closed",
+            state_reason="not_planned",
+            merged_at="",
+            author="bob",
+            labels=("wontfix",),
+            comments=3,
+            created_at="2026-05-01T00:00:00Z",
+            updated_at="2026-06-01T00:00:00Z",
+            html_url="https://example/30",
+        )
+    )
+    try:
+        tool = next(x for x in build(bindings) if x.name == "gh_search_issues")
+        result = tool.execute({"query": "resize crash"}, _ctx())
+        pr_only = tool.execute({"query": "resize crash is:merged"}, _ctx())
+    finally:
+        _stop_loop(loop, t)
+    assert "#30 (issue, closed (not_planned))" in result
+    assert "#31 (PR, merged)" in result
+    assert "#31" in pr_only and "#30" not in pr_only
+
+
+def _git_repo_with_commits(bindings) -> None:
+    """Turn the stub workspace repo_dir into a git repo with two commits."""
+    repo = str(bindings.workspace.repo_dir)
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run(["git", "init", "-q", "-b", "main", repo], check=True)
+    Path(repo, "a.txt").write_text("plain start\n", encoding="utf-8")
+    subprocess.run(["git", "-C", repo, "add", "."], check=True)
+    subprocess.run(["git", "-C", repo, *ident, "commit", "-q", "-m", "feat: initial import"], check=True)
+    Path(repo, "a.txt").write_text("plain start\nsplitPathAndSel guard\n", encoding="utf-8")
+    subprocess.run(["git", "-C", repo, "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", repo, *ident, "commit", "-q", "-m", "fix(tools): colon selector literal paths"],
+        check=True,
+    )
+
+
+def test_search_commits_message_and_patch_modes(db: Database, tmp_path: Path) -> None:
+    """message mode greps commit messages; patch mode pickaxes diff content.
+    Without an origin ref the search falls back to HEAD instead of failing."""
+    bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(lambda r: httpx.Response(500)))
+    _git_repo_with_commits(bindings)
+    try:
+        tool = next(x for x in build(bindings) if x.name == "search_commits")
+        by_message = tool.execute({"query": "colon selector"}, _ctx())
+        by_patch = tool.execute({"query": "splitPathAndSel", "mode": "patch"}, _ctx())
+        none = tool.execute({"query": "nonexistent-topic"}, _ctx())
+        with pytest.raises(RpcCommandError):
+            tool.execute({"query": "x", "mode": "bogus"}, _ctx())
+    finally:
+        _stop_loop(loop, t)
+    assert "fix(tools): colon selector literal paths" in by_message
+    assert "feat: initial import" not in by_message
+    assert "fix(tools): colon selector literal paths" in by_patch
+    assert none.startswith("No commits")
+
+
+def test_open_pr_test_gate_times_out_within_task_budget(
+    db: Database, tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hung suite is cut off at the task budget, so the timeout branch is
+    reachable and the gate cannot outlive the task it belongs to."""
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_bun = fake_bin / "bun"
+    fake_bun.write_text("#!/bin/sh\nexec sleep 30\n")
+    fake_bun.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    bindings, loop, thread = _bindings(
+        db, tmp_path, httpx.MockTransport(lambda request: pytest.fail("no GitHub calls allowed"))
+    )
+    bindings = dataclasses.replace(bindings, settings=settings.model_copy(update={"task_timeout_seconds": 1.0}))
+    db.set_issue_classification(bindings.issue_key, "bug")
+    (bindings.workspace.repo_dir / "package.json").write_text(json.dumps({"scripts": {"test": "bun test"}}))
+    started = time.monotonic()
+    try:
+        tool = next(t for t in build(bindings) if t.name == "gh_open_pr")
+        with pytest.raises(RpcCommandError, match=r"`bun run test` timed out after 1s"):
+            tool.execute(
+                {"title": "fix: bug", "body": "## Repro\nr\n## Cause\nc\n## Fix\nf\n## Verification\nv\nFixes #42"},
+                _ctx(),
+            )
+    finally:
+        _stop_loop(loop, thread)
+    assert time.monotonic() - started < 15
+    assert db.get_issue(bindings.issue_key).pr_number is None
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError(), subprocess.TimeoutExpired("bun", 3600, output=b"hung suite")])
+def test_open_pr_blocks_test_runner_errors(db, tmp_path, monkeypatch, failure):
+    from robomp import host_tools
+
+    bindings, loop, thread = _bindings(
+        db, tmp_path, httpx.MockTransport(lambda request: pytest.fail("no GitHub calls allowed"))
+    )
+    db.set_issue_classification(bindings.issue_key, "bug")
+    (bindings.workspace.repo_dir / "package.json").write_text(json.dumps({"scripts": {"test": "test-runner"}}))
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(host_tools, "_run_repo_command", fail)
+    try:
+        tool = next(t for t in build(bindings) if t.name == "gh_open_pr")
+        with pytest.raises(RpcCommandError, match="bun run test"):
+            tool.execute(
+                {"title": "fix: bug", "body": "## Repro\nr\n## Cause\nc\n## Fix\nf\n## Verification\nv\nFixes #42"},
+                _ctx(),
+            )
+        assert db.get_issue(bindings.issue_key).pr_number is None
+    finally:
+        _stop_loop(loop, thread)

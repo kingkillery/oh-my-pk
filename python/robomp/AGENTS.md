@@ -88,7 +88,8 @@ Lint + format: TypeScript via Biome (config in `biome.json`), Python via Ruff (c
 - `src/queue.py` — `WorkerPool` dispatcher and `_inflight` serialization.
 - `src/tasks.py` — the five task entry points the dispatcher calls.
 - `src/worker.py` — synchronous omp RPC driver, prompt assembly via `persona`.
-- `src/host_tools.py` — agent's GitHub surface; tool list: `classify_issue`, `set_issue_labels`, `gh_post_comment`, `repro_record`, `gh_push_branch`, `gh_open_pr`, `gh_request_review`, `mark_unable_to_reproduce`, `abort_task`, `fetch_issue_thread`.
+- `src/host_tools.py` — agent's GitHub surface; tool list: `classify_issue`, `set_issue_labels`, `gh_post_comment`, `repro_record`, `gh_push_branch`, `gh_open_pr` (gated on `bun run fix` → `bun check` → `bun run test`), `gh_request_review`, `mark_unable_to_reproduce`, `abort_task`, `fetch_issue_thread`, `gh_search_issues` (repo-pinned), `search_commits`.
+- `src/issue_index.py` — on-demand SQLite FTS issue/PR index behind `gh_search_issues`; resumable reconcile, GitHub-search fallback.
 - `src/sandbox.py` — clone pool + worktree lifecycle, `GitCommandError`, credential redaction.
 - `src/github_client.py` — typed httpx client; parses webhook payloads into `IssueInfo` / `CommentInfo` / `PullRequestInfo`.
 - `src/github_events.py` — routing and HMAC verification.

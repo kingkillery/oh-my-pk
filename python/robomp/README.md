@@ -4,8 +4,9 @@ Self-hosted GitHub triage bot. Drives [`omp --mode rpc`](https://github.com/can1
 as a subprocess against a per-issue git worktree, then writes back to GitHub
 through a sidecar that holds the PAT.
 
-On `issues.opened` in an allowlisted repo it classifies the issue, labels it,
-and branches:
+On `issues.opened` (or `issues.reopened`, which discards the previous
+classification/PR state and re-triages) in an allowlisted repo it classifies
+the issue, labels it, and branches:
 
 - `bug` / `documentation` → reproduce, fix on a fresh branch, open a PR whose
   body has `## Repro` / `## Cause` / `## Fix` / `## Verification` and
@@ -52,7 +53,8 @@ roboomp.
 
 ### Supported roboomp invocation
 
-- `issues.opened` in an allowlisted repository starts automatic triage.
+- `issues.opened` in an allowlisted repository starts automatic triage;
+  `issues.reopened` resets the issue's classification/PR state and triages again.
 - With `ROBOMP_PR_REVIEW_ENABLED=true`, incoming non-draft PRs are reviewed on
   `opened`, `reopened`, and `ready_for_review` by default, or only on the
   trusted fresh `vouched` label event when
@@ -241,9 +243,20 @@ The integration test spawns a real `omp --mode rpc` against an
   `origin/<default>..HEAD` carries `ROBOMP_GIT_AUTHOR_NAME` +
   `ROBOMP_GIT_AUTHOR_EMAIL`.
 - Pre-PR gates (`gh_open_pr`): when the repo defines them, `bun run fix`
-  runs first (any diff auto-committed as `style: bun run fix`) and then
-  `bun check`. A failing `bun check` returns to the agent as
-  `RpcCommandError` for iteration.
+  runs first (any diff auto-committed as `style: bun run fix`), then
+  `bun check`, then `bun run test` (capped at one task budget,
+  `ROBOMP_TASK_TIMEOUT_SECONDS`). A failing gate returns to the agent as
+  `RpcCommandError` for iteration. `skip_checks=true` bypasses the gates for
+  breakage the agent's diff did not cause; the bypass is disclosed in the PR
+  body and recorded in the audit row.
+- Search (`gh_search_issues`, `search_commits`): issue/PR search is pinned to
+  the current repository. `repo:`/`org:`/`user:`/`owner:` qualifiers and the
+  `OR` operator are rejected, and remote results from any other repository are
+  dropped. Supported queries are served from the local SQLite FTS index
+  (`issue_index.py`), refreshed on demand at most every five minutes; a
+  reconcile that exceeds its page budget records a resume point and falls back
+  to GitHub search until it completes. `search_commits` greps the worktree's
+  own git history.
 - `gh_open_pr` validates `## Repro` / `## Cause` / `## Fix` /
   `## Verification` headers and a `Fixes`/`Closes`/`Resolves #N`
   reference before opening.
@@ -277,6 +290,7 @@ The integration test spawns a real `omp --mode rpc` against an
 | `refusing to push: commit author identity mismatch` | Some commit not authored as `ROBOMP_GIT_AUTHOR_*`. The error lists the offending shas; `git commit --amend --reset-author --no-edit`. |
 | `refusing to push: working tree is dirty` | Uncommitted agent edits. Or just call `gh_open_pr`, which auto-commits `bun run fix` output. |
 | `bun check failed before PR creation` | Fix the reported failure and retry `gh_open_pr`. |
+| `` `bun run test` failed before PR creation `` | Fix the failing tests, commit, and retry `gh_open_pr`. |
 | `Failed to load pi_natives` | Wrong arch / missing native. `bun run pi:image` then `bun run robomp:build`. |
 | `No API key found for <provider>` | `~/.ompk/agent/models.container.yml` mount missing or provider id mismatch with `ROBOMP_MODEL`. |
 
@@ -291,7 +305,9 @@ src/
   worker.py          synchronous omp RPC driver, prompt assembly, env scrubbing
   host_tools.py      classify_issue, set_issue_labels, gh_post_comment, repro_record,
                      gh_push_branch, gh_open_pr, gh_request_review,
-                     mark_unable_to_reproduce, abort_task, fetch_issue_thread
+                     mark_unable_to_reproduce, abort_task, fetch_issue_thread,
+                     gh_search_issues, search_commits
+  issue_index.py     on-demand SQLite FTS issue/PR index with resumable reconcile
   sandbox.py         clone pool + worktree lifecycle
   github_client.py   typed httpx client; webhook payload parsing
   proxy_client.py    GitHubProxyClient + HMAC signer

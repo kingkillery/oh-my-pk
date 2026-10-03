@@ -116,6 +116,35 @@ describe.skipIf(!SHOULD_RUN)("python runner subprocess", () => {
 		}
 	});
 
+	it("keeps captured subprocess streams out of executor output and processError", async () => {
+		using tempDir = TempDir.createSync("@python-runner-private-output-");
+		const kernel = await PythonKernel.start({ cwd: tempDir.path() });
+		try {
+			for (const exception of [
+				"subprocess.TimeoutExpired(['safe-command'], 2, output=private_stdout, stderr=private_stderr)",
+				"subprocess.CalledProcessError(17, ['safe-command'], output=private_stdout, stderr=private_stderr)",
+			]) {
+				const result = await executePythonWithKernel(
+					kernel,
+					[
+						"import subprocess",
+						"private_stdout = b'SYNTHETIC_PRIVATE_STDOUT_66'",
+						"private_stderr = 'SYNTHETIC_PRIVATE_STDERR_66'",
+						`raise ${exception}`,
+					].join("\n"),
+				);
+				expect(result.exitCode).toBe(1);
+				expect(JSON.stringify(result)).not.toContain("SYNTHETIC_PRIVATE_");
+				expect(result.output).toContain("safe-command");
+				expect(result.output).toContain("captured output withheld");
+				expect(result.processError?.stdout).toContain("withheld");
+				expect(result.processError?.stderr).toContain("withheld");
+			}
+		} finally {
+			await kernel.shutdown();
+		}
+	});
+
 	it("supports top-level await across cells", async () => {
 		using tempDir = TempDir.createSync("@python-runner-await-");
 		const kernel = await PythonKernel.start({ cwd: tempDir.path() });
