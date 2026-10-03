@@ -206,7 +206,13 @@ def _pr_review_pr(pr: Mapping[str, Any], repo: str, action: str, bot_login: str)
         return RouteDecision("skip", None, repo, None, "PR missing number")
     login, assoc = _submitter_info(pr)
     return RouteDecision(
-        "queue", "review_pr", repo, issue_key(repo, number), f"pull_request.{action}", submitter=login, association=assoc
+        "queue",
+        "review_pr",
+        repo,
+        issue_key(repo, number),
+        f"pull_request.{action}",
+        submitter=login,
+        association=assoc,
     )
 
 
@@ -297,10 +303,10 @@ def route(
         if not isinstance(number, int):
             return RouteDecision("skip", None, repo, None, "issue missing number")
         key = issue_key(repo, number)
-        if action == "opened":
+        if action in ("opened", "reopened"):
             login, assoc = _submitter_info(issue)
             return RouteDecision(
-                "queue", "triage_issue", repo, key, "issues.opened", submitter=login, association=assoc
+                "queue", "triage_issue", repo, key, f"issues.{action}", submitter=login, association=assoc
             )
         if action == "closed":
             # Cleanup is a lifecycle event, not a user submission; no rate-limit subject.

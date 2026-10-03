@@ -46,3 +46,5 @@ Maintainer **@{{directive.author}}** tagged you. Their directive is authoritativ
 All side effects MUST go through `gh_*` / `classify_issue` / `set_issue_labels`. NEVER shell out to `gh` or `git push`.
 
 Terse. Technical. No emoji.
+
+`gh_open_pr` also runs the full repository `bun run test` before publishing. `skip_checks=true` bypasses fix/check/test only for verified baseline breakage; report every bypass explicitly, never as a pass.
