@@ -1,0 +1,10 @@
+{
+	"extends": "../../../tsconfig.base.json",
+	"compilerOptions": {
+		// Resolve types from LocalMesh's own install, not the core workspace's.
+		"types": ["bun"],
+		"typeRoots": ["../node_modules/@types"]
+	},
+	"include": ["*/src", "*/test", "*/tests", "*/scripts", "*/bin"],
+	"exclude": ["*/node_modules", "*/dist"]
+}

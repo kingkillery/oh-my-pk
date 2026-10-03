@@ -1,0 +1,38 @@
+import {
+	type ArtifactManifestV1,
+	isJsonRecord,
+	type JsonRecord,
+	type JsonValue,
+	MESH_SCHEMA,
+	parseArtifactManifest,
+	sha256CanonicalJson,
+	toImmutableJson,
+} from "@pk-nerdsaver-ai/mesh-contracts";
+
+export type CreateArtifactManifestInput = Omit<ArtifactManifestV1, "schemaVersion" | "manifestDigest">;
+
+function asRecord(value: JsonValue): JsonRecord {
+	if (!isJsonRecord(value)) throw new Error("artifact manifest input must be a JSON object");
+	return value;
+}
+
+/** Build a canonical, self-verifying artifact manifest around a previously stored blob. */
+export function createArtifactManifest(input: CreateArtifactManifestInput): ArtifactManifestV1 {
+	const immutableInput = asRecord(toImmutableJson(input));
+	const base: Record<string, JsonValue> = {};
+	for (const [key, value] of Object.entries(immutableInput)) {
+		if (key === "schemaVersion" || key === "manifestDigest") {
+			throw new Error(`artifact manifest input must not provide ${key}`);
+		}
+		if (value === undefined) continue; // toImmutableJson already rejects undefined values
+		base[key] = value;
+	}
+	base.schemaVersion = MESH_SCHEMA.artifact;
+	base.manifestDigest = sha256CanonicalJson(base);
+	return parseArtifactManifest(base);
+}
+
+/** Validate both the public contract and its canonical manifest digest. */
+export function validateArtifactManifest(input: unknown): ArtifactManifestV1 {
+	return parseArtifactManifest(input);
+}

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import time
 from collections.abc import Callable, Mapping
@@ -239,17 +240,40 @@ def _run_repo_command(
     *,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a repo-local command with agent-equivalent permissions and env."""
-    return subprocess.run(
+    """Run a repo-local command with agent-equivalent permissions and env.
+
+    The command gets its own session so a timeout kills the whole process tree.
+    `subprocess.run` kills only the direct child, so test runners spawned by
+    `bun run test` kept running (and burning the slot) after the gate gave up.
+    """
+    with subprocess.Popen(
         list(cmd),
         cwd=str(bindings.workspace.repo_dir),
-        check=False,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout,
         env=_repo_command_env(bindings),
+        start_new_session=True,
         **_slot_subprocess_kwargs(bindings.slot_uid),
-    )
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_tree(proc)
+            stdout, stderr = proc.communicate()
+            raise subprocess.TimeoutExpired(proc.args, timeout or 0.0, output=stdout, stderr=stderr) from None
+        except BaseException:
+            _kill_process_tree(proc)
+            raise
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
+def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
+    """SIGKILL the session started for `proc` (falls back to the child alone)."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, AttributeError):
+        proc.kill()
 
 
 def _has_bun_script(repo_dir: Path, name: str) -> bool:

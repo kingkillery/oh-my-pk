@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from robomp.db import Database
@@ -125,8 +127,9 @@ async def test_sync_repo_backfills_pages_and_sets_watermark(db: Database, tmp_pa
 
     ingested = await sync.sync_repo("octo/widget")
     assert ingested is True
-    # First run is a backfill: no `since` on any call, pages walked in order.
-    assert backend.calls == [(None, 1), (None, 2)]
+    # First run is a backfill: no `since`, then keyset from the newest timestamp
+    # seen. This page is all one timestamp, so the sync steps by offset past it.
+    assert backend.calls == [(None, 1), ("2026-06-01T00:00:00Z", 1), ("2026-06-01T00:00:00Z", 2)]
     watermark = db.issue_index_watermark("octo/widget")
     assert watermark is not None
     assert db.search_issue_index("octo/widget", keywords=("issue",), limit=5)
@@ -190,14 +193,18 @@ async def test_failed_refresh_does_not_advance_watermark(db: Database) -> None:
 class _SinceBackend:
     """Ascending-`updated_at` pages that honour `since`, like GitHub's /issues."""
 
-    def __init__(self, entries: list[IssueIndexEntry]) -> None:
+    def __init__(self, entries: list[IssueIndexEntry], on_call: Callable[[int], None] | None = None) -> None:
         self.entries = sorted(entries, key=lambda e: e.updated_at)
         self.calls: list[tuple[str | None, int]] = []
+        self.on_call = on_call
 
     async def list_issue_index_entries(
         self, repo: str, *, since: str | None = None, page: int = 1, per_page: int = 100
     ) -> list[IssueIndexEntry]:
         self.calls.append((since, page))
+        if self.on_call is not None:
+            self.on_call(len(self.calls))
+        self.entries.sort(key=lambda e: e.updated_at)
         window = [e for e in self.entries if since is None or e.updated_at >= since]
         return window[(page - 1) * per_page : page * per_page]
 
@@ -207,16 +214,36 @@ async def test_over_budget_backfill_resumes_and_converges(db: Database) -> None:
     backend = _SinceBackend(entries)
     sync = IssueIndexSync(db=db, github=backend, max_pages=2)
 
-    assert not await sync.sync_repo("octo/widget")  # 200 of 450 ingested
+    assert not await sync.sync_repo("octo/widget")  # out of page budget part-way through
     assert db.issue_index_watermark("octo/widget") is None
-    assert db.issue_index_resume_since("octo/widget") == entries[199].updated_at
+    resume = db.issue_index_resume_since("octo/widget")
+    assert resume is not None and entries[100].updated_at < resume < entries[-1].updated_at
 
     backend.calls.clear()
     assert not await sync.sync_repo("octo/widget")  # resumes instead of restarting at page 1 / since=None
-    assert backend.calls[0] == (entries[199].updated_at, 1)
+    assert backend.calls[0] == (resume, 1)
 
     assert await sync.sync_repo("octo/widget")
     assert db.issue_index_watermark("octo/widget") is not None
     assert db.issue_index_resume_since("octo/widget") is None
     assert len(db.search_issue_index("octo/widget", limit=50)) == 50
     assert {e.number for e in db.search_issue_index("octo/widget", keywords=("issue", "450"))} == {450}
+
+
+async def test_item_updated_mid_sync_is_not_skipped(db: Database) -> None:
+    """An update between pages moves an item to the end; page offsets would then
+    skip the record that slid into the gap, and the watermark excludes it forever."""
+    entries = [_entry(n, updated_at=f"2026-01-01T00:{n // 60:02d}:{n % 60:02d}Z") for n in range(1, 251)]
+    backend = _SinceBackend(entries)
+
+    def bump_issue_5(call: int) -> None:
+        if call == 2:
+            i = next(i for i, e in enumerate(backend.entries) if e.number == 5)
+            backend.entries[i] = replace(backend.entries[i], updated_at="2026-01-01T01:00:00Z", title="issue 5 edited")
+
+    backend.on_call = bump_issue_5
+    assert await IssueIndexSync(db=db, github=backend).sync_repo("octo/widget")
+    indexed = {e.number for e in db.search_issue_index("octo/widget", keywords=("issue",), limit=50)}
+    indexed |= {n for n in range(1, 251) if db.search_issue_index("octo/widget", keywords=("issue", str(n)))}
+    assert indexed == set(range(1, 251))
+    assert db.search_issue_index("octo/widget", keywords=("edited",))[0].number == 5

@@ -49,9 +49,11 @@ async def test_reopen_discards_only_finalized_workspace_state(settings, db, tmp_
     db.upsert_issue(key=key, repo="octo/widget", number=4, state=state, pr_number=99, branch="old", session_dir="old")
     db.set_issue_classification(key, "enhancement")
     calls = []
+    discarded: list[str] = []
 
     def remove(**kwargs):
         calls.append("remove")
+        discarded.extend(b for b in kwargs.get("discard_branches", ()) if b)
 
     def ensure(**kwargs):
         calls.append("ensure")
@@ -88,6 +90,7 @@ async def test_reopen_discards_only_finalized_workspace_state(settings, db, tmp_
     assert row.state == "reproducing" and row.branch == "new"
     if state in ("closed", "merged", "abandoned"):
         assert calls == ["remove", "ensure", "run"]
+        assert "old" in discarded  # the finalized branch is discarded, never resumed
         assert row.pr_number is None and row.classification is None
         assert db.find_issue_by_pr("octo/widget", 99) is None
     else:
