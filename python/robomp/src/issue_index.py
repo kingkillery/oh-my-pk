@@ -89,7 +89,8 @@ class IssueIndexSync:
         resume = self._db.issue_index_resume_since(repo)
         if resume and (since is None or resume > since):
             since = resume
-        for page in range(1, self._max_pages + 1):
+        page = 1
+        for _ in range(self._max_pages):
             batch = await self._github.list_issue_index_entries(repo, since=since, page=page, per_page=_PAGE_SIZE)
             if any(entry.repo != repo for entry in batch):
                 raise ValueError("Issue index backend returned a different repository")
@@ -101,6 +102,14 @@ class IssueIndexSync:
                     self._db.set_issue_index_watermark, repo, started.strftime("%Y-%m-%dT%H:%M:%SZ")
                 )
                 return True
+            # Keyset pagination: restart page 1 from the newest timestamp seen.
+            # Page offsets shift when an item is updated mid-sync, which would
+            # skip a record whose old `updated_at` the watermark then excludes
+            # for good. Only a page that is all one timestamp steps by offset.
+            if progress and progress != since:
+                since, page = progress, 1
+            else:
+                page += 1
         # Never advance the watermark on partial pagination: only the resume
         # point moves, and the index stays unusable until a reconcile finishes.
         return False

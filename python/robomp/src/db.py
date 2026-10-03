@@ -769,6 +769,15 @@ class Database:
             )
         self.cancel_pending_closure(key, reason="issue reopened")
 
+    def clear_issue_branch(self, key: str) -> None:
+        """Forget a finalized issue's branch so a maintainer reopen branches afresh.
+
+        ``upsert_issue`` keeps the stored branch (COALESCE), so a reopen must
+        clear it explicitly or follow-up dispatch resumes the stale branch.
+        """
+        with self._lock:
+            self._conn.execute("UPDATE issues SET branch=NULL, updated_at=? WHERE key=?", (_utcnow(), key))
+
     def set_issue_state(self, key: str, state: IssueState) -> None:
         with self._lock:
             self._conn.execute(

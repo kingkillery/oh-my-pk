@@ -47,6 +47,7 @@ import shutil
 import signal
 import stat
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -894,16 +895,29 @@ class SandboxManager:
                     extra={"file": str(child), "err": str(exc)},
                 )
 
-    def remove_workspace(self, *, repo: str, number: int) -> None:
+    def remove_workspace(self, *, repo: str, number: int, discard_branches: Iterable[str | None] = ()) -> None:
+        """Remove the per-issue worktree, optionally deleting bot-owned pool branches.
+
+        Reopen paths pass the issue's branches: branch names are deterministic,
+        so a surviving ``farm/<hex>/<slug>`` pool branch would make the next
+        ``ensure_workspace`` resume the old commits instead of branching afresh
+        from the default branch. Only ``farm/`` branches are ever deleted.
+        """
         ws_root = self.workspace_root(repo, number)
         repo_dir = ws_root / "repo"
+        pool = self.pool_path(repo)
         if repo_dir.exists():
-            pool = self.pool_path(repo)
             _safe_run(["git", "worktree", "remove", "--force", str(repo_dir)], cwd=pool)
             if repo_dir.exists():
                 shutil.rmtree(repo_dir, ignore_errors=True)
         if ws_root.exists():
             shutil.rmtree(ws_root, ignore_errors=True)
+        doomed = list(dict.fromkeys(b for b in discard_branches if b and b.startswith("farm/")))
+        if doomed and ((pool / ".git").exists() or (pool / "HEAD").exists()):
+            # A worktree removed by rmtree is still registered and would pin its branch.
+            _safe_run(["git", "worktree", "prune"], cwd=pool)
+            for branch in doomed:
+                _safe_run(["git", "branch", "-D", branch], cwd=pool)
 
 
 __all__ = [

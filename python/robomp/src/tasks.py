@@ -18,7 +18,7 @@ from robomp.github_client import (
     RepoInfo,
     parse_issue_payload,
 )
-from robomp.sandbox import GitTransport, SandboxManager
+from robomp.sandbox import GitTransport, SandboxManager, make_branch
 from robomp.worker import DirectiveInfo, TaskInputs, ThreadMessage, run_task
 
 log = logging.getLogger(__name__)
@@ -226,6 +226,11 @@ def _can_handle_pr_directly(*, settings: Settings, repo_full: str, pr: PullReque
     return True
 
 
+def _stale_issue_branches(repo: str, issue: IssueInfo, stored: str | None) -> tuple[str | None, ...]:
+    """Pool branches a reopen must discard: the stored one plus the deterministic name."""
+    return (stored, make_branch(issue_number=issue.number, title=issue.title, seed=f"{repo}#{issue.number}"))
+
+
 async def triage_issue(
     *,
     settings: Settings,
@@ -267,7 +272,11 @@ async def triage_issue(
             )
             return
     elif payload.get("action") == "reopened" and existing.state in ("merged", "closed", "abandoned"):
-        sandbox.remove_workspace(repo=repo.full_name, number=issue.number)
+        sandbox.remove_workspace(
+            repo=repo.full_name,
+            number=issue.number,
+            discard_branches=_stale_issue_branches(repo.full_name, issue, existing.branch),
+        )
         db.reset_issue_for_retriage(key)
     db.upsert_issue(key=key, repo=repo.full_name, number=issue.number, state="reproducing")
     clone_url = repo.clone_url
@@ -460,7 +469,12 @@ async def handle_comment(
         # Maintainer reopen: tear down stale workspace, reset state, branch
         # afresh from default. The old branch may have been merged/deleted.
         log.info("directive reopen", extra={"key": key, "from_state": existing.state, "author": directive.author})
-        sandbox.remove_workspace(repo=repo.full_name, number=issue.number)
+        sandbox.remove_workspace(
+            repo=repo.full_name,
+            number=issue.number,
+            discard_branches=_stale_issue_branches(repo.full_name, issue, existing.branch),
+        )
+        db.clear_issue_branch(key)
         db.upsert_issue(key=key, repo=repo.full_name, number=issue.number, state="reproducing")
         workspace = sandbox.ensure_workspace(
             repo=repo.full_name,
@@ -681,7 +695,10 @@ async def handle_pr_conversation(
             "directive reopen (pr)",
             extra={"key": issue_row.key, "from_state": issue_row.state, "author": directive.author},
         )
-        sandbox.remove_workspace(repo=issue_row.repo, number=issue_row.number)
+        sandbox.remove_workspace(repo=issue_row.repo, number=issue_row.number, discard_branches=(issue_row.branch,))
+        # Without clearing, the stored branch survives the upsert and becomes
+        # `existing_branch` below, resuming the finalized PR's commits.
+        db.clear_issue_branch(issue_row.key)
         db.upsert_issue(key=issue_row.key, repo=issue_row.repo, number=issue_row.number, state="reproducing")
         issue_row = db.get_issue(issue_row.key) or issue_row
     # Bare @mention with no request body — the route stashes an empty

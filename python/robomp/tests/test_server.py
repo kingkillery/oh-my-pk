@@ -1622,6 +1622,7 @@ class _RecordingSandbox:
         self.tmp_root = tmp_root
         self.ensure_calls: list[dict] = []
         self.remove_calls: list[tuple[str, int]] = []
+        self.discarded: list[str] = []
 
     def ensure_workspace(
         self,
@@ -1667,8 +1668,9 @@ class _RecordingSandbox:
             repo_dir=self.tmp_root / wid / "repo",
         )
 
-    def remove_workspace(self, *, repo: str, number: int) -> None:
+    def remove_workspace(self, *, repo: str, number: int, discard_branches: tuple[str | None, ...] = ()) -> None:
         self.remove_calls.append((repo, number))
+        self.discarded.extend(b for b in discard_branches if b)
 
 
 @pytest.fixture
@@ -2214,6 +2216,7 @@ async def test_handle_comment_directive_reopens_finalized_issue(
     assert call["task_kind"] == "handle_comment"
     assert call["directive"].body == "redo the fix"
     assert sandbox.remove_calls == [("octo/widget", 88)]
+    assert "farm/old/branch" in sandbox.discarded  # stale pool branch is not resumed
     assert sandbox.ensure_calls
     # Reopen branches afresh (no existing_branch passed).
     assert sandbox.ensure_calls[0]["existing_branch"] is None

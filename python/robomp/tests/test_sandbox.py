@@ -1104,6 +1104,48 @@ def test_remove_workspace(tmp_path: Path, upstream_repo: Path) -> None:
     assert not ws.root.exists()
 
 
+def test_remove_workspace_discards_stale_branch_so_reopen_starts_fresh(tmp_path: Path, upstream_repo: Path) -> None:
+    """Close (cleanup) then reopen: the next workspace must not inherit old commits."""
+    mgr = SandboxManager(tmp_path / "workspaces")
+    kwargs = {
+        "repo": "octo/widget",
+        "number": 12,
+        "title": "t",
+        "clone_url": str(upstream_repo),
+        "default_branch": "main",
+        "author_name": "robomp-bot",
+        "author_email": "robomp-bot@example.invalid",
+    }
+    ws = mgr.ensure_workspace(**kwargs)
+    env = os.environ | {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    (ws.repo_dir / "old.txt").write_text("old fix\n", encoding="utf-8")
+    _git(["-C", str(ws.repo_dir), "add", "."], cwd=tmp_path)
+    subprocess.run(["git", "commit", "-m", "old fix"], cwd=ws.repo_dir, check=True, capture_output=True, env=env)
+    pool = mgr.pool_path("octo/widget")
+    _git(["branch", "farm/renamed/old-slug", ws.branch], cwd=pool)
+
+    mgr.remove_workspace(repo="octo/widget", number=12)  # issue closed: branch survives
+    mgr.remove_workspace(
+        repo="octo/widget",
+        number=12,
+        discard_branches=(ws.branch, "farm/renamed/old-slug", "main", None),
+    )
+    fresh = mgr.ensure_workspace(**kwargs)
+
+    assert fresh.branch == ws.branch
+    assert not (fresh.repo_dir / "old.txt").exists()
+    branches = subprocess.run(
+        ["git", "branch", "--format=%(refname:short)"], cwd=pool, check=True, capture_output=True, text=True
+    ).stdout.split()
+    assert "farm/renamed/old-slug" not in branches
+    assert "main" in branches  # never deletes non-farm branches
+
+
 def test_redact_credentials_strips_userinfo() -> None:
     from robomp.sandbox import redact_credentials
 
@@ -1301,9 +1343,7 @@ def test_run_git_injects_safe_directory_and_subprocess_identity(
     assert captured["umask"] == 0o002
 
 
-def test_run_git_scopes_token_and_scrubs_parent_auth_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_git_scopes_token_and_scrubs_parent_auth_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from robomp.git_ops import AUTH_ENV_VAR, _run_git
 
     captured: dict[str, object] = {}

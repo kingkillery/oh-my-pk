@@ -144,8 +144,6 @@ def test_repo_command_env_scrubs_secrets_and_uses_workspace_cache(
 def test_run_repo_command_uses_slot_identity_kwargs(
     db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import subprocess
-
     bindings, loop, thread = _bindings(db, tmp_path, httpx.MockTransport(lambda _r: httpx.Response(500)), slot_uid=2001)
     captured: dict[str, Any] = {}
 
@@ -155,12 +153,24 @@ def test_run_repo_command_uses_slot_identity_kwargs(
         lambda uid: {"user": uid, "group": uid, "extra_groups": [2000], "umask": 0o002},
     )
 
-    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        captured["cmd"] = cmd
-        captured["kwargs"] = kwargs
-        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+    class FakePopen:
+        def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            self.args = cmd
+            self.pid = 0
+            self.returncode = 0
 
-    monkeypatch.setattr(host_tools.subprocess, "run", fake_run)  # type: ignore[attr-defined]
+        def __enter__(self) -> FakePopen:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            return "ok", ""
+
+    monkeypatch.setattr(host_tools.subprocess, "Popen", FakePopen)  # type: ignore[attr-defined]
     try:
         proc = host_tools._run_repo_command(bindings, ["git", "status"])
     finally:
@@ -169,6 +179,7 @@ def test_run_repo_command_uses_slot_identity_kwargs(
     assert proc.stdout == "ok"
     assert captured["cmd"] == ["git", "status"]
     kwargs = captured["kwargs"]
+    assert kwargs["start_new_session"] is True  # a timeout can kill the whole tree
     assert kwargs["cwd"] == str(bindings.workspace.repo_dir)
     assert kwargs["user"] == 2001
     assert kwargs["group"] == 2001
@@ -4019,15 +4030,19 @@ def test_search_commits_message_and_patch_modes(db: Database, tmp_path: Path) ->
     assert none.startswith("No commits")
 
 
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="process liveness is read from /proc")
 def test_open_pr_test_gate_times_out_within_task_budget(
     db: Database, tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A hung suite is cut off at the task budget, so the timeout branch is
-    reachable and the gate cannot outlive the task it belongs to."""
+    reachable, and the whole process tree is killed so neither the gate nor
+    the suite outlives the task it belongs to."""
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     fake_bun = fake_bin / "bun"
-    fake_bun.write_text("#!/bin/sh\nexec sleep 30\n")
+    # The suite's runner is a grandchild of the gate's command, like `bun run test`.
+    runner_pid = tmp_path / "runner.pid"
+    fake_bun.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {runner_pid}\nwait\n")
     fake_bun.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
 
@@ -4049,6 +4064,21 @@ def test_open_pr_test_gate_times_out_within_task_budget(
         _stop_loop(loop, thread)
     assert time.monotonic() - started < 15
     assert db.get_issue(bindings.issue_key).pr_number is None
+    assert _wait_until_dead(int(runner_pid.read_text())), "suite runner outlived the gate"
+
+
+def _wait_until_dead(pid: int, timeout: float = 5.0) -> bool:
+    """True once `pid` is gone or a zombie (killed, merely not yet reaped)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+        except FileNotFoundError:
+            return True
+        if stat.rpartition(")")[2].split()[0] in ("Z", "X"):
+            return True
+        time.sleep(0.05)
+    return False
 
 
 @pytest.mark.parametrize("failure", [FileNotFoundError(), subprocess.TimeoutExpired("bun", 3600, output=b"hung suite")])
