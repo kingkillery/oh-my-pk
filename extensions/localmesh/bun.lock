@@ -1,0 +1,293 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "@pk-nerdsaver-ai/localmesh",
+      "devDependencies": {
+        "@biomejs/biome": "2.5.9",
+        "@types/bun": "1.4.0",
+        "@typescript/native-preview": "7.0.0-dev.20260609.1",
+      },
+    },
+    "packages/mesh-artifacts": {
+      "name": "@pk-nerdsaver-ai/mesh-artifacts",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-artifacts-blossom": {
+      "name": "@pk-nerdsaver-ai/mesh-artifacts-blossom",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-artifacts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-auth": {
+      "name": "@pk-nerdsaver-ai/mesh-auth",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-checkpoint": {
+      "name": "@pk-nerdsaver-ai/mesh-checkpoint",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-cli": {
+      "name": "@pk-nerdsaver-ai/mesh-cli",
+      "version": "0.1.0",
+      "bin": {
+        "ompk-mesh": "./bin/ompk-mesh.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-contracts": {
+      "name": "@pk-nerdsaver-ai/mesh-contracts",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-control-api": {
+      "name": "@pk-nerdsaver-ai/mesh-control-api",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-auth": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-cli": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-orchestrator": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-eventbus": {
+      "name": "@pk-nerdsaver-ai/mesh-eventbus",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-eventbus-nostr": {
+      "name": "@pk-nerdsaver-ai/mesh-eventbus-nostr",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-eventbus": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-evidence": {
+      "name": "@pk-nerdsaver-ai/mesh-evidence",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-receipts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-executor": {
+      "name": "@pk-nerdsaver-ai/mesh-executor",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-node": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-integration": {
+      "name": "@pk-nerdsaver-ai/mesh-integration",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-model-broker": {
+      "name": "@pk-nerdsaver-ai/mesh-model-broker",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-node": {
+      "name": "@pk-nerdsaver-ai/mesh-node",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-auth": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-orchestrator": {
+      "name": "@pk-nerdsaver-ai/mesh-orchestrator",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-auth": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-receipts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-policy": {
+      "name": "@pk-nerdsaver-ai/mesh-policy",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-receipts": {
+      "name": "@pk-nerdsaver-ai/mesh-receipts",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-scheduler": {
+      "name": "@pk-nerdsaver-ai/mesh-scheduler",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-auth": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-orchestrator": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-worker-sdk": {
+      "name": "@pk-nerdsaver-ai/mesh-worker-sdk",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+  },
+  "catalog": {
+    "@types/bun": "1.4.0",
+  },
+  "packages": {
+    "@biomejs/biome": ["@biomejs/biome@2.5.9", "", { "optionalDependencies": { "@biomejs/cli-darwin-arm64": "2.5.9", "@biomejs/cli-darwin-x64": "2.5.9", "@biomejs/cli-linux-arm64": "2.5.9", "@biomejs/cli-linux-arm64-musl": "2.5.9", "@biomejs/cli-linux-x64": "2.5.9", "@biomejs/cli-linux-x64-musl": "2.5.9", "@biomejs/cli-win32-arm64": "2.5.9", "@biomejs/cli-win32-x64": "2.5.9" }, "bin": { "biome": "bin/biome" } }, "sha512-KkgCvdHB4IhtpHpF564plA9jo6fDOwWGQ/3jvreLzgOtRLEDoPqr7QO9qejNA8jKwDsSkAKr77hqBHnyUbIw4g=="],
+
+    "@biomejs/cli-darwin-arm64": ["@biomejs/cli-darwin-arm64@2.5.9", "", { "os": "darwin", "cpu": "arm64" }, "sha512-am22pX2aBqznqq1eMyIj/bZ++riF3Lk6ct7cbv+gQK0csFhr+d8O0RkOi2FF2qSgFgANbqNkIZ0/PxlnW2pLFg=="],
+
+    "@biomejs/cli-darwin-x64": ["@biomejs/cli-darwin-x64@2.5.9", "", { "os": "darwin", "cpu": "x64" }, "sha512-l44KWDHLDvEnD0N/XcrVs7VXb3A18xL7QS3WB0eL93wbmk529ffIG55vleGCqaunpRUjLrdnjK05Qki1dsjylg=="],
+
+    "@biomejs/cli-linux-arm64": ["@biomejs/cli-linux-arm64@2.5.9", "", { "os": "linux", "cpu": "arm64" }, "sha512-ICaK+IYaVZvKbBxX2rwrPT0DdUDMnE9Vm3nQGe+mltQPmUg19pONzkPWGdY4FCsoreDETWDynvdt4ysCbF5gNQ=="],
+
+    "@biomejs/cli-linux-arm64-musl": ["@biomejs/cli-linux-arm64-musl@2.5.9", "", { "os": "linux", "cpu": "arm64" }, "sha512-7ImVPwBLCtkmpR5esd8RHhTqW94f0JLJQum6AneYcy94jRm18TaPPm7slaigGzFhfgt3QiD1Vj52LKmBAnKizA=="],
+
+    "@biomejs/cli-linux-x64": ["@biomejs/cli-linux-x64@2.5.9", "", { "os": "linux", "cpu": "x64" }, "sha512-z22Q/zFYSvbIJfW1CbfZPu4X8PddS6Qd2ORbc6h+aT6EcwAxUF3m6fA4HjNvA3TU4X0dTJRwNPB165ES3PJXzg=="],
+
+    "@biomejs/cli-linux-x64-musl": ["@biomejs/cli-linux-x64-musl@2.5.9", "", { "os": "linux", "cpu": "x64" }, "sha512-RXGaD0o1/pTTguYw1aeDJh9ad6Lfrui0fI7mBderTyGr7WuUJkBIttgLkR3XJyoxOkkgfBDspaUT8wXArTqLZw=="],
+
+    "@biomejs/cli-win32-arm64": ["@biomejs/cli-win32-arm64@2.5.9", "", { "os": "win32", "cpu": "arm64" }, "sha512-nHK+/HHC+D0ogAHUxomgoSTdjImb6fmNNVTKmf0tyu4eDL1DqPKIHc+i+UL8+b0RnAu8224qo8F2tCVnaT0A3w=="],
+
+    "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.9", "", { "os": "win32", "cpu": "x64" }, "sha512-Yiq0H56LjXSSw/hd9YkXgSLQfzyDJzbzU2TezozxyNw+uKWAqOtqGVvBfzKRRDiaFF5avGAhHdWKx7LtDOShUw=="],
+
+    "@pk-nerdsaver-ai/mesh-artifacts": ["@pk-nerdsaver-ai/mesh-artifacts@workspace:packages/mesh-artifacts"],
+
+    "@pk-nerdsaver-ai/mesh-artifacts-blossom": ["@pk-nerdsaver-ai/mesh-artifacts-blossom@workspace:packages/mesh-artifacts-blossom"],
+
+    "@pk-nerdsaver-ai/mesh-auth": ["@pk-nerdsaver-ai/mesh-auth@workspace:packages/mesh-auth"],
+
+    "@pk-nerdsaver-ai/mesh-checkpoint": ["@pk-nerdsaver-ai/mesh-checkpoint@workspace:packages/mesh-checkpoint"],
+
+    "@pk-nerdsaver-ai/mesh-cli": ["@pk-nerdsaver-ai/mesh-cli@workspace:packages/mesh-cli"],
+
+    "@pk-nerdsaver-ai/mesh-contracts": ["@pk-nerdsaver-ai/mesh-contracts@workspace:packages/mesh-contracts"],
+
+    "@pk-nerdsaver-ai/mesh-control-api": ["@pk-nerdsaver-ai/mesh-control-api@workspace:packages/mesh-control-api"],
+
+    "@pk-nerdsaver-ai/mesh-eventbus": ["@pk-nerdsaver-ai/mesh-eventbus@workspace:packages/mesh-eventbus"],
+
+    "@pk-nerdsaver-ai/mesh-eventbus-nostr": ["@pk-nerdsaver-ai/mesh-eventbus-nostr@workspace:packages/mesh-eventbus-nostr"],
+
+    "@pk-nerdsaver-ai/mesh-evidence": ["@pk-nerdsaver-ai/mesh-evidence@workspace:packages/mesh-evidence"],
+
+    "@pk-nerdsaver-ai/mesh-executor": ["@pk-nerdsaver-ai/mesh-executor@workspace:packages/mesh-executor"],
+
+    "@pk-nerdsaver-ai/mesh-integration": ["@pk-nerdsaver-ai/mesh-integration@workspace:packages/mesh-integration"],
+
+    "@pk-nerdsaver-ai/mesh-model-broker": ["@pk-nerdsaver-ai/mesh-model-broker@workspace:packages/mesh-model-broker"],
+
+    "@pk-nerdsaver-ai/mesh-node": ["@pk-nerdsaver-ai/mesh-node@workspace:packages/mesh-node"],
+
+    "@pk-nerdsaver-ai/mesh-orchestrator": ["@pk-nerdsaver-ai/mesh-orchestrator@workspace:packages/mesh-orchestrator"],
+
+    "@pk-nerdsaver-ai/mesh-policy": ["@pk-nerdsaver-ai/mesh-policy@workspace:packages/mesh-policy"],
+
+    "@pk-nerdsaver-ai/mesh-receipts": ["@pk-nerdsaver-ai/mesh-receipts@workspace:packages/mesh-receipts"],
+
+    "@pk-nerdsaver-ai/mesh-scheduler": ["@pk-nerdsaver-ai/mesh-scheduler@workspace:packages/mesh-scheduler"],
+
+    "@pk-nerdsaver-ai/mesh-worker-sdk": ["@pk-nerdsaver-ai/mesh-worker-sdk@workspace:packages/mesh-worker-sdk"],
+
+    "@types/bun": ["@types/bun@1.4.0", "", { "dependencies": { "bun-types": "1.4.0" } }, "sha512-K+lZULY23vRgK/CfTjFIV+tyifaNdSMlPh9j+6mQ/cLfpOznLyAuzgV/JQysyECpkBQLVMSyvjlr2fBUSA9wFQ=="],
+
+    "@types/node": ["@types/node@26.6.4", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-ldVPDCzj7fsaGZrLB0NuHuTvJcsNasysBAqMolr/cgxrLd1xbqxIr3XJiPnHHJUCxj5sNF1vnRj9aWnrVh5Jcg=="],
+
+    "@typescript/native-preview": ["@typescript/native-preview@7.0.0-dev.20260609.1", "", { "optionalDependencies": { "@typescript/native-preview-darwin-arm64": "7.0.0-dev.20260609.1", "@typescript/native-preview-darwin-x64": "7.0.0-dev.20260609.1", "@typescript/native-preview-linux-arm": "7.0.0-dev.20260609.1", "@typescript/native-preview-linux-arm64": "7.0.0-dev.20260609.1", "@typescript/native-preview-linux-x64": "7.0.0-dev.20260609.1", "@typescript/native-preview-win32-arm64": "7.0.0-dev.20260609.1", "@typescript/native-preview-win32-x64": "7.0.0-dev.20260609.1" }, "bin": { "tsgo": "bin/tsgo.js" } }, "sha512-1HOuH/u/451O3hx4Z9fesNqarpeit6UfkgwK96sCVWi5p69F0N3v+6bI969lLIjF7K9dbYQNiWUaZ6Wik87iKg=="],
+
+    "@typescript/native-preview-darwin-arm64": ["@typescript/native-preview-darwin-arm64@7.0.0-dev.20260609.1", "", { "os": "darwin", "cpu": "arm64" }, "sha512-Yf/zHEadP/yUiWUdM/mZVfEVFJuGMf6nhRSFif0vp+FwtfGU4jmlpNF7BTJJdOHrrcWkwEJKzAoMCtEtyxhuyQ=="],
+
+    "@typescript/native-preview-darwin-x64": ["@typescript/native-preview-darwin-x64@7.0.0-dev.20260609.1", "", { "os": "darwin", "cpu": "x64" }, "sha512-z4dYWI57CPHs0wV/FWFth8fWmqYH7iOm7THOfZ5Fv0jo/SWK6kE1kEUIqIAExqo7ueRNqSrCw0I8U1J4TJszAw=="],
+
+    "@typescript/native-preview-linux-arm": ["@typescript/native-preview-linux-arm@7.0.0-dev.20260609.1", "", { "os": "linux", "cpu": "arm" }, "sha512-mEtN8BbAgVtBu/5MVomYquXNvgok2C0KG6V0D4SV1jfBJNtlcqbp0WuIqT0bnM9DA4TgzcHvnFMpwGSK/dqI5A=="],
+
+    "@typescript/native-preview-linux-arm64": ["@typescript/native-preview-linux-arm64@7.0.0-dev.20260609.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-OxNVWH9IhrMAzNlDyDit1dPO64GFIDPOUKoruIkJ9A1ZEONfIHXG5f+V3si9jtuNmuomiz9FjpbzOqLsgaxt+w=="],
+
+    "@typescript/native-preview-linux-x64": ["@typescript/native-preview-linux-x64@7.0.0-dev.20260609.1", "", { "os": "linux", "cpu": "x64" }, "sha512-KO8WO1gBIC09T3255RlTY42TGu8en5mEkLPQu2wkMn+dX2T8KYL64zXrCeLeUWa0NvmVdJUeyWu3pFOn3zKemw=="],
+
+    "@typescript/native-preview-win32-arm64": ["@typescript/native-preview-win32-arm64@7.0.0-dev.20260609.1", "", { "os": "win32", "cpu": "arm64" }, "sha512-+8q19LWjnMKK6SF3PLeMEalbfWDYWHs0AU8kSFCBCke/RLoDG4FjQzVtLgUo+KWhsmZMosiEyqEnZmSlED2tIQ=="],
+
+    "@typescript/native-preview-win32-x64": ["@typescript/native-preview-win32-x64@7.0.0-dev.20260609.1", "", { "os": "win32", "cpu": "x64" }, "sha512-qNPcss+6yRoNFfFIKQbPwJWYxDfOZwyL8JBJh4J+yMLOad/+/AOjsO4EtZsIpv5PMCjpnD75coBoDkw+5NkItw=="],
+
+    "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
+
+    "undici-types": ["undici-types@8.9.0", "", {}, "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="],
+  }
+}

@@ -5,7 +5,7 @@
 You establish the stable, transport-neutral contract and authorization surface
 that every later LocalMesh lane consumes. Read in full:
 
-- `.prd/localmesh-orchestration.md`
+- `extensions/localmesh/docs/prd/localmesh-orchestration.md`
 - `../ompk-sovereign-agent-mesh-packet/02-contracts/CONTRACTS_GUIDE.md`
 - `../ompk-sovereign-agent-mesh-packet/02-contracts/schemas/`
 - `packages/coding-agent/src/task/assignment-contract.ts`
@@ -17,8 +17,8 @@ that every later LocalMesh lane consumes. Read in full:
 
 You may edit only new files under:
 
-- `packages/mesh-contracts/**`
-- `packages/mesh-policy/**`
+- `extensions/localmesh/packages/mesh-contracts/**`
+- `extensions/localmesh/packages/mesh-policy/**`
 
 You may not edit existing OMPK task, CoLab, Hub, relay, or remote-workspace
 files. Do not add a runtime dependency on Nostr, Blossom, Iroh, Docker, or a

@@ -8,7 +8,7 @@ These boundaries keep the fork's built-in collaboration feature, extension-owned
 | **2. Product identity** | Fork-owned user-facing outbound identifiers use `oh-my-pk` through `APP_NAME` from `@pk-nerdsaver-ai/pi-utils`, not `Oh-My-Pi` or `omp.sh`. Upstream issue and pull-request links remain as factual attribution. |
 | **3. Hosting domains** | `oh-my-pk.pkking.computer` hosts the CLI/install landing and the `/collab/` browser client; `collab.pkking.computer` hosts the collab relay, share storage, and hub APIs; `pkking.computer` is the apex landing. |
 | **4. Surface capability** | `/collab` provides ephemeral end-to-end encrypted session sharing for browser and TUI guests. `/remote` provides the pk-speak extension's persistent paired operator gateway for voice, routing, sessions, workspace access, and approvals. |
-| **5. LocalMesh** | `packages/mesh-*` and `crates/mesh-iroh` are a private, standalone control plane (signed task and assignment contracts, scheduler, durable node runtime). It does not alias or replace CoLab, Hub/IRC, pk-speak `/remote`, SSH or remote-workspace commands, credentials, endpoints or state directories, and `coding-agent` does not import it until its bridge lane lands. |
+| **5. LocalMesh** | LocalMesh is a personal, opt-in ompk extension that lives entirely under `extensions/localmesh/`, with its own Bun workspace, lockfile, Cargo workspace and CI. Core (`packages/**`, the root workspace and root CI) never imports or builds it, and it reaches OMPK only by being loaded as an extension. It does not alias or replace CoLab, Hub/IRC, pk-speak `/remote`, SSH or remote-workspace commands, credentials, endpoints or state directories. |
 
 ## Command ownership
 

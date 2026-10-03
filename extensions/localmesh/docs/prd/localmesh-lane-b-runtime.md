@@ -4,8 +4,8 @@
 
 Build the authoritative local mesh control plane after Lane A is stable. Read:
 
-- `.prd/localmesh-orchestration.md`
-- `.prd/localmesh-lane-a-contracts.md`
+- `extensions/localmesh/docs/prd/localmesh-orchestration.md`
+- `extensions/localmesh/docs/prd/localmesh-lane-a-contracts.md`
 - `packages/remote-workspace/src/db/job-store.ts`
 - `packages/remote-workspace/src/job/state-machine.ts`
 - `packages/ompk-linear-agent/src/types.ts`
@@ -14,8 +14,8 @@ Build the authoritative local mesh control plane after Lane A is stable. Read:
 
 ## 2. Owned files
 
-- `packages/mesh-orchestrator/**` (new)
-- `packages/mesh-evidence/**` (new)
+- `extensions/localmesh/packages/mesh-orchestrator/**` (new)
+- `extensions/localmesh/packages/mesh-evidence/**` (new)
 
 No edits to Lane A, C, D, or E files. Do not make `remote-workspace` the mesh
 authority.

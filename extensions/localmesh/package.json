@@ -1,0 +1,29 @@
+{
+	"name": "@pk-nerdsaver-ai/localmesh",
+	"version": "0.1.0",
+	"description": "LocalMesh: a personal, opt-in control plane for oh-my-pk, kept out of the core workspace",
+	"private": true,
+	"type": "module",
+	"workspaces": {
+		"packages": [
+			"packages/*"
+		],
+		"catalog": {
+			"@types/bun": "1.4.0"
+		}
+	},
+	"scripts": {
+		"check": "bun run --workspaces --if-present check",
+		"test": "bun run --workspaces --if-present test",
+		"check:rs": "cargo clippy --all-targets -- -D warnings && cargo fmt --check",
+		"test:rs": "cargo test"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.9",
+		"@types/bun": "1.4.0",
+		"@typescript/native-preview": "7.0.0-dev.20260609.1"
+	},
+	"engines": {
+		"bun": ">=1.3.14"
+	}
+}

@@ -5,8 +5,8 @@
 Build transport/artifact/checkpoint adapters against Lane A contracts without
 coupling mesh authority to a relay. Read:
 
-- `.prd/localmesh-orchestration.md`
-- `.prd/localmesh-lane-a-contracts.md`
+- `extensions/localmesh/docs/prd/localmesh-orchestration.md`
+- `extensions/localmesh/docs/prd/localmesh-lane-a-contracts.md`
 - `packages/coding-agent/src/utils/event-bus.ts`
 - `packages/coding-agent/src/session/blob-store.ts`
 - `packages/coding-agent/src/workspace/{ethereal,secrets}.ts`
@@ -16,13 +16,13 @@ coupling mesh authority to a relay. Read:
 
 ## 2. Owned files
 
-- `packages/mesh-eventbus/**` (new)
-- `packages/mesh-eventbus-nostr/**` (new)
-- `packages/mesh-artifacts/**` (new)
-- `packages/mesh-artifacts-blossom/**` (new)
-- `packages/mesh-checkpoint/**` (new)
-- `crates/mesh-iroh/**` (new)
-- `infra/localmesh/**` (new)
+- `extensions/localmesh/packages/mesh-eventbus/**` (new)
+- `extensions/localmesh/packages/mesh-eventbus-nostr/**` (new)
+- `extensions/localmesh/packages/mesh-artifacts/**` (new)
+- `extensions/localmesh/packages/mesh-artifacts-blossom/**` (new)
+- `extensions/localmesh/packages/mesh-checkpoint/**` (new)
+- `extensions/localmesh/crates/mesh-iroh/**` (new)
+- `extensions/localmesh/infra/**` (new)
 
 Do not edit `packages/wire/**`, `packages/collab-relay/**`,
 `packages/coding-agent/src/collab/**`, or `src/irc/**`.

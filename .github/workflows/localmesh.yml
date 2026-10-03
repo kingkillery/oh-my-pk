@@ -1,0 +1,54 @@
+name: LocalMesh
+
+# LocalMesh is a personal, opt-in ompk extension with its own Bun and Cargo
+# workspaces under extensions/localmesh/. It is never part of the core build,
+# so it gets its own workflow that runs only when its files change.
+on:
+   push:
+      branches: [main]
+      paths:
+         - extensions/localmesh/**
+         - .github/workflows/localmesh.yml
+   pull_request:
+      branches: [main]
+      paths:
+         - extensions/localmesh/**
+         - .github/workflows/localmesh.yml
+   workflow_dispatch:
+
+concurrency:
+   group: "${{ github.workflow }}-${{ github.ref }}"
+   cancel-in-progress: true
+
+permissions:
+   contents: read
+
+defaults:
+   run:
+      working-directory: extensions/localmesh
+
+jobs:
+   check:
+      name: LocalMesh check and test
+      runs-on: ubuntu-22.04
+      steps:
+         - uses: actions/checkout@v4
+         - name: Install bun when absent
+           run: |
+              if ! command -v bun >/dev/null 2>&1; then
+                export BUN_INSTALL="${HOME}/.bun"
+                curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.14"
+                echo "${BUN_INSTALL}/bin" >> "$GITHUB_PATH"
+              fi
+         - name: Install LocalMesh dependencies
+           run: bun install --frozen-lockfile
+         - name: Lint and type check
+           run: bun run check
+         - name: Test
+           run: bun run test
+         - uses: ./.github/actions/ensure-rust-toolchain
+           with:
+              toolchain: nightly-2026-04-29
+              components: clippy,rustfmt
+         - name: Rust check and test
+           run: bun run check:rs && bun run test:rs

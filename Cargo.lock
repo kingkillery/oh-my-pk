@@ -2330,10 +2330,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mesh-iroh"
-version = "16.4.28"
-
-[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

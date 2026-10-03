@@ -54,6 +54,12 @@ impl std::error::Error for IrohTransportError {}
 pub trait IrohTransferClient {
 	fn capabilities(&self) -> &[IrohTransportCapability];
 
+	/// Transfer one content-addressed blob to the peer named in `request`.
+	///
+	/// # Errors
+	///
+	/// Returns [`IrohTransportError::Transport`] when the host runtime cannot
+	/// complete the transfer.
 	fn send_blob(
 		&self,
 		request: BlobTransferRequest,
@@ -66,6 +72,12 @@ pub const REQUIRED_BLOB_TRANSFER_CAPABILITIES: &[IrohTransportCapability] = &[
 	IrohTransportCapability::BlobTransfer,
 ];
 
+/// Check that a transport advertises every capability blob transfer needs.
+///
+/// # Errors
+///
+/// Returns [`IrohTransportError::MissingCapabilities`] listing each required
+/// capability that `capabilities` lacks; the check fails closed.
 pub fn require_blob_transfer_capabilities(
 	capabilities: &[IrohTransportCapability],
 ) -> Result<(), IrohTransportError> {

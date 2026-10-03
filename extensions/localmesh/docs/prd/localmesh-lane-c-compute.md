@@ -4,8 +4,8 @@
 
 Build the node-side and placement layer against Lane A contracts. Read:
 
-- `.prd/localmesh-orchestration.md`
-- `.prd/localmesh-lane-a-contracts.md`
+- `extensions/localmesh/docs/prd/localmesh-orchestration.md`
+- `extensions/localmesh/docs/prd/localmesh-lane-a-contracts.md`
 - `packages/remote-workspace/src/backend/types.ts`
 - `packages/remote-workspace/src/backend/msi-docker.ts`
 - `packages/coding-agent/src/task/isolation-runner.ts`
@@ -15,10 +15,10 @@ Build the node-side and placement layer against Lane A contracts. Read:
 
 ## 2. Owned files
 
-- `packages/mesh-node/**` (new)
-- `packages/mesh-scheduler/**` (new)
-- `packages/mesh-worker-sdk/**` (new)
-- `packages/mesh-model-broker/**` (new)
+- `extensions/localmesh/packages/mesh-node/**` (new)
+- `extensions/localmesh/packages/mesh-scheduler/**` (new)
+- `extensions/localmesh/packages/mesh-worker-sdk/**` (new)
+- `extensions/localmesh/packages/mesh-model-broker/**` (new)
 
 Do not alter OMPK task execution or remote-workspace production files in this
 lane. A later integration lane owns additive bridges.
