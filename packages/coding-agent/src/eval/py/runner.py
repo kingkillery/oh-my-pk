@@ -1088,14 +1088,18 @@ async def _handle_request_async(req: dict) -> None:
 
 
 def _subprocess_evidence_text(value: Any) -> str:
-    """Normalize subprocess stream evidence to UTF-8 text for the NDJSON frame."""
-    if value is None:
+    """Describe captured streams without implicitly publishing their contents.
+
+    Recovery is explicit: catch the subprocess exception in the cell, redact
+    its stdout/stderr as appropriate for the data, then print the safe result.
+    Do not mutate the exception or attempt general-purpose secret detection.
+    """
+    if value is None or value == b"" or value == "":
         return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    if isinstance(value, str):
-        return value
-    return str(value)
+    return (
+        "[captured output withheld; catch the subprocess exception and "
+        "redact stdout/stderr before printing to recover output]"
+    )
 
 
 def _subprocess_evidence_command(value: Any) -> str | list[str]:
