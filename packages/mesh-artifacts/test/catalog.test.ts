@@ -6,17 +6,20 @@ import {
 	ArtifactContentMissingError,
 	ArtifactContentSizeMismatchError,
 	ArtifactManifestConflictError,
+	type ContentAddressedStore,
 	ContentHashMismatchError,
 	createArtifactManifest,
 	InMemoryArtifactCatalog,
 	InMemoryContentAddressedStore,
 	sha256Bytes,
-	type ContentAddressedStore,
 } from "../src";
 
 const encoder = new TextEncoder();
 
-function manifestFor(content: Uint8Array, options: { readonly artifactId: string; readonly taskId?: string; readonly name?: string }): ArtifactManifestV1 {
+function manifestFor(
+	content: Uint8Array,
+	options: { readonly artifactId: string; readonly taskId?: string; readonly name?: string },
+): ArtifactManifestV1 {
 	const base = {
 		artifactId: options.artifactId,
 		createdAt: "2026-08-31T00:00:00Z",
@@ -60,9 +63,9 @@ describe("InMemoryArtifactCatalog", () => {
 		const content = encoder.encode("missing content");
 		const catalog = new InMemoryArtifactCatalog(new InMemoryContentAddressedStore());
 
-		await expect(catalog.register(manifestFor(content, { artifactId: "art_missing-content-001" }))).rejects.toBeInstanceOf(
-			ArtifactContentMissingError,
-		);
+		await expect(
+			catalog.register(manifestFor(content, { artifactId: "art_missing-content-001" })),
+		).rejects.toBeInstanceOf(ArtifactContentMissingError);
 	});
 
 	test("rejects CAS bytes whose declared hash or size disagrees with the manifest", async () => {
@@ -70,21 +73,27 @@ describe("InMemoryArtifactCatalog", () => {
 		const wrongSameSize = encoder.encode("mismatcH content");
 		const hashMismatchCatalog = new InMemoryArtifactCatalog(new MisaddressedContentStore(wrongSameSize));
 
-		await expect(hashMismatchCatalog.register(manifestFor(expected, { artifactId: "art_hash-mismatch-001" }))).rejects.toBeInstanceOf(
-			ContentHashMismatchError,
-		);
+		await expect(
+			hashMismatchCatalog.register(manifestFor(expected, { artifactId: "art_hash-mismatch-001" })),
+		).rejects.toBeInstanceOf(ContentHashMismatchError);
 
 		const store = new InMemoryContentAddressedStore();
 		await store.put(expected);
 		const sizeMismatchManifest = manifestFor(expected, { artifactId: "art_size-mismatch-001" });
-		const { schemaVersion: _schemaVersion, manifestDigest: _manifestDigest, ...sizeMismatchInput } = {
+		const {
+			schemaVersion: _schemaVersion,
+			manifestDigest: _manifestDigest,
+			...sizeMismatchInput
+		} = {
 			...sizeMismatchManifest,
 			sizeBytes: sizeMismatchManifest.sizeBytes + 1,
 		};
 		const resignedSizeMismatch = createArtifactManifest(sizeMismatchInput);
 		const sizeMismatchCatalog = new InMemoryArtifactCatalog(store);
 
-		await expect(sizeMismatchCatalog.register(resignedSizeMismatch)).rejects.toBeInstanceOf(ArtifactContentSizeMismatchError);
+		await expect(sizeMismatchCatalog.register(resignedSizeMismatch)).rejects.toBeInstanceOf(
+			ArtifactContentSizeMismatchError,
+		);
 	});
 
 	test("returns the same immutable record for an identical retry and rejects an ID conflict", async () => {

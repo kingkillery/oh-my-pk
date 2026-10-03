@@ -1,5 +1,10 @@
-import type { AssignmentLeaseV1, ExecutionReceiptV1, JsonRecord, TaskContractV1 } from "@pk-nerdsaver-ai/mesh-contracts";
 import type { SignedMeshEnvelopeV1 } from "@pk-nerdsaver-ai/mesh-auth";
+import type {
+	AssignmentLeaseV1,
+	ExecutionReceiptV1,
+	JsonRecord,
+	TaskContractV1,
+} from "@pk-nerdsaver-ai/mesh-contracts";
 import type { ReceiptSignatureVerifier, SignedExecutionReceiptV1 } from "@pk-nerdsaver-ai/mesh-receipts";
 
 export type MeshTaskState = "queued" | "leased" | "completed" | "failed" | "cancelled" | "lost";
@@ -167,7 +172,9 @@ export interface ReceiptRequest {
 
 /** Resolves only from an authoritative lease; untrusted receipt metadata never selects trust. */
 export interface ReceiptVerifierResolver {
-	resolve(assignment: AssignmentLeaseV1): ReceiptSignatureVerifier | undefined | Promise<ReceiptSignatureVerifier | undefined>;
+	resolve(
+		assignment: AssignmentLeaseV1,
+	): ReceiptSignatureVerifier | undefined | Promise<ReceiptSignatureVerifier | undefined>;
 }
 
 /** Durable authority time for scheduler leases, assignment commits, and receipt admission. */

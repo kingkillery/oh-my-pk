@@ -23,7 +23,10 @@ function result(sha256: string, sizeBytes: number, inserted: boolean): PutBlobRe
 	return Object.freeze({ sha256, sizeBytes, inserted });
 }
 
-function verifiedContent(content: Uint8Array, expectedSha256?: string): { readonly content: Uint8Array; readonly sha256: string } {
+function verifiedContent(
+	content: Uint8Array,
+	expectedSha256?: string,
+): { readonly content: Uint8Array; readonly sha256: string } {
 	const immutableCopy = new Uint8Array(content);
 	const sha256 = sha256Bytes(immutableCopy);
 	if (expectedSha256 !== undefined) {

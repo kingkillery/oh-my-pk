@@ -1,28 +1,28 @@
 import {
-	MESH_SCHEMA,
+	type MeshEnvelopeSigner,
+	type MeshEnvelopeVerifier,
+	parseSignedMeshEnvelope,
+	type SignedMeshEnvelopeV1,
+	signAssignmentLease,
+	verifySignedAssignmentLease,
+} from "@pk-nerdsaver-ai/mesh-auth";
+import {
+	type AssignmentLeaseV1,
 	isMeshId,
+	type JsonRecord,
+	MESH_SCHEMA,
 	parseAssignmentLease,
 	parseTaskContract,
 	sha256CanonicalJson,
-	type AssignmentLeaseV1,
-	type JsonRecord,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
-import {
-	parseSignedMeshEnvelope,
-	signAssignmentLease,
-	verifySignedAssignmentLease,
-	type MeshEnvelopeSigner,
-	type MeshEnvelopeVerifier,
-	type SignedMeshEnvelopeV1,
-} from "@pk-nerdsaver-ai/mesh-auth";
 import {
 	IdempotencyConflictError,
 	MeshOrchestrator,
 	type RuntimeAssignmentRecord,
 } from "@pk-nerdsaver-ai/mesh-orchestrator";
 
-import { placeTask, type PlacementDecision, type PlacementNode, type PlacementPolicy } from "./placement";
+import { type PlacementDecision, type PlacementNode, type PlacementPolicy, placeTask } from "./placement";
 
 export type SchedulerIssuanceErrorCode =
 	| "assignment_id_invalid"
@@ -146,7 +146,10 @@ function assertRequest(request: SchedulerIssuanceRequest): void {
 	if (request.schedulerLeaseDurationMs <= request.assignmentLeaseDurationMs) {
 		throw new SchedulerIssuanceError("lease_policy_invalid");
 	}
-	if (!positiveInteger(request.renewAfterSeconds) || request.renewAfterSeconds * 1_000 >= request.assignmentLeaseDurationMs) {
+	if (
+		!positiveInteger(request.renewAfterSeconds) ||
+		request.renewAfterSeconds * 1_000 >= request.assignmentLeaseDurationMs
+	) {
 		throw new SchedulerIssuanceError("lease_policy_invalid");
 	}
 }
@@ -289,7 +292,12 @@ export class MeshSchedulerIssuanceCoordinator {
 		// when it cannot itself be selected for this task.
 		await this.#observeNodeCapacities(request.nodes);
 		const placementNow = this.#now();
-		const initialDecision = placeTask({ task: taskRecord.task, nodes: request.nodes, nowEpochMs: placementNow, policy: request.policy });
+		const initialDecision = placeTask({
+			task: taskRecord.task,
+			nodes: request.nodes,
+			nowEpochMs: placementNow,
+			policy: request.policy,
+		});
 		const initialNode = selectedNode(initialDecision, request.nodes);
 		const fencingToken = nextFencingToken(taskRecord.latestFencingToken);
 		const initialIssuedAt = iso(placementNow);
@@ -324,7 +332,12 @@ export class MeshSchedulerIssuanceCoordinator {
 		// Presence is advisory and may age while authority is acquired. Bind a ticket
 		// only to the currently safe placement, never to an earlier observation.
 		const assignmentNow = this.#now();
-		const decision = placeTask({ task: taskRecord.task, nodes: request.nodes, nowEpochMs: assignmentNow, policy: request.policy });
+		const decision = placeTask({
+			task: taskRecord.task,
+			nodes: request.nodes,
+			nowEpochMs: assignmentNow,
+			policy: request.policy,
+		});
 		const node = selectedNode(decision, request.nodes);
 		const issuedAt = iso(assignmentNow);
 		const leaseExpiresAt = iso(assignmentNow + request.assignmentLeaseDurationMs);
@@ -350,7 +363,12 @@ export class MeshSchedulerIssuanceCoordinator {
 			// expired presence never becomes a durable ticket for a rejecting node.
 			const commitNow = this.#now();
 			await this.#observeNodeCapacities(request.nodes);
-			const commitDecision = placeTask({ task: taskRecord.task, nodes: request.nodes, nowEpochMs: commitNow, policy: request.policy });
+			const commitDecision = placeTask({
+				task: taskRecord.task,
+				nodes: request.nodes,
+				nowEpochMs: commitNow,
+				policy: request.policy,
+			});
 			const commitNode = selectedNode(commitDecision, request.nodes);
 			if (commitNode.nodeId !== node.nodeId || commitNode.actorPubkey !== node.actorPubkey) {
 				throw new SchedulerIssuanceError("no_eligible_node");
@@ -406,7 +424,8 @@ export class MeshSchedulerIssuanceCoordinator {
 	async #recover(assignmentId: string, expectedTaskId?: string): Promise<SchedulerIssuedAssignment> {
 		const first = await this.#runtime.recoverAssignmentDelivery(assignmentId, this.#now());
 		if (first === undefined) {
-			if ((await this.#runtime.getAssignment(assignmentId)) === undefined) throw new SchedulerIssuanceError("recovery_assignment_missing");
+			if ((await this.#runtime.getAssignment(assignmentId)) === undefined)
+				throw new SchedulerIssuanceError("recovery_assignment_missing");
 			throw new SchedulerIssuanceError("recovery_delivery_missing");
 		}
 		if (
@@ -445,7 +464,8 @@ export class MeshSchedulerIssuanceCoordinator {
 				task.digest !== recovered.record.lease.taskDigest ||
 				task.execution.profileId !== recovered.record.lease.executionProfileId ||
 				sha256CanonicalJson(task.permissions) !== recovered.record.lease.permissionsDigest ||
-				recovered.idempotencyKey !== `assignment.delivery:${recovered.record.lease.assignmentId}:${recovered.record.lease.fencingToken}`
+				recovered.idempotencyKey !==
+					`assignment.delivery:${recovered.record.lease.assignmentId}:${recovered.record.lease.fencingToken}`
 			) {
 				throw new Error("delivery binding mismatch");
 			}
@@ -462,8 +482,18 @@ export class MeshSchedulerIssuanceCoordinator {
 	}
 
 	#sameRecoveredDelivery(
-		left: { readonly record: RuntimeAssignmentRecord; readonly task: TaskContractV1; readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>; readonly idempotencyKey: string },
-		right: { readonly record: RuntimeAssignmentRecord; readonly task: TaskContractV1; readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>; readonly idempotencyKey: string },
+		left: {
+			readonly record: RuntimeAssignmentRecord;
+			readonly task: TaskContractV1;
+			readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+			readonly idempotencyKey: string;
+		},
+		right: {
+			readonly record: RuntimeAssignmentRecord;
+			readonly task: TaskContractV1;
+			readonly signedAssignment: SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+			readonly idempotencyKey: string;
+		},
 	): boolean {
 		return (
 			sha256CanonicalJson(left.record.lease) === sha256CanonicalJson(right.record.lease) &&
@@ -478,7 +508,9 @@ export class MeshSchedulerIssuanceCoordinator {
 		if (delivery === undefined) throw new SchedulerIssuanceError("recovery_delivery_missing");
 		try {
 			const task = parseTaskContract(delivery.task);
-			const signedAssignment = parseSignedMeshEnvelope(delivery.signedAssignment) as SignedMeshEnvelopeV1<AssignmentLeaseV1>;
+			const signedAssignment = parseSignedMeshEnvelope(
+				delivery.signedAssignment,
+			) as SignedMeshEnvelopeV1<AssignmentLeaseV1>;
 			const signedLease = parseAssignmentLease(signedAssignment.payload);
 			if (
 				sha256CanonicalJson(signedLease) !== sha256CanonicalJson(record.lease) ||
@@ -490,7 +522,13 @@ export class MeshSchedulerIssuanceCoordinator {
 			) {
 				throw new Error("delivery binding mismatch");
 			}
-			return Object.freeze({ record, task, signedAssignment, deliveryIdempotencyKey: delivery.idempotencyKey, replayed });
+			return Object.freeze({
+				record,
+				task,
+				signedAssignment,
+				deliveryIdempotencyKey: delivery.idempotencyKey,
+				replayed,
+			});
 		} catch {
 			throw new SchedulerIssuanceError("recovery_delivery_invalid");
 		}

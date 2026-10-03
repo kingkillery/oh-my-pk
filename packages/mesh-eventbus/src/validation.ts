@@ -1,10 +1,10 @@
 import {
-	parseEventEnvelope,
-	sha256CanonicalJson,
-	toImmutableJson,
 	type EventEnvelopeV1,
 	type JsonRecord,
 	type JsonValue,
+	parseEventEnvelope,
+	sha256CanonicalJson,
+	toImmutableJson,
 } from "@pk-nerdsaver-ai/mesh-contracts";
 
 import type { EventProvenance, EventVerificationState, MeshEventTransport } from "./types";

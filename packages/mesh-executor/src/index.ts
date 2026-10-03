@@ -1,13 +1,17 @@
 import {
+	type AssignmentLeaseV1,
 	canonicalizeJson,
+	type ExecutorInvocationSpec,
 	parseAssignmentLease,
 	parseTaskContract,
 	sha256CanonicalJson,
-	type AssignmentLeaseV1,
-	type ExecutorInvocationSpec,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
-import type { MeshExecutionRunResult, MeshNodeExecutionContext, MeshNodeExecutionPort } from "@pk-nerdsaver-ai/mesh-node";
+import type {
+	MeshExecutionRunResult,
+	MeshNodeExecutionContext,
+	MeshNodeExecutionPort,
+} from "@pk-nerdsaver-ai/mesh-node";
 
 export const EXECUTOR_MCP_EXECUTION_PROFILE = "executor-mcp-v1";
 
@@ -213,11 +217,18 @@ function normalizeExecutorExecutionUrl(origin: string): string {
 }
 
 function parseExecutorHttpResult(value: unknown): ExecutorMcpGatewayResult {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) throw new ExecutorHttpGatewayError("response_invalid");
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		throw new ExecutorHttpGatewayError("response_invalid");
 	const response = value as Readonly<Record<string, unknown>>;
 	const hasStructured = Object.hasOwn(response, "structured");
-	if (response.status === "paused" && typeof response.text === "string" && hasStructured) return Object.freeze({ status: "approval_required" });
-	if (response.status === "completed" && typeof response.text === "string" && hasStructured && typeof response.isError === "boolean") {
+	if (response.status === "paused" && typeof response.text === "string" && hasStructured)
+		return Object.freeze({ status: "approval_required" });
+	if (
+		response.status === "completed" &&
+		typeof response.text === "string" &&
+		hasStructured &&
+		typeof response.isError === "boolean"
+	) {
 		return response.isError ? Object.freeze({ status: "failed" }) : Object.freeze({ status: "succeeded" });
 	}
 	throw new ExecutorHttpGatewayError("response_invalid");
@@ -228,7 +239,11 @@ interface ExecutorRequestDeadline {
 	cancel(): void;
 }
 
-function createExecutorRequestDeadline(timeoutSeconds: number, deadlineEpochMs: number, nowEpochMs: number): ExecutorRequestDeadline {
+function createExecutorRequestDeadline(
+	timeoutSeconds: number,
+	deadlineEpochMs: number,
+	nowEpochMs: number,
+): ExecutorRequestDeadline {
 	const timeoutMs = timeoutSeconds * 1_000;
 	if (
 		!Number.isSafeInteger(timeoutSeconds) ||
@@ -384,7 +399,8 @@ export class ExecutorMeshExecutionPort implements MeshNodeExecutionPort {
 		const endpoints = new Map<string, TrustedExecutorEndpoint>();
 		for (const endpoint of options.trustedEndpoints) {
 			assertSafeIdentifier(endpoint.endpointId, "endpoint_untrusted");
-			if (!SHA256.test(endpoint.catalogFingerprint) || endpoints.has(endpoint.endpointId)) throw new ExecutorMeshExecutionError("endpoint_untrusted");
+			if (!SHA256.test(endpoint.catalogFingerprint) || endpoints.has(endpoint.endpointId))
+				throw new ExecutorMeshExecutionError("endpoint_untrusted");
 			endpoints.set(endpoint.endpointId, Object.freeze({ ...endpoint }));
 		}
 		this.#trustedEndpoints = endpoints;
@@ -415,11 +431,15 @@ export class ExecutorMeshExecutionPort implements MeshNodeExecutionPort {
 		if (result.status === "approval_required") throw new ExecutorMeshExecutionError("approval_required");
 		if (result.status === "succeeded") {
 			const exitCode = checkedExitCode(result.exitCode);
-			return exitCode === undefined ? Object.freeze({ outcome: "succeeded" }) : Object.freeze({ outcome: "succeeded", exitCode });
+			return exitCode === undefined
+				? Object.freeze({ outcome: "succeeded" })
+				: Object.freeze({ outcome: "succeeded", exitCode });
 		}
 		if (result.status === "failed") {
 			const exitCode = checkedExitCode(result.exitCode);
-			return exitCode === undefined ? Object.freeze({ outcome: "failed" }) : Object.freeze({ outcome: "failed", exitCode });
+			return exitCode === undefined
+				? Object.freeze({ outcome: "failed" })
+				: Object.freeze({ outcome: "failed", exitCode });
 		}
 		throw new ExecutorMeshExecutionError("gateway_result_invalid");
 	}
@@ -471,7 +491,8 @@ export class ExecutorMeshExecutionPort implements MeshNodeExecutionPort {
 		this.#assertInvocation(spec);
 		const endpoint = this.#trustedEndpoints.get(spec.endpointId);
 		if (endpoint === undefined) throw new ExecutorMeshExecutionError("endpoint_untrusted");
-		if (endpoint.catalogFingerprint !== spec.catalogFingerprint) throw new ExecutorMeshExecutionError("catalog_fingerprint_mismatch");
+		if (endpoint.catalogFingerprint !== spec.catalogFingerprint)
+			throw new ExecutorMeshExecutionError("catalog_fingerprint_mismatch");
 
 		const permission = canonicalExecutorToolPermission(spec.endpointId, spec.toolPath);
 		if (!task.permissions.tools.includes(permission)) throw new ExecutorMeshExecutionError("tool_permission_denied");
@@ -498,11 +519,17 @@ export class ExecutorMeshExecutionPort implements MeshNodeExecutionPort {
 		const deadlineEpochMs = Date.parse(context.assignment.leaseExpiresAt);
 		const nowEpochMs = this.#now();
 		const timeoutMs = context.bounds.timeoutSeconds * 1_000;
-		if (!Number.isFinite(deadlineEpochMs) || !Number.isFinite(nowEpochMs) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+		if (
+			!Number.isFinite(deadlineEpochMs) ||
+			!Number.isFinite(nowEpochMs) ||
+			!Number.isSafeInteger(timeoutMs) ||
+			timeoutMs <= 0
+		) {
 			throw new ExecutorMeshExecutionError("assignment_lease_insufficient");
 		}
 		if (deadlineEpochMs <= nowEpochMs) throw new ExecutorMeshExecutionError("assignment_lease_expired");
-		if (deadlineEpochMs - nowEpochMs <= timeoutMs) throw new ExecutorMeshExecutionError("assignment_lease_insufficient");
+		if (deadlineEpochMs - nowEpochMs <= timeoutMs)
+			throw new ExecutorMeshExecutionError("assignment_lease_insufficient");
 		return deadlineEpochMs;
 	}
 
@@ -511,6 +538,7 @@ export class ExecutorMeshExecutionPort implements MeshNodeExecutionPort {
 		assertSafeIdentifier(spec.endpointId, "invocation_invalid");
 		assertToolPath(spec.toolPath, "invocation_invalid");
 		if (!SHA256.test(spec.catalogFingerprint)) throw new ExecutorMeshExecutionError("invocation_invalid");
-		if (sha256CanonicalJson(spec.args) !== spec.inputDigest) throw new ExecutorMeshExecutionError("input_digest_mismatch");
+		if (sha256CanonicalJson(spec.args) !== spec.inputDigest)
+			throw new ExecutorMeshExecutionError("input_digest_mismatch");
 	}
 }

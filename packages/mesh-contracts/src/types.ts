@@ -96,7 +96,12 @@ export interface ApprovalPolicy extends JsonRecord {
 
 export interface TaskContextItem extends JsonRecord {
 	readonly id: string;
-	readonly trustClass: "trusted_instruction" | "authorized_context" | "untrusted_source" | "derived_summary" | "secret_reference";
+	readonly trustClass:
+		| "trusted_instruction"
+		| "authorized_context"
+		| "untrusted_source"
+		| "derived_summary"
+		| "secret_reference";
 	readonly artifactId?: string;
 	readonly uri?: string;
 	readonly sha256?: string;

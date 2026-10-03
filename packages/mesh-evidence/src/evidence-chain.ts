@@ -1,15 +1,15 @@
 import {
-	parseAssignmentLease,
-	parseEvidenceRecord,
-	parseExecutionReceipt,
-	parseTaskContract,
 	type AssignmentLeaseV1,
 	type EvidenceRecordV1,
 	type ExecutionReceiptV1,
 	type JsonRecord,
+	parseAssignmentLease,
+	parseEvidenceRecord,
+	parseExecutionReceipt,
+	parseTaskContract,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
-import { verifySignedExecutionReceipt, type ReceiptSignatureVerifier } from "@pk-nerdsaver-ai/mesh-receipts";
+import { type ReceiptSignatureVerifier, verifySignedExecutionReceipt } from "@pk-nerdsaver-ai/mesh-receipts";
 
 export type EvidenceChainIssueCode =
 	| "invalid_contract"
@@ -46,7 +46,9 @@ export interface EvidenceReceiptAuthorityResult {
  * Untrusted receipt metadata can select only an assignment lookup key, never a verifier.
  */
 export interface EvidenceReceiptAuthority {
-	resolve(assignmentId: string): EvidenceReceiptAuthorityResult | undefined | Promise<EvidenceReceiptAuthorityResult | undefined>;
+	resolve(
+		assignmentId: string,
+	): EvidenceReceiptAuthorityResult | undefined | Promise<EvidenceReceiptAuthorityResult | undefined>;
 }
 
 export interface EvidenceChainInput {
@@ -66,7 +68,11 @@ export interface EvidenceChainVerification {
 }
 
 type ReceiptAuthorityResolution =
-	| Readonly<{ readonly kind: "resolved"; readonly assignment: AssignmentLeaseV1; readonly verifier: ReceiptSignatureVerifier }>
+	| Readonly<{
+			readonly kind: "resolved";
+			readonly assignment: AssignmentLeaseV1;
+			readonly verifier: ReceiptSignatureVerifier;
+	  }>
 	| Readonly<{ readonly kind: "unavailable" }>
 	| Readonly<{ readonly kind: "assignment_mismatch" }>;
 
@@ -123,7 +129,10 @@ function signedReceiptCandidate(input: unknown): ExecutionReceiptV1 | undefined 
 	}
 }
 
-async function resolveReceiptAuthority(authority: EvidenceReceiptAuthority, assignmentId: string): Promise<ReceiptAuthorityResolution> {
+async function resolveReceiptAuthority(
+	authority: EvidenceReceiptAuthority,
+	assignmentId: string,
+): Promise<ReceiptAuthorityResolution> {
 	try {
 		const resolved = await authority.resolve(assignmentId);
 		if (resolved === undefined) return Object.freeze({ kind: "unavailable" });
@@ -135,7 +144,11 @@ async function resolveReceiptAuthority(authority: EvidenceReceiptAuthority, assi
 	}
 }
 
-function matchesAssignment(receipt: ExecutionReceiptV1, assignment: AssignmentLeaseV1, issues: EvidenceChainIssue[]): boolean {
+function matchesAssignment(
+	receipt: ExecutionReceiptV1,
+	assignment: AssignmentLeaseV1,
+	issues: EvidenceChainIssue[],
+): boolean {
 	let matches = true;
 	if (
 		receipt.assignmentId !== assignment.assignmentId ||
@@ -144,11 +157,21 @@ function matchesAssignment(receipt: ExecutionReceiptV1, assignment: AssignmentLe
 		receipt.schedulerEpoch !== assignment.schedulerEpoch ||
 		receipt.fencingToken !== assignment.fencingToken
 	) {
-		issue(issues, "receipt_assignment_mismatch", receipt.receiptId, "Receipt does not match the authoritative assignment");
+		issue(
+			issues,
+			"receipt_assignment_mismatch",
+			receipt.receiptId,
+			"Receipt does not match the authoritative assignment",
+		);
 		matches = false;
 	}
 	if (receipt.worker.role !== "worker" || receipt.worker.pubkey !== assignment.executorPubkey) {
-		issue(issues, "receipt_worker_mismatch", receipt.receiptId, "Receipt worker does not match the assigned executor");
+		issue(
+			issues,
+			"receipt_worker_mismatch",
+			receipt.receiptId,
+			"Receipt worker does not match the assigned executor",
+		);
 		matches = false;
 	}
 	if (receipt.nodeId !== assignment.workerNodeId) {
@@ -156,7 +179,12 @@ function matchesAssignment(receipt: ExecutionReceiptV1, assignment: AssignmentLe
 		matches = false;
 	}
 	if (receipt.worker.nodeId !== assignment.workerNodeId) {
-		issue(issues, "receipt_worker_node_mismatch", receipt.receiptId, "Receipt worker node does not match the assigned worker node");
+		issue(
+			issues,
+			"receipt_worker_node_mismatch",
+			receipt.receiptId,
+			"Receipt worker node does not match the assigned worker node",
+		);
 		matches = false;
 	}
 	return matches;
@@ -177,17 +205,32 @@ async function parseReceipts(
 
 		const authorityResult = await resolveReceiptAuthority(authority, candidate.assignmentId);
 		if (authorityResult.kind === "unavailable") {
-			issue(issues, "receipt_authority_unavailable", candidate.receiptId, "No authoritative assignment or receipt verifier is available");
+			issue(
+				issues,
+				"receipt_authority_unavailable",
+				candidate.receiptId,
+				"No authoritative assignment or receipt verifier is available",
+			);
 			continue;
 		}
 		if (authorityResult.kind === "assignment_mismatch") {
-			issue(issues, "receipt_assignment_mismatch", candidate.receiptId, "Authoritative assignment identity does not match the receipt lookup key");
+			issue(
+				issues,
+				"receipt_assignment_mismatch",
+				candidate.receiptId,
+				"Authoritative assignment identity does not match the receipt lookup key",
+			);
 			continue;
 		}
 
 		const verified = await verifySignedExecutionReceipt(item, authorityResult.verifier);
 		if (!verified.ok) {
-			issue(issues, "receipt_signature_unverified", candidate.receiptId, "Receipt signature could not be verified by the authoritative assignment key");
+			issue(
+				issues,
+				"receipt_signature_unverified",
+				candidate.receiptId,
+				"Receipt signature could not be verified by the authoritative assignment key",
+			);
 			continue;
 		}
 		if (!matchesAssignment(verified.receipt, authorityResult.assignment, issues)) continue;
@@ -196,7 +239,10 @@ async function parseReceipts(
 	return parsed;
 }
 
-function verifyReceiptTopology(receipts: readonly ExecutionReceiptV1[], issues: EvidenceChainIssue[]): readonly ExecutionReceiptV1[] {
+function verifyReceiptTopology(
+	receipts: readonly ExecutionReceiptV1[],
+	issues: EvidenceChainIssue[],
+): readonly ExecutionReceiptV1[] {
 	if (receipts.length === 0) return [];
 	const byHash = new Map<string, ExecutionReceiptV1>();
 	const successors = new Map<string, ExecutionReceiptV1>();
@@ -211,11 +257,21 @@ function verifyReceiptTopology(receipts: readonly ExecutionReceiptV1[], issues: 
 		const predecessor = previousReceiptHash(receipt);
 		if (predecessor === undefined) continue;
 		if (!byHash.has(predecessor)) {
-			issue(issues, "missing_predecessor", receipt.receiptId, "previousReceiptHash does not identify a supplied receipt");
+			issue(
+				issues,
+				"missing_predecessor",
+				receipt.receiptId,
+				"previousReceiptHash does not identify a supplied receipt",
+			);
 			continue;
 		}
 		if (successors.has(predecessor)) {
-			issue(issues, "forked_receipt_chain", receipt.receiptId, "More than one receipt points to the same predecessor");
+			issue(
+				issues,
+				"forked_receipt_chain",
+				receipt.receiptId,
+				"More than one receipt points to the same predecessor",
+			);
 			continue;
 		}
 		successors.set(predecessor, receipt);
@@ -241,7 +297,8 @@ function verifyReceiptTopology(receipts: readonly ExecutionReceiptV1[], issues: 
 		ordered.push(current);
 		current = successors.get(current.receiptHash);
 	}
-	if (visited.size !== byHash.size) issue(issues, "disconnected_receipt_chain", "receipts", "Receipt chain has unreachable receipts");
+	if (visited.size !== byHash.size)
+		issue(issues, "disconnected_receipt_chain", "receipts", "Receipt chain has unreachable receipts");
 	return ordered;
 }
 
@@ -253,23 +310,32 @@ export async function verifyEvidenceChain(input: EvidenceChainInput): Promise<Ev
 	const issues: EvidenceChainIssue[] = [];
 	const task = parseTask(input.task, issues);
 	if (task === undefined) {
-		return Object.freeze({ ok: false, verifiedEvidenceIds: Object.freeze([]), verifiedReceiptIds: Object.freeze([]), issues: Object.freeze(issues) });
+		return Object.freeze({
+			ok: false,
+			verifiedEvidenceIds: Object.freeze([]),
+			verifiedReceiptIds: Object.freeze([]),
+			issues: Object.freeze(issues),
+		});
 	}
 	const allowedCriteria = new Set(task.acceptanceCriteria.map(criterion => criterion.id));
 	const evidence = parseEvidence(input.evidence, issues);
 	const evidenceById = new Map<string, EvidenceRecordV1>();
 	for (const record of evidence) {
-		if (record.taskId !== task.taskId) issue(issues, "task_mismatch", record.evidenceId, "Evidence belongs to a different task");
+		if (record.taskId !== task.taskId)
+			issue(issues, "task_mismatch", record.evidenceId, "Evidence belongs to a different task");
 		for (const criterionId of record.criterionIds) {
-			if (!allowedCriteria.has(criterionId)) issue(issues, "criterion_mismatch", record.evidenceId, `Unknown criterion ${criterionId}`);
+			if (!allowedCriteria.has(criterionId))
+				issue(issues, "criterion_mismatch", record.evidenceId, `Unknown criterion ${criterionId}`);
 		}
 		evidenceById.set(record.evidenceId, record);
 	}
 	const receipts = await parseReceipts(input.receipts, input.receiptAuthority, issues);
 	for (const receipt of receipts) {
-		if (receipt.taskId !== task.taskId || receipt.taskDigest !== task.digest) issue(issues, "task_mismatch", receipt.receiptId, "Receipt task identity or digest does not match");
+		if (receipt.taskId !== task.taskId || receipt.taskDigest !== task.digest)
+			issue(issues, "task_mismatch", receipt.receiptId, "Receipt task identity or digest does not match");
 		for (const evidenceId of receipt.evidence) {
-			if (!evidenceById.has(evidenceId)) issue(issues, "missing_evidence", receipt.receiptId, `Missing evidence ${evidenceId}`);
+			if (!evidenceById.has(evidenceId))
+				issue(issues, "missing_evidence", receipt.receiptId, `Missing evidence ${evidenceId}`);
 		}
 	}
 	const orderedReceipts = verifyReceiptTopology(receipts, issues);

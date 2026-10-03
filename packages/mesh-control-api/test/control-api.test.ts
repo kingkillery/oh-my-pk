@@ -1,19 +1,18 @@
 import { describe, expect, test } from "bun:test";
-
+import { type MeshEnvelopeSigner, type MeshEnvelopeVerifier, signTaskContract } from "../../mesh-auth/src/index";
+import type { MeshCliApi, MeshCliJsonObject, MeshCliSubmitRequest } from "../../mesh-cli/src/index";
 import {
-	MESH_SCHEMA,
 	contractDigest,
-	parseTaskContract,
 	type JsonRecord,
+	MESH_SCHEMA,
+	parseTaskContract,
 	type TaskContractV1,
 } from "../../mesh-contracts/src/index";
 import {
-	signTaskContract,
-	type MeshEnvelopeSigner,
-	type MeshEnvelopeVerifier,
-} from "../../mesh-auth/src/index";
-import type { MeshCliApi, MeshCliJsonObject, MeshCliSubmitRequest } from "../../mesh-cli/src/index";
-import { InMemoryMeshRuntimeRepository, MeshOrchestrator, type ReceiptVerifierResolver } from "../../mesh-orchestrator/src/index";
+	InMemoryMeshRuntimeRepository,
+	MeshOrchestrator,
+	type ReceiptVerifierResolver,
+} from "../../mesh-orchestrator/src/index";
 import { MeshControlApi, type MeshControlAuthorizationRequest, type MeshControlAuthorizer } from "../src/index";
 
 const T0 = Date.parse("2026-08-31T12:00:00.000Z");
@@ -67,7 +66,9 @@ function signedTask(taskId: string, idempotencyKey: string): TaskContractV1 {
 		requester: { pubkey: TASK_AUTHOR_PUBKEY, role: "human" as const },
 		goal: "Run a harmless control API fixture.",
 		mode: "general_tool" as const,
-		acceptanceCriteria: [{ id: "fixture-output", description: "A fixture result is recorded.", level: "required" as const }],
+		acceptanceCriteria: [
+			{ id: "fixture-output", description: "A fixture result is recorded.", level: "required" as const },
+		],
 		permissions: { tools: ["fixture.run"], externalSideEffects: "none" as const },
 		execution: { profileId: "linux-test-v1", timeoutSeconds: 60 },
 		routing: { trustZoneMin: "private" as const, activeMachineAllowed: false },
@@ -96,14 +97,25 @@ function allowAuthorizer(calls: MeshControlAuthorizationRequest[] = []): MeshCon
 	};
 }
 
-function controlApi(authorizer: MeshControlAuthorizer, repository = new InMemoryMeshRuntimeRepository()): {
+function controlApi(
+	authorizer: MeshControlAuthorizer,
+	repository = new InMemoryMeshRuntimeRepository(),
+): {
 	readonly api: MeshControlApi;
 	readonly repository: InMemoryMeshRuntimeRepository;
 	readonly runtime: MeshOrchestrator;
 } {
-	const runtime = new MeshOrchestrator(repository, { receiptVerifierResolver: noReceiptVerifier, clock: { nowEpochMs: () => T0 } });
+	const runtime = new MeshOrchestrator(repository, {
+		receiptVerifierResolver: noReceiptVerifier,
+		clock: { nowEpochMs: () => T0 },
+	});
 	return {
-		api: new MeshControlApi({ orchestrator: runtime, taskEnvelopeVerifier, authorizer, clock: { nowEpochMs: () => T0 } }),
+		api: new MeshControlApi({
+			orchestrator: runtime,
+			taskEnvelopeVerifier,
+			authorizer,
+			clock: { nowEpochMs: () => T0 },
+		}),
 		repository,
 		runtime,
 	};
@@ -168,10 +180,18 @@ describe("MeshControlApi", () => {
 		const alteredTask = parseTaskContract({
 			...taskWithoutDigest,
 			goal: "A payload changed after the signer approved it.",
-			digest: contractDigest({ ...taskWithoutDigest, goal: "A payload changed after the signer approved it." } as JsonRecord, "digest"),
+			digest: contractDigest(
+				{ ...taskWithoutDigest, goal: "A payload changed after the signer approved it." } as JsonRecord,
+				"digest",
+			),
 		});
 		void ignoredDigest;
-		await expect(api.submit({ ...request, payload: { ...(request.payload as object), payload: alteredTask } as MeshCliJsonObject })).rejects.toMatchObject({
+		await expect(
+			api.submit({
+				...request,
+				payload: { ...(request.payload as object), payload: alteredTask } as MeshCliJsonObject,
+			}),
+		).rejects.toMatchObject({
 			code: "signature_unverified",
 		});
 		expect(calls).toHaveLength(0);
@@ -183,7 +203,9 @@ describe("MeshControlApi", () => {
 		const { api, runtime } = controlApi(allowAuthorizer(calls));
 		const task = signedTask("task_control-api-key", "control-api-key");
 
-		await expect(api.submit({ ...(await submitRequest(task)), idempotencyKey: "a-different-key" })).rejects.toMatchObject({ code: "idempotency_key_mismatch" });
+		await expect(
+			api.submit({ ...(await submitRequest(task)), idempotencyKey: "a-different-key" }),
+		).rejects.toMatchObject({ code: "idempotency_key_mismatch" });
 		expect(calls).toHaveLength(0);
 		expect(await runtime.getTask(task.taskId)).toBeUndefined();
 	});
@@ -214,7 +236,13 @@ describe("MeshControlApi", () => {
 		const compatibleApi: MeshCliApi = api;
 		const taskId = "task_control-api-unsupported";
 
-		expect(await compatibleApi.cancel?.({ requestId: "request-control-api-cancel", taskId, idempotencyKey: "control-api-cancel" })).toMatchObject({
+		expect(
+			await compatibleApi.cancel?.({
+				requestId: "request-control-api-cancel",
+				taskId,
+				idempotencyKey: "control-api-cancel",
+			}),
+		).toMatchObject({
 			status: "unsupported",
 			code: "durable_cancellation_unsupported",
 			retryable: false,

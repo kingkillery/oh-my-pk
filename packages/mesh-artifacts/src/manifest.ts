@@ -1,11 +1,11 @@
 import {
+	type ArtifactManifestV1,
+	type JsonRecord,
+	type JsonValue,
 	MESH_SCHEMA,
 	parseArtifactManifest,
 	sha256CanonicalJson,
 	toImmutableJson,
-	type ArtifactManifestV1,
-	type JsonRecord,
-	type JsonValue,
 } from "@pk-nerdsaver-ai/mesh-contracts";
 
 export type CreateArtifactManifestInput = Omit<ArtifactManifestV1, "schemaVersion" | "manifestDigest">;

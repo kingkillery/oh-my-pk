@@ -1,15 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-	MESH_SCHEMA,
-	parseTaskContract,
-	sha256CanonicalJson,
-} from "../../mesh-contracts/src/index";
-import {
-	evaluateAssignmentAttenuation,
-	evaluateAuthorization,
-	parseIdentityDelegation,
-} from "../src/index";
+import { MESH_SCHEMA, parseTaskContract, sha256CanonicalJson } from "../../mesh-contracts/src/index";
+import { evaluateAssignmentAttenuation, evaluateAuthorization, parseIdentityDelegation } from "../src/index";
 
 function task(): ReturnType<typeof parseTaskContract> {
 	const unsigned = {

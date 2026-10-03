@@ -1,18 +1,18 @@
 import {
+	type MeshEnvelopeVerifier,
+	parseSignedMeshEnvelope,
+	type SignedMeshEnvelopeV1,
+	verifySignedAssignmentLease,
+} from "@pk-nerdsaver-ai/mesh-auth";
+import {
+	type AssignmentLeaseV1,
 	MESH_SCHEMA,
 	parseAssignmentLease,
 	parseTaskContract,
 	sha256CanonicalJson,
-	type AssignmentLeaseV1,
 	type TaskContractV1,
 	type TrustZone,
 } from "@pk-nerdsaver-ai/mesh-contracts";
-import {
-	parseSignedMeshEnvelope,
-	verifySignedAssignmentLease,
-	type MeshEnvelopeVerifier,
-	type SignedMeshEnvelopeV1,
-} from "@pk-nerdsaver-ai/mesh-auth";
 
 import { isNodePresenceFresh, type MeshNodePresence } from "./node-presence";
 import {
@@ -238,7 +238,15 @@ const TRUST_ZONE_EXPOSURE: Readonly<Record<TrustZone, number>> = Object.freeze({
 
 const TERMINAL_STATES = new Set<MeshNodeLifecycleState>(["cancelled", "completed", "failed", "lost", "cleaned"]);
 const CLEANUP_ELIGIBLE_STATES = new Set<MeshNodeLifecycleState>(["cancelled", "completed", "failed", "lost"]);
-const ACTIVE_STATES = new Set<MeshNodeLifecycleState>(["admitted", "starting", "started", "running", "cancelling", "cleaning", "reconciliation_required"]);
+const ACTIVE_STATES = new Set<MeshNodeLifecycleState>([
+	"admitted",
+	"starting",
+	"started",
+	"running",
+	"cancelling",
+	"cleaning",
+	"reconciliation_required",
+]);
 const RECOVERY_STATES = new Set<MeshNodeLifecycleState>(["starting", "started", "running", "cancelling", "cleaning"]);
 
 function freezeRecord(record: MeshNodeLifecycleRecord): MeshNodeLifecycleRecord {
@@ -369,13 +377,19 @@ export class MeshNodeAgent {
 		if (!options.identity.nodeId || !options.identity.pubkey) throw new Error("A node identity is required.");
 		this.#identity = Object.freeze({ ...options.identity });
 		this.#execution = options.execution;
-		this.#trustedSchedulerVerifiers = Object.freeze(options.trustedSchedulerVerifiers.map(verifier => Object.freeze({ ...verifier })));
+		this.#trustedSchedulerVerifiers = Object.freeze(
+			options.trustedSchedulerVerifiers.map(verifier => Object.freeze({ ...verifier })),
+		);
 		this.#getPresence = options.getPresence;
 		this.#now = options.now ?? Date.now;
 		this.#interactivePolicy = options.interactivePolicy ?? "deny_when_active";
 		this.#defaultTimeoutSeconds = options.defaultTimeoutSeconds ?? 300;
 		this.#maximumTimeoutSeconds = options.maximumTimeoutSeconds ?? 3_600;
-		if (!isPositiveInteger(this.#defaultTimeoutSeconds) || !isPositiveInteger(this.#maximumTimeoutSeconds) || this.#defaultTimeoutSeconds > this.#maximumTimeoutSeconds) {
+		if (
+			!isPositiveInteger(this.#defaultTimeoutSeconds) ||
+			!isPositiveInteger(this.#maximumTimeoutSeconds) ||
+			this.#defaultTimeoutSeconds > this.#maximumTimeoutSeconds
+		) {
 			throw new Error("Node execution timeout configuration is invalid.");
 		}
 		this.#stateRepository = new InMemoryMeshNodeStateRepository();
@@ -400,7 +414,10 @@ export class MeshNodeAgent {
 	 * Validates an assignment at the execution boundary and reserves a local
 	 * capacity slot. Validation is repeated before start, run, and heartbeat.
 	 */
-	async accept(input: { readonly task: unknown; readonly signedAssignment: unknown }): Promise<MeshNodeLifecycleRecord> {
+	async accept(input: {
+		readonly task: unknown;
+		readonly signedAssignment: unknown;
+	}): Promise<MeshNodeLifecycleRecord> {
 		let task: TaskContractV1;
 		try {
 			task = parseTaskContract(input.task);
@@ -417,8 +434,12 @@ export class MeshNodeAgent {
 
 		const existing = this.#assignments.get(assignment.assignmentId);
 		if (existing !== undefined) {
-			if (existing.assignmentPayloadDigest === verifiedAssignment.payloadDigest && existing.admissionRecord !== undefined) {
-				if (task.taskId === existing.task.taskId && task.digest === existing.task.digest) return existing.admissionRecord;
+			if (
+				existing.assignmentPayloadDigest === verifiedAssignment.payloadDigest &&
+				existing.admissionRecord !== undefined
+			) {
+				if (task.taskId === existing.task.taskId && task.digest === existing.task.digest)
+					return existing.admissionRecord;
 				return this.#reject("lease_invalid_binding", "admitted", task, assignment);
 			}
 			return this.#reject("assignment_already_known", "admitted", task, assignment);
@@ -454,7 +475,12 @@ export class MeshNodeAgent {
 		try {
 			await this.#execution.start(this.#contextFor(tracked));
 		} catch {
-			return this.#reconcileAfterPort(assignmentId, "execution.start_failed", "execution_adapter_failed", "execution_adapter_failed");
+			return this.#reconcileAfterPort(
+				assignmentId,
+				"execution.start_failed",
+				"execution_adapter_failed",
+				"execution_adapter_failed",
+			);
 		}
 		const current = this.#assignmentFor(assignmentId);
 		if (current.state === "cancelled") {
@@ -480,7 +506,12 @@ export class MeshNodeAgent {
 		try {
 			result = await this.#execution.run(this.#contextFor(tracked));
 		} catch {
-			return this.#reconcileAfterPort(assignmentId, "execution.failed", "execution_adapter_failed", "execution_adapter_failed");
+			return this.#reconcileAfterPort(
+				assignmentId,
+				"execution.failed",
+				"execution_adapter_failed",
+				"execution_adapter_failed",
+			);
 		}
 		const current = this.#assignmentFor(assignmentId);
 		if (current.state === "cancelled") {
@@ -503,12 +534,18 @@ export class MeshNodeAgent {
 	async heartbeat(assignmentId: string): Promise<MeshNodeLifecycleRecord> {
 		const tracked = this.#assignmentFor(assignmentId);
 		this.#requireNotReconciliation(tracked);
-		if (tracked.state !== "started" && tracked.state !== "running") throw new MeshNodeAgentError("assignment_state_invalid");
+		if (tracked.state !== "started" && tracked.state !== "running")
+			throw new MeshNodeAgentError("assignment_state_invalid");
 		this.#revalidateForOperation(tracked, "execution.heartbeat_rejected");
 		try {
 			await this.#execution.heartbeat(this.#contextFor(tracked));
 		} catch {
-			return this.#reconcileAfterPort(assignmentId, "execution.heartbeat_failed", "execution_adapter_failed", "execution_adapter_failed");
+			return this.#reconcileAfterPort(
+				assignmentId,
+				"execution.heartbeat_failed",
+				"execution_adapter_failed",
+				"execution_adapter_failed",
+			);
 		}
 		const current = this.#assignmentFor(assignmentId);
 		if (current.state === "started" || current.state === "running") {
@@ -516,13 +553,17 @@ export class MeshNodeAgent {
 			try {
 				return this.#record("execution.heartbeat", current);
 			} catch {
-				return this.#reconcileAfterPort(assignmentId, "execution.reconciliation_required", "node_state_unavailable");
+				return this.#reconcileAfterPort(
+					assignmentId,
+					"execution.reconciliation_required",
+					"node_state_unavailable",
+				);
 			}
 		}
 		if (current.terminalRecord !== undefined) return current.terminalRecord;
 		if (current.state === "cancelling" && current.cancelPromise !== undefined) return current.cancelPromise;
 		throw new MeshNodeAgentError("assignment_reconciliation_required");
-		}
+	}
 
 	cancel(assignmentId: string): Promise<MeshNodeLifecycleRecord> {
 		const tracked = this.#assignmentFor(assignmentId);
@@ -541,21 +582,34 @@ export class MeshNodeAgent {
 		try {
 			if (started) await this.#execution.cancel(this.#contextFor(tracked));
 		} catch {
-			return this.#reconcileAfterPort(tracked.assignment.assignmentId, "execution.cancel_failed", "execution_adapter_failed", "execution_adapter_failed");
+			return this.#reconcileAfterPort(
+				tracked.assignment.assignmentId,
+				"execution.cancel_failed",
+				"execution_adapter_failed",
+				"execution_adapter_failed",
+			);
 		}
 		let current: AcceptedAssignment;
 		try {
 			current = this.#assignmentFor(tracked.assignment.assignmentId);
 			this.#requireNotReconciliation(current);
 		} catch {
-			return this.#reconcileAfterPort(tracked.assignment.assignmentId, "execution.reconciliation_required", "node_state_unavailable");
+			return this.#reconcileAfterPort(
+				tracked.assignment.assignmentId,
+				"execution.reconciliation_required",
+				"node_state_unavailable",
+			);
 		}
 		try {
 			const record = this.#terminal(current, "cancelled", "execution.cancelled");
 			current.cancelRecord = record;
 			return record;
 		} catch {
-			return this.#reconcileAfterPort(tracked.assignment.assignmentId, "execution.reconciliation_required", "node_state_unavailable");
+			return this.#reconcileAfterPort(
+				tracked.assignment.assignmentId,
+				"execution.reconciliation_required",
+				"node_state_unavailable",
+			);
 		}
 	}
 
@@ -579,14 +633,23 @@ export class MeshNodeAgent {
 		try {
 			await this.#execution.cleanup(this.#contextFor(tracked));
 		} catch {
-			return this.#reconcileAfterPort(tracked.assignment.assignmentId, "execution.cleanup_failed", "execution_adapter_failed", "execution_adapter_failed");
+			return this.#reconcileAfterPort(
+				tracked.assignment.assignmentId,
+				"execution.cleanup_failed",
+				"execution_adapter_failed",
+				"execution_adapter_failed",
+			);
 		}
 		let current: AcceptedAssignment;
 		try {
 			current = this.#assignmentFor(tracked.assignment.assignmentId);
 			this.#requireNotReconciliation(current);
 		} catch {
-			return this.#reconcileAfterPort(tracked.assignment.assignmentId, "execution.reconciliation_required", "node_state_unavailable");
+			return this.#reconcileAfterPort(
+				tracked.assignment.assignmentId,
+				"execution.reconciliation_required",
+				"node_state_unavailable",
+			);
 		}
 		try {
 			const record = this.#mutate(() => {
@@ -597,7 +660,11 @@ export class MeshNodeAgent {
 			current.cleanupRecord = record;
 			return record;
 		} catch {
-			return this.#reconcileAfterPort(tracked.assignment.assignmentId, "execution.reconciliation_required", "node_state_unavailable");
+			return this.#reconcileAfterPort(
+				tracked.assignment.assignmentId,
+				"execution.reconciliation_required",
+				"node_state_unavailable",
+			);
 		}
 	}
 
@@ -704,7 +771,8 @@ export class MeshNodeAgent {
 		let candidateSignature: { readonly algorithm: string; readonly keyId: string };
 		try {
 			const envelope = parseSignedMeshEnvelope(input);
-			if (envelope.payload.schemaVersion !== MESH_SCHEMA.assignment) throw new MeshNodeAgentError("assignment_signature_unverified");
+			if (envelope.payload.schemaVersion !== MESH_SCHEMA.assignment)
+				throw new MeshNodeAgentError("assignment_signature_unverified");
 			candidate = envelope.payload;
 			candidateSignature = envelope.signature;
 		} catch {
@@ -740,7 +808,10 @@ export class MeshNodeAgent {
 	}
 
 	#isReconciliationRequired(tracked: AcceptedAssignment): boolean {
-		return tracked.state === "reconciliation_required" || this.#volatileReconciliation.has(tracked.assignment.assignmentId);
+		return (
+			tracked.state === "reconciliation_required" ||
+			this.#volatileReconciliation.has(tracked.assignment.assignmentId)
+		);
 	}
 
 	/** Never mutate an assignment object that a failed transaction may have replaced. */
@@ -751,9 +822,19 @@ export class MeshNodeAgent {
 		return current;
 	}
 
-	#revalidateForOperation(tracked: AcceptedAssignment, rejectedEvent: MeshNodeLifecycleEventType, requireFullExecutionWindow = false): void {
+	#revalidateForOperation(
+		tracked: AcceptedAssignment,
+		rejectedEvent: MeshNodeLifecycleEventType,
+		requireFullExecutionWindow = false,
+	): void {
 		try {
-			this.#validateAdmission(tracked.task, tracked.assignment, this.#getPresence(), false, requireFullExecutionWindow);
+			this.#validateAdmission(
+				tracked.task,
+				tracked.assignment,
+				this.#getPresence(),
+				false,
+				requireFullExecutionWindow,
+			);
 		} catch (error) {
 			this.#markReconciliation(tracked, rejectedEvent, this.#toCode(error));
 			throw new MeshNodeAgentError(this.#toCode(error));
@@ -765,9 +846,19 @@ export class MeshNodeAgent {
 	 * or local admission conditions changed while it was awaited, quarantine the
 	 * ticket rather than emitting a success or releasing the reservation.
 	 */
-	#revalidateAfterPort(tracked: AcceptedAssignment, rejectedEvent: MeshNodeLifecycleEventType, requireFullExecutionWindow = false): void {
+	#revalidateAfterPort(
+		tracked: AcceptedAssignment,
+		rejectedEvent: MeshNodeLifecycleEventType,
+		requireFullExecutionWindow = false,
+	): void {
 		try {
-			this.#validateAdmission(tracked.task, tracked.assignment, this.#getPresence(), false, requireFullExecutionWindow);
+			this.#validateAdmission(
+				tracked.task,
+				tracked.assignment,
+				this.#getPresence(),
+				false,
+				requireFullExecutionWindow,
+			);
 		} catch (error) {
 			const code = this.#toCode(error);
 			return this.#reconcileAfterPort(tracked.assignment.assignmentId, rejectedEvent, code, code);
@@ -788,12 +879,27 @@ export class MeshNodeAgent {
 		return bounds;
 	}
 
-	#validateLease(task: TaskContractV1, assignment: AssignmentLeaseV1, now: number, bounds: MeshExecutionBounds, requireFullExecutionWindow: boolean): void {
-		if (assignment.taskId !== task.taskId || assignment.taskDigest !== task.digest || assignment.permissionsDigest !== sha256CanonicalJson(task.permissions)) {
+	#validateLease(
+		task: TaskContractV1,
+		assignment: AssignmentLeaseV1,
+		now: number,
+		bounds: MeshExecutionBounds,
+		requireFullExecutionWindow: boolean,
+	): void {
+		if (
+			assignment.taskId !== task.taskId ||
+			assignment.taskDigest !== task.digest ||
+			assignment.permissionsDigest !== sha256CanonicalJson(task.permissions)
+		) {
 			throw new MeshNodeAgentError("lease_invalid_binding");
 		}
-		if (assignment.workerNodeId !== this.#identity.nodeId || assignment.executorPubkey !== this.#identity.pubkey) throw new MeshNodeAgentError("lease_invalid_binding");
-		if (!isPositiveInteger(assignment.schedulerEpoch) || !isPositiveInteger(assignment.fencingToken) || !isPositiveInteger(assignment.renewAfterSeconds)) {
+		if (assignment.workerNodeId !== this.#identity.nodeId || assignment.executorPubkey !== this.#identity.pubkey)
+			throw new MeshNodeAgentError("lease_invalid_binding");
+		if (
+			!isPositiveInteger(assignment.schedulerEpoch) ||
+			!isPositiveInteger(assignment.fencingToken) ||
+			!isPositiveInteger(assignment.renewAfterSeconds)
+		) {
 			throw new MeshNodeAgentError("lease_invalid_fencing");
 		}
 		const issuedAt = Date.parse(assignment.issuedAt);
@@ -805,25 +911,40 @@ export class MeshNodeAgent {
 		}
 	}
 
-	#validatePresence(task: TaskContractV1, assignment: AssignmentLeaseV1, presence: MeshNodePresence, now: number, reserveCapacity: boolean): void {
-		if (presence.nodeId !== this.#identity.nodeId || presence.actorPubkey !== this.#identity.pubkey) throw new MeshNodeAgentError("node_identity_mismatch");
+	#validatePresence(
+		task: TaskContractV1,
+		assignment: AssignmentLeaseV1,
+		presence: MeshNodePresence,
+		now: number,
+		reserveCapacity: boolean,
+	): void {
+		if (presence.nodeId !== this.#identity.nodeId || presence.actorPubkey !== this.#identity.pubkey)
+			throw new MeshNodeAgentError("node_identity_mismatch");
 		if (Date.parse(presence.observedAt) > now) throw new MeshNodeAgentError("node_presence_future");
 		if (!isNodePresenceFresh(presence, now)) throw new MeshNodeAgentError("node_presence_stale");
 		if (presence.draining) throw new MeshNodeAgentError("node_draining");
 		if (presence.health !== "healthy") throw new MeshNodeAgentError("node_health_unavailable");
-		if (!presence.executionProfiles.includes(assignment.executionProfileId)) throw new MeshNodeAgentError("execution_profile_mismatch");
-		if (task.execution.profileId !== undefined && task.execution.profileId !== assignment.executionProfileId) throw new MeshNodeAgentError("execution_profile_mismatch");
+		if (!presence.executionProfiles.includes(assignment.executionProfileId))
+			throw new MeshNodeAgentError("execution_profile_mismatch");
+		if (task.execution.profileId !== undefined && task.execution.profileId !== assignment.executionProfileId)
+			throw new MeshNodeAgentError("execution_profile_mismatch");
 		if (task.routing.forbiddenNodes?.includes(this.#identity.nodeId)) throw new MeshNodeAgentError("forbidden_node");
-		if (!trustZoneSupports(presence.trustZone, task.routing.trustZoneMin)) throw new MeshNodeAgentError("trust_zone_incompatible");
-		for (const capability of task.routing.requiredCapabilities ?? []) if (!presence.capabilities.includes(capability)) throw new MeshNodeAgentError("node_capability_missing");
+		if (!trustZoneSupports(presence.trustZone, task.routing.trustZoneMin))
+			throw new MeshNodeAgentError("trust_zone_incompatible");
+		for (const capability of task.routing.requiredCapabilities ?? [])
+			if (!presence.capabilities.includes(capability)) throw new MeshNodeAgentError("node_capability_missing");
 		this.#validateInteractivePolicy(task, presence);
-		if (reserveCapacity && (presence.capacity.availableSlots < 1 || this.#activeAssignmentCount() >= presence.capacity.availableSlots)) {
+		if (
+			reserveCapacity &&
+			(presence.capacity.availableSlots < 1 || this.#activeAssignmentCount() >= presence.capacity.availableSlots)
+		) {
 			throw new MeshNodeAgentError("capacity_exhausted");
 		}
 	}
 
 	#validateInteractivePolicy(task: TaskContractV1, presence: MeshNodePresence): void {
-		if (presence.interactive && this.#interactivePolicy === "deny_all") throw new MeshNodeAgentError("active_interactive_local");
+		if (presence.interactive && this.#interactivePolicy === "deny_all")
+			throw new MeshNodeAgentError("active_interactive_local");
 		if (!presence.activeInteractiveUser) return;
 		if (task.routing.activeMachineAllowed !== true) throw new MeshNodeAgentError("task_disallows_active_machine");
 		if (this.#interactivePolicy !== "allow_explicit") throw new MeshNodeAgentError("active_interactive_local");
@@ -831,12 +952,21 @@ export class MeshNodeAgent {
 
 	#executionBounds(task: TaskContractV1): MeshExecutionBounds {
 		const requestedTimeout = task.execution.timeoutSeconds;
-		if (requestedTimeout !== undefined && !isPositiveInteger(requestedTimeout)) throw new MeshNodeAgentError("execution_timeout_invalid");
+		if (requestedTimeout !== undefined && !isPositiveInteger(requestedTimeout))
+			throw new MeshNodeAgentError("execution_timeout_invalid");
 		const timeoutSeconds = requestedTimeout ?? this.#defaultTimeoutSeconds;
-		if (timeoutSeconds > this.#maximumTimeoutSeconds) throw new MeshNodeAgentError("execution_timeout_exceeds_local_max");
+		if (timeoutSeconds > this.#maximumTimeoutSeconds)
+			throw new MeshNodeAgentError("execution_timeout_exceeds_local_max");
 
 		const bounds: { -readonly [Key in keyof MeshExecutionBounds]: MeshExecutionBounds[Key] } = { timeoutSeconds };
-		for (const field of ["cpuMax", "memoryBytesMax", "diskBytesMax", "pidMax", "networkBytesMax", "retriesMax"] as const) {
+		for (const field of [
+			"cpuMax",
+			"memoryBytesMax",
+			"diskBytesMax",
+			"pidMax",
+			"networkBytesMax",
+			"retriesMax",
+		] as const) {
 			const value = task.execution[field];
 			if (value === undefined) continue;
 			if (!Number.isFinite(value) || value < 0) throw new MeshNodeAgentError("execution_timeout_invalid");
@@ -902,14 +1032,19 @@ export class MeshNodeAgent {
 		if (code !== undefined) Object.assign(event, { code });
 		if (result !== undefined) {
 			Object.assign(event, { outcome: result.outcome });
-			if (Number.isInteger(result.exitCode) && result.exitCode >= 0) Object.assign(event, { exitCode: result.exitCode });
+			if (Number.isInteger(result.exitCode) && result.exitCode >= 0)
+				Object.assign(event, { exitCode: result.exitCode });
 		}
 		const frozen = freezeRecord(event);
 		this.#events.push(frozen);
 		return frozen;
 	}
 
-	#transition(tracked: AcceptedAssignment, state: MeshNodeLifecycleState, type: MeshNodeLifecycleEventType): MeshNodeLifecycleRecord {
+	#transition(
+		tracked: AcceptedAssignment,
+		state: MeshNodeLifecycleState,
+		type: MeshNodeLifecycleEventType,
+	): MeshNodeLifecycleRecord {
 		const current = this.#requireCurrentAssignment(tracked);
 		return this.#mutate(() => {
 			current.state = state;
@@ -956,7 +1091,12 @@ export class MeshNodeAgent {
 	#nextPendingTerminalOutbox(attempted: ReadonlySet<string>): MeshNodeTerminalOutboxMessage | undefined {
 		return [...this.#outbox.values()]
 			.sort((left, right) => left.outboxId.localeCompare(right.outboxId))
-			.find(message => message.state === "pending" && !attempted.has(message.outboxId) && !this.#drainingOutbox.has(message.outboxId));
+			.find(
+				message =>
+					message.state === "pending" &&
+					!attempted.has(message.outboxId) &&
+					!this.#drainingOutbox.has(message.outboxId),
+			);
 	}
 
 	#publicationFor(message: MeshNodeTerminalOutboxMessage): MeshNodeTerminalOutboxPublication {
@@ -1005,7 +1145,11 @@ export class MeshNodeAgent {
 		}
 	}
 
-	#markReconciliation(tracked: AcceptedAssignment, type: MeshNodeLifecycleEventType, code: MeshNodeAgentErrorCode): MeshNodeLifecycleRecord {
+	#markReconciliation(
+		tracked: AcceptedAssignment,
+		type: MeshNodeLifecycleEventType,
+		code: MeshNodeAgentErrorCode,
+	): MeshNodeLifecycleRecord {
 		if (tracked.state === "reconciliation_required") {
 			for (let index = this.#events.length - 1; index >= 0; index -= 1) {
 				const record = this.#events[index];
@@ -1105,7 +1249,10 @@ export class MeshNodeAgent {
 		} catch {
 			throw new MeshNodeAgentError("node_state_unavailable");
 		}
-		if (stored.identity !== undefined && (stored.identity.nodeId !== this.#identity.nodeId || stored.identity.pubkey !== this.#identity.pubkey)) {
+		if (
+			stored.identity !== undefined &&
+			(stored.identity.nodeId !== this.#identity.nodeId || stored.identity.pubkey !== this.#identity.pubkey)
+		) {
 			throw new MeshNodeAgentError("node_state_identity_mismatch");
 		}
 		await this.#restoreVerified(stored);
@@ -1142,7 +1289,8 @@ export class MeshNodeAgent {
 	}
 
 	#parsePersistedEvents(snapshot: MeshNodeStateSnapshot): readonly MeshNodeLifecycleRecord[] {
-		if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0) throw new MeshNodeAgentError("node_state_corrupt");
+		if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0)
+			throw new MeshNodeAgentError("node_state_corrupt");
 		const events = snapshot.events.map(event => this.#parsePersistedRecord(event));
 		if (events.some((event, index) => event.sequence !== index)) throw new MeshNodeAgentError("node_state_corrupt");
 		return events;
@@ -1184,7 +1332,13 @@ export class MeshNodeAgent {
 
 	#parsePersistedAssignmentUnchecked(assignmentId: string, value: unknown): AcceptedAssignment {
 		const parsed = this.#parsePersistedAssignmentShape(assignmentId, value);
-		return this.#buildPersistedAssignment(parsed.task, parsed.assignment, parsed.signedAssignment, parsed.state, parsed.value);
+		return this.#buildPersistedAssignment(
+			parsed.task,
+			parsed.assignment,
+			parsed.signedAssignment,
+			parsed.state,
+			parsed.value,
+		);
 	}
 
 	async #parsePersistedAssignmentVerified(assignmentId: string, value: unknown): Promise<AcceptedAssignment> {
@@ -1196,7 +1350,13 @@ export class MeshNodeAgent {
 		) {
 			throw new MeshNodeAgentError("node_state_corrupt");
 		}
-		return this.#buildPersistedAssignment(parsed.task, verified.assignment, verified.signedAssignment, parsed.state, parsed.value);
+		return this.#buildPersistedAssignment(
+			parsed.task,
+			verified.assignment,
+			verified.signedAssignment,
+			parsed.state,
+			parsed.value,
+		);
 	}
 
 	#parsePersistedAssignmentShape(
@@ -1216,7 +1376,8 @@ export class MeshNodeAgent {
 		try {
 			task = parseTaskContract(value.task);
 			const envelope = parseSignedMeshEnvelope(value.signedAssignment);
-			if (envelope.payload.schemaVersion !== MESH_SCHEMA.assignment) throw new MeshNodeAgentError("node_state_corrupt");
+			if (envelope.payload.schemaVersion !== MESH_SCHEMA.assignment)
+				throw new MeshNodeAgentError("node_state_corrupt");
 			signedAssignment = envelope as SignedMeshEnvelopeV1<AssignmentLeaseV1>;
 			assignment = parseAssignmentLease(signedAssignment.payload);
 		} catch {
@@ -1260,7 +1421,14 @@ export class MeshNodeAgent {
 			tracked.cleanupOriginState = value.cleanupOriginState;
 		}
 		if (tracked.admissionRecord === undefined) throw new MeshNodeAgentError("node_state_corrupt");
-		if ((tracked.state === "cancelled" || tracked.state === "completed" || tracked.state === "failed" || tracked.state === "lost" || tracked.state === "cleaned") && tracked.terminalRecord === undefined) {
+		if (
+			(tracked.state === "cancelled" ||
+				tracked.state === "completed" ||
+				tracked.state === "failed" ||
+				tracked.state === "lost" ||
+				tracked.state === "cleaned") &&
+			tracked.terminalRecord === undefined
+		) {
 			throw new MeshNodeAgentError("node_state_corrupt");
 		}
 		return tracked;
@@ -1302,7 +1470,12 @@ export class MeshNodeAgent {
 			nodeId: value.nodeId,
 			state: value.state,
 		};
-		if (value.assignmentId !== undefined || value.taskId !== undefined || value.schedulerEpoch !== undefined || value.fencingToken !== undefined) {
+		if (
+			value.assignmentId !== undefined ||
+			value.taskId !== undefined ||
+			value.schedulerEpoch !== undefined ||
+			value.fencingToken !== undefined
+		) {
 			if (
 				typeof value.assignmentId !== "string" ||
 				typeof value.taskId !== "string" ||
@@ -1325,7 +1498,8 @@ export class MeshNodeAgent {
 			Object.assign(record, { code: value.code as MeshNodeAgentErrorCode });
 		}
 		if (value.outcome !== undefined) {
-			if (value.outcome !== "succeeded" && value.outcome !== "failed") throw new MeshNodeAgentError("node_state_corrupt");
+			if (value.outcome !== "succeeded" && value.outcome !== "failed")
+				throw new MeshNodeAgentError("node_state_corrupt");
 			Object.assign(record, { outcome: value.outcome });
 		}
 		if (value.exitCode !== undefined) {
@@ -1342,7 +1516,12 @@ export class MeshNodeAgent {
 		value: unknown,
 		assignments: ReadonlyMap<string, AcceptedAssignment>,
 	): MeshNodeTerminalOutboxMessage {
-		if (!isRecord(value) || value.outboxId !== outboxId || typeof value.assignmentId !== "string" || typeof value.taskId !== "string") {
+		if (
+			!isRecord(value) ||
+			value.outboxId !== outboxId ||
+			typeof value.assignmentId !== "string" ||
+			typeof value.taskId !== "string"
+		) {
 			throw new MeshNodeAgentError("node_state_corrupt");
 		}
 		const tracked = assignments.get(value.assignmentId);
@@ -1397,8 +1576,16 @@ export class MeshNodeAgent {
 		});
 	}
 
-	#reject(code: MeshNodeAgentErrorCode, state: MeshNodeLifecycleState, task?: TaskContractV1, assignment?: AssignmentLeaseV1): never {
-		const tracked = task !== undefined && assignment !== undefined ? { task, assignment, bounds: Object.freeze({ timeoutSeconds: this.#defaultTimeoutSeconds }), state } : undefined;
+	#reject(
+		code: MeshNodeAgentErrorCode,
+		state: MeshNodeLifecycleState,
+		task?: TaskContractV1,
+		assignment?: AssignmentLeaseV1,
+	): never {
+		const tracked =
+			task !== undefined && assignment !== undefined
+				? { task, assignment, bounds: Object.freeze({ timeoutSeconds: this.#defaultTimeoutSeconds }), state }
+				: undefined;
 		this.#record("assignment.rejected", tracked, code);
 		throw new MeshNodeAgentError(code);
 	}

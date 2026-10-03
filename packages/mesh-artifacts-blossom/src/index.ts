@@ -53,7 +53,11 @@ export class BlossomArtifactAdapter {
 		assertCapabilities(this.#client);
 		const actualSha256 = sha256Bytes(content);
 		if (actualSha256 !== expectedSha256) throw new ContentHashMismatchError(expectedSha256, actualSha256);
-		const receipt = await this.#client.putBlob({ content: new Uint8Array(content), sha256: actualSha256, contentType });
+		const receipt = await this.#client.putBlob({
+			content: new Uint8Array(content),
+			sha256: actualSha256,
+			contentType,
+		});
 		if (receipt.sha256 !== actualSha256) throw new ContentHashMismatchError(actualSha256, receipt.sha256);
 		return Object.freeze({ ...receipt });
 	}

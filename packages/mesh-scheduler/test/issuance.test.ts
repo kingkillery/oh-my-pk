@@ -1,15 +1,23 @@
 import { describe, expect, test } from "bun:test";
-
-import { MESH_SCHEMA, parseTaskContract, sha256CanonicalJson, type TaskContractV1 } from "@pk-nerdsaver-ai/mesh-contracts";
-import { verifySignedAssignmentLease, type MeshEnvelopeSigner, type MeshEnvelopeVerifier } from "@pk-nerdsaver-ai/mesh-auth";
+import {
+	type MeshEnvelopeSigner,
+	type MeshEnvelopeVerifier,
+	verifySignedAssignmentLease,
+} from "@pk-nerdsaver-ai/mesh-auth";
+import {
+	MESH_SCHEMA,
+	parseTaskContract,
+	sha256CanonicalJson,
+	type TaskContractV1,
+} from "@pk-nerdsaver-ai/mesh-contracts";
 import {
 	FencingViolationError,
 	InMemoryMeshRuntimeRepository,
 	MeshOrchestrator,
+	type MeshRuntimeRepository,
 	SchedulerLeaseConflictError,
 	WorkerCapacityConflictError,
 	WorkerCapacityObservationError,
-	type MeshRuntimeRepository,
 } from "@pk-nerdsaver-ai/mesh-orchestrator";
 
 import { MeshSchedulerIssuanceCoordinator, type SchedulerIssuanceRequest } from "../src/index";
@@ -27,7 +35,9 @@ function at(now: number): string {
 }
 
 function signature(payload: Uint8Array): Uint8Array {
-	return signatureEncoder.encode(`scheduler-issuance:${signatureDecoder.decode(payload).split("").reverse().join("")}`);
+	return signatureEncoder.encode(
+		`scheduler-issuance:${signatureDecoder.decode(payload).split("").reverse().join("")}`,
+	);
 }
 
 const signer: MeshEnvelopeSigner = Object.freeze({
@@ -115,11 +125,18 @@ function coordinator(
 	inputSigner: MeshEnvelopeSigner = signer,
 	inputVerifier: MeshEnvelopeVerifier = verifier,
 ): MeshSchedulerIssuanceCoordinator {
-	return new MeshSchedulerIssuanceCoordinator({ runtime, signer: inputSigner, verifier: inputVerifier, clock: { nowEpochMs: now } });
+	return new MeshSchedulerIssuanceCoordinator({
+		runtime,
+		signer: inputSigner,
+		verifier: inputVerifier,
+		clock: { nowEpochMs: now },
+	});
 }
 
 async function issuedOutboxCount(repository: InMemoryMeshRuntimeRepository): Promise<number> {
-	return repository.read(snapshot => Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued").length);
+	return repository.read(
+		snapshot => Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued").length,
+	);
 }
 
 describe("MeshSchedulerIssuanceCoordinator", () => {
@@ -155,14 +172,18 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const noCandidateRepository = new InMemoryMeshRuntimeRepository();
 		const noCandidateRuntime = createRuntime(noCandidateRepository, () => now);
 		await noCandidateRuntime.submitTask(task(), now);
-		await expect(coordinator(noCandidateRuntime, () => now).issue(request({ nodes: [node({ availableSlots: 0 })] }))).rejects.toMatchObject({ code: "no_eligible_node" });
+		await expect(
+			coordinator(noCandidateRuntime, () => now).issue(request({ nodes: [node({ availableSlots: 0 })] })),
+		).rejects.toMatchObject({ code: "no_eligible_node" });
 		expect(await noCandidateRepository.read(snapshot => snapshot.scheduler.ownerId)).toBeUndefined();
 		expect(await issuedOutboxCount(noCandidateRepository)).toBe(0);
 
 		const profileRepository = new InMemoryMeshRuntimeRepository();
 		const profileRuntime = createRuntime(profileRepository, () => now);
 		await profileRuntime.submitTask(task({ execution: {} }), now);
-		await expect(coordinator(profileRuntime, () => now).issue(request())).rejects.toMatchObject({ code: "execution_profile_required" });
+		await expect(coordinator(profileRuntime, () => now).issue(request())).rejects.toMatchObject({
+			code: "execution_profile_required",
+		});
 		expect(await profileRepository.read(snapshot => snapshot.scheduler.ownerId)).toBeUndefined();
 		expect(await issuedOutboxCount(profileRepository)).toBe(0);
 	});
@@ -174,7 +195,9 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		await runtime.submitTask(task(), now);
 
 		await expect(
-			coordinator(runtime, () => now).issue(request({ schedulerLeaseDurationMs: 20_000, assignmentLeaseDurationMs: 20_000 })),
+			coordinator(runtime, () => now).issue(
+				request({ schedulerLeaseDurationMs: 20_000, assignmentLeaseDurationMs: 20_000 }),
+			),
 		).rejects.toMatchObject({ code: "lease_policy_invalid" });
 		expect(await repository.read(snapshot => snapshot.scheduler.ownerId)).toBeUndefined();
 		expect(await issuedOutboxCount(repository)).toBe(0);
@@ -187,7 +210,9 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		await runtime.submitTask(task(), now);
 
 		await expect(
-			coordinator(runtime, () => now).issue(request({ schedulerLeaseDurationMs: 70_000, assignmentLeaseDurationMs: 60_000 })),
+			coordinator(runtime, () => now).issue(
+				request({ schedulerLeaseDurationMs: 70_000, assignmentLeaseDurationMs: 60_000 }),
+			),
 		).rejects.toMatchObject({ code: "lease_policy_invalid" });
 		expect(await repository.read(snapshot => snapshot.scheduler.ownerId)).toBeUndefined();
 		expect(await issuedOutboxCount(repository)).toBe(0);
@@ -199,7 +224,9 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task({ execution: { profileId: "scheduler-fixture-v1" } }), now);
 
-		await expect(coordinator(runtime, () => now).issue(request())).rejects.toMatchObject({ code: "execution_timeout_required" });
+		await expect(coordinator(runtime, () => now).issue(request())).rejects.toMatchObject({
+			code: "execution_timeout_required",
+		});
 		expect(await repository.read(snapshot => snapshot.scheduler.ownerId)).toBeUndefined();
 		expect(await issuedOutboxCount(repository)).toBe(0);
 	});
@@ -209,9 +236,16 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
-		const failingSigner: MeshEnvelopeSigner = Object.freeze({ ...signer, sign: () => { throw new Error("offline_signer"); } });
+		const failingSigner: MeshEnvelopeSigner = Object.freeze({
+			...signer,
+			sign: () => {
+				throw new Error("offline_signer");
+			},
+		});
 
-		await expect(coordinator(runtime, () => now, failingSigner).issue(request())).rejects.toMatchObject({ code: "signing_failed" });
+		await expect(coordinator(runtime, () => now, failingSigner).issue(request())).rejects.toMatchObject({
+			code: "signing_failed",
+		});
 		expect(await runtime.getAssignment("asg_scheduler-issuance-001")).toBeUndefined();
 		expect(await issuedOutboxCount(repository)).toBe(0);
 	});
@@ -226,7 +260,9 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 			sign: () => signatureEncoder.encode("not-the-scheduler-signature"),
 		});
 
-		await expect(coordinator(runtime, () => now, wrongSigner).issue(request())).rejects.toMatchObject({ code: "signature_unverified" });
+		await expect(coordinator(runtime, () => now, wrongSigner).issue(request())).rejects.toMatchObject({
+			code: "signature_unverified",
+		});
 		expect(await runtime.getAssignment("asg_scheduler-issuance-001")).toBeUndefined();
 		expect(await issuedOutboxCount(repository)).toBe(0);
 	});
@@ -245,7 +281,9 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		});
 
 		await expect(
-			coordinator(runtime, () => now, delayedSigner).issue(request({ schedulerLeaseDurationMs: 65_001, nodes: [node({ expiresAt: at(T0 + 200_000) })] })),
+			coordinator(runtime, () => now, delayedSigner).issue(
+				request({ schedulerLeaseDurationMs: 65_001, nodes: [node({ expiresAt: at(T0 + 200_000) })] }),
+			),
 		).rejects.toMatchObject({ code: "assignment_lease_insufficient" });
 		expect(await runtime.getAssignment("asg_scheduler-issuance-001")).toBeUndefined();
 		expect(await issuedOutboxCount(repository)).toBe(0);
@@ -277,7 +315,9 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		expect(signCalls).toBe(1);
 		expect((await verifySignedAssignmentLease(replay.signedAssignment, verifier)).ok).toBeTrue();
 		expect(await issuedOutboxCount(repository)).toBe(1);
-		await expect(issuer.issue(request({ assignmentId: "asg_scheduler-issuance-other" }))).rejects.toMatchObject({ code: "task_not_queued" });
+		await expect(issuer.issue(request({ assignmentId: "asg_scheduler-issuance-other" }))).rejects.toMatchObject({
+			code: "task_not_queued",
+		});
 		expect(await issuedOutboxCount(repository)).toBe(1);
 	});
 
@@ -323,7 +363,9 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 			},
 		});
 
-		await expect(coordinator(runtime, () => now, countingSigner).issue(request({ nodes: [] }))).rejects.toMatchObject({ code: "recovery_delivery_missing" });
+		await expect(coordinator(runtime, () => now, countingSigner).issue(request({ nodes: [] }))).rejects.toMatchObject(
+			{ code: "recovery_delivery_missing" },
+		);
 		expect(signCalls).toBe(0);
 		expect(await issuedOutboxCount(repository)).toBe(1);
 	});
@@ -378,9 +420,15 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		await issuer.issue(request());
 		now += 1;
 
-		await expect(issuer.issue(request({ nodes: [node({ availableSlots: 0, observedAt: at(now) })] }))).rejects.toBeInstanceOf(WorkerCapacityConflictError);
+		await expect(
+			issuer.issue(request({ nodes: [node({ availableSlots: 0, observedAt: at(now) })] })),
+		).rejects.toBeInstanceOf(WorkerCapacityConflictError);
 		expect(signCalls).toBe(1);
-		expect(await repository.read(snapshot => snapshot.workerCapacityObservations["node_scheduler-worker-001"]?.availableSlots)).toBe(0);
+		expect(
+			await repository.read(
+				snapshot => snapshot.workerCapacityObservations["node_scheduler-worker-001"]?.availableSlots,
+			),
+		).toBe(0);
 		expect(await issuedOutboxCount(repository)).toBe(1);
 	});
 
@@ -427,7 +475,9 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		});
 		const issuer = coordinator(runtime, () => (clockReads++ === 0 ? T0 : T0 + 2), countingSigner);
 
-		await expect(issuer.issue(request({ nodes: [node({ expiresAt: at(T0 + 1) })] }))).rejects.toMatchObject({ code: "no_eligible_node" });
+		await expect(issuer.issue(request({ nodes: [node({ expiresAt: at(T0 + 1) })] }))).rejects.toMatchObject({
+			code: "no_eligible_node",
+		});
 		expect(signCalls).toBe(0);
 		expect(await runtime.getAssignment("asg_scheduler-issuance-001")).toBeUndefined();
 		expect(await issuedOutboxCount(repository)).toBe(0);
@@ -470,7 +520,9 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		});
 
 		await expect(
-			coordinator(runtime, () => now, delayedSigner).issue(request({ nodes: [node({ expiresAt: at(T0 + 120_000) })] })),
+			coordinator(runtime, () => now, delayedSigner).issue(
+				request({ nodes: [node({ expiresAt: at(T0 + 120_000) })] }),
+			),
 		).rejects.toMatchObject({ code: "assignment_lease_insufficient" });
 		expect(await runtime.getAssignment("asg_scheduler-issuance-001")).toBeUndefined();
 		expect(await issuedOutboxCount(repository)).toBe(0);
@@ -529,7 +581,9 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		await runtime.submitTask(secondTask, now);
 		const authorityBeforeReuse = await repository.read(snapshot => structuredClone(snapshot.scheduler));
 
-		await expect(issuer.issue(request({ taskId: secondTask.taskId }))).rejects.toMatchObject({ code: "recovery_assignment_mismatch" });
+		await expect(issuer.issue(request({ taskId: secondTask.taskId }))).rejects.toMatchObject({
+			code: "recovery_assignment_mismatch",
+		});
 		expect(signCalls).toBe(1);
 		expect(await repository.read(snapshot => snapshot.scheduler)).toEqual(authorityBeforeReuse);
 		expect((await runtime.getTask(secondTask.taskId))?.state).toBe("queued");
@@ -549,12 +603,20 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const twoSlotNode = node({ availableSlots: 2 });
 
 		await issuer.issue(request({ nodes: [twoSlotNode] }));
-		await issuer.issue(request({ assignmentId: "asg_scheduler-issuance-002", taskId: secondTask.taskId, nodes: [twoSlotNode] }));
+		await issuer.issue(
+			request({ assignmentId: "asg_scheduler-issuance-002", taskId: secondTask.taskId, nodes: [twoSlotNode] }),
+		);
 		await expect(
-			issuer.issue(request({ assignmentId: "asg_scheduler-issuance-003", taskId: thirdTask.taskId, nodes: [twoSlotNode] })),
+			issuer.issue(
+				request({ assignmentId: "asg_scheduler-issuance-003", taskId: thirdTask.taskId, nodes: [twoSlotNode] }),
+			),
 		).rejects.toBeInstanceOf(WorkerCapacityConflictError);
 
-		expect(await repository.read(snapshot => Object.values(snapshot.assignments).filter(record => record.state === "leased"))).toHaveLength(2);
+		expect(
+			await repository.read(snapshot =>
+				Object.values(snapshot.assignments).filter(record => record.state === "leased"),
+			),
+		).toHaveLength(2);
 		expect((await runtime.getTask(thirdTask.taskId))?.state).toBe("queued");
 		expect(await issuedOutboxCount(repository)).toBe(2);
 	});
@@ -583,9 +645,15 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		await issuer.issue(request({ nodes: changingNodes }));
 
 		await expect(
-			issuer.issue(request({ assignmentId: "asg_scheduler-issuance-002", taskId: secondTask.taskId, nodes: changingNodes })),
+			issuer.issue(
+				request({ assignmentId: "asg_scheduler-issuance-002", taskId: secondTask.taskId, nodes: changingNodes }),
+			),
 		).rejects.toBeInstanceOf(WorkerCapacityConflictError);
-		expect(await repository.read(snapshot => Object.values(snapshot.assignments).filter(record => record.state === "leased"))).toHaveLength(1);
+		expect(
+			await repository.read(snapshot =>
+				Object.values(snapshot.assignments).filter(record => record.state === "leased"),
+			),
+		).toHaveLength(1);
 		expect((await runtime.getTask(secondTask.taskId))?.state).toBe("queued");
 		expect(await issuedOutboxCount(repository)).toBe(1);
 	});
@@ -606,16 +674,27 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		now += 1;
 		const newerOneSlot = node({ availableSlots: 1, observedAt: at(now), expiresAt: at(T0 + 120_000) });
 		await expect(
-			issuer.issue(request({ assignmentId: "asg_scheduler-issuance-002", taskId: secondTask.taskId, nodes: [newerOneSlot] })),
+			issuer.issue(
+				request({ assignmentId: "asg_scheduler-issuance-002", taskId: secondTask.taskId, nodes: [newerOneSlot] }),
+			),
 		).rejects.toBeInstanceOf(WorkerCapacityConflictError);
-		expect(
-			await repository.read(snapshot => snapshot.workerCapacityObservations[initialTwoSlots.nodeId]),
-		).toEqual({ actorPubkey: WORKER, availableSlots: 1, observedAt: now, expiresAt: T0 + 120_000 });
+		expect(await repository.read(snapshot => snapshot.workerCapacityObservations[initialTwoSlots.nodeId])).toEqual({
+			actorPubkey: WORKER,
+			availableSlots: 1,
+			observedAt: now,
+			expiresAt: T0 + 120_000,
+		});
 
 		await expect(
-			issuer.issue(request({ assignmentId: "asg_scheduler-issuance-003", taskId: thirdTask.taskId, nodes: [initialTwoSlots] })),
+			issuer.issue(
+				request({ assignmentId: "asg_scheduler-issuance-003", taskId: thirdTask.taskId, nodes: [initialTwoSlots] }),
+			),
 		).rejects.toEqual(new WorkerCapacityObservationError("capacity_observation_stale"));
-		expect(await repository.read(snapshot => Object.values(snapshot.assignments).filter(record => record.state === "leased"))).toHaveLength(1);
+		expect(
+			await repository.read(snapshot =>
+				Object.values(snapshot.assignments).filter(record => record.state === "leased"),
+			),
+		).toHaveLength(1);
 		expect((await runtime.getTask(thirdTask.taskId))?.state).toBe("queued");
 		expect(await issuedOutboxCount(repository)).toBe(1);
 	});
@@ -634,13 +713,22 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 			},
 		});
 		const issuer = coordinator(runtime, () => now, countingSigner);
-		await issuer.issue(request({ schedulerLeaseDurationMs: 30_000, assignmentLeaseDurationMs: 11_000, renewAfterSeconds: 10 }));
+		await issuer.issue(
+			request({ schedulerLeaseDurationMs: 30_000, assignmentLeaseDurationMs: 11_000, renewAfterSeconds: 10 }),
+		);
 		const authorityBeforeRetry = await repository.read(snapshot => structuredClone(snapshot.scheduler));
 		now += 11_001;
 
-		await expect(issuer.issue(request({ nodes: [], schedulerLeaseDurationMs: 30_000, assignmentLeaseDurationMs: 11_000, renewAfterSeconds: 10 }))).rejects.toBeInstanceOf(
-			FencingViolationError,
-		);
+		await expect(
+			issuer.issue(
+				request({
+					nodes: [],
+					schedulerLeaseDurationMs: 30_000,
+					assignmentLeaseDurationMs: 11_000,
+					renewAfterSeconds: 10,
+				}),
+			),
+		).rejects.toBeInstanceOf(FencingViolationError);
 		expect(signCalls).toBe(1);
 		expect(await repository.read(snapshot => snapshot.scheduler)).toEqual(authorityBeforeRetry);
 		expect(await issuedOutboxCount(repository)).toBe(1);
@@ -661,7 +749,10 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		expect(first.signedAssignment).toEqual(second.signedAssignment);
 		expect(first.task).toEqual(second.task);
 		expect(first.deliveryIdempotencyKey).toBe(second.deliveryIdempotencyKey);
-		expect(await runtime.getAssignment("asg_scheduler-issuance-001")).toMatchObject({ state: "leased", lease: first.record.lease });
+		expect(await runtime.getAssignment("asg_scheduler-issuance-001")).toMatchObject({
+			state: "leased",
+			lease: first.record.lease,
+		});
 		expect(await issuedOutboxCount(repository)).toBe(1);
 	});
 
@@ -714,7 +805,11 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		await expect(left).rejects.toBeInstanceOf(WorkerCapacityConflictError);
 		expect(leftSignCalls).toBe(0);
 		expect(rightSignCalls).toBe(1);
-		expect(await backing.read(snapshot => snapshot.workerCapacityObservations["node_scheduler-worker-001"]?.availableSlots)).toBe(0);
+		expect(
+			await backing.read(
+				snapshot => snapshot.workerCapacityObservations["node_scheduler-worker-001"]?.availableSlots,
+			),
+		).toBe(0);
 		expect(await issuedOutboxCount(backing)).toBe(1);
 	});
 
@@ -737,5 +832,4 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		expect(result.record.lease.scheduler.pubkey).toBe(SCHEDULER);
 		expect(result.signedAssignment.signature.actorPubkey).toBe(SCHEDULER);
 	});
-
 });

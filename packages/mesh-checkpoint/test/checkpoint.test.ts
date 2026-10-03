@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 
 import { CheckpointSafetyError, createCheckpointManifest } from "../src";
 
-const createdBy = Object.freeze({ pubkey: "0123456789abcdef0123456789abcdef", role: "worker" as const, nodeId: "node_worker" });
+const createdBy = Object.freeze({
+	pubkey: "0123456789abcdef0123456789abcdef",
+	role: "worker" as const,
+	nodeId: "node_worker",
+});
 
 function input(): Record<string, unknown> {
 	return {
@@ -38,10 +42,14 @@ describe("createCheckpointManifest", () => {
 		(rawContent.files as Array<Record<string, unknown>>)[0].contents = "workspace file body";
 		expect(() => createCheckpointManifest(rawContent as never)).toThrow(CheckpointSafetyError);
 		const nestedContent = input();
-		(nestedContent.files as Array<Record<string, unknown>>)[0].metadata = { provenance: { diff: "workspace file body" } };
+		(nestedContent.files as Array<Record<string, unknown>>)[0].metadata = {
+			provenance: { diff: "workspace file body" },
+		};
 		expect(() => createCheckpointManifest(nestedContent as never)).toThrow(CheckpointSafetyError);
 		const nestedBytes = input();
-		(nestedBytes.excluded as Array<Record<string, unknown>>)[0].metadata = [{ hashes: { bytes: "workspace file body" } }];
+		(nestedBytes.excluded as Array<Record<string, unknown>>)[0].metadata = [
+			{ hashes: { bytes: "workspace file body" } },
+		];
 		expect(() => createCheckpointManifest(nestedBytes as never)).toThrow(CheckpointSafetyError);
 
 		const secret = input();

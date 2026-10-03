@@ -1,11 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-	MeshCliApiError,
-	createMeshCliService,
-	runMeshCli,
-	type MeshCliApi,
-	type MeshCliEnvelope,
-} from "../src/index";
+import { createMeshCliService, type MeshCliApi, MeshCliApiError, type MeshCliEnvelope, runMeshCli } from "../src/index";
 
 async function collect(api: MeshCliApi, argv: readonly string[]): Promise<readonly MeshCliEnvelope[]> {
 	const envelopes: MeshCliEnvelope[] = [];
@@ -70,7 +64,13 @@ describe("MeshCliService", () => {
 			},
 		};
 
-		await collect(api, ["submit", "--request", '{"goal":"hello","idempotencyKey":"submit-key"}', "--request-id", "r-submit"]);
+		await collect(api, [
+			"submit",
+			"--request",
+			'{"goal":"hello","idempotencyKey":"submit-key"}',
+			"--request-id",
+			"r-submit",
+		]);
 		await collect(api, ["status", "task-1", "--cursor", "c1", "--request-id", "r-status"]);
 		const follow = await collect(api, ["follow", "task-1", "--limit", "2", "--request-id", "r-follow"]);
 		await collect(api, ["cancel", "task-1", "--idempotency-key", "cancel-key", "--request-id", "r-cancel"]);
@@ -78,7 +78,10 @@ describe("MeshCliService", () => {
 		await collect(api, ["trace", "task-1", "--request-id", "r-trace"]);
 
 		expect(calls.map(call => call.name)).toEqual(["submit", "status", "follow", "cancel", "artifacts", "trace"]);
-		expect(calls[0]?.request).toMatchObject({ idempotencyKey: "submit-key", payload: { goal: "hello", idempotencyKey: "submit-key" } });
+		expect(calls[0]?.request).toMatchObject({
+			idempotencyKey: "submit-key",
+			payload: { goal: "hello", idempotencyKey: "submit-key" },
+		});
 		expect(calls[3]?.request).toMatchObject({ taskId: "task-1", idempotencyKey: "cancel-key" });
 		expect(follow.map(envelope => envelope.type)).toEqual(["event", "complete"]);
 	});

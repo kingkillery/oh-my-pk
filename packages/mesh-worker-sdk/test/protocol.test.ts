@@ -66,7 +66,11 @@ describe("OMPK execution adapter", () => {
 
 		expect(received?.fencingToken).toBe(7);
 		expect(received?.taskDigest).toBe(taskContract.digest);
-		expect(result).toMatchObject({ taskId: taskContract.taskId, assignmentId: assignment.assignmentId, outcome: "succeeded" });
+		expect(result).toMatchObject({
+			taskId: taskContract.taskId,
+			assignmentId: assignment.assignmentId,
+			outcome: "succeeded",
+		});
 		expect(Object.isFrozen(result.artifactIds)).toBe(true);
 	});
 });

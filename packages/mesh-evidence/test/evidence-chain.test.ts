@@ -1,15 +1,19 @@
 import { expect, test } from "bun:test";
 import {
-	MESH_SCHEMA,
+	type AssignmentLeaseV1,
 	contractDigest,
+	type JsonRecord,
+	MESH_SCHEMA,
 	parseAssignmentLease,
 	parseTaskContract,
 	sha256CanonicalJson,
-	type AssignmentLeaseV1,
-	type JsonRecord,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
-import { signExecutionReceipt, type ReceiptSignatureVerifier, type ReceiptSigner } from "@pk-nerdsaver-ai/mesh-receipts";
+import {
+	type ReceiptSignatureVerifier,
+	type ReceiptSigner,
+	signExecutionReceipt,
+} from "@pk-nerdsaver-ai/mesh-receipts";
 
 import { verifyEvidenceChain } from "../src";
 
@@ -38,7 +42,9 @@ function task(): TaskContractV1 {
 		requester: { pubkey: HUMAN, role: "human" },
 		goal: "Verify receipt evidence",
 		mode: "general_tool",
-		acceptanceCriteria: [{ id: "criterion-one", description: "A receipt references valid evidence", level: "required" }],
+		acceptanceCriteria: [
+			{ id: "criterion-one", description: "A receipt references valid evidence", level: "required" },
+		],
 		permissions: { tools: ["test"], externalSideEffects: "none" },
 		execution: {},
 		routing: {},
@@ -91,26 +97,40 @@ function signature(payload: Uint8Array, keyId = SIGNATURE_KEY_ID): Uint8Array {
 }
 
 function signer(keyId = SIGNATURE_KEY_ID): ReceiptSigner {
-	return Object.freeze({ algorithm: SIGNATURE_ALGORITHM, keyId, sign: (payload: Uint8Array) => signature(payload, keyId) });
+	return Object.freeze({
+		algorithm: SIGNATURE_ALGORITHM,
+		keyId,
+		sign: (payload: Uint8Array) => signature(payload, keyId),
+	});
 }
 
 function verifier(keyId = SIGNATURE_KEY_ID): ReceiptSignatureVerifier {
 	return Object.freeze({
 		algorithm: SIGNATURE_ALGORITHM,
 		keyId,
-		verify: (payload: Uint8Array, signed: Uint8Array) => signatureDecoder.decode(signed) === signatureDecoder.decode(signature(payload, keyId)),
+		verify: (payload: Uint8Array, signed: Uint8Array) =>
+			signatureDecoder.decode(signed) === signatureDecoder.decode(signature(payload, keyId)),
 	});
 }
 
 function receiptAuthority(lease: AssignmentLeaseV1, receiptVerifier = verifier()) {
 	return Object.freeze({
-		resolve: (assignmentId: string) => (assignmentId === lease.assignmentId ? Object.freeze({ assignment: lease, verifier: receiptVerifier }) : undefined),
+		resolve: (assignmentId: string) =>
+			assignmentId === lease.assignmentId
+				? Object.freeze({ assignment: lease, verifier: receiptVerifier })
+				: undefined,
 	});
 }
 
 function receipt(
 	taskContract: TaskContractV1,
-	options?: { readonly previousReceiptHash?: string; readonly id?: string; readonly timeOffset?: number; readonly workerPubkey?: string; readonly nodeId?: string },
+	options?: {
+		readonly previousReceiptHash?: string;
+		readonly id?: string;
+		readonly timeOffset?: number;
+		readonly workerPubkey?: string;
+		readonly nodeId?: string;
+	},
 ) {
 	const timeOffset = options?.timeOffset ?? 20;
 	const nodeId = options?.nodeId ?? "node_evidence-worker";
@@ -144,7 +164,10 @@ test("verifies a task-bound evidence record and assignment-bound signed receipt 
 	const evidenceRecord = evidence(contract);
 	const lease = assignment(contract);
 	const first = await signExecutionReceipt(receipt(contract), signer());
-	const second = await signExecutionReceipt(receipt(contract, { id: "rcpt_chain-two", previousReceiptHash: first.receipt.receiptHash, timeOffset: 40 }), signer());
+	const second = await signExecutionReceipt(
+		receipt(contract, { id: "rcpt_chain-two", previousReceiptHash: first.receipt.receiptHash, timeOffset: 40 }),
+		signer(),
+	);
 	const result = await verifyEvidenceChain({
 		task: contract,
 		evidence: [evidenceRecord],
@@ -198,7 +221,10 @@ test("rejects a receipt signed by an untrusted worker key", async () => {
 test("rejects a valid signature whose worker is not the assigned executor", async () => {
 	const contract = task();
 	const lease = assignment(contract);
-	const signed = await signExecutionReceipt(receipt(contract, { workerPubkey: "other-worker-public-key-000001" }), signer());
+	const signed = await signExecutionReceipt(
+		receipt(contract, { workerPubkey: "other-worker-public-key-000001" }),
+		signer(),
+	);
 	const result = await verifyEvidenceChain({
 		task: contract,
 		evidence: [evidence(contract)],

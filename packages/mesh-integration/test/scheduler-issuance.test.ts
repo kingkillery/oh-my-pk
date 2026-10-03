@@ -2,11 +2,19 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-import { MESH_SCHEMA, parseTaskContract, sha256CanonicalJson, type TaskContractV1 } from "../../mesh-contracts/src/index";
 import { type MeshEnvelopeSigner, type MeshEnvelopeVerifier } from "../../mesh-auth/src/index";
-import { InMemoryMeshRuntimeRepository, MeshOrchestrator, SqliteMeshRuntimeRepository } from "../../mesh-orchestrator/src/index";
-import { MeshNodeAgent, type MeshExecutionRunResult, type MeshNodeExecutionContext } from "../../mesh-node/src/index";
+import {
+	MESH_SCHEMA,
+	parseTaskContract,
+	sha256CanonicalJson,
+	type TaskContractV1,
+} from "../../mesh-contracts/src/index";
+import { type MeshExecutionRunResult, MeshNodeAgent, type MeshNodeExecutionContext } from "../../mesh-node/src/index";
+import {
+	InMemoryMeshRuntimeRepository,
+	MeshOrchestrator,
+	SqliteMeshRuntimeRepository,
+} from "../../mesh-orchestrator/src/index";
 import { MeshSchedulerIssuanceCoordinator, type PlacementNode } from "../../mesh-scheduler/src/index";
 
 const T0 = Date.parse("2026-08-31T12:00:00.000Z");
@@ -51,7 +59,9 @@ function task(): TaskContractV1 {
 		requester: { pubkey: "h".repeat(64), role: "human" },
 		goal: "Deliver one scheduler-issued lease only to the safe worker.",
 		mode: "general_tool",
-		acceptanceCriteria: [{ id: "admitted", description: "The safe node admits the signed assignment.", level: "required" }],
+		acceptanceCriteria: [
+			{ id: "admitted", description: "The safe node admits the signed assignment.", level: "required" },
+		],
 		permissions: { tools: ["fixture.run"], externalSideEffects: "none" },
 		execution: { profileId: "scheduler-integration-v1", timeoutSeconds: 60 },
 		routing: { requiredCapabilities: ["container"], trustZoneMin: "private", activeMachineAllowed: false },
@@ -131,11 +141,19 @@ describe("scheduler issuance through node admission", () => {
 		});
 		const contract = task();
 		await runtime.submitTask(contract, T0);
-		const issuer = new MeshSchedulerIssuanceCoordinator({ runtime, signer: schedulerSigner, verifier: schedulerVerifier, clock: { nowEpochMs: () => T0 } });
+		const issuer = new MeshSchedulerIssuanceCoordinator({
+			runtime,
+			signer: schedulerSigner,
+			verifier: schedulerVerifier,
+			clock: { nowEpochMs: () => T0 },
+		});
 		const issued = await issuer.issue({
 			assignmentId: "asg_scheduler-integration-001",
 			taskId: contract.taskId,
-			nodes: [placementNode({ nodeId: "node_active-main-001", interactive: true, activeInteractiveUser: true }), placementNode()],
+			nodes: [
+				placementNode({ nodeId: "node_active-main-001", interactive: true, activeInteractiveUser: true }),
+				placementNode(),
+			],
 			schedulerLeaseDurationMs: 70_000,
 			assignmentLeaseDurationMs: 65_000,
 			renewAfterSeconds: 10,
@@ -145,7 +163,11 @@ describe("scheduler issuance through node admission", () => {
 		expect(issued.record.lease.workerNodeId).toBe(NODE);
 		expect(admitted).toMatchObject({ assignmentId: issued.record.lease.assignmentId, state: "admitted" });
 		expect(await repository.read(snapshot => Object.values(snapshot.assignments))).toEqual([issued.record]);
-		expect(await repository.read(snapshot => Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued"))).toHaveLength(1);
+		expect(
+			await repository.read(snapshot =>
+				Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued"),
+			),
+		).toHaveLength(1);
 	});
 
 	test("recovers the exact durable delivery after a SQLite controller restart without issuing again", async () => {
@@ -216,7 +238,10 @@ describe("scheduler issuance through node admission", () => {
 					assignmentLeaseDurationMs: 65_000,
 					renewAfterSeconds: 10,
 				});
-				const admitted = await nodeAgent().accept({ task: recovered.task, signedAssignment: recovered.signedAssignment });
+				const admitted = await nodeAgent().accept({
+					task: recovered.task,
+					signedAssignment: recovered.signedAssignment,
+				});
 
 				expect(recovered.replayed).toBeTrue();
 				expect(recovered.task.taskId).toBe(original.taskId);
@@ -229,7 +254,11 @@ describe("scheduler issuance through node admission", () => {
 				expect(admitted).toMatchObject({ assignmentId: original.assignmentId, state: "admitted" });
 				expect(signCalls).toBe(1);
 				expect(await reopenedRepository.read(snapshot => snapshot.revision)).toBe(original.revision);
-				expect(await reopenedRepository.read(snapshot => Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued"))).toHaveLength(1);
+				expect(
+					await reopenedRepository.read(snapshot =>
+						Object.values(snapshot.outbox).filter(message => message.type === "assignment.issued"),
+					),
+				).toHaveLength(1);
 			} finally {
 				reopenedRepository.close();
 			}

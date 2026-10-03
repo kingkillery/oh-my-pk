@@ -22,7 +22,8 @@ const ID_SUFFIX = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,155}$/;
 
 export function assertMeshId(value: unknown, kind: MeshIdKind, path: string): string {
 	const prefix = MESH_ID_PREFIX[kind];
-	if (typeof value === "string" && value.startsWith(prefix) && ID_SUFFIX.test(value.slice(prefix.length))) return value;
+	if (typeof value === "string" && value.startsWith(prefix) && ID_SUFFIX.test(value.slice(prefix.length)))
+		return value;
 	throw new MeshValidationError([
 		{
 			code: "invalid_id",

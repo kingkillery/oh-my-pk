@@ -1,5 +1,5 @@
-import type { MeshRole, TaskContractV1, TaskMode } from "@pk-nerdsaver-ai/mesh-contracts";
 import type { MeshEnvelopeVerifier } from "@pk-nerdsaver-ai/mesh-auth";
+import type { MeshRole, TaskContractV1, TaskMode } from "@pk-nerdsaver-ai/mesh-contracts";
 import type { MeshTaskState } from "@pk-nerdsaver-ai/mesh-orchestrator";
 
 export const MESH_CONTROL_API_SCHEMA = "ompk.mesh-control-api/v1" as const;

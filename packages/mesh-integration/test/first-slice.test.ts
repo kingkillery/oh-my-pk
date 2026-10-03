@@ -1,20 +1,27 @@
 import { describe, expect, test } from "bun:test";
-
+import { createArtifactManifest, InMemoryContentAddressedStore } from "../../mesh-artifacts/src/index";
 import {
-	MESH_SCHEMA,
 	contractDigest,
+	type JsonRecord,
+	MESH_SCHEMA,
 	parseAssignmentLease,
 	parseEvidenceRecord,
 	parseTaskContract,
 	sha256CanonicalJson,
-	type JsonRecord,
 } from "../../mesh-contracts/src/index";
-import { InMemoryContentAddressedStore, createArtifactManifest } from "../../mesh-artifacts/src/index";
-import { verifyEvidenceChain } from "../../mesh-evidence/src/index";
 import { InMemoryDurableEventLog } from "../../mesh-eventbus/src/index";
-import { InMemoryMeshRuntimeRepository, MeshOrchestrator, type ReceiptVerifierResolver } from "../../mesh-orchestrator/src/index";
-import { signExecutionReceipt, verifySignedExecutionReceipt, type ReceiptSignatureVerifier } from "../../mesh-receipts/src/index";
-import { placeTask, type PlacementNode } from "../../mesh-scheduler/src/index";
+import { verifyEvidenceChain } from "../../mesh-evidence/src/index";
+import {
+	InMemoryMeshRuntimeRepository,
+	MeshOrchestrator,
+	type ReceiptVerifierResolver,
+} from "../../mesh-orchestrator/src/index";
+import {
+	type ReceiptSignatureVerifier,
+	signExecutionReceipt,
+	verifySignedExecutionReceipt,
+} from "../../mesh-receipts/src/index";
+import { type PlacementNode, placeTask } from "../../mesh-scheduler/src/index";
 import { createOmpkExecutionAdapter } from "../../mesh-worker-sdk/src/index";
 
 const T0 = Date.parse("2026-08-31T12:00:00.000Z");
@@ -36,10 +43,16 @@ function signedTask() {
 		requester: { pubkey: "h".repeat(64), role: "human" },
 		goal: "Run the harmless first-slice fixture.",
 		mode: "general_tool",
-		acceptanceCriteria: [{ id: "fixture-output", description: "result.json is stored and verified.", level: "required" }],
+		acceptanceCriteria: [
+			{ id: "fixture-output", description: "result.json is stored and verified.", level: "required" },
+		],
 		permissions: { tools: ["fixture.run"], externalSideEffects: "none" },
 		execution: { profileId: "linux-test-v1", timeoutSeconds: 60 },
-		routing: { requiredCapabilities: ["container", "isolated"], trustZoneMin: "private", activeMachineAllowed: false },
+		routing: {
+			requiredCapabilities: ["container", "isolated"],
+			trustZoneMin: "private",
+			activeMachineAllowed: false,
+		},
 		artifactPolicy: { encryptionRequired: true, retentionClass: "ephemeral" },
 		idempotencyKey: "first-slice-submit-001",
 		digestAlgorithm: "sha256" as const,
@@ -75,7 +88,8 @@ function fixtureSignature(payload: Uint8Array): Uint8Array {
 const receiptVerifier: ReceiptSignatureVerifier = Object.freeze({
 	algorithm: "fixture-deterministic-v1",
 	keyId: "fixture-worker",
-	verify: (payload: Uint8Array, signature: Uint8Array) => signatureDecoder.decode(signature) === signatureDecoder.decode(fixtureSignature(payload)),
+	verify: (payload: Uint8Array, signature: Uint8Array) =>
+		signatureDecoder.decode(signature) === signatureDecoder.decode(fixtureSignature(payload)),
 });
 
 const receiptVerifierResolver: ReceiptVerifierResolver = Object.freeze({
@@ -179,7 +193,10 @@ describe("LocalMesh first vertical slice", () => {
 			sourceReference: { artifactId: artifact.artifactId, contentSha256: artifact.contentSha256 },
 			confidence: "direct" as const,
 		};
-		const evidence = parseEvidenceRecord({ ...evidenceBody, digest: contractDigest(evidenceBody as unknown as JsonRecord, "digest") });
+		const evidence = parseEvidenceRecord({
+			...evidenceBody,
+			digest: contractDigest(evidenceBody as unknown as JsonRecord, "digest"),
+		});
 		const receiptBody = {
 			schemaVersion: MESH_SCHEMA.receipt,
 			receiptId: "rcpt_first-slice-001",
@@ -201,7 +218,10 @@ describe("LocalMesh first vertical slice", () => {
 			cost: { usd: 0 },
 			cleanup: { workspace: "not-created", worker: "released" },
 		};
-		const receipt = { ...receiptBody, receiptHash: contractDigest(receiptBody as unknown as JsonRecord, "receiptHash") };
+		const receipt = {
+			...receiptBody,
+			receiptHash: contractDigest(receiptBody as unknown as JsonRecord, "receiptHash"),
+		};
 		const signedReceipt = await signExecutionReceipt(receipt, {
 			algorithm: "fixture-deterministic-v1",
 			keyId: "fixture-worker",
@@ -210,7 +230,8 @@ describe("LocalMesh first vertical slice", () => {
 		const signatureVerification = await verifySignedExecutionReceipt(signedReceipt, {
 			algorithm: "fixture-deterministic-v1",
 			keyId: "fixture-worker",
-			verify: (payload, signature) => signatureDecoder.decode(signature) === signatureDecoder.decode(fixtureSignature(payload)),
+			verify: (payload, signature) =>
+				signatureDecoder.decode(signature) === signatureDecoder.decode(fixtureSignature(payload)),
 		});
 		expect(signatureVerification.ok).toBe(true);
 		await runtime.recordReceipt({ signedReceipt });
@@ -221,7 +242,9 @@ describe("LocalMesh first vertical slice", () => {
 			receipts: [signedReceipt],
 			receiptAuthority: {
 				resolve(assignmentId) {
-					return assignmentId === assignment.assignmentId ? Object.freeze({ assignment, verifier: receiptVerifier }) : undefined;
+					return assignmentId === assignment.assignmentId
+						? Object.freeze({ assignment, verifier: receiptVerifier })
+						: undefined;
 				},
 			},
 		});
@@ -231,7 +254,11 @@ describe("LocalMesh first vertical slice", () => {
 		const published = await runtime.drainOutbox(
 			{
 				async publish(message) {
-					const payload = { type: message.type, aggregateId: message.aggregateId, ...message.payload } as JsonRecord;
+					const payload = {
+						type: message.type,
+						aggregateId: message.aggregateId,
+						...message.payload,
+					} as JsonRecord;
 					await eventLog.append({
 						envelope: {
 							schemaVersion: MESH_SCHEMA.event,
@@ -244,7 +271,12 @@ describe("LocalMesh first vertical slice", () => {
 							payload,
 							payloadSha256: sha256CanonicalJson(payload),
 						} as never,
-						provenance: { transport: "local", receivedAt: at(6), verification: "not_applicable", sourceNodeId: NODE },
+						provenance: {
+							transport: "local",
+							receivedAt: at(6),
+							verification: "not_applicable",
+							sourceNodeId: NODE,
+						},
 					});
 				},
 			},

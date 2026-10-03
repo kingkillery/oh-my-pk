@@ -91,10 +91,7 @@ function hasInvalidPresenceWindow(node: PlacementNode, nowEpochMs: number): bool
 	const observedAt = Date.parse(node.observedAt);
 	const expiresAt = Date.parse(node.expiresAt);
 	return (
-		!Number.isFinite(observedAt) ||
-		!Number.isFinite(expiresAt) ||
-		observedAt > nowEpochMs ||
-		expiresAt <= observedAt
+		!Number.isFinite(observedAt) || !Number.isFinite(expiresAt) || observedAt > nowEpochMs || expiresAt <= observedAt
 	);
 }
 
@@ -144,7 +141,10 @@ function evaluateNode(request: PlacementRequest, node: PlacementNode): Placement
 	const reasons: PlacementRejectionCode[] = [];
 	if (node.draining) reasons.push("draining");
 	if (!node.healthy) reasons.push("unhealthy");
-	if (hasInvalidPresenceWindow(node, request.nowEpochMs) || (policy?.requireFreshPresence !== false && hasExpiredPresence(node, request.nowEpochMs))) {
+	if (
+		hasInvalidPresenceWindow(node, request.nowEpochMs) ||
+		(policy?.requireFreshPresence !== false && hasExpiredPresence(node, request.nowEpochMs))
+	) {
 		reasons.push("stale_presence");
 	}
 	if (!Number.isSafeInteger(node.availableSlots) || node.availableSlots < 1) reasons.push("no_available_slots");

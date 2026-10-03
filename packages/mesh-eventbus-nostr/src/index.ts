@@ -1,10 +1,10 @@
 import {
-	parseMeshEventEnvelope,
-	serializeOutboxEvent,
 	type DurableEventLog,
 	type EventAppendResult,
 	type InboundMeshEvent,
 	type MeshOutboxRecord,
+	parseMeshEventEnvelope,
+	serializeOutboxEvent,
 } from "@pk-nerdsaver-ai/mesh-eventbus";
 
 export type NostrTransportCapability = "relay_write" | "nip44" | "gift_wrap";

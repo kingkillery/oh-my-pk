@@ -1,16 +1,16 @@
 import {
-	MESH_SCHEMA,
+	type AssignmentLeaseV1,
 	canonicalizeJson,
+	MESH_SCHEMA,
+	type MeshContractV1,
+	type MeshRole,
+	type MeshSchemaVersion,
 	parseAssignmentLease,
 	parseMeshContract,
 	parseTaskContract,
 	sha256CanonicalJson,
-	toImmutableJson,
-	type AssignmentLeaseV1,
-	type MeshContractV1,
-	type MeshRole,
-	type MeshSchemaVersion,
 	type TaskContractV1,
+	toImmutableJson,
 } from "@pk-nerdsaver-ai/mesh-contracts";
 
 import { MeshEnvelopeError, type MeshEnvelopeErrorCode } from "./errors";
@@ -121,10 +121,29 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 export const MAX_MESH_SIGNATURE_BYTES = 16 * 1024;
 const MAX_MESH_SIGNATURE_BASE64_CHARS = 4 * Math.ceil(MAX_MESH_SIGNATURE_BYTES / 3);
-const MESH_ROLES = new Set<MeshRole>(["human", "orchestrator", "scheduler", "node", "worker", "agent", "tool", "service", "validator"]);
+const MESH_ROLES = new Set<MeshRole>([
+	"human",
+	"orchestrator",
+	"scheduler",
+	"node",
+	"worker",
+	"agent",
+	"tool",
+	"service",
+	"validator",
+]);
 const TASK_REQUESTER_ROLE_SET = new Set<MeshRole>(TASK_REQUESTER_AUTHOR_ROLES);
 const ENVELOPE_FIELDS = new Set(["schemaVersion", "payload", "payloadDigest", "signature"]);
-const SIGNATURE_FIELDS = new Set(["schemaVersion", "algorithm", "keyId", "actorPubkey", "role", "signedAt", "signatureBytes", "signatureBase64"]);
+const SIGNATURE_FIELDS = new Set([
+	"schemaVersion",
+	"algorithm",
+	"keyId",
+	"actorPubkey",
+	"role",
+	"signedAt",
+	"signatureBytes",
+	"signatureBase64",
+]);
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -167,7 +186,11 @@ function requiredActorPubkey(value: unknown, field: string, code: MeshEnvelopeEr
 	return pubkey;
 }
 
-function immutableRecord(input: unknown, code: MeshEnvelopeErrorCode, label: string): Readonly<Record<string, unknown>> {
+function immutableRecord(
+	input: unknown,
+	code: MeshEnvelopeErrorCode,
+	label: string,
+): Readonly<Record<string, unknown>> {
 	try {
 		const immutable = toImmutableJson(input);
 		if (!isRecord(immutable)) error(code, `${label} must be an object`);
@@ -178,7 +201,12 @@ function immutableRecord(input: unknown, code: MeshEnvelopeErrorCode, label: str
 	}
 }
 
-function assertExactFields(record: Readonly<Record<string, unknown>>, fields: ReadonlySet<string>, code: MeshEnvelopeErrorCode, label: string): void {
+function assertExactFields(
+	record: Readonly<Record<string, unknown>>,
+	fields: ReadonlySet<string>,
+	code: MeshEnvelopeErrorCode,
+	label: string,
+): void {
 	for (const key of Object.keys(record)) {
 		if (!fields.has(key)) error(code, `${label}.${key} is not permitted`);
 	}
@@ -294,7 +322,11 @@ function assertPayloadAuthorityBinding(payload: MeshContractV1, signer: MeshSign
 	}
 }
 
-function signingPayloadFor(payload: MeshContractV1, payloadDigest: string, signer: MeshSignatureMetadataV1): MeshEnvelopeSigningPayloadV1 {
+function signingPayloadFor(
+	payload: MeshContractV1,
+	payloadDigest: string,
+	signer: MeshSignatureMetadataV1,
+): MeshEnvelopeSigningPayloadV1 {
 	return Object.freeze({
 		schemaVersion: MESH_ENVELOPE_SIGNING_PAYLOAD_SCHEMA,
 		envelopeSchemaVersion: MESH_SIGNED_ENVELOPE_SCHEMA,
@@ -313,14 +345,25 @@ function signingPayloadFor(payload: MeshContractV1, payloadDigest: string, signe
 	});
 }
 
-function signingPayloadBytesFor(payload: MeshContractV1, payloadDigest: string, signer: MeshSignatureMetadataV1): Uint8Array {
+function signingPayloadBytesFor(
+	payload: MeshContractV1,
+	payloadDigest: string,
+	signer: MeshSignatureMetadataV1,
+): Uint8Array {
 	return new TextEncoder().encode(canonicalizeJson(signingPayloadFor(payload, payloadDigest, signer)));
 }
 
 /** Encodes non-empty signature bytes as canonical RFC 4648 padded base64. */
 export function encodeMeshSignatureBase64(signature: Uint8Array): string {
-	if (!(signature instanceof Uint8Array) || signature.byteLength === 0 || signature.byteLength > MAX_MESH_SIGNATURE_BYTES) {
-		error("invalid_signature", `signature must be a non-empty Uint8Array no larger than ${MAX_MESH_SIGNATURE_BYTES} bytes`);
+	if (
+		!(signature instanceof Uint8Array) ||
+		signature.byteLength === 0 ||
+		signature.byteLength > MAX_MESH_SIGNATURE_BYTES
+	) {
+		error(
+			"invalid_signature",
+			`signature must be a non-empty Uint8Array no larger than ${MAX_MESH_SIGNATURE_BYTES} bytes`,
+		);
 	}
 	let binary = "";
 	for (const byte of signature) binary += String.fromCharCode(byte);
@@ -335,7 +378,10 @@ export function decodeMeshSignatureBase64(signatureBase64: string): Uint8Array {
 		signatureBase64.length > MAX_MESH_SIGNATURE_BASE64_CHARS ||
 		!BASE64.test(signatureBase64)
 	) {
-		error("invalid_signature_envelope", `signatureBase64 must be non-empty canonical padded base64 no larger than ${MAX_MESH_SIGNATURE_BYTES} bytes`);
+		error(
+			"invalid_signature_envelope",
+			`signatureBase64 must be non-empty canonical padded base64 no larger than ${MAX_MESH_SIGNATURE_BYTES} bytes`,
+		);
 	}
 	let binary: string;
 	try {
@@ -344,7 +390,11 @@ export function decodeMeshSignatureBase64(signatureBase64: string): Uint8Array {
 		error("invalid_signature_envelope", "signatureBase64 is not valid base64");
 	}
 	const signature = Uint8Array.from(binary, character => character.charCodeAt(0));
-	if (signature.byteLength === 0 || signature.byteLength > MAX_MESH_SIGNATURE_BYTES || encodeMeshSignatureBase64(signature) !== signatureBase64) {
+	if (
+		signature.byteLength === 0 ||
+		signature.byteLength > MAX_MESH_SIGNATURE_BYTES ||
+		encodeMeshSignatureBase64(signature) !== signatureBase64
+	) {
 		error("invalid_signature_envelope", "signatureBase64 must be canonical padded base64");
 	}
 	return signature;
@@ -363,9 +413,13 @@ export function parseMeshSignatureEnvelope(input: unknown): MeshSignatureEnvelop
 		record.signatureBytes <= 0 ||
 		record.signatureBytes > MAX_MESH_SIGNATURE_BYTES
 	) {
-		error("invalid_signature_envelope", `signature.signatureBytes must be a positive safe integer no larger than ${MAX_MESH_SIGNATURE_BYTES}`);
+		error(
+			"invalid_signature_envelope",
+			`signature.signatureBytes must be a positive safe integer no larger than ${MAX_MESH_SIGNATURE_BYTES}`,
+		);
 	}
-	if (typeof record.signatureBase64 !== "string") error("invalid_signature_envelope", "signature.signatureBase64 must be a string");
+	if (typeof record.signatureBase64 !== "string")
+		error("invalid_signature_envelope", "signature.signatureBase64 must be a string");
 	const signature = decodeMeshSignatureBase64(record.signatureBase64);
 	if (signature.byteLength !== record.signatureBytes) {
 		error("invalid_signature_envelope", "signature.signatureBytes does not match signatureBase64");
@@ -406,7 +460,10 @@ export function parseSignedMeshEnvelope(input: unknown): SignedMeshEnvelopeV1 {
 }
 
 /** Creates the fixed, canonical signing object from a validated payload and signer metadata. */
-export function createMeshEnvelopeSigningPayload(payload: MeshContractV1, signer: MeshSignatureMetadataV1): MeshEnvelopeSigningPayloadV1 {
+export function createMeshEnvelopeSigningPayload(
+	payload: MeshContractV1,
+	signer: MeshSignatureMetadataV1,
+): MeshEnvelopeSigningPayloadV1 {
 	const parsedPayload = parsePayload(payload);
 	const parsedSigner = parseSigningMetadata(signer, "invalid_envelope", "signer");
 	assertPayloadAuthorityBinding(parsedPayload, parsedSigner);
@@ -472,7 +529,9 @@ export async function signAssignmentLease(
 	return signValidatedMeshEnvelope(parseAssignmentPayload(assignment), signer, options);
 }
 
-function verificationFailure<TPayload extends MeshContractV1>(reason: MeshEnvelopeVerificationFailureCode): MeshEnvelopeVerificationResult<TPayload> {
+function verificationFailure<TPayload extends MeshContractV1>(
+	reason: MeshEnvelopeVerificationFailureCode,
+): MeshEnvelopeVerificationResult<TPayload> {
 	return Object.freeze({ ok: false, reason });
 }
 
@@ -494,7 +553,10 @@ function verificationReason(errorValue: unknown): MeshEnvelopeVerificationFailur
  * Verifies origin evidence without treating it as authorization. Invalid input,
  * metadata mismatch, and signature failure always deny and never throw.
  */
-export async function verifySignedMeshEnvelope(input: unknown, verifier: MeshEnvelopeVerifier): Promise<MeshEnvelopeVerificationResult> {
+export async function verifySignedMeshEnvelope(
+	input: unknown,
+	verifier: MeshEnvelopeVerifier,
+): Promise<MeshEnvelopeVerificationResult> {
 	let envelope: SignedMeshEnvelopeV1;
 	try {
 		envelope = parseSignedMeshEnvelope(input);
@@ -535,7 +597,10 @@ export async function verifySignedMeshEnvelope(input: unknown, verifier: MeshEnv
 	});
 }
 
-export async function verifySignedTaskContract(input: unknown, verifier: MeshEnvelopeVerifier): Promise<MeshEnvelopeVerificationResult<TaskContractV1>> {
+export async function verifySignedTaskContract(
+	input: unknown,
+	verifier: MeshEnvelopeVerifier,
+): Promise<MeshEnvelopeVerificationResult<TaskContractV1>> {
 	const result = await verifySignedMeshEnvelope(input, verifier);
 	if (!result.ok) return verificationFailure(result.reason);
 	if (!isTaskEnvelope(result.envelope)) return verificationFailure("payload_type_mismatch");

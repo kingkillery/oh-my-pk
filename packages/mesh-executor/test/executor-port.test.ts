@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+	type AssignmentLeaseV1,
 	MESH_SCHEMA,
 	parseAssignmentLease,
 	parseTaskContract,
 	sha256CanonicalJson,
-	type AssignmentLeaseV1,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
 import type { MeshNodeExecutionContext } from "@pk-nerdsaver-ai/mesh-node";
@@ -13,14 +13,14 @@ import {
 	canonicalExecutorToolPermission,
 	ExecutorHttpCodeGateway,
 	ExecutorHttpGatewayError,
-	ExecutorMeshExecutionError,
-	ExecutorMeshExecutionPort,
-	FetchExecutorHttpTransport,
 	type ExecutorHttpTransport,
 	type ExecutorHttpTransportRequest,
 	type ExecutorHttpTransportResponse,
 	type ExecutorMcpGateway,
 	type ExecutorMcpGatewayRequest,
+	ExecutorMeshExecutionError,
+	ExecutorMeshExecutionPort,
+	FetchExecutorHttpTransport,
 } from "../src";
 
 const NODE_ID = "node_executor-001";
@@ -101,7 +101,11 @@ function makeContext(task: TaskContractV1, assignment = makeAssignment(task)): M
 	};
 }
 
-function makePort(gateway: ExecutorMcpGateway, catalogFingerprint = CATALOG_FINGERPRINT, now: () => number = () => NOW): ExecutorMeshExecutionPort {
+function makePort(
+	gateway: ExecutorMcpGateway,
+	catalogFingerprint = CATALOG_FINGERPRINT,
+	now: () => number = () => NOW,
+): ExecutorMeshExecutionPort {
 	return new ExecutorMeshExecutionPort({
 		gateway,
 		trustedEndpoints: [{ endpointId: ENDPOINT_ID, catalogFingerprint }],
@@ -109,7 +113,10 @@ function makePort(gateway: ExecutorMcpGateway, catalogFingerprint = CATALOG_FING
 	});
 }
 
-function httpResponse(value: unknown, options: { readonly ok?: boolean; readonly status?: number } = {}): ExecutorHttpTransportResponse {
+function httpResponse(
+	value: unknown,
+	options: { readonly ok?: boolean; readonly status?: number } = {},
+): ExecutorHttpTransportResponse {
 	return Object.freeze({
 		ok: options.ok ?? true,
 		status: options.status ?? 200,
@@ -141,14 +148,18 @@ class HangingHttpTransport implements ExecutorHttpTransport {
 	async send(request: ExecutorHttpTransportRequest): Promise<ExecutorHttpTransportResponse> {
 		this.requests.push(request);
 		const pending = Promise.withResolvers<ExecutorHttpTransportResponse>();
-		request.signal.addEventListener("abort", () => pending.reject(new Error("test_transport_aborted")), { once: true });
+		request.signal.addEventListener("abort", () => pending.reject(new Error("test_transport_aborted")), {
+			once: true,
+		});
 		return pending.promise;
 	}
 }
 
 function makeHttpGateway(transport: ExecutorHttpTransport, now: () => number = () => NOW): ExecutorHttpCodeGateway {
 	return new ExecutorHttpCodeGateway({
-		endpoints: [{ endpointId: ENDPOINT_ID, origin: "http://127.0.0.1:4788", authorization: "Bearer host-only-token" }],
+		endpoints: [
+			{ endpointId: ENDPOINT_ID, origin: "http://127.0.0.1:4788", authorization: "Bearer host-only-token" },
+		],
 		transport,
 		now,
 	});
@@ -199,7 +210,10 @@ describe("ExecutorMeshExecutionPort", () => {
 	test("refuses a direct Executor invocation without the full remaining assignment window", async () => {
 		const task = makeTask();
 		const deadlineEpochMs = NOW + 30_000;
-		const context = makeContext(task, makeAssignment(task, { leaseExpiresAt: new Date(deadlineEpochMs).toISOString() }));
+		const context = makeContext(
+			task,
+			makeAssignment(task, { leaseExpiresAt: new Date(deadlineEpochMs).toISOString() }),
+		);
 		let gatewayCalls = 0;
 		const gateway: ExecutorMcpGateway = {
 			async invoke() {
@@ -208,7 +222,9 @@ describe("ExecutorMeshExecutionPort", () => {
 			},
 		};
 
-		await expect(makePort(gateway, CATALOG_FINGERPRINT, () => NOW).run(context)).rejects.toEqual(new ExecutorMeshExecutionError("assignment_lease_insufficient"));
+		await expect(makePort(gateway, CATALOG_FINGERPRINT, () => NOW).run(context)).rejects.toEqual(
+			new ExecutorMeshExecutionError("assignment_lease_insufficient"),
+		);
 		expect(gatewayCalls).toBe(0);
 	});
 
@@ -216,7 +232,10 @@ describe("ExecutorMeshExecutionPort", () => {
 		let now = NOW;
 		const task = makeTask();
 		const deadlineEpochMs = NOW + 60_000;
-		const context = makeContext(task, makeAssignment(task, { leaseExpiresAt: new Date(deadlineEpochMs).toISOString() }));
+		const context = makeContext(
+			task,
+			makeAssignment(task, { leaseExpiresAt: new Date(deadlineEpochMs).toISOString() }),
+		);
 		const gateway: ExecutorMcpGateway = {
 			async invoke() {
 				now = deadlineEpochMs;
@@ -224,7 +243,9 @@ describe("ExecutorMeshExecutionPort", () => {
 			},
 		};
 
-		await expect(makePort(gateway, CATALOG_FINGERPRINT, () => now).run(context)).rejects.toEqual(new ExecutorMeshExecutionError("assignment_lease_expired"));
+		await expect(makePort(gateway, CATALOG_FINGERPRINT, () => now).run(context)).rejects.toEqual(
+			new ExecutorMeshExecutionError("assignment_lease_expired"),
+		);
 	});
 
 	test("rejects missing exact permission, stale args, and untrusted catalog before the gateway", async () => {
@@ -236,23 +257,34 @@ describe("ExecutorMeshExecutionPort", () => {
 			},
 		};
 		const noPermission = makeTask({
-			permissions: { tools: ["executor:localExecutor:tools.github.issues.*"], externalSideEffects: "approval_required" },
+			permissions: {
+				tools: ["executor:localExecutor:tools.github.issues.*"],
+				externalSideEffects: "approval_required",
+			},
 		});
-		await expect(makePort(gateway).start(makeContext(noPermission))).rejects.toMatchObject({ code: "tool_permission_denied" });
+		await expect(makePort(gateway).start(makeContext(noPermission))).rejects.toMatchObject({
+			code: "tool_permission_denied",
+		});
 
 		const validTask = makeTask();
 		const staleArgs = {
 			...validTask,
 			executorInvocation: { ...validTask.executorInvocation, args: { changed: true } },
 		} as TaskContractV1;
-		await expect(makePort(gateway).start(makeContext(staleArgs))).rejects.toMatchObject({ code: "invocation_invalid" });
+		await expect(makePort(gateway).start(makeContext(staleArgs))).rejects.toMatchObject({
+			code: "invocation_invalid",
+		});
 
-		await expect(makePort(gateway, "d".repeat(64)).start(makeContext(validTask))).rejects.toMatchObject({ code: "catalog_fingerprint_mismatch" });
+		await expect(makePort(gateway, "d".repeat(64)).start(makeContext(validTask))).rejects.toMatchObject({
+			code: "catalog_fingerprint_mismatch",
+		});
 		expect(callCount).toBe(0);
 	});
 
 	test("posts only canonical code to the configured Executor endpoint and never opts into auto-approval", async () => {
-		const transport = new RecordingHttpTransport([httpResponse({ status: "completed", text: "completed", structured: {}, isError: false })]);
+		const transport = new RecordingHttpTransport([
+			httpResponse({ status: "completed", text: "completed", structured: {}, isError: false }),
+		]);
 		const task = makeTask();
 		const port = makePort(makeHttpGateway(transport));
 
@@ -268,8 +300,13 @@ describe("ExecutorMeshExecutionPort", () => {
 				authorization: "Bearer host-only-token",
 			},
 		});
-		const body = JSON.parse(transport.requests[0]?.body ?? "") as { readonly code?: unknown; readonly autoApprove?: unknown };
-		expect(body).toEqual({ code: 'return await tools.github.issues.create({"owner":"kingkillery","repo":"oh-my-pk","title":"Safe request"});' });
+		const body = JSON.parse(transport.requests[0]?.body ?? "") as {
+			readonly code?: unknown;
+			readonly autoApprove?: unknown;
+		};
+		expect(body).toEqual({
+			code: 'return await tools.github.issues.create({"owner":"kingkillery","repo":"oh-my-pk","title":"Safe request"});',
+		});
 		expect(body.autoApprove).toBeUndefined();
 		expect(transport.requests[0]?.body).not.toContain(task.goal);
 		expect(transport.requests[0]?.signal.aborted).toBeFalse();
@@ -298,7 +335,9 @@ describe("ExecutorMeshExecutionPort", () => {
 					now: () => NOW,
 				}),
 			);
-			await expect(port.run(makeContext(makeTask()))).rejects.toEqual(new ExecutorHttpGatewayError("transport_unavailable"));
+			await expect(port.run(makeContext(makeTask()))).rejects.toEqual(
+				new ExecutorHttpGatewayError("transport_unavailable"),
+			);
 			expect(redirectedRequestCount).toBe(0);
 		} finally {
 			executor.stop(true);
@@ -314,7 +353,9 @@ describe("ExecutorMeshExecutionPort", () => {
 			bounds: Object.freeze({ ...context.bounds, timeoutSeconds: 1 }),
 		};
 
-		await expect(makePort(makeHttpGateway(transport)).run(timeoutBoundContext)).rejects.toEqual(new ExecutorHttpGatewayError("transport_timed_out"));
+		await expect(makePort(makeHttpGateway(transport)).run(timeoutBoundContext)).rejects.toEqual(
+			new ExecutorHttpGatewayError("transport_timed_out"),
+		);
 		expect(transport.requests).toHaveLength(1);
 		expect(transport.requests[0]?.signal.aborted).toBeTrue();
 	});
@@ -388,24 +429,40 @@ describe("ExecutorMeshExecutionPort", () => {
 			transport: missingEndpointTransport,
 			now: () => NOW,
 		});
-		await expect(makePort(missingEndpointGateway).run(context)).rejects.toEqual(new ExecutorHttpGatewayError("endpoint_not_registered"));
+		await expect(makePort(missingEndpointGateway).run(context)).rejects.toEqual(
+			new ExecutorHttpGatewayError("endpoint_not_registered"),
+		);
 		expect(missingEndpointTransport.requests).toHaveLength(0);
 
-		const knownFailedTransport = new RecordingHttpTransport([httpResponse({ status: "completed", text: "rejected", structured: {}, isError: true })]);
-		await expect(makePort(makeHttpGateway(knownFailedTransport)).run(context)).resolves.toEqual({ outcome: "failed" });
+		const knownFailedTransport = new RecordingHttpTransport([
+			httpResponse({ status: "completed", text: "rejected", structured: {}, isError: true }),
+		]);
+		await expect(makePort(makeHttpGateway(knownFailedTransport)).run(context)).resolves.toEqual({
+			outcome: "failed",
+		});
 		expect(knownFailedTransport.requests).toHaveLength(1);
 
 		const unavailableTransport = new RecordingHttpTransport([]);
-		await expect(makePort(makeHttpGateway(unavailableTransport)).run(context)).rejects.toEqual(new ExecutorHttpGatewayError("transport_unavailable"));
+		await expect(makePort(makeHttpGateway(unavailableTransport)).run(context)).rejects.toEqual(
+			new ExecutorHttpGatewayError("transport_unavailable"),
+		);
 		expect(unavailableTransport.requests).toHaveLength(1);
 
 		for (const [response, code] of [
-			[httpResponse({ status: "completed", text: "unavailable", structured: {}, isError: false }, { ok: false, status: 503 }), "transport_unavailable"],
+			[
+				httpResponse(
+					{ status: "completed", text: "unavailable", structured: {}, isError: false },
+					{ ok: false, status: 503 },
+				),
+				"transport_unavailable",
+			],
 			[httpResponse({ status: "completed" }), "response_invalid"],
 			[httpResponse({ status: "paused" }), "response_invalid"],
 		] as const) {
 			const transport = new RecordingHttpTransport([response]);
-			await expect(makePort(makeHttpGateway(transport)).run(context)).rejects.toEqual(new ExecutorHttpGatewayError(code));
+			await expect(makePort(makeHttpGateway(transport)).run(context)).rejects.toEqual(
+				new ExecutorHttpGatewayError(code),
+			);
 			expect(transport.requests).toHaveLength(1);
 		}
 
@@ -418,7 +475,9 @@ describe("ExecutorMeshExecutionPort", () => {
 	});
 
 	test("never resumes approvals and reports cancellation as uncertain", async () => {
-		const transport = new RecordingHttpTransport([httpResponse({ status: "paused", text: "approval required", structured: { executionId: "execution-paused" } })]);
+		const transport = new RecordingHttpTransport([
+			httpResponse({ status: "paused", text: "approval required", structured: { executionId: "execution-paused" } }),
+		]);
 		const context = makeContext(makeTask());
 		const port = makePort(makeHttpGateway(transport));
 

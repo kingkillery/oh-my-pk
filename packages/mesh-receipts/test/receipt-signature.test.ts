@@ -1,21 +1,21 @@
 import { expect, test } from "bun:test";
 import {
-	MESH_SCHEMA,
-	MeshValidationError,
 	contractDigest,
-	parseExecutionReceipt,
 	type ExecutionReceiptV1,
 	type JsonRecord,
+	MESH_SCHEMA,
+	MeshValidationError,
+	parseExecutionReceipt,
 } from "@pk-nerdsaver-ai/mesh-contracts";
 
 import {
 	canonicalReceiptSigningPayload,
 	createReceiptSigningPayload,
 	decodeReceiptSignatureBase64,
-	signExecutionReceipt,
-	verifySignedExecutionReceipt,
 	type ReceiptSignatureVerifier,
 	type ReceiptSigner,
+	signExecutionReceipt,
+	verifySignedExecutionReceipt,
 } from "../src";
 
 const TEST_KEY_ID = "test-worker-key-alpha";
@@ -102,7 +102,9 @@ test("signs and verifies the canonical receipt-bound payload through injected ad
 		fencingToken: signed.receipt.fencingToken,
 	});
 	expect(canonicalReceiptSigningPayload(signed.receipt)).toContain(signed.receipt.receiptHash);
-	expect(decodeReceiptSignatureBase64(signed.signature.signatureBase64).byteLength).toBe(signed.signature.signatureBytes);
+	expect(decodeReceiptSignatureBase64(signed.signature.signatureBase64).byteLength).toBe(
+		signed.signature.signatureBytes,
+	);
 });
 
 test("rejects a receipt altered after signing even when its self-hash is recomputed", async () => {
@@ -110,7 +112,10 @@ test("rejects a receipt altered after signing even when its self-hash is recompu
 	const { receiptHash: ignoredReceiptHash, ...withoutHash } = signed.receipt;
 	const tamperedBody = { ...withoutHash, outcome: "failed" as const };
 	const tamperedReceipt = { ...tamperedBody, receiptHash: digest(tamperedBody, "receiptHash") };
-	const result = await verifySignedExecutionReceipt({ receipt: tamperedReceipt, signature: signed.signature }, deterministicVerifier());
+	const result = await verifySignedExecutionReceipt(
+		{ receipt: tamperedReceipt, signature: signed.signature },
+		deterministicVerifier(),
+	);
 
 	void ignoredReceiptHash;
 	expect(result).toEqual({ ok: false, reason: "signature_rejected" });

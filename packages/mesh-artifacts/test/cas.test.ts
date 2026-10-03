@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { AtomicFileContentAddressedStore, ContentHashMismatchError, InMemoryContentAddressedStore, sha256Bytes } from "../src";
+import {
+	AtomicFileContentAddressedStore,
+	ContentHashMismatchError,
+	InMemoryContentAddressedStore,
+	sha256Bytes,
+} from "../src";
 
 describe("InMemoryContentAddressedStore", () => {
 	test("rejects content whose supplied address does not match", async () => {

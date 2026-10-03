@@ -6,7 +6,7 @@ import {
 	sha256CanonicalJson,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
-import { placeTask, type PlacementNode } from "../src/index";
+import { type PlacementNode, placeTask } from "../src/index";
 
 function task(routingOverride: Record<string, unknown> = {}): TaskContractV1 {
 	const unsigned = {

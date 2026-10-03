@@ -1,9 +1,9 @@
 import {
 	canonicalizeJson,
-	parseExecutionReceipt,
-	toImmutableJson,
 	type ExecutionReceiptV1,
 	type JsonRecord,
+	parseExecutionReceipt,
+	toImmutableJson,
 } from "@pk-nerdsaver-ai/mesh-contracts";
 
 import { ReceiptSignatureError } from "./errors";
@@ -67,11 +67,11 @@ export type ReceiptSignatureVerificationResult =
 			readonly receipt: ExecutionReceiptV1;
 			readonly payload: ReceiptSigningPayloadV1;
 			readonly signature: ReceiptSignatureEnvelopeV1;
-		}>
+	  }>
 	| Readonly<{
 			readonly ok: false;
 			readonly reason: ReceiptSignatureVerificationFailureCode;
-		}>;
+	  }>;
 
 interface SignatureDescriptor {
 	readonly algorithm: string;
@@ -102,7 +102,11 @@ function requiredText(value: unknown, field: string, code: ReceiptSignatureError
 }
 
 function descriptor(value: unknown, kind: "signer" | "verifier"): SignatureDescriptor {
-	if (!isRecord(value)) throw new ReceiptSignatureError(kind === "signer" ? "invalid_signer" : "invalid_verifier", `${kind} must be an object`);
+	if (!isRecord(value))
+		throw new ReceiptSignatureError(
+			kind === "signer" ? "invalid_signer" : "invalid_verifier",
+			`${kind} must be an object`,
+		);
 	const code = kind === "signer" ? "invalid_signer" : "invalid_verifier";
 	const algorithm = requiredText(value.algorithm, `${kind}.algorithm`, code);
 	const keyId = requiredText(value.keyId, `${kind}.keyId`, code);
@@ -111,13 +115,15 @@ function descriptor(value: unknown, kind: "signer" | "verifier"): SignatureDescr
 
 function assertSigner(value: ReceiptSigner): SignatureDescriptor {
 	const result = descriptor(value, "signer");
-	if (typeof value.sign !== "function") throw new ReceiptSignatureError("invalid_signer", "signer.sign must be a function");
+	if (typeof value.sign !== "function")
+		throw new ReceiptSignatureError("invalid_signer", "signer.sign must be a function");
 	return result;
 }
 
 function assertVerifier(value: ReceiptSignatureVerifier): SignatureDescriptor {
 	const result = descriptor(value, "verifier");
-	if (typeof value.verify !== "function") throw new ReceiptSignatureError("invalid_verifier", "verifier.verify must be a function");
+	if (typeof value.verify !== "function")
+		throw new ReceiptSignatureError("invalid_verifier", "verifier.verify must be a function");
 	return result;
 }
 
@@ -175,7 +181,10 @@ export function encodeReceiptSignatureBase64(signature: Uint8Array): string {
 /** Decodes only canonical RFC 4648 padded base64 to avoid alternate wire encodings. */
 export function decodeReceiptSignatureBase64(signatureBase64: string): Uint8Array {
 	if (typeof signatureBase64 !== "string" || signatureBase64.length === 0 || !BASE64.test(signatureBase64)) {
-		throw new ReceiptSignatureError("invalid_signature_envelope", "signatureBase64 must be non-empty canonical padded base64");
+		throw new ReceiptSignatureError(
+			"invalid_signature_envelope",
+			"signatureBase64 must be non-empty canonical padded base64",
+		);
 	}
 	let binary: string;
 	try {
@@ -194,32 +203,51 @@ export function parseReceiptSignatureEnvelope(input: unknown): ReceiptSignatureE
 	let normalized: JsonRecord;
 	try {
 		const immutable = toImmutableJson(input);
-		if (!isRecord(immutable)) throw new ReceiptSignatureError("invalid_signature_envelope", "signature envelope must be an object");
+		if (!isRecord(immutable))
+			throw new ReceiptSignatureError("invalid_signature_envelope", "signature envelope must be an object");
 		normalized = immutable as JsonRecord;
 	} catch (error) {
 		if (error instanceof ReceiptSignatureError) throw error;
 		throw new ReceiptSignatureError("invalid_signature_envelope", "signature envelope must contain only JSON values");
 	}
 	for (const key of Object.keys(normalized)) {
-		if (!ENVELOPE_FIELDS.has(key)) throw new ReceiptSignatureError("invalid_signature_envelope", `${key} is not permitted in a signature envelope`);
+		if (!ENVELOPE_FIELDS.has(key))
+			throw new ReceiptSignatureError(
+				"invalid_signature_envelope",
+				`${key} is not permitted in a signature envelope`,
+			);
 	}
 	for (const key of ENVELOPE_FIELDS) {
-		if (!hasOwn(normalized, key)) throw new ReceiptSignatureError("invalid_signature_envelope", `${key} is required in a signature envelope`);
+		if (!hasOwn(normalized, key))
+			throw new ReceiptSignatureError("invalid_signature_envelope", `${key} is required in a signature envelope`);
 	}
 	if (normalized.schemaVersion !== RECEIPT_SIGNATURE_ENVELOPE_SCHEMA) {
-		throw new ReceiptSignatureError("invalid_signature_envelope", `schemaVersion must be ${RECEIPT_SIGNATURE_ENVELOPE_SCHEMA}`);
+		throw new ReceiptSignatureError(
+			"invalid_signature_envelope",
+			`schemaVersion must be ${RECEIPT_SIGNATURE_ENVELOPE_SCHEMA}`,
+		);
 	}
 	const algorithm = requiredText(normalized.algorithm, "signature.algorithm", "invalid_signature_envelope");
 	const keyId = requiredText(normalized.keyId, "signature.keyId", "invalid_signature_envelope");
-	if (typeof normalized.signatureBytes !== "number" || !Number.isSafeInteger(normalized.signatureBytes) || normalized.signatureBytes <= 0) {
-		throw new ReceiptSignatureError("invalid_signature_envelope", "signature.signatureBytes must be a positive safe integer");
+	if (
+		typeof normalized.signatureBytes !== "number" ||
+		!Number.isSafeInteger(normalized.signatureBytes) ||
+		normalized.signatureBytes <= 0
+	) {
+		throw new ReceiptSignatureError(
+			"invalid_signature_envelope",
+			"signature.signatureBytes must be a positive safe integer",
+		);
 	}
 	if (typeof normalized.signatureBase64 !== "string") {
 		throw new ReceiptSignatureError("invalid_signature_envelope", "signature.signatureBase64 must be a string");
 	}
 	const signature = decodeReceiptSignatureBase64(normalized.signatureBase64);
 	if (signature.byteLength !== normalized.signatureBytes) {
-		throw new ReceiptSignatureError("invalid_signature_envelope", "signature.signatureBytes does not match signatureBase64");
+		throw new ReceiptSignatureError(
+			"invalid_signature_envelope",
+			"signature.signatureBytes does not match signatureBase64",
+		);
 	}
 	return Object.freeze({
 		schemaVersion: RECEIPT_SIGNATURE_ENVELOPE_SCHEMA,
@@ -259,7 +287,10 @@ export async function signExecutionReceipt(receipt: unknown, signer: ReceiptSign
  * Verifies a signed receipt without throwing for untrusted input. Every parse,
  * identity, algorithm, decoding, or verifier failure is an explicit denial.
  */
-export async function verifySignedExecutionReceipt(input: unknown, verifier: ReceiptSignatureVerifier): Promise<ReceiptSignatureVerificationResult> {
+export async function verifySignedExecutionReceipt(
+	input: unknown,
+	verifier: ReceiptSignatureVerifier,
+): Promise<ReceiptSignatureVerificationResult> {
 	const signed = signedInput(input);
 	if (signed === undefined) return verificationFailure("invalid_receipt");
 
@@ -294,7 +325,8 @@ export async function verifySignedExecutionReceipt(input: unknown, verifier: Rec
 		return verificationFailure("invalid_signature_envelope");
 	}
 	try {
-		if ((await verifier.verify(payloadBytes(payload), signature)) !== true) return verificationFailure("signature_rejected");
+		if ((await verifier.verify(payloadBytes(payload), signature)) !== true)
+			return verificationFailure("signature_rejected");
 	} catch {
 		return verificationFailure("verifier_error");
 	}

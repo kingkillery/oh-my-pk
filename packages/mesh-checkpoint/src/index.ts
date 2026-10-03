@@ -1,14 +1,17 @@
 import {
+	type CheckpointManifestV1,
+	type JsonRecord,
+	type JsonValue,
 	MESH_SCHEMA,
 	parseCheckpointManifest,
 	sha256CanonicalJson,
 	toImmutableJson,
-	type CheckpointManifestV1,
-	type JsonRecord,
-	type JsonValue,
 } from "@pk-nerdsaver-ai/mesh-contracts";
 
-export type CreateCheckpointManifestInput = Omit<CheckpointManifestV1, "schemaVersion" | "contentDigest" | "manifestDigest">;
+export type CreateCheckpointManifestInput = Omit<
+	CheckpointManifestV1,
+	"schemaVersion" | "contentDigest" | "manifestDigest"
+>;
 
 /** A checkpoint is metadata and artifact references only; it must never embed file bytes. */
 export class CheckpointSafetyError extends Error {
@@ -49,7 +52,8 @@ function assertNoSecretMaterial(value: JsonValue, path: string): void {
 		return;
 	}
 	for (const [key, entry] of Object.entries(value)) {
-		if (SECRET_KEY.test(key) && key !== "secretScan") fail(`${path}.${key}`, "must not contain credential-bearing fields");
+		if (SECRET_KEY.test(key) && key !== "secretScan")
+			fail(`${path}.${key}`, "must not contain credential-bearing fields");
 		assertNoSecretMaterial(entry, `${path}.${key}`);
 	}
 }

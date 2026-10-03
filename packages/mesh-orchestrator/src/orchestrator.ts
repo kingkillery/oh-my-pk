@@ -1,16 +1,16 @@
+import { parseSignedMeshEnvelope } from "@pk-nerdsaver-ai/mesh-auth";
 import {
+	type AssignmentLeaseV1,
+	type ExecutionReceiptV1,
+	type JsonRecord,
 	MESH_SCHEMA,
 	parseAssignmentLease,
 	parseExecutionReceipt,
 	parseTaskContract,
 	sha256CanonicalJson,
-	type AssignmentLeaseV1,
-	type ExecutionReceiptV1,
-	type JsonRecord,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
-import { parseSignedMeshEnvelope } from "@pk-nerdsaver-ai/mesh-auth";
-import { verifySignedExecutionReceipt, type ReceiptSignatureVerifier } from "@pk-nerdsaver-ai/mesh-receipts";
+import { type ReceiptSignatureVerifier, verifySignedExecutionReceipt } from "@pk-nerdsaver-ai/mesh-receipts";
 
 import {
 	AssignmentLeaseAuthorityError,
@@ -33,8 +33,8 @@ import type {
 	MeshRuntimeSnapshot,
 	OutboxDrainResult,
 	OutboxMessage,
-	ReceiptRequest,
 	ReapResult,
+	ReceiptRequest,
 	RuntimeAssignmentDelivery,
 	RuntimeAssignmentDeliveryRecovery,
 	RuntimeAssignmentRecord,
@@ -69,7 +69,8 @@ function nonNegativeInteger(value: number, name: string): void {
 }
 
 function positiveOrInfinity(value: number, name: string): void {
-	if ((value !== Number.POSITIVE_INFINITY && !Number.isFinite(value)) || value <= 0) throw new TypeError(`${name} must be positive or Infinity`);
+	if ((value !== Number.POSITIVE_INFINITY && !Number.isFinite(value)) || value <= 0)
+		throw new TypeError(`${name} must be positive or Infinity`);
 }
 
 function leaseDeadline(lease: AssignmentLeaseV1): number {
@@ -84,13 +85,16 @@ function findOutboxByKey(snapshot: MeshRuntimeSnapshot, idempotencyKey: string):
 	return Object.values(snapshot.outbox).find(message => message.idempotencyKey === idempotencyKey);
 }
 
-function enqueue(snapshot: MeshRuntimeSnapshot, input: {
-	readonly type: string;
-	readonly aggregateId: string;
-	readonly idempotencyKey: string;
-	readonly payload: JsonRecord;
-	readonly now: number;
-}): void {
+function enqueue(
+	snapshot: MeshRuntimeSnapshot,
+	input: {
+		readonly type: string;
+		readonly aggregateId: string;
+		readonly idempotencyKey: string;
+		readonly payload: JsonRecord;
+		readonly now: number;
+	},
+): void {
 	if (findOutboxByKey(snapshot, input.idempotencyKey) !== undefined) return;
 	const ordinal = Object.keys(snapshot.outbox).length + 1;
 	const outboxId = outboundId(input.aggregateId, input.type, ordinal);
@@ -183,7 +187,11 @@ function sameDelivery(left: RuntimeAssignmentDelivery, right: RuntimeAssignmentD
 	);
 }
 
-function assertExactCurrentAssignment(snapshot: MeshRuntimeSnapshot, record: RuntimeAssignmentRecord, now: number): RuntimeTaskRecord {
+function assertExactCurrentAssignment(
+	snapshot: MeshRuntimeSnapshot,
+	record: RuntimeAssignmentRecord,
+	now: number,
+): RuntimeTaskRecord {
 	const assignment = record.lease;
 	assertCurrentScheduler(snapshot, assignment, now);
 	const task = snapshot.tasks[assignment.taskId];
@@ -203,7 +211,12 @@ function assertExactCurrentAssignment(snapshot: MeshRuntimeSnapshot, record: Run
 	return task;
 }
 
-function assertAssignmentFence(snapshot: MeshRuntimeSnapshot, record: RuntimeAssignmentRecord | undefined, receipt: ExecutionReceiptV1, now: number): RuntimeAssignmentRecord {
+function assertAssignmentFence(
+	snapshot: MeshRuntimeSnapshot,
+	record: RuntimeAssignmentRecord | undefined,
+	receipt: ExecutionReceiptV1,
+	now: number,
+): RuntimeAssignmentRecord {
 	if (record === undefined || record.state !== "leased") throw new FencingViolationError(receipt.assignmentId);
 	if (
 		snapshot.scheduler.epoch !== receipt.schedulerEpoch ||
@@ -271,7 +284,9 @@ export class MeshOrchestrator {
 				if (existingById.task.digest !== task.digest) throw new IdempotencyConflictError(task.taskId);
 				return structuredClone(existingById);
 			}
-			const existingByKey = Object.values(snapshot.tasks).find(record => record.task.idempotencyKey === task.idempotencyKey);
+			const existingByKey = Object.values(snapshot.tasks).find(
+				record => record.task.idempotencyKey === task.idempotencyKey,
+			);
 			if (existingByKey !== undefined) {
 				if (existingByKey.task.digest !== task.digest) throw new IdempotencyConflictError(task.idempotencyKey);
 				return structuredClone(existingByKey);
@@ -302,9 +317,13 @@ export class MeshOrchestrator {
 			// The repository may wait for an earlier durable transaction. Read trusted
 			// time only after it has admitted this authority-changing operation.
 			const now = this.#authorityClockNow(request.now);
-			const activeOtherScheduler = snapshot.scheduler.leaseExpiresAt > now && snapshot.scheduler.ownerId !== undefined && snapshot.scheduler.ownerId !== request.schedulerId;
+			const activeOtherScheduler =
+				snapshot.scheduler.leaseExpiresAt > now &&
+				snapshot.scheduler.ownerId !== undefined &&
+				snapshot.scheduler.ownerId !== request.schedulerId;
 			if (activeOtherScheduler) throw new SchedulerLeaseConflictError();
-			const continuingOwner = snapshot.scheduler.ownerId === request.schedulerId && snapshot.scheduler.leaseExpiresAt > now;
+			const continuingOwner =
+				snapshot.scheduler.ownerId === request.schedulerId && snapshot.scheduler.leaseExpiresAt > now;
 			if (!continuingOwner) {
 				snapshot.scheduler.epoch += 1;
 				snapshot.scheduler.ownerId = request.schedulerId;
@@ -405,8 +424,12 @@ export class MeshOrchestrator {
 			assertCurrentScheduler(snapshot, assignment, now);
 			const existing = snapshot.assignments[assignment.assignmentId];
 			if (existing !== undefined) {
-				if (sha256CanonicalJson(existing.lease) !== sha256CanonicalJson(assignment)) throw new IdempotencyConflictError(assignment.assignmentId);
-				if (delivery !== undefined && (existing.delivery === undefined || !sameDelivery(existing.delivery, delivery))) {
+				if (sha256CanonicalJson(existing.lease) !== sha256CanonicalJson(assignment))
+					throw new IdempotencyConflictError(assignment.assignmentId);
+				if (
+					delivery !== undefined &&
+					(existing.delivery === undefined || !sameDelivery(existing.delivery, delivery))
+				) {
 					throw new IdempotencyConflictError(assignment.assignmentId);
 				}
 				assertExactCurrentAssignment(snapshot, existing, now);
@@ -419,10 +442,14 @@ export class MeshOrchestrator {
 			if (delivery !== undefined && sha256CanonicalJson(delivery.task) !== sha256CanonicalJson(task.task)) {
 				throw new IdempotencyConflictError(assignment.assignmentId);
 			}
-			if (leaseDeadline(assignment) <= now) throw new TransitionViolationError(assignment.assignmentId, "expired", "be assigned");
-			if (assignment.fencingToken <= task.latestFencingToken) throw new FencingViolationError(assignment.assignmentId);
+			if (leaseDeadline(assignment) <= now)
+				throw new TransitionViolationError(assignment.assignmentId, "expired", "be assigned");
+			if (assignment.fencingToken <= task.latestFencingToken)
+				throw new FencingViolationError(assignment.assignmentId);
 			const workerCapacity = currentWorkerCapacity(snapshot, assignment, now);
-			const leasedWorkerAssignments = Object.values(snapshot.assignments).filter(record => record.state === "leased" && record.lease.workerNodeId === assignment.workerNodeId).length;
+			const leasedWorkerAssignments = Object.values(snapshot.assignments).filter(
+				record => record.state === "leased" && record.lease.workerNodeId === assignment.workerNodeId,
+			).length;
 			if (leasedWorkerAssignments >= workerCapacity) throw new WorkerCapacityConflictError(assignment.workerNodeId);
 			const record: RuntimeAssignmentRecord = {
 				lease: assignment,
@@ -440,7 +467,11 @@ export class MeshOrchestrator {
 				type: "assignment.issued",
 				aggregateId: assignment.taskId,
 				idempotencyKey: `assignment.issued:${assignment.assignmentId}:${assignment.fencingToken}`,
-				payload: asPayload({ assignmentId: assignment.assignmentId, taskId: assignment.taskId, fencingToken: assignment.fencingToken }),
+				payload: asPayload({
+					assignmentId: assignment.assignmentId,
+					taskId: assignment.taskId,
+					fencingToken: assignment.fencingToken,
+				}),
 				now,
 			});
 			return structuredClone(record);
@@ -452,7 +483,10 @@ export class MeshOrchestrator {
 	 * while the lease remains current. It neither changes authority nor creates
 	 * an outbox message, so restart delivery cannot manufacture new work.
 	 */
-	async recoverAssignmentDelivery(assignmentId: string, now?: number): Promise<RuntimeAssignmentDeliveryRecovery | undefined> {
+	async recoverAssignmentDelivery(
+		assignmentId: string,
+		now?: number,
+	): Promise<RuntimeAssignmentDeliveryRecovery | undefined> {
 		nonEmpty(assignmentId, "assignmentId");
 		return this.#repository.read(snapshot => {
 			const record = snapshot.assignments[assignmentId];
@@ -497,13 +531,15 @@ export class MeshOrchestrator {
 			const receipt = verification.receipt;
 			assertReceiptExecutorBinding(assignmentRecord, receipt);
 			if (assignmentRecord.receipt !== undefined) {
-				if (assignmentRecord.receipt.receiptHash !== receipt.receiptHash) throw new IdempotencyConflictError(receipt.receiptId);
+				if (assignmentRecord.receipt.receiptHash !== receipt.receiptHash)
+					throw new IdempotencyConflictError(receipt.receiptId);
 				return structuredClone(assignmentRecord);
 			}
 			const now = this.#receiptClockNow();
 			const assignment = assertAssignmentFence(snapshot, assignmentRecord, receipt, now);
 			const task = snapshot.tasks[receipt.taskId];
-			if (task === undefined || task.currentAssignmentId !== receipt.assignmentId) throw new FencingViolationError(receipt.assignmentId);
+			if (task === undefined || task.currentAssignmentId !== receipt.assignmentId)
+				throw new FencingViolationError(receipt.assignmentId);
 			assignment.receipt = receipt;
 			assignment.receiptVerification = Object.freeze({
 				algorithm: verification.signature.algorithm,
@@ -522,7 +558,11 @@ export class MeshOrchestrator {
 				type: "receipt.recorded",
 				aggregateId: receipt.taskId,
 				idempotencyKey: `receipt.recorded:${receipt.receiptId}:${receipt.receiptHash}`,
-				payload: asPayload({ assignmentId: receipt.assignmentId, receiptId: receipt.receiptId, taskId: receipt.taskId }),
+				payload: asPayload({
+					assignmentId: receipt.assignmentId,
+					receiptId: receipt.receiptId,
+					taskId: receipt.taskId,
+				}),
 				now,
 			});
 			return structuredClone(assignment);
@@ -548,19 +588,25 @@ export class MeshOrchestrator {
 					type: "assignment.expired",
 					aggregateId: assignment.lease.taskId,
 					idempotencyKey: `assignment.expired:${assignment.lease.assignmentId}:${assignment.lease.fencingToken}`,
-					payload: asPayload({ assignmentId: assignment.lease.assignmentId, taskId: assignment.lease.taskId, fencingToken: assignment.lease.fencingToken }),
+					payload: asPayload({
+						assignmentId: assignment.lease.assignmentId,
+						taskId: assignment.lease.taskId,
+						fencingToken: assignment.lease.fencingToken,
+					}),
 					now,
 				});
 			}
 			for (const message of Object.values(snapshot.outbox)) {
-				if (message.state !== "in_flight" || message.lockedUntil === undefined || message.lockedUntil > now) continue;
+				if (message.state !== "in_flight" || message.lockedUntil === undefined || message.lockedUntil > now)
+					continue;
 				message.state = "pending";
 				message.claimToken = undefined;
 				message.lockedUntil = undefined;
 				message.availableAt = now;
 				recoveredOutboxMessages.push(message.outboxId);
 			}
-			const schedulerLeaseExpired = snapshot.scheduler.ownerId !== undefined && snapshot.scheduler.leaseExpiresAt <= now;
+			const schedulerLeaseExpired =
+				snapshot.scheduler.ownerId !== undefined && snapshot.scheduler.leaseExpiresAt <= now;
 			if (schedulerLeaseExpired) snapshot.scheduler.ownerId = undefined;
 			return Object.freeze({
 				expiredAssignments: Object.freeze(expiredAssignments),
@@ -570,7 +616,10 @@ export class MeshOrchestrator {
 		});
 	}
 
-	async drainOutbox(publisher: MeshOutboxPublisher, options?: { readonly now?: number; readonly max?: number }): Promise<OutboxDrainResult> {
+	async drainOutbox(
+		publisher: MeshOutboxPublisher,
+		options?: { readonly now?: number; readonly max?: number },
+	): Promise<OutboxDrainResult> {
 		const now = options?.now ?? Date.now();
 		const max = options?.max ?? Number.POSITIVE_INFINITY;
 		positiveOrInfinity(max, "max");
@@ -656,11 +705,15 @@ export class MeshOrchestrator {
 		return Math.max(durableNow, requestedNow);
 	}
 
-	async #claimNextOutbox(now: number): Promise<{ readonly message: OutboxMessage; readonly claimToken: string } | undefined> {
+	async #claimNextOutbox(
+		now: number,
+	): Promise<{ readonly message: OutboxMessage; readonly claimToken: string } | undefined> {
 		return this.#repository.transaction(({ snapshot }) => {
 			const message = Object.values(snapshot.outbox)
 				.filter(candidate => candidate.state === "pending" && candidate.availableAt <= now)
-				.sort((left, right) => left.availableAt - right.availableAt || left.outboxId.localeCompare(right.outboxId))[0];
+				.sort(
+					(left, right) => left.availableAt - right.availableAt || left.outboxId.localeCompare(right.outboxId),
+				)[0];
 			if (message === undefined) return undefined;
 			message.state = "in_flight";
 			message.attempts += 1;

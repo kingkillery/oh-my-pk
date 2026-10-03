@@ -18,12 +18,12 @@ export type OmpkModelRouteResolution =
 			readonly modelId: string;
 			readonly selectionSource: string;
 			readonly policyRevision: string;
-		}
+	  }
 	| {
 			readonly status: "unavailable";
 			readonly reason: string;
 			readonly policyRevision: string;
-		};
+	  };
 
 /** OMPK remains the only component that interprets model policy and provider availability. */
 export interface OmpkModelRouteDelegate {
@@ -55,7 +55,7 @@ export type ModelRouteDecision =
 			readonly providerId: string;
 			readonly modelId: string;
 			readonly provenance: ModelRouteProvenance;
-		}
+	  }
 	| {
 			readonly status: "unavailable";
 			readonly taskId: string;
@@ -64,16 +64,13 @@ export type ModelRouteDecision =
 			readonly workloadRole: ModelWorkloadRole;
 			readonly reason: string;
 			readonly provenance: ModelRouteProvenance;
-		};
+	  };
 
 export interface ModelRouteBroker {
 	route(request: ModelRouteRequest, signal: AbortSignal): Promise<ModelRouteDecision>;
 }
 
-function freezeProvenance(
-	resolution: OmpkModelRouteResolution,
-	decidedAt: string,
-): ModelRouteProvenance {
+function freezeProvenance(resolution: OmpkModelRouteResolution, decidedAt: string): ModelRouteProvenance {
 	if (resolution.status === "selected") {
 		return Object.freeze({
 			authority: "ompk-model-router" as const,

@@ -4,7 +4,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { MeshOrchestrator, MeshRuntimeCorruptionError, SqliteMeshRuntimeRepository, WorkerCapacityObservationError } from "../src";
+import {
+	MeshOrchestrator,
+	MeshRuntimeCorruptionError,
+	SqliteMeshRuntimeRepository,
+	WorkerCapacityObservationError,
+} from "../src";
 
 function createDatabasePath(): { readonly directory: string; readonly path: string } {
 	const directory = mkdtempSync(join(tmpdir(), "mesh-orchestrator-"));
@@ -30,7 +35,9 @@ describe("SqliteMeshRuntimeRepository", () => {
 			first.close();
 
 			const probe = new Database(database.path, { readonly: true, strict: true });
-			const migration = probe.query<{ version: number }, []>("SELECT MAX(version) AS version FROM mesh_runtime_schema_migrations").get();
+			const migration = probe
+				.query<{ version: number }, []>("SELECT MAX(version) AS version FROM mesh_runtime_schema_migrations")
+				.get();
 			const journalMode = probe.query<{ journal_mode: string }, []>("PRAGMA journal_mode").get();
 			probe.close();
 			expect(migration?.version).toBe(3);
@@ -42,7 +49,12 @@ describe("SqliteMeshRuntimeRepository", () => {
 			expect(snapshot.revision).toBe(1);
 			expect(snapshot.scheduler).toEqual({ epoch: 7, ownerId: "scheduler-durable-001", leaseExpiresAt: 42 });
 			expect(snapshot.workerCapacityObservations).toEqual({
-				"node_durable-worker": { actorPubkey: "worker-durable-001", availableSlots: 0, observedAt: 21, expiresAt: 42 },
+				"node_durable-worker": {
+					actorPubkey: "worker-durable-001",
+					availableSlots: 0,
+					observedAt: 21,
+					expiresAt: 42,
+				},
 			});
 		} finally {
 			rmSync(database.directory, { recursive: true, force: true });
@@ -83,7 +95,9 @@ describe("SqliteMeshRuntimeRepository", () => {
 				),
 			);
 
-			expect(commits.map(commit => commit.observedRevision)).toEqual(Array.from({ length: 12 }, (_, index) => index));
+			expect(commits.map(commit => commit.observedRevision)).toEqual(
+				Array.from({ length: 12 }, (_, index) => index),
+			);
 			expect(commits.map(commit => commit.epoch)).toEqual(Array.from({ length: 12 }, (_, index) => index + 1));
 			const afterCommits = await first.read(snapshot => snapshot);
 			expect(afterCommits.revision).toBe(12);
@@ -122,7 +136,11 @@ describe("SqliteMeshRuntimeRepository", () => {
 			first.close();
 
 			const raw = new Database(database.path, { create: false, readwrite: true, strict: true });
-			const row = raw.query<{ snapshotJson: string }, []>("SELECT snapshot_json AS snapshotJson FROM mesh_runtime_state WHERE singleton = 1").get();
+			const row = raw
+				.query<{ snapshotJson: string }, []>(
+					"SELECT snapshot_json AS snapshotJson FROM mesh_runtime_state WHERE singleton = 1",
+				)
+				.get();
 			if (row === null || row === undefined) throw new Error("expected durable snapshot");
 			const legacy = JSON.parse(row.snapshotJson) as Record<string, unknown>;
 			delete legacy.workerCapacityObservations;
@@ -138,7 +156,9 @@ describe("SqliteMeshRuntimeRepository", () => {
 			expect(snapshot.workerCapacityObservations).toEqual({});
 
 			const probe = new Database(database.path, { readonly: true, strict: true });
-			const migration = probe.query<{ version: number }, []>("SELECT MAX(version) AS version FROM mesh_runtime_schema_migrations").get();
+			const migration = probe
+				.query<{ version: number }, []>("SELECT MAX(version) AS version FROM mesh_runtime_schema_migrations")
+				.get();
 			probe.close();
 			expect(migration?.version).toBe(3);
 		} finally {

@@ -1,9 +1,8 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-
-import type { TaskContractV1 } from "@pk-nerdsaver-ai/mesh-contracts";
 import type { SignedMeshEnvelopeV1 } from "@pk-nerdsaver-ai/mesh-auth";
+import type { TaskContractV1 } from "@pk-nerdsaver-ai/mesh-contracts";
 
 import type { MeshNodeLifecycleRecord, MeshNodeLifecycleState } from "./lifecycle";
 
@@ -120,7 +119,8 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 function assertObjectMap(value: unknown, name: string): asserts value is Record<string, Record<string, unknown>> {
 	if (!isRecord(value)) throw new MeshNodeStateCorruptionError(`${name} is not an object map`);
-	for (const entry of Object.values(value)) if (!isRecord(entry)) throw new MeshNodeStateCorruptionError(`${name} contains a non-object record`);
+	for (const entry of Object.values(value))
+		if (!isRecord(entry)) throw new MeshNodeStateCorruptionError(`${name} contains a non-object record`);
 }
 
 function assertIdentity(value: unknown): asserts value is MeshNodeStateIdentity {
@@ -254,11 +254,16 @@ export class SqliteMeshNodeStateRepository implements MeshNodeStateRepository {
 			);
 		`);
 		const initial = createEmptyMeshNodeStateSnapshot();
-		this.#db.run(
-			"INSERT INTO mesh_node_state (singleton, revision, snapshot_json, updated_at) VALUES (?, ?, ?, ?)",
-			[STATE_ROW_ID, initial.revision, JSON.stringify(initial), new Date().toISOString()],
-		);
-		this.#db.run("INSERT INTO mesh_node_state_schema_migrations (version, applied_at) VALUES (?, ?)", [1, new Date().toISOString()]);
+		this.#db.run("INSERT INTO mesh_node_state (singleton, revision, snapshot_json, updated_at) VALUES (?, ?, ?, ?)", [
+			STATE_ROW_ID,
+			initial.revision,
+			JSON.stringify(initial),
+			new Date().toISOString(),
+		]);
+		this.#db.run("INSERT INTO mesh_node_state_schema_migrations (version, applied_at) VALUES (?, ?)", [
+			1,
+			new Date().toISOString(),
+		]);
 	}
 
 	/**
@@ -270,7 +275,9 @@ export class SqliteMeshNodeStateRepository implements MeshNodeStateRepository {
 		let row: StateRow | null;
 		try {
 			row = this.#db
-				.query<StateRow, []>("SELECT revision, snapshot_json AS snapshotJson FROM mesh_node_state WHERE singleton = 1")
+				.query<StateRow, []>(
+					"SELECT revision, snapshot_json AS snapshotJson FROM mesh_node_state WHERE singleton = 1",
+				)
 				.get();
 		} catch {
 			throw new MeshNodeStateCorruptionError("node state table is unreadable");
@@ -285,7 +292,8 @@ export class SqliteMeshNodeStateRepository implements MeshNodeStateRepository {
 			throw new MeshNodeStateCorruptionError("node state snapshot is not valid JSON");
 		}
 		const snapshot = assertSnapshot(parsed);
-		if (snapshot.revision !== row.revision) throw new MeshNodeStateCorruptionError("node state revision does not match its snapshot");
+		if (snapshot.revision !== row.revision)
+			throw new MeshNodeStateCorruptionError("node state revision does not match its snapshot");
 		snapshot.revision = row.revision + 1;
 		const result = this.#db.run(
 			`UPDATE mesh_node_state
@@ -294,20 +302,26 @@ export class SqliteMeshNodeStateRepository implements MeshNodeStateRepository {
 			[snapshot.revision, JSON.stringify(snapshot), new Date().toISOString(), STATE_ROW_ID, row.revision],
 		);
 		if (result.changes !== 1) throw new MeshNodeStateError("node state revision changed during migration");
-		this.#db.run("INSERT INTO mesh_node_state_schema_migrations (version, applied_at) VALUES (?, ?)", [2, new Date().toISOString()]);
+		this.#db.run("INSERT INTO mesh_node_state_schema_migrations (version, applied_at) VALUES (?, ?)", [
+			2,
+			new Date().toISOString(),
+		]);
 	}
 
 	#loadSnapshot(): MeshNodeStateSnapshot {
 		let row: StateRow | null;
 		try {
 			row = this.#db
-				.query<StateRow, []>("SELECT revision, snapshot_json AS snapshotJson FROM mesh_node_state WHERE singleton = 1")
+				.query<StateRow, []>(
+					"SELECT revision, snapshot_json AS snapshotJson FROM mesh_node_state WHERE singleton = 1",
+				)
 				.get();
 		} catch {
 			throw new MeshNodeStateCorruptionError("node state table is unreadable");
 		}
 		if (row === null || row === undefined) throw new MeshNodeStateCorruptionError("node state row is missing");
-		if (!isNonNegativeInteger(row.revision)) throw new MeshNodeStateCorruptionError("node state row revision is invalid");
+		if (!isNonNegativeInteger(row.revision))
+			throw new MeshNodeStateCorruptionError("node state row revision is invalid");
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(row.snapshotJson);
@@ -315,7 +329,8 @@ export class SqliteMeshNodeStateRepository implements MeshNodeStateRepository {
 			throw new MeshNodeStateCorruptionError("node state snapshot is not valid JSON");
 		}
 		const snapshot = assertSnapshot(parsed);
-		if (snapshot.revision !== row.revision) throw new MeshNodeStateCorruptionError("node state revision does not match its snapshot");
+		if (snapshot.revision !== row.revision)
+			throw new MeshNodeStateCorruptionError("node state revision does not match its snapshot");
 		return snapshot;
 	}
 

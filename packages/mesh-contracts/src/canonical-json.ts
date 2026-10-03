@@ -16,7 +16,8 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function normalize(value: unknown, path: string, ancestors: ReadonlySet<object>): JsonValue {
 	if (value === null || typeof value === "string" || typeof value === "boolean") return value;
 	if (typeof value === "number") {
-		if (!Number.isFinite(value) || Object.is(value, -0)) fail(path, "must be a finite, non-negative-zero JSON number");
+		if (!Number.isFinite(value) || Object.is(value, -0))
+			fail(path, "must be a finite, non-negative-zero JSON number");
 		return value;
 	}
 	if (Array.isArray(value)) {

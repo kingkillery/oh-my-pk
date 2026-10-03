@@ -6,10 +6,7 @@ import {
 	sha256CanonicalJson,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
-import {
-	createModelRouteBroker,
-	type OmpkModelRouteRequest,
-} from "../src/index";
+import { createModelRouteBroker, type OmpkModelRouteRequest } from "../src/index";
 
 function task(): TaskContractV1 {
 	const unsigned = {

@@ -3,32 +3,31 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { type MeshEnvelopeSigner, type MeshEnvelopeVerifier, signAssignmentLease } from "@pk-nerdsaver-ai/mesh-auth";
 import {
+	type AssignmentLeaseV1,
 	MESH_SCHEMA,
 	parseAssignmentLease,
 	parseNodeAdvertisement,
 	parseTaskContract,
 	sha256CanonicalJson,
-	type AssignmentLeaseV1,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
-import { signAssignmentLease, type MeshEnvelopeSigner, type MeshEnvelopeVerifier } from "@pk-nerdsaver-ai/mesh-auth";
 import {
+	InMemoryMeshNodeStateRepository,
+	type MeshExecutionRunResult,
 	MeshNodeAgent,
 	MeshNodeAgentError,
-	MeshNodeStateCorruptionError,
-	InMemoryMeshNodeStateRepository,
-	projectNodeAdvertisement,
-	SqliteMeshNodeStateRepository,
-	type MeshExecutionRunResult,
 	type MeshNodeExecutionContext,
 	type MeshNodeExecutionPort,
 	type MeshNodePresence,
+	MeshNodeStateCorruptionError,
 	type MeshNodeStateRepository,
 	type MeshNodeStateSnapshot,
 	type MeshNodeStateTransaction,
 	type MeshNodeTerminalOutboxPublication,
+	projectNodeAdvertisement,
+	SqliteMeshNodeStateRepository,
 } from "../src";
 
 const NOW = Date.parse("2026-08-31T12:00:00.000Z");
@@ -113,7 +112,9 @@ function makeAssignment(task: TaskContractV1, overrides: Record<string, unknown>
 }
 
 function signature(payload: Uint8Array): Uint8Array {
-	return signatureEncoder.encode(`${SIGNATURE_ALGORITHM}:${SIGNATURE_KEY_ID}:${signatureDecoder.decode(payload).split("").reverse().join("")}`);
+	return signatureEncoder.encode(
+		`${SIGNATURE_ALGORITHM}:${SIGNATURE_KEY_ID}:${signatureDecoder.decode(payload).split("").reverse().join("")}`,
+	);
 }
 
 const schedulerVerifier: MeshEnvelopeVerifier = Object.freeze({
@@ -266,15 +267,27 @@ describe("SqliteMeshNodeStateRepository", () => {
 			const reopenedRepository = new SqliteMeshNodeStateRepository(database.path);
 			const reopenedCalls = calls();
 			const reopened = await createAgent(reopenedRepository, makePort(reopenedCalls));
-			const duplicate = await reopened.accept({ task, signedAssignment: await signedAssignment(assignment, "2026-08-31T11:59:45.000Z") });
+			const duplicate = await reopened.accept({
+				task,
+				signedAssignment: await signedAssignment(assignment, "2026-08-31T11:59:45.000Z"),
+			});
 			expect(duplicate).toEqual(admission);
 			expect(reopened.state(assignment.assignmentId)).toBe("admitted");
-			expect(reopened.assignmentEvents(assignment.assignmentId).filter(event => event.type === "assignment.accepted")).toHaveLength(1);
+			expect(
+				reopened.assignmentEvents(assignment.assignmentId).filter(event => event.type === "assignment.accepted"),
+			).toHaveLength(1);
 
 			const conflicting = makeAssignment(task, { leaseExpiresAt: "2026-08-31T12:06:00.000Z" });
-			await expect(reopened.accept({ task, signedAssignment: await signedAssignment(conflicting) })).rejects.toMatchObject({ code: "assignment_already_known" });
-			const second = makeAssignment(task, { assignmentId: "asg_node-state-capacity-002", idempotencyKey: "assignment-node-state-capacity-002" });
-			await expect(reopened.accept({ task, signedAssignment: await signedAssignment(second) })).rejects.toMatchObject({ code: "capacity_exhausted" });
+			await expect(
+				reopened.accept({ task, signedAssignment: await signedAssignment(conflicting) }),
+			).rejects.toMatchObject({ code: "assignment_already_known" });
+			const second = makeAssignment(task, {
+				assignmentId: "asg_node-state-capacity-002",
+				idempotencyKey: "assignment-node-state-capacity-002",
+			});
+			await expect(
+				reopened.accept({ task, signedAssignment: await signedAssignment(second) }),
+			).rejects.toMatchObject({ code: "capacity_exhausted" });
 			expect(reopenedCalls).toEqual({ start: 0, run: 0, cancel: 0, cleanup: 0 });
 			reopenedRepository.close();
 		} finally {
@@ -293,7 +306,11 @@ describe("SqliteMeshNodeStateRepository", () => {
 			firstRepository.close();
 
 			const raw = new Database(database.path, { create: false, readwrite: true, strict: true });
-			const row = raw.query<{ readonly snapshotJson: string }, []>("SELECT snapshot_json AS snapshotJson FROM mesh_node_state WHERE singleton = 1").get();
+			const row = raw
+				.query<{ readonly snapshotJson: string }, []>(
+					"SELECT snapshot_json AS snapshotJson FROM mesh_node_state WHERE singleton = 1",
+				)
+				.get();
 			if (row === null || row === undefined) throw new Error("durable node state row is missing");
 			const snapshot = JSON.parse(row.snapshotJson) as StoredNodeSnapshot;
 			const signature = snapshot.assignments[assignment.assignmentId]?.signedAssignment.signature;
@@ -303,7 +320,9 @@ describe("SqliteMeshNodeStateRepository", () => {
 			raw.close();
 
 			const reopenedRepository = new SqliteMeshNodeStateRepository(database.path);
-			await expect(createAgent(reopenedRepository, makePort(calls()))).rejects.toMatchObject({ code: "assignment_signature_unverified" });
+			await expect(createAgent(reopenedRepository, makePort(calls()))).rejects.toMatchObject({
+				code: "assignment_signature_unverified",
+			});
 			reopenedRepository.close();
 		} finally {
 			rmSync(database.directory, { recursive: true, force: true });
@@ -321,7 +340,11 @@ describe("SqliteMeshNodeStateRepository", () => {
 			firstRepository.close();
 
 			const raw = new Database(database.path, { create: false, readwrite: true, strict: true });
-			const row = raw.query<{ readonly snapshotJson: string }, []>("SELECT snapshot_json AS snapshotJson FROM mesh_node_state WHERE singleton = 1").get();
+			const row = raw
+				.query<{ readonly snapshotJson: string }, []>(
+					"SELECT snapshot_json AS snapshotJson FROM mesh_node_state WHERE singleton = 1",
+				)
+				.get();
 			if (row === null || row === undefined) throw new Error("durable node state row is missing");
 			const snapshot = JSON.parse(row.snapshotJson) as StoredNodeSnapshot;
 			const stored = snapshot.assignments[assignment.assignmentId];
@@ -410,31 +433,47 @@ describe("SqliteMeshNodeStateRepository", () => {
 			const recoveredCalls = calls();
 			const recovered = await createAgent(recoveredRepository, makePort(recoveredCalls));
 			expect(recovered.state(assignment.assignmentId)).toBe("reconciliation_required");
-			expect(recovered.assignmentEvents(assignment.assignmentId).filter(event => event.type === "execution.reconciliation_required")).toHaveLength(1);
-				expect(recovered.outbox()).toHaveLength(0);
-				await expect(recovered.start(assignment.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
-				expect(recoveredCalls).toEqual({ start: 0, run: 0, cancel: 0, cleanup: 0 });
-				const resolved = recovered.resolveReconciliationAsLost(assignment.assignmentId);
-				expect(resolved).toMatchObject({
-					type: "execution.reconciliation_resolved_as_lost",
-					state: "lost",
-					code: "assignment_reconciliation_required",
-				});
-				expect(recovered.resolveReconciliationAsLost(assignment.assignmentId)).toBe(resolved);
-				const next = makeAssignment(task, {
-					assignmentId: "asg_node-state-reconciled-capacity-002",
-					idempotencyKey: "assignment-node-state-reconciled-capacity-002",
-				});
-				await expect(recovered.accept({ task, signedAssignment: await signedAssignment(next) })).resolves.toMatchObject({ type: "assignment.accepted" });
-				recoveredRepository.close();
+			expect(
+				recovered
+					.assignmentEvents(assignment.assignmentId)
+					.filter(event => event.type === "execution.reconciliation_required"),
+			).toHaveLength(1);
+			expect(recovered.outbox()).toHaveLength(0);
+			await expect(recovered.start(assignment.assignmentId)).rejects.toMatchObject({
+				code: "assignment_reconciliation_required",
+			});
+			expect(recoveredCalls).toEqual({ start: 0, run: 0, cancel: 0, cleanup: 0 });
+			const resolved = recovered.resolveReconciliationAsLost(assignment.assignmentId);
+			expect(resolved).toMatchObject({
+				type: "execution.reconciliation_resolved_as_lost",
+				state: "lost",
+				code: "assignment_reconciliation_required",
+			});
+			expect(recovered.resolveReconciliationAsLost(assignment.assignmentId)).toBe(resolved);
+			const next = makeAssignment(task, {
+				assignmentId: "asg_node-state-reconciled-capacity-002",
+				idempotencyKey: "assignment-node-state-reconciled-capacity-002",
+			});
+			await expect(
+				recovered.accept({ task, signedAssignment: await signedAssignment(next) }),
+			).resolves.toMatchObject({ type: "assignment.accepted" });
+			recoveredRepository.close();
 
-				const reopenedRepository = new SqliteMeshNodeStateRepository(database.path);
-				const reopened = await createAgent(reopenedRepository, makePort(calls()));
-				expect(reopened.state(assignment.assignmentId)).toBe("lost");
-				expect(reopened.assignmentEvents(assignment.assignmentId).filter(event => event.type === "execution.reconciliation_required")).toHaveLength(1);
-				expect(reopened.assignmentEvents(assignment.assignmentId).filter(event => event.type === "execution.reconciliation_resolved_as_lost")).toHaveLength(1);
-				expect(reopened.outbox()).toHaveLength(1);
-				reopenedRepository.close();
+			const reopenedRepository = new SqliteMeshNodeStateRepository(database.path);
+			const reopened = await createAgent(reopenedRepository, makePort(calls()));
+			expect(reopened.state(assignment.assignmentId)).toBe("lost");
+			expect(
+				reopened
+					.assignmentEvents(assignment.assignmentId)
+					.filter(event => event.type === "execution.reconciliation_required"),
+			).toHaveLength(1);
+			expect(
+				reopened
+					.assignmentEvents(assignment.assignmentId)
+					.filter(event => event.type === "execution.reconciliation_resolved_as_lost"),
+			).toHaveLength(1);
+			expect(reopened.outbox()).toHaveLength(1);
+			reopenedRepository.close();
 
 			runGate.resolve({ outcome: "succeeded", exitCode: 0 });
 			await expect(activeRun).rejects.toBeInstanceOf(MeshNodeAgentError);
@@ -465,13 +504,21 @@ describe("SqliteMeshNodeStateRepository", () => {
 		await first.accept({ task, signedAssignment: await signedAssignment(assignment) });
 		await first.start(assignment.assignmentId);
 
-		await expect(first.run(assignment.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
+		await expect(first.run(assignment.assignmentId)).rejects.toMatchObject({
+			code: "assignment_reconciliation_required",
+		});
 		expect(first.state(assignment.assignmentId)).toBe("reconciliation_required");
 		expect(first.outbox()).toHaveLength(0);
-		await expect(first.heartbeat(assignment.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
+		await expect(first.heartbeat(assignment.assignmentId)).rejects.toMatchObject({
+			code: "assignment_reconciliation_required",
+		});
 		expect(() => first.cancel(assignment.assignmentId)).toThrow("assignment_reconciliation_required");
-		await expect(first.start(assignment.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
-		await expect(first.run(assignment.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
+		await expect(first.start(assignment.assignmentId)).rejects.toMatchObject({
+			code: "assignment_reconciliation_required",
+		});
+		await expect(first.run(assignment.assignmentId)).rejects.toMatchObject({
+			code: "assignment_reconciliation_required",
+		});
 		expect(() => first.cleanup(assignment.assignmentId)).toThrow("assignment_reconciliation_required");
 		expect(executionCalls).toEqual({ start: 1, run: 1, cancel: 0, cleanup: 0 });
 		expect(heartbeatCalls).toBe(0);
@@ -483,7 +530,9 @@ describe("SqliteMeshNodeStateRepository", () => {
 			assignmentId: "asg_node-state-after-reconciliation-002",
 			idempotencyKey: "assignment-node-state-after-reconciliation-002",
 		});
-		await expect(first.accept({ task, signedAssignment: await signedAssignment(next) })).rejects.toMatchObject({ code: "capacity_exhausted" });
+		await expect(first.accept({ task, signedAssignment: await signedAssignment(next) })).rejects.toMatchObject({
+			code: "capacity_exhausted",
+		});
 
 		const resolved = first.resolveReconciliationAsLost(assignment.assignmentId);
 		expect(resolved).toMatchObject({
@@ -501,7 +550,9 @@ describe("SqliteMeshNodeStateRepository", () => {
 				record: { type: "execution.reconciliation_resolved_as_lost", state: "lost" },
 			},
 		]);
-		await expect(first.accept({ task, signedAssignment: await signedAssignment(next) })).resolves.toMatchObject({ type: "assignment.accepted" });
+		await expect(first.accept({ task, signedAssignment: await signedAssignment(next) })).resolves.toMatchObject({
+			type: "assignment.accepted",
+		});
 	});
 
 	test("persists reconciliation from the current assignment after one post-port terminal-write failure", async () => {
@@ -526,7 +577,9 @@ describe("SqliteMeshNodeStateRepository", () => {
 		await agent.accept({ task, signedAssignment: await signedAssignment(assignment) });
 		await agent.start(assignment.assignmentId);
 
-		await expect(agent.run(assignment.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
+		await expect(agent.run(assignment.assignmentId)).rejects.toMatchObject({
+			code: "assignment_reconciliation_required",
+		});
 		expect(agent.state(assignment.assignmentId)).toBe("reconciliation_required");
 		expect(agent.assignmentEvents(assignment.assignmentId).at(-1)).toMatchObject({
 			type: "execution.reconciliation_required",
@@ -534,7 +587,9 @@ describe("SqliteMeshNodeStateRepository", () => {
 			code: "node_state_unavailable",
 		});
 		expect(agent.outbox()).toHaveLength(0);
-		await expect(agent.heartbeat(assignment.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
+		await expect(agent.heartbeat(assignment.assignmentId)).rejects.toMatchObject({
+			code: "assignment_reconciliation_required",
+		});
 		expect(heartbeatCalls).toBe(0);
 	});
 
@@ -573,7 +628,9 @@ describe("SqliteMeshNodeStateRepository", () => {
 		cancelGate.resolve();
 		await expect(cancelling).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
 		expect(agent.state(assignment.assignmentId)).toBe("reconciliation_required");
-		expect(agent.assignmentEvents(assignment.assignmentId).filter(event => event.type === "execution.cancelled")).toHaveLength(0);
+		expect(
+			agent.assignmentEvents(assignment.assignmentId).filter(event => event.type === "execution.cancelled"),
+		).toHaveLength(0);
 		expect(agent.outbox()).toHaveLength(0);
 
 		const reopenedCalls = calls();
@@ -609,97 +666,104 @@ describe("SqliteMeshNodeStateRepository", () => {
 			const reopened = await createAgent(reopenedRepository, makePort(calls()));
 			expect(reopened.state(assignment.assignmentId)).toBe("completed");
 			expect(reopened.outbox()).toEqual(firstOutbox);
-			await reopened.accept({ task, signedAssignment: await signedAssignment(assignment, "2026-08-31T11:59:45.000Z") });
+			await reopened.accept({
+				task,
+				signedAssignment: await signedAssignment(assignment, "2026-08-31T11:59:45.000Z"),
+			});
 			expect(reopened.outbox()).toHaveLength(1);
-			expect(reopened.assignmentEvents(assignment.assignmentId).filter(event => event.type === "execution.completed")).toHaveLength(1);
+			expect(
+				reopened.assignmentEvents(assignment.assignmentId).filter(event => event.type === "execution.completed"),
+			).toHaveLength(1);
 			reopenedRepository.close();
 		} finally {
 			rmSync(database.directory, { recursive: true, force: true });
 		}
 	});
 
-		test("upgrades a V1 pending terminal outbox snapshot and fences its prior revision", async () => {
+	test("upgrades a V1 pending terminal outbox snapshot and fences its prior revision", async () => {
 		const database = createDatabasePath();
 		try {
 			const task = makeTask();
 			const assignment = makeAssignment(task);
-				const firstRepository = new SqliteMeshNodeStateRepository(database.path);
-				const first = await createAgent(firstRepository, makePort(calls()));
-				await completeTerminalAssignment(first, task, assignment);
-				const staleSnapshot = firstRepository.read(snapshot => snapshot);
-				const revisionBeforeUpgrade = staleSnapshot.revision;
-				firstRepository.close();
+			const firstRepository = new SqliteMeshNodeStateRepository(database.path);
+			const first = await createAgent(firstRepository, makePort(calls()));
+			await completeTerminalAssignment(first, task, assignment);
+			const staleSnapshot = firstRepository.read(snapshot => snapshot);
+			const revisionBeforeUpgrade = staleSnapshot.revision;
+			firstRepository.close();
 
 			const raw = new Database(database.path, { create: false, readwrite: true, strict: true });
 			raw.run("DELETE FROM mesh_node_state_schema_migrations WHERE version = 2");
 			raw.close();
 
-				const upgradedRepository = new SqliteMeshNodeStateRepository(database.path);
-				expect(upgradedRepository.read(snapshot => snapshot.revision)).toBe(revisionBeforeUpgrade + 1);
-				upgradedRepository.close();
+			const upgradedRepository = new SqliteMeshNodeStateRepository(database.path);
+			expect(upgradedRepository.read(snapshot => snapshot.revision)).toBe(revisionBeforeUpgrade + 1);
+			upgradedRepository.close();
 
-				const staleWriter = new Database(database.path, { create: false, readwrite: true, strict: true });
-				const staleWrite = staleWriter.run(
-					"UPDATE mesh_node_state SET revision = ?, snapshot_json = ?, updated_at = ? WHERE singleton = 1 AND revision = ?",
-					[
-						staleSnapshot.revision + 1,
-						JSON.stringify({ ...staleSnapshot, revision: staleSnapshot.revision + 1 }),
-						"2026-08-31T12:00:00.000Z",
-						staleSnapshot.revision,
-					],
-				);
-				expect(staleWrite.changes).toBe(0);
-				staleWriter.close();
+			const staleWriter = new Database(database.path, { create: false, readwrite: true, strict: true });
+			const staleWrite = staleWriter.run(
+				"UPDATE mesh_node_state SET revision = ?, snapshot_json = ?, updated_at = ? WHERE singleton = 1 AND revision = ?",
+				[
+					staleSnapshot.revision + 1,
+					JSON.stringify({ ...staleSnapshot, revision: staleSnapshot.revision + 1 }),
+					"2026-08-31T12:00:00.000Z",
+					staleSnapshot.revision,
+				],
+			);
+			expect(staleWrite.changes).toBe(0);
+			staleWriter.close();
 
-				const reopenedRepository = new SqliteMeshNodeStateRepository(database.path);
-				const upgraded = await createAgent(reopenedRepository, makePort(calls()));
-				expect(upgraded.outbox()).toMatchObject([
-					{ state: "pending", idempotencyKey: `node.lifecycle.terminal:${assignment.assignmentId}:1:1` },
-				]);
-				reopenedRepository.close();
+			const reopenedRepository = new SqliteMeshNodeStateRepository(database.path);
+			const upgraded = await createAgent(reopenedRepository, makePort(calls()));
+			expect(upgraded.outbox()).toMatchObject([
+				{ state: "pending", idempotencyKey: `node.lifecycle.terminal:${assignment.assignmentId}:1:1` },
+			]);
+			reopenedRepository.close();
 		} finally {
 			rmSync(database.directory, { recursive: true, force: true });
+		}
+	});
+
+	test("fails closed when a terminal outbox record does not prove a terminal lifecycle event", async () => {
+		const database = createDatabasePath();
+		try {
+			const task = makeTask();
+			const assignment = makeAssignment(task);
+			const firstRepository = new SqliteMeshNodeStateRepository(database.path);
+			const first = await createAgent(firstRepository, makePort(calls()));
+			await completeTerminalAssignment(first, task, assignment);
+			firstRepository.close();
+
+			const outboxId = `node-terminal:${assignment.assignmentId}:${assignment.schedulerEpoch}:${assignment.fencingToken}`;
+			const raw = new Database(database.path, { create: false, readwrite: true, strict: true });
+			const row = raw
+				.query<{ readonly snapshotJson: string }, []>(
+					"SELECT snapshot_json AS snapshotJson FROM mesh_node_state WHERE singleton = 1",
+				)
+				.get();
+			if (row === null || row === undefined) throw new Error("durable node state row is missing");
+			const snapshot = JSON.parse(row.snapshotJson) as StoredNodeSnapshot;
+			const stored = snapshot.assignments[assignment.assignmentId];
+			const outbox = snapshot.outbox?.[outboxId];
+			if (stored?.admissionRecord === undefined || outbox === undefined) {
+				throw new Error("durable terminal fact is missing");
 			}
-		});
+			stored.terminalRecord = stored.admissionRecord;
+			outbox.record = stored.admissionRecord;
+			raw.run("UPDATE mesh_node_state SET snapshot_json = ? WHERE singleton = 1", [JSON.stringify(snapshot)]);
+			raw.close();
 
-		test("fails closed when a terminal outbox record does not prove a terminal lifecycle event", async () => {
-			const database = createDatabasePath();
-			try {
-				const task = makeTask();
-				const assignment = makeAssignment(task);
-				const firstRepository = new SqliteMeshNodeStateRepository(database.path);
-				const first = await createAgent(firstRepository, makePort(calls()));
-				await completeTerminalAssignment(first, task, assignment);
-				firstRepository.close();
+			const corruptRepository = new SqliteMeshNodeStateRepository(database.path);
+			await expect(createAgent(corruptRepository, makePort(calls()))).rejects.toMatchObject({
+				code: "node_state_corrupt",
+			});
+			corruptRepository.close();
+		} finally {
+			rmSync(database.directory, { recursive: true, force: true });
+		}
+	});
 
-				const outboxId = `node-terminal:${assignment.assignmentId}:${assignment.schedulerEpoch}:${assignment.fencingToken}`;
-				const raw = new Database(database.path, { create: false, readwrite: true, strict: true });
-				const row = raw
-					.query<{ readonly snapshotJson: string }, []>("SELECT snapshot_json AS snapshotJson FROM mesh_node_state WHERE singleton = 1")
-					.get();
-				if (row === null || row === undefined) throw new Error("durable node state row is missing");
-				const snapshot = JSON.parse(row.snapshotJson) as StoredNodeSnapshot;
-				const stored = snapshot.assignments[assignment.assignmentId];
-				const outbox = snapshot.outbox?.[outboxId];
-				if (stored?.admissionRecord === undefined || outbox === undefined) {
-					throw new Error("durable terminal fact is missing");
-				}
-				stored.terminalRecord = stored.admissionRecord;
-				outbox.record = stored.admissionRecord;
-				raw.run("UPDATE mesh_node_state SET snapshot_json = ? WHERE singleton = 1", [JSON.stringify(snapshot)]);
-				raw.close();
-
-				const corruptRepository = new SqliteMeshNodeStateRepository(database.path);
-				await expect(createAgent(corruptRepository, makePort(calls()))).rejects.toMatchObject({
-					code: "node_state_corrupt",
-				});
-				corruptRepository.close();
-			} finally {
-				rmSync(database.directory, { recursive: true, force: true });
-			}
-		});
-
-		test("delivers one terminal fact durably and exposes only the safe publication shape", async () => {
+	test("delivers one terminal fact durably and exposes only the safe publication shape", async () => {
 		const database = createDatabasePath();
 		try {
 			const task = makeTask();
@@ -716,24 +780,24 @@ describe("SqliteMeshNodeStateRepository", () => {
 			});
 			expect(result).toEqual({ delivered: [`node-terminal:${assignment.assignmentId}:1:1`], failed: [] });
 			expect(published).toHaveLength(1);
-				expect(Object.keys(published[0]).sort()).toEqual([
-					"assignmentId",
-					"idempotencyKey",
-					"outboxId",
-					"record",
-					"taskId",
-					"type",
-				]);
+			expect(Object.keys(published[0]).sort()).toEqual([
+				"assignmentId",
+				"idempotencyKey",
+				"outboxId",
+				"record",
+				"taskId",
+				"type",
+			]);
 			expect(first.outbox()).toMatchObject([{ state: "delivered", deliveredAt: "2026-08-31T12:00:00.000Z" }]);
 			firstRepository.close();
 
 			const reopenedRepository = new SqliteMeshNodeStateRepository(database.path);
 			const reopened = await createAgent(reopenedRepository, makePort(calls()));
-				const second = await reopened.drainTerminalOutbox({
-					async publish() {
-						throw new Error("delivered facts must not republish");
-					},
-				});
+			const second = await reopened.drainTerminalOutbox({
+				async publish() {
+					throw new Error("delivered facts must not republish");
+				},
+			});
 			expect(second).toEqual({ delivered: [], failed: [] });
 			expect(reopened.outbox()).toMatchObject([{ state: "delivered", deliveredAt: "2026-08-31T12:00:00.000Z" }]);
 			reopenedRepository.close();

@@ -3,7 +3,11 @@ import { MESH_SCHEMA, sha256CanonicalJson } from "@pk-nerdsaver-ai/mesh-contract
 
 import { createOutboxRecord, EventConflictError, InMemoryDurableEventLog } from "../src";
 
-const actor = Object.freeze({ pubkey: "0123456789abcdef0123456789abcdef", role: "orchestrator" as const, nodeId: "node_control" });
+const actor = Object.freeze({
+	pubkey: "0123456789abcdef0123456789abcdef",
+	role: "orchestrator" as const,
+	nodeId: "node_control",
+});
 
 function event(eventId = "evt_alpha"): Record<string, unknown> {
 	const payload = { taskId: "task_alpha", state: "queued" };

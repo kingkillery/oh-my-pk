@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+	type AssignmentLeaseV1,
 	MESH_SCHEMA,
+	type MeshRole,
 	parseAssignmentLease,
 	parseTaskContract,
 	sha256CanonicalJson,
-	type AssignmentLeaseV1,
-	type MeshRole,
 	type TaskContractV1,
 } from "@pk-nerdsaver-ai/mesh-contracts";
 
@@ -14,12 +14,12 @@ import {
 	MAX_MESH_SIGNATURE_BYTES,
 	MESH_ENVELOPE_SIGNING_PAYLOAD_SCHEMA,
 	MeshEnvelopeError,
+	type MeshEnvelopeSigner,
+	type MeshEnvelopeVerifier,
 	signAssignmentLease,
 	signTaskContract,
 	verifySignedAssignmentLease,
 	verifySignedTaskContract,
-	type MeshEnvelopeSigner,
-	type MeshEnvelopeVerifier,
 } from "../src";
 
 const TASK_KEY_ID = "task-author-key-alpha";
@@ -90,7 +90,9 @@ function task(overrides: Readonly<Record<string, unknown>> = {}): TaskContractV1
 		requester: { pubkey: TASK_PUBKEY, role: "human" },
 		goal: "Prove the signed authority envelope boundary.",
 		mode: "general_tool",
-		acceptanceCriteria: [{ id: "signed", description: "A validated task has an origin signature.", level: "required" }],
+		acceptanceCriteria: [
+			{ id: "signed", description: "A validated task has an origin signature.", level: "required" },
+		],
 		permissions: { tools: ["safe.tool"], externalSideEffects: "none" },
 		execution: { timeoutSeconds: 30 },
 		routing: { trustZoneMin: "private", activeMachineAllowed: false },
@@ -137,7 +139,13 @@ describe("signed mesh envelopes", () => {
 			envelopeSchemaVersion: "ompk.signed-mesh-envelope/v1",
 			payloadSchemaVersion: MESH_SCHEMA.task,
 			payloadDigest: signed.payloadDigest,
-			signer: { algorithm: TEST_ALGORITHM, keyId: TASK_KEY_ID, actorPubkey: TASK_PUBKEY, role: "human", signedAt: SIGNED_AT },
+			signer: {
+				algorithm: TEST_ALGORITHM,
+				keyId: TASK_KEY_ID,
+				actorPubkey: TASK_PUBKEY,
+				role: "human",
+				signedAt: SIGNED_AT,
+			},
 		});
 		expect(Object.isFrozen(signed)).toBe(true);
 		expect(Object.isFrozen(signed.payload)).toBe(true);
@@ -145,8 +153,15 @@ describe("signed mesh envelopes", () => {
 
 	test("signs and verifies an assignment only under scheduler origin evidence", async () => {
 		const parentTask = task();
-		const signed = await signAssignmentLease(assignment(parentTask), signer("scheduler", SCHEDULER_KEY_ID, SCHEDULER_PUBKEY), { signedAt: SIGNED_AT });
-		const result = await verifySignedAssignmentLease(signed, verifier("scheduler", SCHEDULER_KEY_ID, SCHEDULER_PUBKEY));
+		const signed = await signAssignmentLease(
+			assignment(parentTask),
+			signer("scheduler", SCHEDULER_KEY_ID, SCHEDULER_PUBKEY),
+			{ signedAt: SIGNED_AT },
+		);
+		const result = await verifySignedAssignmentLease(
+			signed,
+			verifier("scheduler", SCHEDULER_KEY_ID, SCHEDULER_PUBKEY),
+		);
 
 		expect(result.ok).toBe(true);
 		if (!result.ok) throw new Error(`expected a valid assignment signature, received ${result.reason}`);
@@ -182,19 +197,39 @@ describe("signed mesh envelopes", () => {
 			verificationCalls += 1;
 		};
 
-		expect(await verifySignedTaskContract(signed, verifier("human", "task-author-key-beta", TASK_PUBKEY, TEST_ALGORITHM, countVerify))).toEqual({
+		expect(
+			await verifySignedTaskContract(
+				signed,
+				verifier("human", "task-author-key-beta", TASK_PUBKEY, TEST_ALGORITHM, countVerify),
+			),
+		).toEqual({
 			ok: false,
 			reason: "key_id_mismatch",
 		});
-		expect(await verifySignedTaskContract(signed, verifier("human", TASK_KEY_ID, TASK_PUBKEY, "test-other-algorithm", countVerify))).toEqual({
+		expect(
+			await verifySignedTaskContract(
+				signed,
+				verifier("human", TASK_KEY_ID, TASK_PUBKEY, "test-other-algorithm", countVerify),
+			),
+		).toEqual({
 			ok: false,
 			reason: "algorithm_mismatch",
 		});
-		expect(await verifySignedTaskContract(signed, verifier("human", TASK_KEY_ID, "z".repeat(64), TEST_ALGORITHM, countVerify))).toEqual({
+		expect(
+			await verifySignedTaskContract(
+				signed,
+				verifier("human", TASK_KEY_ID, "z".repeat(64), TEST_ALGORITHM, countVerify),
+			),
+		).toEqual({
 			ok: false,
 			reason: "actor_pubkey_mismatch",
 		});
-		expect(await verifySignedTaskContract(signed, verifier("orchestrator", TASK_KEY_ID, TASK_PUBKEY, TEST_ALGORITHM, countVerify))).toEqual({
+		expect(
+			await verifySignedTaskContract(
+				signed,
+				verifier("orchestrator", TASK_KEY_ID, TASK_PUBKEY, TEST_ALGORITHM, countVerify),
+			),
+		).toEqual({
 			ok: false,
 			reason: "role_mismatch",
 		});
@@ -233,7 +268,9 @@ describe("signed mesh envelopes", () => {
 			),
 		).rejects.toMatchObject({ code: "authority_mismatch" } satisfies Partial<MeshEnvelopeError>);
 		expect(signingCalls).toBe(0);
-		await expect(signTaskContract(task(), signer("human", TASK_KEY_ID, "z".repeat(64)), { signedAt: SIGNED_AT })).rejects.toMatchObject({
+		await expect(
+			signTaskContract(task(), signer("human", TASK_KEY_ID, "z".repeat(64)), { signedAt: SIGNED_AT }),
+		).rejects.toMatchObject({
 			code: "authority_mismatch",
 		} satisfies Partial<MeshEnvelopeError>);
 	});

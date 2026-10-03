@@ -1,6 +1,16 @@
-import { assertMeshId, canonicalizeJson, type ArtifactManifestV1, type JsonRecord } from "@pk-nerdsaver-ai/mesh-contracts";
+import {
+	type ArtifactManifestV1,
+	assertMeshId,
+	canonicalizeJson,
+	type JsonRecord,
+} from "@pk-nerdsaver-ai/mesh-contracts";
 
-import { ArtifactContentMissingError, ArtifactContentSizeMismatchError, ArtifactManifestConflictError, ContentHashMismatchError } from "./errors";
+import {
+	ArtifactContentMissingError,
+	ArtifactContentSizeMismatchError,
+	ArtifactManifestConflictError,
+	ContentHashMismatchError,
+} from "./errors";
 import { sha256Bytes } from "./hash";
 import { validateArtifactManifest } from "./manifest";
 import type { ContentAddressedStore } from "./store";
@@ -88,7 +98,11 @@ export class InMemoryArtifactCatalog {
 		const existing = this.#entries.get(manifest.artifactId);
 		if (existing !== undefined) {
 			if (manifestsAreIdentical(existing.manifest, manifest)) return registrationResult(existing, false);
-			throw new ArtifactManifestConflictError(manifest.artifactId, existing.manifest.manifestDigest, manifest.manifestDigest);
+			throw new ArtifactManifestConflictError(
+				manifest.artifactId,
+				existing.manifest.manifestDigest,
+				manifest.manifestDigest,
+			);
 		}
 
 		const entry = Object.freeze({ manifest, retention: retentionMetadata(manifest) });

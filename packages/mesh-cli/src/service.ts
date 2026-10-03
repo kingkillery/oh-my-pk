@@ -21,7 +21,16 @@ import type {
 
 const SCHEMA_VERSION = "ompk.mesh-cli/v1" as const;
 const COMMANDS = new Set<MeshCliCommand>(["submit", "status", "follow", "cancel", "artifacts", "trace"]);
-const VALUE_FLAGS = new Set(["request", "idempotency-key", "request-id", "task-id", "cursor", "limit", "reason", "goal"]);
+const VALUE_FLAGS = new Set([
+	"request",
+	"idempotency-key",
+	"request-id",
+	"task-id",
+	"cursor",
+	"limit",
+	"reason",
+	"goal",
+]);
 const GLOBAL_FLAGS = new Set(["json", "help", "request-id"]);
 
 type ParsedFlag = string | true;
@@ -89,7 +98,12 @@ export class MeshCliService {
 			}
 			for await (const envelope of this.#dispatchKnown(invocation)) yield envelope;
 		} catch (error) {
-			yield errorEnvelope(invocation?.command ?? "unknown", invocation?.requestId ?? fallbackRequestId, 0, toCliError(error));
+			yield errorEnvelope(
+				invocation?.command ?? "unknown",
+				invocation?.requestId ?? fallbackRequestId,
+				0,
+				toCliError(error),
+			);
 		}
 	}
 
@@ -176,7 +190,8 @@ export async function runMeshCli(argv: readonly string[], api: MeshCliApi, write
 function parseInvocation(argv: readonly string[], fallbackRequestId: string): ParsedInvocation {
 	const parsed = parseArguments(argv);
 	const requestId = stringOption(parsed.flags, "request-id") ?? fallbackRequestId;
-	if (!isSafeRequestId(requestId)) throw new MeshCliInputError("invalid_request_id", "The request identifier is invalid.");
+	if (!isSafeRequestId(requestId))
+		throw new MeshCliInputError("invalid_request_id", "The request identifier is invalid.");
 	if (parsed.flags.has("help") || parsed.commandToken === undefined || parsed.commandToken === "help") {
 		return Object.freeze({ command: "help" as const, requestId, parsed });
 	}
@@ -201,17 +216,20 @@ function parseArguments(argv: readonly string[]): ParsedArguments {
 			const equalIndex = token.indexOf("=");
 			const name = token.slice(2, equalIndex === -1 ? undefined : equalIndex);
 			if (!name) throw new MeshCliInputError("invalid_option", "A command option is invalid.");
-			if (flags.has(name)) throw new MeshCliInputError("duplicate_option", "A command option was supplied more than once.");
+			if (flags.has(name))
+				throw new MeshCliInputError("duplicate_option", "A command option was supplied more than once.");
 			if (equalIndex !== -1) {
 				const value = token.slice(equalIndex + 1);
-				if (!VALUE_FLAGS.has(name)) throw new MeshCliInputError("invalid_option", "This command option does not take a value.");
+				if (!VALUE_FLAGS.has(name))
+					throw new MeshCliInputError("invalid_option", "This command option does not take a value.");
 				if (value.length === 0) throw new MeshCliInputError("invalid_option", "A command option requires a value.");
 				flags.set(name, value);
 				continue;
 			}
 			if (VALUE_FLAGS.has(name)) {
 				const value = argv[index + 1];
-				if (!value || value.startsWith("--")) throw new MeshCliInputError("missing_option_value", "A command option requires a value.");
+				if (!value || value.startsWith("--"))
+					throw new MeshCliInputError("missing_option_value", "A command option requires a value.");
 				flags.set(name, value);
 				index += 1;
 				continue;
@@ -245,12 +263,14 @@ function assertKnownOptions(command: MeshCliCommand, flags: ReadonlyMap<string, 
 		if (command === "follow") allowed.add("limit");
 	}
 	for (const name of flags.keys()) {
-		if (!allowed.has(name)) throw new MeshCliInputError("unsupported_option", "The command option is not supported here.");
+		if (!allowed.has(name))
+			throw new MeshCliInputError("unsupported_option", "The command option is not supported here.");
 	}
 }
 
 function submitRequest(parsed: ParsedArguments, requestId: string): MeshCliSubmitRequest {
-	if (parsed.positional.length > 0) throw new MeshCliInputError("unexpected_argument", "Submit accepts task fields only through options.");
+	if (parsed.positional.length > 0)
+		throw new MeshCliInputError("unexpected_argument", "Submit accepts task fields only through options.");
 	const payload = jsonObjectOption(parsed.flags, "request") ?? {};
 	const goal = stringOption(parsed.flags, "goal");
 	const goalFromPayload = typeof payload.goal === "string" ? payload.goal : undefined;
@@ -271,7 +291,12 @@ function statusRequest(parsed: ParsedArguments, requestId: string): MeshCliStatu
 function followRequest(parsed: ParsedArguments, requestId: string): MeshCliFollowRequest {
 	const taskId = requiredTaskId(parsed);
 	const limit = positiveIntegerOption(parsed.flags, "limit");
-	return Object.freeze({ requestId, taskId, ...cursorOption(parsed.flags), ...(limit === undefined ? {} : { limit }) });
+	return Object.freeze({
+		requestId,
+		taskId,
+		...cursorOption(parsed.flags),
+		...(limit === undefined ? {} : { limit }),
+	});
 }
 
 function cancelRequest(parsed: ParsedArguments, requestId: string): MeshCliCancelRequest {
@@ -291,7 +316,8 @@ function traceRequest(parsed: ParsedArguments, requestId: string): MeshCliTraceR
 }
 
 function optionalTaskId(parsed: ParsedArguments): string | undefined {
-	if (parsed.positional.length > 1) throw new MeshCliInputError("unexpected_argument", "The command accepts at most one task identifier.");
+	if (parsed.positional.length > 1)
+		throw new MeshCliInputError("unexpected_argument", "The command accepts at most one task identifier.");
 	return consistentStringOption(parsed.flags, "task-id", parsed.positional[0]);
 }
 
@@ -312,7 +338,8 @@ function jsonObjectOption(flags: ReadonlyMap<string, ParsedFlag>, name: string):
 	try {
 		const parsed = JSON.parse(raw) as unknown;
 		const safe = toMeshCliJson(parsed);
-		if (!isMeshCliJsonObject(safe)) throw new MeshCliInputError("invalid_json", "The JSON request must be an object.");
+		if (!isMeshCliJsonObject(safe))
+			throw new MeshCliInputError("invalid_json", "The JSON request must be an object.");
 		return safe;
 	} catch (error) {
 		if (error instanceof MeshCliInputError) throw error;
@@ -334,23 +361,27 @@ function consistentStringOption(
 	}
 	const value = direct ?? fallback;
 	if (value === undefined) return undefined;
-	if (value.length === 0) throw new MeshCliInputError("invalid_option", "A command option must be a non-empty string.");
+	if (value.length === 0)
+		throw new MeshCliInputError("invalid_option", "A command option must be a non-empty string.");
 	return value;
 }
 
 function stringOption(flags: ReadonlyMap<string, ParsedFlag>, name: string): string | undefined {
 	const value = flags.get(name);
 	if (value === undefined) return undefined;
-	if (value === true || value.length === 0) throw new MeshCliInputError("missing_option_value", "A command option requires a value.");
+	if (value === true || value.length === 0)
+		throw new MeshCliInputError("missing_option_value", "A command option requires a value.");
 	return value;
 }
 
 function positiveIntegerOption(flags: ReadonlyMap<string, ParsedFlag>, name: string): number | undefined {
 	const value = stringOption(flags, name);
 	if (value === undefined) return undefined;
-	if (!/^\d+$/.test(value)) throw new MeshCliInputError("invalid_option", "A command option must be a positive integer.");
+	if (!/^\d+$/.test(value))
+		throw new MeshCliInputError("invalid_option", "A command option must be a positive integer.");
 	const number = Number(value);
-	if (!Number.isSafeInteger(number) || number < 1) throw new MeshCliInputError("invalid_option", "A command option must be a positive integer.");
+	if (!Number.isSafeInteger(number) || number < 1)
+		throw new MeshCliInputError("invalid_option", "A command option must be a positive integer.");
 	return number;
 }
 
@@ -389,7 +420,8 @@ function isUnavailableResult(value: unknown): value is MeshCliUnavailableResult 
 		value !== null &&
 		typeof value === "object" &&
 		"status" in value &&
-		((value as { readonly status?: unknown }).status === "unavailable" || (value as { readonly status?: unknown }).status === "unsupported")
+		((value as { readonly status?: unknown }).status === "unavailable" ||
+			(value as { readonly status?: unknown }).status === "unsupported")
 	);
 }
 
@@ -418,8 +450,21 @@ function successEnvelope(
 	return Object.freeze({ schemaVersion: SCHEMA_VERSION, ok: true, command, requestId, sequence, type, data });
 }
 
-function errorEnvelope(command: MeshCliEnvelopeCommand, requestId: string, sequence: number, error: MeshCliError): MeshCliEnvelope {
-	return Object.freeze({ schemaVersion: SCHEMA_VERSION, ok: false, command, requestId, sequence, type: "error", error: Object.freeze(error) });
+function errorEnvelope(
+	command: MeshCliEnvelopeCommand,
+	requestId: string,
+	sequence: number,
+	error: MeshCliError,
+): MeshCliEnvelope {
+	return Object.freeze({
+		schemaVersion: SCHEMA_VERSION,
+		ok: false,
+		command,
+		requestId,
+		sequence,
+		type: "error",
+		error: Object.freeze(error),
+	});
 }
 
 function toCliError(error: unknown): MeshCliError {

@@ -1,26 +1,25 @@
 import { describe, expect, test } from "bun:test";
-
+import { type MeshEnvelopeSigner, type MeshEnvelopeVerifier, signAssignmentLease } from "../../mesh-auth/src/index";
 import {
-	MESH_SCHEMA,
+	type AssignmentLeaseV1,
 	contractDigest,
+	type JsonRecord,
+	MESH_SCHEMA,
 	parseAssignmentLease,
 	parseNodeAdvertisement,
 	parseTaskContract,
 	sha256CanonicalJson,
-	type AssignmentLeaseV1,
-	type JsonRecord,
 	type TaskContractV1,
 } from "../../mesh-contracts/src/index";
-import { signAssignmentLease, type MeshEnvelopeSigner, type MeshEnvelopeVerifier } from "../../mesh-auth/src/index";
 import {
 	canonicalExecutorToolPermission,
 	ExecutorHttpCodeGateway,
-	ExecutorMeshExecutionPort,
 	type ExecutorHttpTransport,
 	type ExecutorHttpTransportRequest,
 	type ExecutorHttpTransportResponse,
+	ExecutorMeshExecutionPort,
 } from "../../mesh-executor/src/index";
-import { MeshNodeAgent, projectNodeAdvertisement, type MeshNodePresence } from "../../mesh-node/src/index";
+import { MeshNodeAgent, type MeshNodePresence, projectNodeAdvertisement } from "../../mesh-node/src/index";
 
 const T0 = Date.parse("2026-08-31T12:00:00.000Z");
 const NODE_ID = "node_executor-integration-001";
@@ -92,13 +91,13 @@ function signedTask(options: TaskFixtureOptions = {}): TaskContractV1 {
 		requester: { pubkey: "r".repeat(64), role: "human" },
 		goal: `Create the approved fixture. ${RAW_PAYLOAD}`,
 		mode: "general_tool",
-		acceptanceCriteria: [{ id: "created", description: "The exact allowed tool is invoked once.", level: "required" }],
-		permissions:
-			options.permissions ??
-			{
-				tools: [canonicalExecutorToolPermission(ENDPOINT_ID, TOOL_PATH)],
-				externalSideEffects: "approval_required",
-			},
+		acceptanceCriteria: [
+			{ id: "created", description: "The exact allowed tool is invoked once.", level: "required" },
+		],
+		permissions: options.permissions ?? {
+			tools: [canonicalExecutorToolPermission(ENDPOINT_ID, TOOL_PATH)],
+			externalSideEffects: "approval_required",
+		},
 		execution: { profileId: "executor-mcp-v1", timeoutSeconds: 30 },
 		executorInvocation: invocation,
 		routing: { requiredCapabilities: ["executor.mcp"], trustZoneMin: "private", activeMachineAllowed: false },
@@ -132,7 +131,9 @@ function assignment(task: TaskContractV1): AssignmentLeaseV1 {
 }
 
 function assignmentSignature(payload: Uint8Array): Uint8Array {
-	return signatureEncoder.encode(`${ASSIGNMENT_SIGNATURE_ALGORITHM}:${ASSIGNMENT_SIGNATURE_KEY_ID}:${signatureDecoder.decode(payload).split("").reverse().join("")}`);
+	return signatureEncoder.encode(
+		`${ASSIGNMENT_SIGNATURE_ALGORITHM}:${ASSIGNMENT_SIGNATURE_KEY_ID}:${signatureDecoder.decode(payload).split("").reverse().join("")}`,
+	);
 }
 
 const schedulerSigner: MeshEnvelopeSigner = Object.freeze({
@@ -150,7 +151,9 @@ const schedulerVerifier: MeshEnvelopeVerifier = Object.freeze({
 	role: "scheduler",
 	verify(payload, signature) {
 		const expected = assignmentSignature(payload);
-		return expected.byteLength === signature.byteLength && expected.every((value, index) => value === signature[index]);
+		return (
+			expected.byteLength === signature.byteLength && expected.every((value, index) => value === signature[index])
+		);
 	},
 });
 
@@ -191,7 +194,13 @@ function createAgent(transport: ExecutorHttpTransport, now: () => number = () =>
 		identity: { nodeId: NODE_ID, pubkey: NODE_PUBKEY },
 		execution: new ExecutorMeshExecutionPort({
 			gateway: new ExecutorHttpCodeGateway({
-				endpoints: [{ endpointId: ENDPOINT_ID, origin: "http://127.0.0.1:4788", authorization: "Bearer integration-host-token" }],
+				endpoints: [
+					{
+						endpointId: ENDPOINT_ID,
+						origin: "http://127.0.0.1:4788",
+						authorization: "Bearer integration-host-token",
+					},
+				],
 				transport,
 				now,
 			}),
@@ -206,15 +215,23 @@ function createAgent(transport: ExecutorHttpTransport, now: () => number = () =>
 
 describe("Executor through the MeshNodeAgent boundary", () => {
 	test("admits a digest-bound lease before sending exactly one canonical Executor HTTP request", async () => {
-		const transport = new RecordingExecutorTransport(response({ status: "completed", text: "completed", structured: {}, isError: false }));
+		const transport = new RecordingExecutorTransport(
+			response({ status: "completed", text: "completed", structured: {}, isError: false }),
+		);
 		const agent = createAgent(transport);
 		const task = signedTask();
 		const assigned = assignment(task);
 
-		await expect(agent.accept({ task, signedAssignment: await signedDelivery(assigned) })).resolves.toMatchObject({ type: "assignment.accepted", state: "admitted" });
+		await expect(agent.accept({ task, signedAssignment: await signedDelivery(assigned) })).resolves.toMatchObject({
+			type: "assignment.accepted",
+			state: "admitted",
+		});
 		expect(transport.requests).toHaveLength(0);
 
-		await expect(agent.start(assigned.assignmentId)).resolves.toMatchObject({ type: "execution.started", state: "started" });
+		await expect(agent.start(assigned.assignmentId)).resolves.toMatchObject({
+			type: "execution.started",
+			state: "started",
+		});
 		expect(transport.requests).toHaveLength(0);
 
 		await expect(agent.run(assigned.assignmentId)).resolves.toMatchObject({
@@ -243,7 +260,9 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 	});
 
 	test("records an explicit upstream Executor failure as a known terminal outcome", async () => {
-		const transport = new RecordingExecutorTransport(response({ status: "completed", text: "failed", structured: {}, isError: true }));
+		const transport = new RecordingExecutorTransport(
+			response({ status: "completed", text: "failed", structured: {}, isError: true }),
+		);
 		const agent = createAgent(transport);
 		const task = signedTask();
 		const assigned = assignment(task);
@@ -255,7 +274,9 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 			state: "failed",
 			outcome: "failed",
 		});
-		expect(agent.outbox()).toMatchObject([{ record: { type: "execution.failed", state: "failed", outcome: "failed" } }]);
+		expect(agent.outbox()).toMatchObject([
+			{ record: { type: "execution.failed", state: "failed", outcome: "failed" } },
+		]);
 		expect(transport.requests).toHaveLength(1);
 	});
 
@@ -275,7 +296,9 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 			code: "execution_adapter_failed",
 		});
 		expect(agent.outbox()).toHaveLength(0);
-		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
+		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({
+			code: "assignment_reconciliation_required",
+		});
 		expect(transport.requests).toHaveLength(1);
 	});
 
@@ -297,16 +320,24 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 		await agent.start(assigned.assignmentId);
 		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "execution_adapter_failed" });
 		expect(agent.state(assigned.assignmentId)).toBe("reconciliation_required");
-		expect(agent.assignmentEvents(assigned.assignmentId).at(-1)).toMatchObject({ type: "execution.failed", code: "execution_adapter_failed" });
+		expect(agent.assignmentEvents(assigned.assignmentId).at(-1)).toMatchObject({
+			type: "execution.failed",
+			code: "execution_adapter_failed",
+		});
 		expect(agent.outbox()).toHaveLength(0);
 		expect(requests).toHaveLength(1);
 	});
 
 	test("blocks a wildcard permission before the Executor gateway is contacted", async () => {
-		const transport = new RecordingExecutorTransport(response({ status: "completed", text: "completed", structured: {}, isError: false }));
+		const transport = new RecordingExecutorTransport(
+			response({ status: "completed", text: "completed", structured: {}, isError: false }),
+		);
 		const agent = createAgent(transport);
 		const task = signedTask({
-			permissions: { tools: ["executor:localExecutor:tools.github.issues.*"], externalSideEffects: "approval_required" },
+			permissions: {
+				tools: ["executor:localExecutor:tools.github.issues.*"],
+				externalSideEffects: "approval_required",
+			},
 		});
 		const assigned = assignment(task);
 
@@ -323,7 +354,9 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 	});
 
 	test("turns an Executor approval pause into reconciliation-required state without automatic resume", async () => {
-		const transport = new RecordingExecutorTransport(response({ status: "paused", text: "approval required", structured: { executionId: "pause-001" } }));
+		const transport = new RecordingExecutorTransport(
+			response({ status: "paused", text: "approval required", structured: { executionId: "pause-001" } }),
+		);
 		const agent = createAgent(transport);
 		const task = signedTask();
 		const assigned = assignment(task);
@@ -339,8 +372,9 @@ describe("Executor through the MeshNodeAgent boundary", () => {
 		});
 		expect(agent.outbox()).toHaveLength(0);
 
-
-		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({ code: "assignment_reconciliation_required" });
+		await expect(agent.run(assigned.assignmentId)).rejects.toMatchObject({
+			code: "assignment_reconciliation_required",
+		});
 		expect(transport.requests).toHaveLength(1);
 		expect(transport.requests[0]?.body).not.toContain("autoApprove");
 		expect(transport.requests[0]?.body).not.toContain("pause-001");

@@ -1,12 +1,16 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-
-import { parseAssignmentLease, parseTaskContract, sha256CanonicalJson } from "@pk-nerdsaver-ai/mesh-contracts";
 import { parseSignedMeshEnvelope } from "@pk-nerdsaver-ai/mesh-auth";
+import { parseAssignmentLease, parseTaskContract, sha256CanonicalJson } from "@pk-nerdsaver-ai/mesh-contracts";
 
 import { MeshRuntimeCorruptionError, MeshRuntimeError } from "./errors";
-import { createEmptyRuntimeSnapshot, type MeshRuntimeRepository, type MeshRuntimeSnapshot, type MeshRuntimeTransaction } from "./types";
+import {
+	createEmptyRuntimeSnapshot,
+	type MeshRuntimeRepository,
+	type MeshRuntimeSnapshot,
+	type MeshRuntimeTransaction,
+} from "./types";
 
 const CURRENT_SCHEMA_VERSION = 3;
 const STATE_ROW_ID = 1;
@@ -175,7 +179,10 @@ export class SqliteMeshRuntimeRepository implements MeshRuntimeRepository {
 			"INSERT INTO mesh_runtime_state (singleton, revision, snapshot_json, updated_at) VALUES (?, ?, ?, ?)",
 			[STATE_ROW_ID, initial.revision, JSON.stringify(initial), new Date().toISOString()],
 		);
-		this.#db.run("INSERT INTO mesh_runtime_schema_migrations (version, applied_at) VALUES (?, ?)", [1, new Date().toISOString()]);
+		this.#db.run("INSERT INTO mesh_runtime_schema_migrations (version, applied_at) VALUES (?, ?)", [
+			1,
+			new Date().toISOString(),
+		]);
 	}
 
 	/**
@@ -186,7 +193,9 @@ export class SqliteMeshRuntimeRepository implements MeshRuntimeRepository {
 		let row: StateRow | null;
 		try {
 			row = this.#db
-				.query<StateRow, []>("SELECT revision, snapshot_json AS snapshotJson FROM mesh_runtime_state WHERE singleton = 1")
+				.query<StateRow, []>(
+					"SELECT revision, snapshot_json AS snapshotJson FROM mesh_runtime_state WHERE singleton = 1",
+				)
 				.get();
 		} catch {
 			throw new MeshRuntimeCorruptionError("state table is unreadable");
@@ -203,12 +212,17 @@ export class SqliteMeshRuntimeRepository implements MeshRuntimeRepository {
 			parsed.workerCapacityObservations = {};
 		}
 		const snapshot = assertSnapshot(parsed);
-		if (snapshot.revision !== row.revision) throw new MeshRuntimeCorruptionError("state revision does not match its snapshot");
-		this.#db.run(
-			"UPDATE mesh_runtime_state SET snapshot_json = ?, updated_at = ? WHERE singleton = ?",
-			[JSON.stringify(snapshot), new Date().toISOString(), STATE_ROW_ID],
-		);
-		this.#db.run("INSERT INTO mesh_runtime_schema_migrations (version, applied_at) VALUES (?, ?)", [2, new Date().toISOString()]);
+		if (snapshot.revision !== row.revision)
+			throw new MeshRuntimeCorruptionError("state revision does not match its snapshot");
+		this.#db.run("UPDATE mesh_runtime_state SET snapshot_json = ?, updated_at = ? WHERE singleton = ?", [
+			JSON.stringify(snapshot),
+			new Date().toISOString(),
+			STATE_ROW_ID,
+		]);
+		this.#db.run("INSERT INTO mesh_runtime_schema_migrations (version, applied_at) VALUES (?, ?)", [
+			2,
+			new Date().toISOString(),
+		]);
 	}
 
 	/**
@@ -220,7 +234,9 @@ export class SqliteMeshRuntimeRepository implements MeshRuntimeRepository {
 		let row: StateRow | null;
 		try {
 			row = this.#db
-				.query<StateRow, []>("SELECT revision, snapshot_json AS snapshotJson FROM mesh_runtime_state WHERE singleton = 1")
+				.query<StateRow, []>(
+					"SELECT revision, snapshot_json AS snapshotJson FROM mesh_runtime_state WHERE singleton = 1",
+				)
 				.get();
 		} catch {
 			throw new MeshRuntimeCorruptionError("state table is unreadable");
@@ -233,19 +249,26 @@ export class SqliteMeshRuntimeRepository implements MeshRuntimeRepository {
 			throw new MeshRuntimeCorruptionError("state snapshot is not valid JSON");
 		}
 		const snapshot = assertSnapshot(parsed);
-		if (snapshot.revision !== row.revision) throw new MeshRuntimeCorruptionError("state revision does not match its snapshot");
-		this.#db.run(
-			"UPDATE mesh_runtime_state SET snapshot_json = ?, updated_at = ? WHERE singleton = ?",
-			[JSON.stringify(snapshot), new Date().toISOString(), STATE_ROW_ID],
-		);
-		this.#db.run("INSERT INTO mesh_runtime_schema_migrations (version, applied_at) VALUES (?, ?)", [3, new Date().toISOString()]);
+		if (snapshot.revision !== row.revision)
+			throw new MeshRuntimeCorruptionError("state revision does not match its snapshot");
+		this.#db.run("UPDATE mesh_runtime_state SET snapshot_json = ?, updated_at = ? WHERE singleton = ?", [
+			JSON.stringify(snapshot),
+			new Date().toISOString(),
+			STATE_ROW_ID,
+		]);
+		this.#db.run("INSERT INTO mesh_runtime_schema_migrations (version, applied_at) VALUES (?, ?)", [
+			3,
+			new Date().toISOString(),
+		]);
 	}
 
 	#loadSnapshot(): MeshRuntimeSnapshot {
 		let row: StateRow | null;
 		try {
 			row = this.#db
-				.query<StateRow, []>("SELECT revision, snapshot_json AS snapshotJson FROM mesh_runtime_state WHERE singleton = 1")
+				.query<StateRow, []>(
+					"SELECT revision, snapshot_json AS snapshotJson FROM mesh_runtime_state WHERE singleton = 1",
+				)
 				.get();
 		} catch {
 			throw new MeshRuntimeCorruptionError("state table is unreadable");
@@ -259,7 +282,8 @@ export class SqliteMeshRuntimeRepository implements MeshRuntimeRepository {
 			throw new MeshRuntimeCorruptionError("state snapshot is not valid JSON");
 		}
 		const snapshot = assertSnapshot(parsed);
-		if (snapshot.revision !== row.revision) throw new MeshRuntimeCorruptionError("state revision does not match its snapshot");
+		if (snapshot.revision !== row.revision)
+			throw new MeshRuntimeCorruptionError("state revision does not match its snapshot");
 		return snapshot;
 	}
 
@@ -293,7 +317,8 @@ export class SqliteMeshRuntimeRepository implements MeshRuntimeRepository {
 
 function assertSnapshot(value: unknown): MeshRuntimeSnapshot {
 	if (!isRecord(value)) throw new MeshRuntimeCorruptionError("state snapshot is not an object");
-	if (!isNonNegativeInteger(value.revision)) throw new MeshRuntimeCorruptionError("state snapshot revision is invalid");
+	if (!isNonNegativeInteger(value.revision))
+		throw new MeshRuntimeCorruptionError("state snapshot revision is invalid");
 	assertObjectMap(value.tasks, "tasks");
 	assertObjectMap(value.assignments, "assignments");
 	assertObjectMap(value.outbox, "outbox");
@@ -312,7 +337,8 @@ function assertSnapshot(value: unknown): MeshRuntimeSnapshot {
 }
 
 function assertAssignmentDeliveries(assignments: unknown, tasks: unknown): void {
-	if (!isRecord(assignments) || !isRecord(tasks)) throw new MeshRuntimeCorruptionError("assignment delivery maps are invalid");
+	if (!isRecord(assignments) || !isRecord(tasks))
+		throw new MeshRuntimeCorruptionError("assignment delivery maps are invalid");
 	for (const [assignmentId, record] of Object.entries(assignments)) {
 		if (!isRecord(record) || record.delivery === undefined) continue;
 		if (!isRecord(record.delivery)) throw new MeshRuntimeCorruptionError("assignment delivery is invalid");

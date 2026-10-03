@@ -1,7 +1,12 @@
 import { canonicalizeJson } from "@pk-nerdsaver-ai/mesh-contracts";
 
 import type { MeshOutboxRecord, OutboxDestination } from "./types";
-import { assertOutboxIdentifier, assertOutboxTimestamp, eventEnvelopeDigest, parseMeshEventEnvelope } from "./validation";
+import {
+	assertOutboxIdentifier,
+	assertOutboxTimestamp,
+	eventEnvelopeDigest,
+	parseMeshEventEnvelope,
+} from "./validation";
 
 export interface CreateOutboxRecordInput {
 	readonly outboxId: string;
@@ -12,7 +17,10 @@ export interface CreateOutboxRecordInput {
 }
 
 function parseDestination(input: OutboxDestination): OutboxDestination {
-	if ((input.transport !== "nostr" && input.transport !== "iroh" && input.transport !== "local") || input.target.trim().length === 0) {
+	if (
+		(input.transport !== "nostr" && input.transport !== "iroh" && input.transport !== "local") ||
+		input.target.trim().length === 0
+	) {
 		throw new Error("outbox destination must identify a supported transport and non-empty target");
 	}
 	return Object.freeze({ transport: input.transport, target: input.target });

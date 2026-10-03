@@ -45,15 +45,15 @@ export type OutboxDestination =
 	| {
 			readonly transport: "nostr";
 			readonly target: string;
-		}
+	  }
 	| {
 			readonly transport: "iroh";
 			readonly target: string;
-		}
+	  }
 	| {
 			readonly transport: "local";
 			readonly target: string;
-		};
+	  };
 
 export type OutboxState = "pending" | "in_flight" | "delivered" | "dead_letter";
 

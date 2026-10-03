@@ -78,13 +78,19 @@ function assertExecutionBinding(start: MeshExecutionStart, identity: WorkerIdent
 		throw new MeshWorkerProtocolError("task_id_mismatch", "Assignment taskId does not match the task contract.");
 	}
 	if (assignment.taskDigest !== task.digest) {
-		throw new MeshWorkerProtocolError("task_digest_mismatch", "Assignment task digest does not match the task contract.");
+		throw new MeshWorkerProtocolError(
+			"task_digest_mismatch",
+			"Assignment task digest does not match the task contract.",
+		);
 	}
 	if (assignment.workerNodeId !== identity.nodeId) {
 		throw new MeshWorkerProtocolError("worker_node_mismatch", "Assignment is not bound to this worker node.");
 	}
 	if (assignment.executorPubkey !== identity.executorPubkey) {
-		throw new MeshWorkerProtocolError("executor_pubkey_mismatch", "Assignment is not bound to this executor identity.");
+		throw new MeshWorkerProtocolError(
+			"executor_pubkey_mismatch",
+			"Assignment is not bound to this executor identity.",
+		);
 	}
 	const leaseExpiresAt = Date.parse(assignment.leaseExpiresAt);
 	if (!Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= start.nowEpochMs) {

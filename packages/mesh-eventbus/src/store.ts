@@ -1,7 +1,6 @@
 import type { EventEnvelopeV1 } from "@pk-nerdsaver-ai/mesh-contracts";
-
-import { eventEnvelopeDigest, parseEventProvenance, parseMeshEventEnvelope } from "./validation";
 import type { DurableEventLog, EventAppendResult, InboundMeshEvent, StoredMeshEvent } from "./types";
+import { eventEnvelopeDigest, parseEventProvenance, parseMeshEventEnvelope } from "./validation";
 
 /** The same eventId or idempotency key must never resolve to different content. */
 export class EventConflictError extends Error {
@@ -69,9 +68,11 @@ export class InMemoryDurableEventLog implements DurableEventLog {
 
 	async listByType(type: string): Promise<readonly StoredMeshEvent[]> {
 		const ids = this.#byType.get(type) ?? [];
-		return Object.freeze(ids.flatMap(id => {
-			const record = this.#byEventId.get(id);
-			return record ? [record] : [];
-		}));
+		return Object.freeze(
+			ids.flatMap(id => {
+				const record = this.#byEventId.get(id);
+				return record ? [record] : [];
+			}),
+		);
 	}
 }
