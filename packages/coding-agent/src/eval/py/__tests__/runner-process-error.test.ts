@@ -1,12 +1,15 @@
 import { describe, expect, it } from "bun:test";
-import { fileURLToPath } from "node:url";
+import * as path from "node:path";
 
-const runner = fileURLToPath(new URL("../runner.py", import.meta.url));
+const runner = path.join(import.meta.dir, "..", "runner.py");
+// Resolve the interpreter like the rest of the suite instead of assuming `python3` exists.
+const python = Bun.which("python3") ?? Bun.which("python");
 const stdoutMarker = "SYNTHETIC_PRIVATE_STDOUT_66";
 const stderrMarker = "SYNTHETIC_PRIVATE_STDERR_66";
 
 async function execute(code: string): Promise<string> {
-	const proc = Bun.spawn(["python3", runner], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+	if (!python) throw new Error("Python 3 is required to run the eval runner");
+	const proc = Bun.spawn([python, runner], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
 	const deadline = setTimeout(() => proc.kill(), 4_000);
 	try {
 		proc.stdin.write(`${JSON.stringify({ id: "regression", code })}\n`);
@@ -32,7 +35,7 @@ async function execute(code: string): Promise<string> {
 	}
 }
 
-describe("Python runner captured process errors", () => {
+describe.skipIf(!python)("Python runner captured process errors", () => {
 	for (const timeout of [false, true]) {
 		for (const text of [false, true]) {
 			it(`withholds captured streams for ${timeout ? "TimeoutExpired" : "CalledProcessError"} (text=${text})`, async () => {
