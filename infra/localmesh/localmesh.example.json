@@ -1,0 +1,24 @@
+{
+	"controlPlane": {
+		"authority": "transactional-database",
+		"outboxPollingMilliseconds": 1000
+	},
+	"eventTransports": {
+		"nostr": {
+			"enabled": false,
+			"requiredCapabilities": ["relay_write", "nip44", "gift_wrap"],
+			"relayUrlReference": "secret://localmesh/nostr-relay-url"
+		},
+		"iroh": {
+			"enabled": false,
+			"requiredCapabilities": ["endpoint_discovery", "authenticated_transfer", "blob_transfer"]
+		}
+	},
+	"artifacts": {
+		"localCasRoot": "./data/localmesh/cas",
+		"blossom": {
+			"enabled": false,
+			"requiredCapabilities": ["blossom_put", "nostr_authorization"]
+		}
+	}
+}
