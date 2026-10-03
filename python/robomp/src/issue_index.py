@@ -2,7 +2,8 @@
 
 No webhook ingestion or background worker: a search refreshes the current repo
 at most once per five minutes. Only a complete reconcile makes the index usable.
-Large initial backfills that exceed the page budget use GitHub search instead.
+A reconcile that exceeds the page budget records how far it got and uses GitHub
+search for now; the next refresh resumes there, so large repos converge.
 """
 
 from __future__ import annotations
@@ -61,9 +62,10 @@ def parse_search_query(query: str) -> ParsedSearchQuery | None:
 
 
 class IssueIndexSync:
-    def __init__(self, *, db: Database, github: GitHubBackend) -> None:
+    def __init__(self, *, db: Database, github: GitHubBackend, max_pages: int = _MAX_PAGES_PER_SEARCH) -> None:
         self._db = db
         self._github = github
+        self._max_pages = max_pages
 
     async def ensure_fresh(self, repo: str) -> bool:
         """Return whether the repo has a complete, fresh index after this call."""
@@ -81,15 +83,24 @@ class IssueIndexSync:
         since = None
         if watermark:
             since = (datetime.fromisoformat(watermark) - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for page in range(1, _MAX_PAGES_PER_SEARCH + 1):
+        # Pages come back in ascending `updated_at`, so everything before the
+        # recorded resume point is already ingested. `since` is inclusive, so
+        # records sharing that timestamp are re-read rather than skipped.
+        resume = self._db.issue_index_resume_since(repo)
+        if resume and (since is None or resume > since):
+            since = resume
+        for page in range(1, self._max_pages + 1):
             batch = await self._github.list_issue_index_entries(repo, since=since, page=page, per_page=_PAGE_SIZE)
-            for entry in batch:
-                if entry.repo != repo:
-                    raise ValueError("Issue index backend returned a different repository")
-                self._db.upsert_issue_index(entry)
+            if any(entry.repo != repo for entry in batch):
+                raise ValueError("Issue index backend returned a different repository")
+            progress = max((entry.updated_at for entry in batch if entry.updated_at), default=None)
+            # One transaction per page, off the event loop that serves webhooks.
+            await asyncio.to_thread(self._db.record_issue_index_page, repo, batch, resume_since=progress)
             if len(batch) < _PAGE_SIZE:
-                self._db.set_issue_index_watermark(repo, started.strftime("%Y-%m-%dT%H:%M:%SZ"))
+                await asyncio.to_thread(
+                    self._db.set_issue_index_watermark, repo, started.strftime("%Y-%m-%dT%H:%M:%SZ")
+                )
                 return True
-        # Never advance a watermark on partial pagination: equal timestamps can
-        # span pages, and an advanced timestamp would permanently skip records.
+        # Never advance the watermark on partial pagination: only the resume
+        # point moves, and the index stays unusable until a reconcile finishes.
         return False

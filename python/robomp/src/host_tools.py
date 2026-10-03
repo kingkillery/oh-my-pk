@@ -27,7 +27,13 @@ from robomp.config import Settings
 from robomp.db import Database, IssueState, issue_key
 from robomp.git_ops import GitCommandError, HeadDriftError
 from robomp.github_backend import GitHubBackend
-from robomp.github_client import GitHubError, IssueInfo, PullRequestFileInfo, RepoInfo
+from robomp.github_client import (
+    SEARCH_SCOPE_OVERRIDE_RE,
+    GitHubError,
+    IssueInfo,
+    PullRequestFileInfo,
+    RepoInfo,
+)
 from robomp.issue_index import IssueIndexSync, parse_search_query
 from robomp.sandbox import (
     GitTransport,
@@ -527,8 +533,9 @@ def _run_pre_publish_bun_test(
         return
     if not _has_bun_script(bindings.workspace.repo_dir, "test"):
         return
+    timeout = _pre_pr_test_timeout(bindings)
     try:
-        proc = _run_repo_command(bindings, _PRE_PR_TEST_COMMAND, timeout=_PRE_PR_TEST_TIMEOUT_SECONDS)
+        proc = _run_repo_command(bindings, _PRE_PR_TEST_COMMAND, timeout=timeout)
     except FileNotFoundError:
         msg = f"refusing to {stage}: `bun run test` is required before {stage}, but `bun` is not on PATH."
         _audit(bindings, tool_name, args, error=msg)
@@ -537,7 +544,7 @@ def _run_pre_publish_bun_test(
         output = _format_process_output(exc.stdout, exc.stderr)
         msg = (
             f"refusing to {stage}: `bun run test` timed out after "
-            f"{_PRE_PR_TEST_TIMEOUT_SECONDS:.0f}s.\n"
+            f"{timeout:.0f}s.\n"
             f"{output}\n\n"
             f"Investigate the hang (a test that never exits blocks every future run), "
             f"rerun `bun run test`, and retry."
@@ -553,6 +560,14 @@ def _run_pre_publish_bun_test(
         )
         _audit(bindings, tool_name, args, error=msg)
         _raise_command(msg)
+
+
+def _pre_pr_test_timeout(bindings: ToolBindings) -> float:
+    """Cap the suite at one task budget so the timeout branch is reachable and a
+    hung `bun run test` cannot outlive its task by more than that budget."""
+    if bindings.settings is None:
+        return _PRE_PR_TEST_TIMEOUT_SECONDS
+    return min(_PRE_PR_TEST_TIMEOUT_SECONDS, bindings.settings.task_timeout_seconds)
 
 
 _AUTOCLOSE_INELIGIBLE_STATES: frozenset[str] = frozenset({"closed", "merged", "needs_info", "abandoned"})
@@ -1171,7 +1186,6 @@ def _build_fetch_thread(bindings: ToolBindings) -> HostTool[Any, Any]:
 
 
 # ---------- gh_search_issues ----------
-_REPO_QUALIFIER_RE = re.compile(r"(?i)\brepo\s*:|\bOR\b")
 
 
 def _render_search_matches(
@@ -1201,9 +1215,10 @@ def _build_search_issues(bindings: ToolBindings) -> HostTool[Any, Any]:
             _audit(bindings, "gh_search_issues", args, error=msg)
             _raise_command(msg)
         query = query.strip()
-        if _REPO_QUALIFIER_RE.search(query):
+        if SEARCH_SCOPE_OVERRIDE_RE.search(query):
             msg = (
-                "gh_search_issues scopes to the current repo automatically; drop 'repo:' qualifiers and OR expressions."
+                "gh_search_issues scopes to the current repo automatically; drop repo:/org:/user:/owner: "
+                "qualifiers and OR expressions."
             )
             _audit(bindings, "gh_search_issues", args, error=msg)
             _raise_command(msg)

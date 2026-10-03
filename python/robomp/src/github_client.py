@@ -375,8 +375,11 @@ class GitHubClient:
         come back in GitHub's best-match order. `limit` is capped at 30 — this
         serves triage lookups (duplicates, prior fixes), not pagination.
         """
-        if not query.strip() or re.search(r"(?i)\brepo\s*:|\bOR\b", query):
-            raise GitHubError(422, "Search requires keywords without repo: or OR; repository scope is fixed.")
+        if not query.strip() or SEARCH_SCOPE_OVERRIDE_RE.search(query):
+            raise GitHubError(
+                422,
+                "Search requires keywords without repo:/org:/user:/owner: or OR; repository scope is fixed.",
+            )
         per_page = max(1, min(int(limit), 30))
         data = await self.request(
             "GET",
@@ -384,7 +387,8 @@ class GitHubClient:
             params={"q": f"repo:{repo} {query}".strip(), "per_page": per_page},
         )
         items = (data or {}).get("items") or []
-        return [_summary_from_item(repo, item) for item in items]
+        # Defence in depth: never attribute another repository's result to `repo`.
+        return [_summary_from_item(repo, item) for item in items if _item_in_repo(repo, item)]
 
     async def list_issue_index_entries(
         self,
@@ -632,6 +636,18 @@ def _pr_review_from_payload(data: Mapping[str, Any]) -> PullRequestReviewInfo:
         state=str(data.get("state") or ""),
         submitted_at=str(data.get("submitted_at") or data.get("created_at") or ""),
     )
+
+
+# Scope qualifiers would widen a `repo:`-pinned search (GitHub unions them), and
+# the upper-case `OR` operator would detach terms from the pinned scope. A
+# lower-case "or" is an ordinary keyword and stays allowed.
+SEARCH_SCOPE_OVERRIDE_RE = re.compile(r"(?i:\b(?:repo|org|user|owner)\s*:)|\bOR\b")
+
+
+def _item_in_repo(repo: str, item: Mapping[str, Any]) -> bool:
+    """True iff a search result's `repository_url` names `repo` (fail closed when absent)."""
+    url = str(item.get("repository_url") or "")
+    return url.lower().endswith(f"/repos/{repo}".lower())
 
 
 def _summary_from_item(repo: str, item: Mapping[str, Any]) -> IssueSummary:

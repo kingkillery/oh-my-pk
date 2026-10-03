@@ -1,4 +1,4 @@
-"""Local issue index: query parsing, webhook ingest, FTS search, reconcile sync."""
+"""Local issue index: query parsing, FTS search, on-demand reconcile sync."""
 
 from __future__ import annotations
 
@@ -185,3 +185,38 @@ async def test_failed_refresh_does_not_advance_watermark(db: Database) -> None:
     with pytest.raises(GitHubError):
         await IssueIndexSync(db=db, github=backend).ensure_fresh("octo/widget")
     assert db.issue_index_watermark("octo/widget") == "2026-01-01T00:00:00Z"
+
+
+class _SinceBackend:
+    """Ascending-`updated_at` pages that honour `since`, like GitHub's /issues."""
+
+    def __init__(self, entries: list[IssueIndexEntry]) -> None:
+        self.entries = sorted(entries, key=lambda e: e.updated_at)
+        self.calls: list[tuple[str | None, int]] = []
+
+    async def list_issue_index_entries(
+        self, repo: str, *, since: str | None = None, page: int = 1, per_page: int = 100
+    ) -> list[IssueIndexEntry]:
+        self.calls.append((since, page))
+        window = [e for e in self.entries if since is None or e.updated_at >= since]
+        return window[(page - 1) * per_page : page * per_page]
+
+
+async def test_over_budget_backfill_resumes_and_converges(db: Database) -> None:
+    entries = [_entry(n, updated_at=f"2026-01-01T00:{n // 60:02d}:{n % 60:02d}Z") for n in range(1, 451)]
+    backend = _SinceBackend(entries)
+    sync = IssueIndexSync(db=db, github=backend, max_pages=2)
+
+    assert not await sync.sync_repo("octo/widget")  # 200 of 450 ingested
+    assert db.issue_index_watermark("octo/widget") is None
+    assert db.issue_index_resume_since("octo/widget") == entries[199].updated_at
+
+    backend.calls.clear()
+    assert not await sync.sync_repo("octo/widget")  # resumes instead of restarting at page 1 / since=None
+    assert backend.calls[0] == (entries[199].updated_at, 1)
+
+    assert await sync.sync_repo("octo/widget")
+    assert db.issue_index_watermark("octo/widget") is not None
+    assert db.issue_index_resume_since("octo/widget") is None
+    assert len(db.search_issue_index("octo/widget", limit=50)) == 50
+    assert {e.number for e in db.search_issue_index("octo/widget", keywords=("issue", "450"))} == {450}

@@ -276,6 +276,7 @@ def round_trip_app(proxy_settings: Settings):
                             "updated_at": "2026-02-01T00:00:00Z",
                             "created_at": "2026-01-15T00:00:00Z",
                             "html_url": "https://example/9",
+                            "repository_url": "https://api.github.com/repos/octo/widget",
                             "pull_request": {"url": "https://example/pull/9"},
                         }
                     ],

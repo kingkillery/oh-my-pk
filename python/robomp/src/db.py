@@ -160,6 +160,13 @@ CREATE TABLE IF NOT EXISTS issue_index_sync (
   repo        TEXT PRIMARY KEY,
   last_synced TEXT NOT NULL
 );
+
+-- Resume point for a reconcile that ran out of page budget: the max
+-- `updated_at` already ingested. Never makes the index usable on its own.
+CREATE TABLE IF NOT EXISTS issue_index_resume (
+  repo         TEXT PRIMARY KEY,
+  resume_since TEXT NOT NULL
+);
 """
 
 
@@ -1223,8 +1230,21 @@ class Database:
     # ---- issue search index ----
     def upsert_issue_index(self, entry: IssueIndexEntry) -> None:
         """Insert or refresh one issue/PR in the local search index."""
-        with self._lock:
-            self._conn.execute(
+        self.record_issue_index_page(entry.repo, [entry])
+
+    def record_issue_index_page(
+        self, repo: str, entries: Iterable[IssueIndexEntry], *, resume_since: str | None = None
+    ) -> None:
+        """Upsert one reconcile page in a single transaction.
+
+        `resume_since` (when given) records how far an unfinished reconcile got,
+        so the next refresh continues from there instead of restarting.
+        """
+        rows = [_issue_index_params(entry) for entry in entries]
+        if any(row[0] != repo for row in rows):
+            raise ValueError("Issue index page mixes repositories")
+        with self._txn() as conn:
+            conn.executemany(
                 """
                 INSERT INTO issue_index
                   (repo, number, is_pr, title, body, state, state_reason, merged_at,
@@ -1245,23 +1265,16 @@ class Database:
                   html_url = excluded.html_url
                 WHERE excluded.updated_at >= issue_index.updated_at
                 """,
-                (
-                    entry.repo,
-                    entry.number,
-                    1 if entry.is_pull_request else 0,
-                    entry.title,
-                    entry.body,
-                    entry.state,
-                    entry.state_reason,
-                    entry.merged_at,
-                    entry.author,
-                    json.dumps(list(entry.labels), separators=(",", ":")),
-                    entry.comments,
-                    entry.created_at,
-                    entry.updated_at,
-                    entry.html_url,
-                ),
+                rows,
             )
+            if resume_since is not None:
+                conn.execute(
+                    """
+                    INSERT INTO issue_index_resume (repo, resume_since) VALUES (?, ?)
+                    ON CONFLICT(repo) DO UPDATE SET resume_since = excluded.resume_since
+                    """,
+                    (repo, resume_since),
+                )
 
     def search_issue_index(
         self,
@@ -1319,14 +1332,41 @@ class Database:
         return str(row["last_synced"]) if row is not None else None
 
     def set_issue_index_watermark(self, repo: str, last_synced: str) -> None:
-        with self._lock:
-            self._conn.execute(
+        """Mark `repo` fully reconciled as of `last_synced` and drop any resume point."""
+        with self._txn() as conn:
+            conn.execute(
                 """
                 INSERT INTO issue_index_sync (repo, last_synced) VALUES (?, ?)
                 ON CONFLICT(repo) DO UPDATE SET last_synced = excluded.last_synced
                 """,
                 (repo, last_synced),
             )
+            conn.execute("DELETE FROM issue_index_resume WHERE repo = ?", (repo,))
+
+    def issue_index_resume_since(self, repo: str) -> str | None:
+        """Where an unfinished reconcile stopped; None = nothing to resume."""
+        with self._lock:
+            row = self._conn.execute("SELECT resume_since FROM issue_index_resume WHERE repo = ?", (repo,)).fetchone()
+        return str(row["resume_since"]) if row is not None else None
+
+
+def _issue_index_params(entry: IssueIndexEntry) -> tuple[Any, ...]:
+    return (
+        entry.repo,
+        entry.number,
+        1 if entry.is_pull_request else 0,
+        entry.title,
+        entry.body,
+        entry.state,
+        entry.state_reason,
+        entry.merged_at,
+        entry.author,
+        json.dumps(list(entry.labels), separators=(",", ":")),
+        entry.comments,
+        entry.created_at,
+        entry.updated_at,
+        entry.html_url,
+    )
 
 
 def _index_entry_from_row(row: sqlite3.Row) -> IssueIndexEntry:

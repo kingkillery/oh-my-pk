@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
+import os
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +17,7 @@ import pytest
 from omp_rpc import HostToolContext, RpcCommandError
 
 from robomp import host_tools
+from robomp.config import Settings
 from robomp.db import Database
 from robomp.github_client import GitHubClient, IssueIndexEntry, IssueInfo, RepoInfo
 from robomp.host_tools import AbortController, ToolBindings, build
@@ -3848,6 +3852,7 @@ def test_gh_search_issues_scopes_repo_and_renders_matches(db: Database, tmp_path
                         "updated_at": "2026-07-01T00:00:00Z",
                         "created_at": "2026-07-01T00:00:00Z",
                         "html_url": "https://example/42",
+                        "repository_url": "https://api.github.com/repos/octo/widget",
                     },
                     {
                         "number": 30,
@@ -3860,6 +3865,7 @@ def test_gh_search_issues_scopes_repo_and_renders_matches(db: Database, tmp_path
                         "updated_at": "2026-06-01T00:00:00Z",
                         "created_at": "2026-05-01T00:00:00Z",
                         "html_url": "https://example/30",
+                        "repository_url": "https://api.github.com/repos/octo/widget",
                     },
                     {
                         "number": 31,
@@ -3872,7 +3878,20 @@ def test_gh_search_issues_scopes_repo_and_renders_matches(db: Database, tmp_path
                         "updated_at": "2026-06-02T00:00:00Z",
                         "created_at": "2026-06-02T00:00:00Z",
                         "html_url": "https://example/pull/31",
+                        "repository_url": "https://api.github.com/repos/Octo/Widget",
                         "pull_request": {"url": "https://example/pull/31"},
+                    },
+                    {
+                        "number": 77,  # another repository's hit — must never be attributed here
+                        "title": "private resize crash",
+                        "state": "open",
+                        "user": {"login": "mallory"},
+                        "labels": [],
+                        "comments": 0,
+                        "updated_at": "2026-06-03T00:00:00Z",
+                        "created_at": "2026-06-03T00:00:00Z",
+                        "html_url": "https://example/other/77",
+                        "repository_url": "https://api.github.com/repos/other/private",
                     },
                 ],
             },
@@ -3888,14 +3907,18 @@ def test_gh_search_issues_scopes_repo_and_renders_matches(db: Database, tmp_path
     assert "#42" not in result  # inbound issue filtered out
     assert "#30 (issue, closed (not_planned))" in result
     assert "#31 (PR, closed (completed))" in result
+    assert "#77" not in result and "private resize crash" not in result
 
 
 def test_gh_search_issues_rejects_repo_qualifier_and_empty_query(db: Database, tmp_path: Path) -> None:
     bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(lambda r: httpx.Response(500)))
     try:
         tool = next(x for x in build(bindings) if x.name == "gh_search_issues")
+        for widening in ("repo:evil/elsewhere secrets", "org:evil secrets", "USER:evil secrets", "owner: evil x"):
+            with pytest.raises(RpcCommandError):
+                tool.execute({"query": widening}, _ctx())
         with pytest.raises(RpcCommandError):
-            tool.execute({"query": "repo:evil/elsewhere secrets"}, _ctx())
+            tool.execute({"query": "crash OR secrets"}, _ctx())
         with pytest.raises(RpcCommandError):
             tool.execute({"query": "   "}, _ctx())
     finally:
@@ -3994,6 +4017,38 @@ def test_search_commits_message_and_patch_modes(db: Database, tmp_path: Path) ->
     assert "feat: initial import" not in by_message
     assert "fix(tools): colon selector literal paths" in by_patch
     assert none.startswith("No commits")
+
+
+def test_open_pr_test_gate_times_out_within_task_budget(
+    db: Database, tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hung suite is cut off at the task budget, so the timeout branch is
+    reachable and the gate cannot outlive the task it belongs to."""
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_bun = fake_bin / "bun"
+    fake_bun.write_text("#!/bin/sh\nexec sleep 30\n")
+    fake_bun.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    bindings, loop, thread = _bindings(
+        db, tmp_path, httpx.MockTransport(lambda request: pytest.fail("no GitHub calls allowed"))
+    )
+    bindings = dataclasses.replace(bindings, settings=settings.model_copy(update={"task_timeout_seconds": 1.0}))
+    db.set_issue_classification(bindings.issue_key, "bug")
+    (bindings.workspace.repo_dir / "package.json").write_text(json.dumps({"scripts": {"test": "bun test"}}))
+    started = time.monotonic()
+    try:
+        tool = next(t for t in build(bindings) if t.name == "gh_open_pr")
+        with pytest.raises(RpcCommandError, match=r"`bun run test` timed out after 1s"):
+            tool.execute(
+                {"title": "fix: bug", "body": "## Repro\nr\n## Cause\nc\n## Fix\nf\n## Verification\nv\nFixes #42"},
+                _ctx(),
+            )
+    finally:
+        _stop_loop(loop, thread)
+    assert time.monotonic() - started < 15
+    assert db.get_issue(bindings.issue_key).pr_number is None
 
 
 @pytest.mark.parametrize("failure", [FileNotFoundError(), subprocess.TimeoutExpired("bun", 3600, output=b"hung suite")])
