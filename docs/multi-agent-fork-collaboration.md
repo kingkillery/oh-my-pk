@@ -2,7 +2,13 @@
 
 This is the operating policy for agents working from Linear on the same repository. It applies to root agents, remote runners, task subagents that own a code slice, reviewers, and the merge integrator.
 
-## When Linear is mandatory
+## Temporary Linear suspension
+
+At the repository owner's request, the mandatory Linear prerequisite is suspended until explicitly reinstated. Work may proceed without a Linear issue, issue contract, or `linear/<issue-key>-…` branch name. The Linear-specific requirements below apply only when work is deliberately managed through Linear; they do not block manually authorized work.
+
+For work outside Linear, record the objective, path scope, base SHA, owning agent, branch/worktree, verification, and handoff in the task or PR. Keep isolated branches and worktrees, one writer per worktree, conflict coordination, and a designated merge owner. This suspension does not authorize automated dispatch, merging, deployment, or changes to credentials or repository settings.
+
+## When Linear is mandatory (suspended)
 
 Linear is required the moment work crosses a session or ownership boundary; work that dies inside one interactive session may skip it. Any one of these conditions requires an issue before proceeding:
 
