@@ -316,11 +316,15 @@ describe("searchExa", () => {
 			);
 		};
 
+		// The throttle spaces slot reservations, not fetch callbacks: a pause between the
+		// first reservation and its fetch (GC under --smol, a loaded runner) shrinks the
+		// callback gap. The first reservation happens after `before`, so this bound holds.
+		const before = Date.now();
 		await searchExa({ query: "first paced request", fetch: fetchMock });
 		await searchExa({ query: "second paced request", fetch: fetchMock });
 
 		expect(requestTimes).toHaveLength(2);
-		expect(requestTimes[1] - requestTimes[0]).toBeGreaterThanOrEqual(20);
+		expect(requestTimes[1] - before).toBeGreaterThanOrEqual(23);
 	});
 
 	it("aborts while waiting for the configured Exa request delay", async () => {
