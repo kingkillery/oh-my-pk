@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { MeshValidationError } from "./errors";
 import type { JsonRecord, JsonValue } from "./types";
 
@@ -39,6 +37,11 @@ function normalize(value: unknown, path: string, ancestors: ReadonlySet<object>)
 	return Object.freeze(result) as JsonRecord;
 }
 
+/** Narrow a JSON value to a record; `Array.isArray` alone does not exclude readonly arrays. */
+export function isJsonRecord(value: JsonValue | undefined): value is JsonRecord {
+	return value !== null && value !== undefined && typeof value === "object" && !Array.isArray(value);
+}
+
 /** Canonical JSON with recursively ordered object keys and preserved array order. */
 export function canonicalizeJson(value: unknown): string {
 	return JSON.stringify(normalize(value, "$", new Set()));
@@ -46,7 +49,7 @@ export function canonicalizeJson(value: unknown): string {
 
 /** SHA-256 over canonical JSON, encoded as lowercase hexadecimal. */
 export function sha256CanonicalJson(value: unknown): string {
-	return createHash("sha256").update(canonicalizeJson(value)).digest("hex");
+	return new Bun.CryptoHasher("sha256").update(canonicalizeJson(value)).digest("hex");
 }
 
 export function toImmutableJson(value: unknown): JsonValue {

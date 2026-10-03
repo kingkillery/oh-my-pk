@@ -271,13 +271,13 @@ function assertKnownOptions(command: MeshCliCommand, flags: ReadonlyMap<string, 
 function submitRequest(parsed: ParsedArguments, requestId: string): MeshCliSubmitRequest {
 	if (parsed.positional.length > 0)
 		throw new MeshCliInputError("unexpected_argument", "Submit accepts task fields only through options.");
-	const payload = jsonObjectOption(parsed.flags, "request") ?? {};
+	const payload: MeshCliJsonObject = jsonObjectOption(parsed.flags, "request") ?? {};
 	const goal = stringOption(parsed.flags, "goal");
 	const goalFromPayload = typeof payload.goal === "string" ? payload.goal : undefined;
 	if (goal !== undefined && goalFromPayload !== undefined && goal !== goalFromPayload) {
 		throw new MeshCliInputError("conflicting_option", "The submission goal was supplied with conflicting values.");
 	}
-	const combinedPayload = Object.freeze({ ...payload, ...(goal === undefined ? {} : { goal }) });
+	const combinedPayload: MeshCliJsonObject = Object.freeze(goal === undefined ? { ...payload } : { ...payload, goal });
 	const idempotencyKey = consistentStringOption(parsed.flags, "idempotency-key", combinedPayload.idempotencyKey);
 	if (!idempotencyKey) throw new MeshCliInputError("idempotency_key_required", "Submit requires an idempotency key.");
 	return Object.freeze({ requestId, idempotencyKey, payload: combinedPayload });

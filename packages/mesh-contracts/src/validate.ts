@@ -648,7 +648,7 @@ function fail(code: MeshValidationCode, path: string, message: string, operatorD
 }
 
 function hasOwn(record: JsonRecord, field: string): boolean {
-	return Object.prototype.hasOwnProperty.call(record, field);
+	return Object.hasOwn(record, field);
 }
 
 function assertRecord(value: unknown, path: string): JsonRecord {

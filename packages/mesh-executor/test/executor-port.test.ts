@@ -175,6 +175,8 @@ describe("ExecutorMeshExecutionPort", () => {
 			},
 		};
 		const task = makeTask();
+		const invocation = task.executorInvocation;
+		if (!invocation) throw new Error("fixture task must carry an executor invocation");
 		const context = makeContext(task);
 		const port = makePort(gateway);
 
@@ -192,7 +194,7 @@ describe("ExecutorMeshExecutionPort", () => {
 				assignmentId: context.assignmentId,
 				schedulerEpoch: 9,
 				fencingToken: 17,
-				inputDigest: task.executorInvocation?.inputDigest,
+				inputDigest: invocation.inputDigest,
 				catalogFingerprint: CATALOG_FINGERPRINT,
 				toolPermission: canonicalExecutorToolPermission(ENDPOINT_ID, TOOL_PATH),
 			},
@@ -324,7 +326,7 @@ describe("ExecutorMeshExecutionPort", () => {
 		const executor = Bun.serve({
 			port: 0,
 			fetch() {
-				return Response.redirect(redirected.url, 307);
+				return Response.redirect(redirected.url.href, 307);
 			},
 		});
 		try {

@@ -28,6 +28,7 @@ describe("InMemoryContentAddressedStore", () => {
 		expect(first).toEqual({ sha256, sizeBytes: content.byteLength, inserted: true });
 		expect(second).toEqual({ sha256, sizeBytes: content.byteLength, inserted: false });
 		const returned = await store.get(sha256);
+		if (returned === null) throw new Error("stored blob is missing");
 		expect(new TextDecoder().decode(returned)).toBe("immutable artifact");
 	});
 
@@ -41,7 +42,9 @@ describe("InMemoryContentAddressedStore", () => {
 
 			expect(results.filter(result => result.inserted)).toHaveLength(1);
 			expect(results.filter(result => !result.inserted)).toHaveLength(1);
-			expect(new TextDecoder().decode(await store.get(sha256))).toBe("atomic artifact");
+			const stored = await store.get(sha256);
+			if (stored === null) throw new Error("stored blob is missing");
+			expect(new TextDecoder().decode(stored)).toBe("atomic artifact");
 			const shard = await readdir(join(root, sha256.slice(0, 2), sha256.slice(2, 4)));
 			expect(shard).toEqual([sha256]);
 		} finally {

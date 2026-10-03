@@ -248,7 +248,7 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 }
 
 function receiptCandidate(value: unknown): unknown {
-	if (!isRecord(value) || !Object.prototype.hasOwnProperty.call(value, "receipt")) {
+	if (!isRecord(value) || !Object.hasOwn(value, "receipt")) {
 		throw new ReceiptFinalizationError("invalid_signed_receipt");
 	}
 	return value.receipt;

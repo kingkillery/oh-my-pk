@@ -34,7 +34,7 @@ function deterministicSignature(payload: Uint8Array): Uint8Array {
 	return encoder.encode(`${TEST_ALGORITHM}:${TASK_KEY_ID}:${decoder.decode(payload).split("").reverse().join("")}`);
 }
 
-const taskEnvelopeSigner: MeshEnvelopeSigner = Object.freeze({
+const taskEnvelopeSigner = Object.freeze<MeshEnvelopeSigner>({
 	algorithm: TEST_ALGORITHM,
 	keyId: TASK_KEY_ID,
 	actorPubkey: TASK_AUTHOR_PUBKEY,
@@ -42,7 +42,7 @@ const taskEnvelopeSigner: MeshEnvelopeSigner = Object.freeze({
 	sign: deterministicSignature,
 });
 
-const taskEnvelopeVerifier: MeshEnvelopeVerifier = Object.freeze({
+const taskEnvelopeVerifier = Object.freeze<MeshEnvelopeVerifier>({
 	algorithm: TEST_ALGORITHM,
 	keyId: TASK_KEY_ID,
 	actorPubkey: TASK_AUTHOR_PUBKEY,
@@ -52,7 +52,7 @@ const taskEnvelopeVerifier: MeshEnvelopeVerifier = Object.freeze({
 	},
 });
 
-const noReceiptVerifier: ReceiptVerifierResolver = Object.freeze({
+const noReceiptVerifier = Object.freeze<ReceiptVerifierResolver>({
 	resolve() {
 		return undefined;
 	},

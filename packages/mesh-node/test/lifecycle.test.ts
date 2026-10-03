@@ -12,7 +12,6 @@ import {
 import {
 	type MeshExecutionRunResult,
 	MeshNodeAgent,
-	MeshNodeAgentError,
 	type MeshNodeExecutionContext,
 	type MeshNodeExecutionPort,
 	type MeshNodePresence,
@@ -95,7 +94,7 @@ function schedulerSigner(actorPubkey = SCHEDULER_PUBKEY): MeshEnvelopeSigner {
 	});
 }
 
-const schedulerVerifier: MeshEnvelopeVerifier = Object.freeze({
+const schedulerVerifier = Object.freeze<MeshEnvelopeVerifier>({
 	algorithm: SIGNATURE_ALGORITHM,
 	keyId: SIGNATURE_KEY_ID,
 	actorPubkey: SCHEDULER_PUBKEY,

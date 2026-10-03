@@ -85,14 +85,14 @@ function fixtureSignature(payload: Uint8Array): Uint8Array {
 	return signatureEncoder.encode(`fixture-worker:${signatureDecoder.decode(payload)}`);
 }
 
-const receiptVerifier: ReceiptSignatureVerifier = Object.freeze({
+const receiptVerifier = Object.freeze<ReceiptSignatureVerifier>({
 	algorithm: "fixture-deterministic-v1",
 	keyId: "fixture-worker",
 	verify: (payload: Uint8Array, signature: Uint8Array) =>
 		signatureDecoder.decode(signature) === signatureDecoder.decode(fixtureSignature(payload)),
 });
 
-const receiptVerifierResolver: ReceiptVerifierResolver = Object.freeze({
+const receiptVerifierResolver = Object.freeze<ReceiptVerifierResolver>({
 	resolve(lease) {
 		if (lease.executorPubkey !== WORKER || lease.workerNodeId !== NODE) return undefined;
 		return receiptVerifier;

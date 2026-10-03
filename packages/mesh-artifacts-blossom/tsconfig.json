@@ -1,7 +1,6 @@
 {
 	"extends": "../tsconfig.workspace.json",
 	"compilerOptions": {
-		"baseUrl": ".",
 		"paths": {
 			"@pk-nerdsaver-ai/mesh-artifacts": ["../mesh-artifacts/src/index.ts"]
 		}

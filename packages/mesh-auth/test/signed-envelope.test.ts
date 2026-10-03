@@ -13,7 +13,7 @@ import {
 import {
 	MAX_MESH_SIGNATURE_BYTES,
 	MESH_ENVELOPE_SIGNING_PAYLOAD_SCHEMA,
-	MeshEnvelopeError,
+	type MeshEnvelopeError,
 	type MeshEnvelopeSigner,
 	type MeshEnvelopeVerifier,
 	signAssignmentLease,

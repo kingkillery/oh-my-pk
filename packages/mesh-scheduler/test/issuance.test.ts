@@ -15,6 +15,8 @@ import {
 	InMemoryMeshRuntimeRepository,
 	MeshOrchestrator,
 	type MeshRuntimeRepository,
+	type MeshRuntimeSnapshot,
+	type MeshRuntimeTransaction,
 	SchedulerLeaseConflictError,
 	WorkerCapacityConflictError,
 	WorkerCapacityObservationError,
@@ -40,7 +42,7 @@ function signature(payload: Uint8Array): Uint8Array {
 	);
 }
 
-const signer: MeshEnvelopeSigner = Object.freeze({
+const signer = Object.freeze<MeshEnvelopeSigner>({
 	algorithm: "scheduler-issuance-test-v1",
 	keyId: "scheduler-issuance-key",
 	actorPubkey: SCHEDULER,
@@ -48,7 +50,7 @@ const signer: MeshEnvelopeSigner = Object.freeze({
 	sign: signature,
 });
 
-const verifier: MeshEnvelopeVerifier = Object.freeze({
+const verifier = Object.freeze<MeshEnvelopeVerifier>({
 	algorithm: signer.algorithm,
 	keyId: signer.keyId,
 	actorPubkey: signer.actorPubkey,
@@ -141,7 +143,7 @@ async function issuedOutboxCount(repository: InMemoryMeshRuntimeRepository): Pro
 
 describe("MeshSchedulerIssuanceCoordinator", () => {
 	test("issues one safe, durable, scheduler-signed assignment", async () => {
-		let now = T0;
+		const now = T0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
@@ -168,7 +170,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("fails before scheduler authority mutation when no candidate or execution profile is issuable", async () => {
-		let now = T0;
+		const now = T0;
 		const noCandidateRepository = new InMemoryMeshRuntimeRepository();
 		const noCandidateRuntime = createRuntime(noCandidateRepository, () => now);
 		await noCandidateRuntime.submitTask(task(), now);
@@ -189,7 +191,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("rejects a ticket lease that would outlive its scheduler authority", async () => {
-		let now = T0;
+		const now = T0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
@@ -204,7 +206,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("requires a ticket lease that covers the declared execution bound", async () => {
-		let now = T0;
+		const now = T0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
@@ -219,7 +221,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("requires an explicit bounded execution time before issuing a ticket", async () => {
-		let now = T0;
+		const now = T0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task({ execution: { profileId: "scheduler-fixture-v1" } }), now);
@@ -232,7 +234,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("does not write a durable assignment when signing fails", async () => {
-		let now = T0;
+		const now = T0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
@@ -251,11 +253,11 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("does not persist a nonempty signature rejected by the trusted verifier", async () => {
-		let now = T0;
+		const now = T0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
-		const wrongSigner: MeshEnvelopeSigner = Object.freeze({
+		const wrongSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign: () => signatureEncoder.encode("not-the-scheduler-signature"),
 		});
@@ -272,7 +274,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
-		const delayedSigner: MeshEnvelopeSigner = Object.freeze({
+		const delayedSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				now += 65_002;
@@ -295,7 +297,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
 		let signCalls = 0;
-		const countingSigner: MeshEnvelopeSigner = Object.freeze({
+		const countingSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				signCalls += 1;
@@ -322,7 +324,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("fails closed instead of fabricating a signature for an artifact-less legacy assignment", async () => {
-		let now = T0;
+		const now = T0;
 		let signCalls = 0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
@@ -355,7 +357,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 			expiresAt: now + 120_000,
 		});
 		await runtime.assign({ assignment: legacyLease, now });
-		const countingSigner: MeshEnvelopeSigner = Object.freeze({
+		const countingSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				signCalls += 1;
@@ -371,12 +373,12 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("fails closed on a verifier-invalid persisted signature without signing a replacement", async () => {
-		let now = T0;
+		const now = T0;
 		let signCalls = 0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
-		const countingSigner: MeshEnvelopeSigner = Object.freeze({
+		const countingSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				signCalls += 1;
@@ -409,7 +411,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
-		const countingSigner: MeshEnvelopeSigner = Object.freeze({
+		const countingSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				signCalls += 1;
@@ -433,12 +435,12 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("never re-signs or mutates authority after leadership has turned over", async () => {
-		let now = T0;
+		const now = T0;
 		let signCalls = 0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task({ execution: { profileId: "scheduler-fixture-v1", timeoutSeconds: 10 } }), now);
-		const countingSigner: MeshEnvelopeSigner = Object.freeze({
+		const countingSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				signCalls += 1;
@@ -466,7 +468,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => T0);
 		await runtime.submitTask(task(), T0);
-		const countingSigner: MeshEnvelopeSigner = Object.freeze({
+		const countingSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				signCalls += 1;
@@ -489,7 +491,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task({ execution: { profileId: "scheduler-fixture-v1", timeoutSeconds: 10 } }), now);
-		const delayedSigner: MeshEnvelopeSigner = Object.freeze({
+		const delayedSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				signCalls += 1;
@@ -511,7 +513,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
-		const delayedSigner: MeshEnvelopeSigner = Object.freeze({
+		const delayedSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				now += 5_001;
@@ -529,7 +531,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("requires a selected node presence window that covers the declared execution bound", async () => {
-		let now = T0;
+		const now = T0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
@@ -547,7 +549,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => T0);
 		await runtime.submitTask(task(), T0);
-		const countingSigner: MeshEnvelopeSigner = Object.freeze({
+		const countingSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				signCalls += 1;
@@ -563,12 +565,12 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("rejects cross-task stable ID reuse before it can renew scheduler authority", async () => {
-		let now = T0;
+		const now = T0;
 		let signCalls = 0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
-		const countingSigner: MeshEnvelopeSigner = Object.freeze({
+		const countingSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				signCalls += 1;
@@ -591,7 +593,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("transactionally reserves the selected worker's durable capacity", async () => {
-		let now = T0;
+		const now = T0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		const secondTask = task({ taskId: "task_scheduler-issuance-002", idempotencyKey: "scheduler-issuance-task-002" });
@@ -630,7 +632,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		await runtime.submitTask(task(), now);
 		await runtime.submitTask(secondTask, now);
 		const changingNodes: PlacementNode[] = [node({ availableSlots: 2 })];
-		const changingSigner: MeshEnvelopeSigner = Object.freeze({
+		const changingSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				signCalls += 1;
@@ -705,7 +707,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task({ execution: { profileId: "scheduler-fixture-v1", timeoutSeconds: 10 } }), now);
-		const countingSigner: MeshEnvelopeSigner = Object.freeze({
+		const countingSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				signCalls += 1;
@@ -765,7 +767,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 		const replayReadEntered = Promise.withResolvers<void>();
 		const releaseReplayRead = Promise.withResolvers<void>();
 		const repository: MeshRuntimeRepository = {
-			read<T>(select) {
+			read<T>(select: (snapshot: MeshRuntimeSnapshot) => T | Promise<T>): Promise<T> {
 				reads += 1;
 				if (reads !== 3) return backing.read(select);
 				return (async () => {
@@ -774,20 +776,20 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 					return backing.read(select);
 				})();
 			},
-			transaction<T>(operation) {
+			transaction<T>(operation: (transaction: MeshRuntimeTransaction) => T | Promise<T>): Promise<T> {
 				return backing.transaction(operation);
 			},
 		};
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);
-		const leftSigner: MeshEnvelopeSigner = Object.freeze({
+		const leftSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				leftSignCalls += 1;
 				return signature(payload);
 			},
 		});
-		const rightSigner: MeshEnvelopeSigner = Object.freeze({
+		const rightSigner = Object.freeze<MeshEnvelopeSigner>({
 			...signer,
 			sign(payload) {
 				rightSignCalls += 1;
@@ -814,7 +816,7 @@ describe("MeshSchedulerIssuanceCoordinator", () => {
 	});
 
 	test("snapshots signer identity instead of retaining a mutable adapter reference", async () => {
-		let now = T0;
+		const now = T0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const runtime = createRuntime(repository, () => now);
 		await runtime.submitTask(task(), now);

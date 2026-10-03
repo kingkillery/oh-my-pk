@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type MeshEnvelopeSigner, signAssignmentLease } from "@pk-nerdsaver-ai/mesh-auth";
 import {
+	type AssignmentLeaseV1,
 	contractDigest,
 	type JsonRecord,
 	MESH_SCHEMA,
@@ -16,7 +17,7 @@ import {
 	IdempotencyConflictError,
 	InMemoryMeshRuntimeRepository,
 	MeshOrchestrator,
-	ReceiptFinalizationError,
+	type ReceiptFinalizationError,
 	type ReceiptVerifierResolver,
 	SchedulerLeaseConflictError,
 	WorkerCapacityConflictError,
@@ -54,7 +55,7 @@ function assignmentSignature(payload: Uint8Array): Uint8Array {
 	);
 }
 
-const schedulerSigner: MeshEnvelopeSigner = Object.freeze({
+const schedulerSigner = Object.freeze<MeshEnvelopeSigner>({
 	algorithm: SCHEDULER_ALGORITHM,
 	keyId: SCHEDULER_KEY_ID,
 	actorPubkey: SCHEDULER_KEY,
@@ -62,7 +63,7 @@ const schedulerSigner: MeshEnvelopeSigner = Object.freeze({
 	sign: assignmentSignature,
 });
 
-const workerReceiptVerifier: ReceiptSignatureVerifier = Object.freeze({
+const workerReceiptVerifier = Object.freeze<ReceiptSignatureVerifier>({
 	algorithm: RECEIPT_ALGORITHM,
 	keyId: RECEIPT_KEY_ID,
 	verify(payload, signature) {
@@ -72,7 +73,7 @@ const workerReceiptVerifier: ReceiptSignatureVerifier = Object.freeze({
 	},
 });
 
-const receiptVerifierResolver: ReceiptVerifierResolver = Object.freeze({
+const receiptVerifierResolver = Object.freeze<ReceiptVerifierResolver>({
 	resolve(lease) {
 		return lease.executorPubkey === WORKER_KEY ? workerReceiptVerifier : undefined;
 	},
@@ -106,7 +107,7 @@ function task(idempotencyKey = "task-submit-001", execution: TaskContractV1["exe
 function assignment(
 	taskContract: TaskContractV1,
 	options: { readonly id: string; readonly epoch: number; readonly fence: number; readonly expiresAt: number },
-) {
+): AssignmentLeaseV1 {
 	return {
 		schemaVersion: MESH_SCHEMA.assignment,
 		assignmentId: options.id,
@@ -434,7 +435,7 @@ describe("MeshOrchestrator durable authority", () => {
 	});
 
 	test("keeps an assignment deadline strictly inside its scheduler authority for direct callers", async () => {
-		let now = T0;
+		const now = T0;
 		const repository = new InMemoryMeshRuntimeRepository();
 		const control = new MeshOrchestrator(repository, { receiptVerifierResolver, clock: { nowEpochMs: () => now } });
 		const contract = task("task-assignment-deadline-authority-001");
@@ -684,7 +685,7 @@ describe("MeshOrchestrator durable authority", () => {
 	test("rejects a signed receipt when its lease expires during verification", async () => {
 		const repository = new InMemoryMeshRuntimeRepository();
 		let receiptNow = T0 + 999;
-		const delayedResolver: ReceiptVerifierResolver = Object.freeze({
+		const delayedResolver = Object.freeze<ReceiptVerifierResolver>({
 			async resolve() {
 				await Promise.resolve();
 				receiptNow = T0 + 1_000;

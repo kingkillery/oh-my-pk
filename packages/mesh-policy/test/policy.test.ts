@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import { MESH_SCHEMA, parseTaskContract, sha256CanonicalJson } from "../../mesh-contracts/src/index";
+import {
+	MESH_SCHEMA,
+	parseTaskContract,
+	sha256CanonicalJson,
+	type TaskContractV1,
+} from "../../mesh-contracts/src/index";
 import { evaluateAssignmentAttenuation, evaluateAuthorization, parseIdentityDelegation } from "../src/index";
 
-function task(): ReturnType<typeof parseTaskContract> {
+function task(): TaskContractV1 {
 	const unsigned = {
 		schemaVersion: MESH_SCHEMA.task,
 		taskId: "task_policy-attenuation-001",
@@ -35,7 +40,7 @@ function task(): ReturnType<typeof parseTaskContract> {
 	return parseTaskContract({ ...unsigned, digest: sha256CanonicalJson(unsigned) });
 }
 
-function scopeFor(root: ReturnType<typeof task>) {
+function scopeFor(root: TaskContractV1) {
 	return {
 		goal: root.goal,
 		permissions: root.permissions,

@@ -1,5 +1,6 @@
 import {
 	type ArtifactManifestV1,
+	isJsonRecord,
 	type JsonRecord,
 	type JsonValue,
 	MESH_SCHEMA,
@@ -11,9 +12,7 @@ import {
 export type CreateArtifactManifestInput = Omit<ArtifactManifestV1, "schemaVersion" | "manifestDigest">;
 
 function asRecord(value: JsonValue): JsonRecord {
-	if (value === null || Array.isArray(value) || typeof value !== "object") {
-		throw new Error("artifact manifest input must be a JSON object");
-	}
+	if (!isJsonRecord(value)) throw new Error("artifact manifest input must be a JSON object");
 	return value;
 }
 
@@ -25,6 +24,7 @@ export function createArtifactManifest(input: CreateArtifactManifestInput): Arti
 		if (key === "schemaVersion" || key === "manifestDigest") {
 			throw new Error(`artifact manifest input must not provide ${key}`);
 		}
+		if (value === undefined) continue; // toImmutableJson already rejects undefined values
 		base[key] = value;
 	}
 	base.schemaVersion = MESH_SCHEMA.artifact;

@@ -1,4 +1,4 @@
-//! Interface-only Iroh boundary for LocalMesh.
+//! Interface-only Iroh boundary for `LocalMesh`.
 //!
 //! This crate deliberately has no Iroh dependency yet. It gives the scheduler
 //! and artifact layers a typed capability gate while a separately configured

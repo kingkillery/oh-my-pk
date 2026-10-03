@@ -136,7 +136,8 @@ function assertSnapshot(value: unknown): MeshNodeStateSnapshot {
 	assertObjectMap(value.assignments, "node assignments");
 	if (!Array.isArray(value.events)) throw new MeshNodeStateCorruptionError("node events are not an array");
 	assertObjectMap(value.outbox, "node outbox");
-	return value as MeshNodeStateSnapshot;
+	// Every field was validated above; the cast only narrows the record shape.
+	return value as unknown as MeshNodeStateSnapshot;
 }
 
 function rejectPromiseResult(value: unknown): void {

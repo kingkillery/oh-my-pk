@@ -136,7 +136,7 @@ function assignmentSignature(payload: Uint8Array): Uint8Array {
 	);
 }
 
-const schedulerSigner: MeshEnvelopeSigner = Object.freeze({
+const schedulerSigner = Object.freeze<MeshEnvelopeSigner>({
 	algorithm: ASSIGNMENT_SIGNATURE_ALGORITHM,
 	keyId: ASSIGNMENT_SIGNATURE_KEY_ID,
 	actorPubkey: SCHEDULER_PUBKEY,
@@ -144,7 +144,7 @@ const schedulerSigner: MeshEnvelopeSigner = Object.freeze({
 	sign: assignmentSignature,
 });
 
-const schedulerVerifier: MeshEnvelopeVerifier = Object.freeze({
+const schedulerVerifier = Object.freeze<MeshEnvelopeVerifier>({
 	algorithm: ASSIGNMENT_SIGNATURE_ALGORITHM,
 	keyId: ASSIGNMENT_SIGNATURE_KEY_ID,
 	actorPubkey: SCHEDULER_PUBKEY,

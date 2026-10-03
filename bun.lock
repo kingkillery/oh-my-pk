@@ -245,6 +245,201 @@
         "typescript": ">=5.5.0",
       },
     },
+    "packages/mesh-artifacts": {
+      "name": "@pk-nerdsaver-ai/mesh-artifacts",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-artifacts-blossom": {
+      "name": "@pk-nerdsaver-ai/mesh-artifacts-blossom",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-artifacts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-auth": {
+      "name": "@pk-nerdsaver-ai/mesh-auth",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-checkpoint": {
+      "name": "@pk-nerdsaver-ai/mesh-checkpoint",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-cli": {
+      "name": "@pk-nerdsaver-ai/mesh-cli",
+      "version": "0.1.0",
+      "bin": {
+        "ompk-mesh": "./bin/ompk-mesh.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-contracts": {
+      "name": "@pk-nerdsaver-ai/mesh-contracts",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-control-api": {
+      "name": "@pk-nerdsaver-ai/mesh-control-api",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-auth": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-cli": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-orchestrator": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-eventbus": {
+      "name": "@pk-nerdsaver-ai/mesh-eventbus",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-eventbus-nostr": {
+      "name": "@pk-nerdsaver-ai/mesh-eventbus-nostr",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-eventbus": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-evidence": {
+      "name": "@pk-nerdsaver-ai/mesh-evidence",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-receipts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-executor": {
+      "name": "@pk-nerdsaver-ai/mesh-executor",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-node": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-integration": {
+      "name": "@pk-nerdsaver-ai/mesh-integration",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-model-broker": {
+      "name": "@pk-nerdsaver-ai/mesh-model-broker",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-node": {
+      "name": "@pk-nerdsaver-ai/mesh-node",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-auth": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-orchestrator": {
+      "name": "@pk-nerdsaver-ai/mesh-orchestrator",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-auth": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-receipts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-policy": {
+      "name": "@pk-nerdsaver-ai/mesh-policy",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-receipts": {
+      "name": "@pk-nerdsaver-ai/mesh-receipts",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-scheduler": {
+      "name": "@pk-nerdsaver-ai/mesh-scheduler",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-auth": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+        "@pk-nerdsaver-ai/mesh-orchestrator": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
+    "packages/mesh-worker-sdk": {
+      "name": "@pk-nerdsaver-ai/mesh-worker-sdk",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pk-nerdsaver-ai/mesh-contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
     "packages/mnemopi": {
       "name": "@pk-nerdsaver-ai/pi-mnemopi",
       "version": "16.4.28",
@@ -1003,6 +1198,44 @@
     "@pk-nerdsaver-ai/collab-web": ["@pk-nerdsaver-ai/collab-web@workspace:packages/collab-web"],
 
     "@pk-nerdsaver-ai/hashline": ["@pk-nerdsaver-ai/hashline@workspace:packages/hashline"],
+
+    "@pk-nerdsaver-ai/mesh-artifacts": ["@pk-nerdsaver-ai/mesh-artifacts@workspace:packages/mesh-artifacts"],
+
+    "@pk-nerdsaver-ai/mesh-artifacts-blossom": ["@pk-nerdsaver-ai/mesh-artifacts-blossom@workspace:packages/mesh-artifacts-blossom"],
+
+    "@pk-nerdsaver-ai/mesh-auth": ["@pk-nerdsaver-ai/mesh-auth@workspace:packages/mesh-auth"],
+
+    "@pk-nerdsaver-ai/mesh-checkpoint": ["@pk-nerdsaver-ai/mesh-checkpoint@workspace:packages/mesh-checkpoint"],
+
+    "@pk-nerdsaver-ai/mesh-cli": ["@pk-nerdsaver-ai/mesh-cli@workspace:packages/mesh-cli"],
+
+    "@pk-nerdsaver-ai/mesh-contracts": ["@pk-nerdsaver-ai/mesh-contracts@workspace:packages/mesh-contracts"],
+
+    "@pk-nerdsaver-ai/mesh-control-api": ["@pk-nerdsaver-ai/mesh-control-api@workspace:packages/mesh-control-api"],
+
+    "@pk-nerdsaver-ai/mesh-eventbus": ["@pk-nerdsaver-ai/mesh-eventbus@workspace:packages/mesh-eventbus"],
+
+    "@pk-nerdsaver-ai/mesh-eventbus-nostr": ["@pk-nerdsaver-ai/mesh-eventbus-nostr@workspace:packages/mesh-eventbus-nostr"],
+
+    "@pk-nerdsaver-ai/mesh-evidence": ["@pk-nerdsaver-ai/mesh-evidence@workspace:packages/mesh-evidence"],
+
+    "@pk-nerdsaver-ai/mesh-executor": ["@pk-nerdsaver-ai/mesh-executor@workspace:packages/mesh-executor"],
+
+    "@pk-nerdsaver-ai/mesh-integration": ["@pk-nerdsaver-ai/mesh-integration@workspace:packages/mesh-integration"],
+
+    "@pk-nerdsaver-ai/mesh-model-broker": ["@pk-nerdsaver-ai/mesh-model-broker@workspace:packages/mesh-model-broker"],
+
+    "@pk-nerdsaver-ai/mesh-node": ["@pk-nerdsaver-ai/mesh-node@workspace:packages/mesh-node"],
+
+    "@pk-nerdsaver-ai/mesh-orchestrator": ["@pk-nerdsaver-ai/mesh-orchestrator@workspace:packages/mesh-orchestrator"],
+
+    "@pk-nerdsaver-ai/mesh-policy": ["@pk-nerdsaver-ai/mesh-policy@workspace:packages/mesh-policy"],
+
+    "@pk-nerdsaver-ai/mesh-receipts": ["@pk-nerdsaver-ai/mesh-receipts@workspace:packages/mesh-receipts"],
+
+    "@pk-nerdsaver-ai/mesh-scheduler": ["@pk-nerdsaver-ai/mesh-scheduler@workspace:packages/mesh-scheduler"],
+
+    "@pk-nerdsaver-ai/mesh-worker-sdk": ["@pk-nerdsaver-ai/mesh-worker-sdk@workspace:packages/mesh-worker-sdk"],
 
     "@pk-nerdsaver-ai/omp-stats": ["@pk-nerdsaver-ai/omp-stats@workspace:packages/stats"],
 

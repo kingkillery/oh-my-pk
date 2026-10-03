@@ -91,7 +91,7 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 }
 
 function hasOwn(record: Readonly<Record<string, unknown>>, key: string): boolean {
-	return Object.prototype.hasOwnProperty.call(record, key);
+	return Object.hasOwn(record, key);
 }
 
 function requiredText(value: unknown, field: string, code: ReceiptSignatureError["code"]): string {

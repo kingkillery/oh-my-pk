@@ -73,7 +73,7 @@ function freezeStrings(values: readonly string[]): readonly string[] {
 	return Object.freeze([...values]);
 }
 
-function stableUnique(values: readonly string[]): readonly string[] {
+function stableUnique<T extends string>(values: readonly T[]): readonly T[] {
 	return Object.freeze([...new Set(values)].sort());
 }
 

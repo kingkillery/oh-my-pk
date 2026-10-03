@@ -90,6 +90,17 @@ const fastWorkspacePackages = [
 	"packages/stats",
 ];
 
+// LocalMesh control-plane packages (`packages/mesh-*`): pure TypeScript over real
+// SQLite files and loopback HTTP, no native addon. Discovered rather than listed so
+// a new mesh package cannot silently skip CI.
+async function meshWorkspacePackages(): Promise<string[]> {
+	const entries = await fs.readdir(path.join(repoRoot, "packages"), { withFileTypes: true });
+	return entries
+		.filter(entry => entry.isDirectory() && entry.name.startsWith("mesh-"))
+		.map(entry => `packages/${entry.name}`)
+		.sort();
+}
+
 // These suites cover the native package, TUI/browser-ish behavior, local servers,
 // or coding-agent-adjacent benchmark paths. Keep them low-concurrency and in jobs
 // that have downloaded the Linux x64 native addon artifacts.
@@ -307,6 +318,7 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 		case "workspace":
 			return [
 				...fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8)),
+				...(await meshWorkspacePackages()).map(pkg => workspaceTestCommand(pkg, 4)),
 				{
 					label: "scripts",
 					cwd: ".",

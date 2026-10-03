@@ -381,7 +381,7 @@ export function canonicalExecutorToolPermission(endpointId: string, toolPath: re
 }
 
 function checkedExitCode(value: number | undefined): number | undefined {
-	return Number.isInteger(value) && value >= 0 ? value : undefined;
+	return value !== undefined && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
 /**

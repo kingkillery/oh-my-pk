@@ -17,7 +17,11 @@ describe("MeshCliService", () => {
 					return { later: new Date("2026-08-31T00:00:00.000Z"), count: 1n, invalid: Number.NaN };
 				},
 			},
-			{ write: line => lines.push(line) },
+			{
+				write: line => {
+					lines.push(line);
+				},
+			},
 		);
 
 		expect(exitCode).toBe(0);

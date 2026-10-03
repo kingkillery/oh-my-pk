@@ -208,7 +208,7 @@ export class SqliteMeshRuntimeRepository implements MeshRuntimeRepository {
 			throw new MeshRuntimeCorruptionError("state snapshot is not valid JSON");
 		}
 		if (!isRecord(parsed)) throw new MeshRuntimeCorruptionError("state snapshot is not an object");
-		if (!Object.prototype.hasOwnProperty.call(parsed, "workerCapacityObservations")) {
+		if (!Object.hasOwn(parsed, "workerCapacityObservations")) {
 			parsed.workerCapacityObservations = {};
 		}
 		const snapshot = assertSnapshot(parsed);
@@ -333,7 +333,8 @@ function assertSnapshot(value: unknown): MeshRuntimeSnapshot {
 	if (value.scheduler.ownerId !== undefined && typeof value.scheduler.ownerId !== "string") {
 		throw new MeshRuntimeCorruptionError("scheduler owner is invalid");
 	}
-	return value as MeshRuntimeSnapshot;
+	// Every field was validated above; the cast only narrows the record shape.
+	return value as unknown as MeshRuntimeSnapshot;
 }
 
 function assertAssignmentDeliveries(assignments: unknown, tasks: unknown): void {

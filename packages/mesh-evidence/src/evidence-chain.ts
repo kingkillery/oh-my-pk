@@ -89,7 +89,7 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 }
 
 function hasOwn(record: Readonly<Record<string, unknown>>, key: string): boolean {
-	return Object.prototype.hasOwnProperty.call(record, key);
+	return Object.hasOwn(record, key);
 }
 
 /** The v1 wire validator permits this optional field before the public type adds it. */

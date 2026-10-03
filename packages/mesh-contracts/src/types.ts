@@ -1,5 +1,10 @@
 export type JsonPrimitive = string | number | boolean | null;
-export type JsonRecord = Readonly<Record<string, JsonValue>>;
+// An interface (not `Readonly<Record<…>>`) so the recursive JsonValue alias resolves.
+// `undefined` admits optional contract fields; canonicalizeJson still rejects a key
+// whose value is present-but-undefined, so serialized records stay strict JSON.
+export interface JsonRecord {
+	readonly [key: string]: JsonValue | undefined;
+}
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | JsonRecord;
 
 export const MESH_SCHEMA = {
@@ -40,21 +45,21 @@ export type ApprovalCategory =
 	| "publication"
 	| "destructive_action";
 
-export interface MeshActor {
+export interface MeshActor extends JsonRecord {
 	readonly pubkey: string;
 	readonly role: MeshRole;
 	readonly nodeId?: string;
 	readonly delegationId?: string;
 }
 
-export interface AcceptanceCriterion {
+export interface AcceptanceCriterion extends JsonRecord {
 	readonly id: string;
 	readonly description: string;
 	readonly level: "required" | "advisory" | "negative";
 	readonly evidenceRequired?: readonly string[];
 }
 
-export interface TaskPermissions {
+export interface TaskPermissions extends JsonRecord {
 	readonly tools: readonly string[];
 	readonly secrets?: readonly string[];
 	readonly network?: readonly string[];

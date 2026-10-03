@@ -1,5 +1,6 @@
 import {
 	type EventEnvelopeV1,
+	isJsonRecord,
 	type JsonRecord,
 	type JsonValue,
 	parseEventEnvelope,
@@ -29,7 +30,7 @@ function fail(path: string, message: string): never {
 }
 
 function asRecord(value: JsonValue, path: string): JsonRecord {
-	if (value === null || Array.isArray(value) || typeof value !== "object") fail(path, "must be an object");
+	if (!isJsonRecord(value)) fail(path, "must be an object");
 	return value;
 }
 

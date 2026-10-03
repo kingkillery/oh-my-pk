@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type MeshEnvelopeSigner, type MeshEnvelopeVerifier } from "../../mesh-auth/src/index";
+import type { MeshEnvelopeSigner, MeshEnvelopeVerifier } from "../../mesh-auth/src/index";
 import {
 	MESH_SCHEMA,
 	parseTaskContract,
@@ -32,7 +32,7 @@ function signature(payload: Uint8Array): Uint8Array {
 	return encoder.encode(`scheduler-integration:${decoder.decode(payload).split("").reverse().join("")}`);
 }
 
-const schedulerSigner: MeshEnvelopeSigner = Object.freeze({
+const schedulerSigner = Object.freeze<MeshEnvelopeSigner>({
 	algorithm: "scheduler-integration-v1",
 	keyId: "scheduler-integration-key",
 	actorPubkey: SCHEDULER,
@@ -40,7 +40,7 @@ const schedulerSigner: MeshEnvelopeSigner = Object.freeze({
 	sign: signature,
 });
 
-const schedulerVerifier: MeshEnvelopeVerifier = Object.freeze({
+const schedulerVerifier = Object.freeze<MeshEnvelopeVerifier>({
 	algorithm: schedulerSigner.algorithm,
 	keyId: schedulerSigner.keyId,
 	actorPubkey: schedulerSigner.actorPubkey,
@@ -174,7 +174,7 @@ describe("scheduler issuance through node admission", () => {
 		const database = createDatabasePath();
 		try {
 			let signCalls = 0;
-			const countingSigner: MeshEnvelopeSigner = Object.freeze({
+			const countingSigner = Object.freeze<MeshEnvelopeSigner>({
 				...schedulerSigner,
 				sign(payload) {
 					signCalls += 1;

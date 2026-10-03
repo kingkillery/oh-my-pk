@@ -18,7 +18,7 @@ import {
 } from "@pk-nerdsaver-ai/mesh-contracts";
 import {
 	IdempotencyConflictError,
-	MeshOrchestrator,
+	type MeshOrchestrator,
 	type RuntimeAssignmentRecord,
 } from "@pk-nerdsaver-ai/mesh-orchestrator";
 
@@ -101,8 +101,8 @@ function positiveFinite(value: number): boolean {
 	return Number.isFinite(value) && value > 0;
 }
 
-function positiveInteger(value: number): boolean {
-	return Number.isSafeInteger(value) && value > 0;
+function positiveInteger(value: number | undefined): value is number {
+	return value !== undefined && Number.isSafeInteger(value) && value > 0;
 }
 
 function nonEmpty(value: unknown): value is string {

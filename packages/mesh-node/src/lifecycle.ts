@@ -1032,8 +1032,9 @@ export class MeshNodeAgent {
 		if (code !== undefined) Object.assign(event, { code });
 		if (result !== undefined) {
 			Object.assign(event, { outcome: result.outcome });
-			if (Number.isInteger(result.exitCode) && result.exitCode >= 0)
+			if (result.exitCode !== undefined && Number.isInteger(result.exitCode) && result.exitCode >= 0) {
 				Object.assign(event, { exitCode: result.exitCode });
+			}
 		}
 		const frozen = freezeRecord(event);
 		this.#events.push(frozen);
@@ -1549,7 +1550,7 @@ export class MeshNodeAgent {
 			outboxId,
 			assignmentId: value.assignmentId,
 			taskId: value.taskId,
-			type: "node.lifecycle.terminal",
+			type: "node.lifecycle.terminal" as const,
 			idempotencyKey: value.idempotencyKey,
 			record,
 		};
