@@ -248,8 +248,38 @@ def round_trip_app(proxy_settings: Settings):
                         "updated_at": "2026-01-01T00:00:00Z",
                         "created_at": "2026-01-01T00:00:00Z",
                         "html_url": "https://example/1",
-                    }
+                    },
+                    {
+                        "number": 2,
+                        "title": "fix",
+                        "state": "closed",
+                        "pull_request": {"merged_at": "2026-02-01T00:00:00Z"},
+                        "body": "the fix",
+                    },
                 ],
+            )
+        if path == "/search/issues" and req.method == "GET":
+            assert req.url.params["q"].startswith("repo:octo/widget ")
+            return httpx.Response(
+                200,
+                json={
+                    "total_count": 1,
+                    "items": [
+                        {
+                            "number": 9,
+                            "title": "fixed it",
+                            "state": "closed",
+                            "state_reason": "completed",
+                            "user": {"login": "bob"},
+                            "labels": [{"name": "bug"}],
+                            "comments": 2,
+                            "updated_at": "2026-02-01T00:00:00Z",
+                            "created_at": "2026-01-15T00:00:00Z",
+                            "html_url": "https://example/9",
+                            "pull_request": {"url": "https://example/pull/9"},
+                        }
+                    ],
+                },
             )
         if path == "/repos/octo/widget/issues/1/comments" and req.method == "GET":
             return httpx.Response(
@@ -364,6 +394,15 @@ async def test_round_trip_all_endpoints(round_trip_app) -> None:
 
     issues = await client.list_issues("octo/widget")
     assert len(issues) == 1 and isinstance(issues[0], IssueSummary)
+
+    indexed = await client.list_issue_index_entries("octo/widget", since="2026-01-01T00:00:00Z")
+    assert len(indexed) == 2
+    assert any(entry.is_pull_request for entry in indexed)
+    assert all(entry.repo == "octo/widget" for entry in indexed)
+
+    found = await client.search_issues("octo/widget", "colon selector is:pr")
+    assert len(found) == 1 and isinstance(found[0], IssueSummary)
+    assert found[0].is_pull_request and found[0].state_reason == "completed"
 
     comments = await client.list_comments("octo/widget", 1)
     assert len(comments) == 1 and isinstance(comments[0], CommentInfo)
@@ -600,3 +639,22 @@ def test_proxy_git_transport_post_headers_verify() -> None:
     )
     assert result.ok, result.reason
     assert json.loads(req.content)["repo"] == "octo/widget"
+
+
+@pytest.mark.parametrize(
+    "path", ["/gh/v1/search_issues?repo=octo/widget&q=crash", "/gh/v1/issue_index_entries?repo=octo/widget"]
+)
+async def test_search_reads_require_existing_proxy_auth(round_trip_app, path) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=round_trip_app), base_url="http://proxy.test"
+    ) as client:
+        response = await client.get(path)
+    assert response.status_code == 401
+
+
+async def test_proxy_search_cannot_add_other_repo_scope(round_trip_app) -> None:
+    client = GitHubProxyClient(
+        base_url="http://proxy.test", hmac_key=_HMAC, transport=httpx.ASGITransport(app=round_trip_app)
+    )
+    with pytest.raises(GitHubError, match="repository scope is fixed"):
+        await client.search_issues("octo/widget", "repo:elsewhere/private secret")

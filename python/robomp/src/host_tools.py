@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NoReturn
 
+import httpx
 from omp_rpc import HostTool, HostToolContext, RpcCommandError, host_tool
 
 from robomp import persona
@@ -27,6 +28,7 @@ from robomp.db import Database, IssueState, issue_key
 from robomp.git_ops import GitCommandError, HeadDriftError
 from robomp.github_backend import GitHubBackend
 from robomp.github_client import GitHubError, IssueInfo, PullRequestFileInfo, RepoInfo
+from robomp.issue_index import IssueIndexSync, parse_search_query
 from robomp.sandbox import (
     GitTransport,
     Workspace,
@@ -43,6 +45,7 @@ from robomp.sandbox import (
 log = logging.getLogger(__name__)
 _PRE_PR_FIX_COMMAND = ("bun", "run", "fix")
 _PRE_PR_CHECK_COMMAND = ("bun", "check")
+_PRE_PR_TEST_COMMAND = ("bun", "run", "test")
 _BUN_INSTALL_COMMAND = ("bun", "install", "--frozen-lockfile", "--ignore-scripts")
 _BUN_INSTALL_TIMEOUT_SECONDS = 300.0
 _REPO_COMMAND_SCRUBBED_ENV_KEYS: tuple[str, ...] = (
@@ -55,6 +58,7 @@ _NEEDS_INFO_LABEL = "needs-info"
 _AGENT_HOME = Path("/srv/agent-home")
 _PRE_PR_FIX_TIMEOUT_SECONDS = 600.0
 _PRE_PR_CHECK_TIMEOUT_SECONDS = 600.0
+_PRE_PR_TEST_TIMEOUT_SECONDS = 3600.0
 _PRE_PR_CHECK_MAX_OUTPUT = 12_000
 _PRE_PR_FIX_COMMIT_SUBJECT = "style: bun run fix"
 
@@ -498,6 +502,59 @@ def _run_pre_publish_bun_check(
         _raise_command(msg)
 
 
+def _run_pre_publish_bun_test(
+    bindings: ToolBindings,
+    args: Mapping[str, Any],
+    *,
+    tool_name: str,
+    stage: str,
+    skip_checks: bool = False,
+) -> None:
+    """Run `bun run test` before opening a PR.
+
+    Same shape as the `bun check` gate: no-op when the repository defines no
+    `scripts.test`, bypassed by `skip_checks=True` for breakage the agent's
+    diff did not cause, and any failure comes back to the agent as a
+    `RpcCommandError` instead of becoming a red PR.
+    """
+    if skip_checks:
+        _audit(
+            bindings,
+            tool_name,
+            args,
+            result={"skipped": "bun_run_test", "reason": "skip_checks=true"},
+        )
+        return
+    if not _has_bun_script(bindings.workspace.repo_dir, "test"):
+        return
+    try:
+        proc = _run_repo_command(bindings, _PRE_PR_TEST_COMMAND, timeout=_PRE_PR_TEST_TIMEOUT_SECONDS)
+    except FileNotFoundError:
+        msg = f"refusing to {stage}: `bun run test` is required before {stage}, but `bun` is not on PATH."
+        _audit(bindings, tool_name, args, error=msg)
+        _raise_command(msg)
+    except subprocess.TimeoutExpired as exc:
+        output = _format_process_output(exc.stdout, exc.stderr)
+        msg = (
+            f"refusing to {stage}: `bun run test` timed out after "
+            f"{_PRE_PR_TEST_TIMEOUT_SECONDS:.0f}s.\n"
+            f"{output}\n\n"
+            f"Investigate the hang (a test that never exits blocks every future run), "
+            f"rerun `bun run test`, and retry."
+        )
+        _audit(bindings, tool_name, args, error=msg)
+        _raise_command(msg)
+    if proc.returncode != 0:
+        output = _format_process_output(proc.stdout, proc.stderr)
+        msg = (
+            f"refusing to {stage}: `bun run test` failed before {stage} (exit {proc.returncode}).\n"
+            f"{output}\n\n"
+            f"Fix the failing tests, commit, and retry — no PR is opened while the suite is red."
+        )
+        _audit(bindings, tool_name, args, error=msg)
+        _raise_command(msg)
+
+
 _AUTOCLOSE_INELIGIBLE_STATES: frozenset[str] = frozenset({"closed", "merged", "needs_info", "abandoned"})
 
 
@@ -724,6 +781,9 @@ def _build_push_branch(bindings: ToolBindings) -> HostTool[Any, Any]:
         # pass auto-commits any formatter diff so the push includes it.
         # `skip_checks=true` bypasses the formatter/check (e.g. when `main`
         # itself is broken); dirty-tree gate still runs unconditionally.
+        # The suite itself is gated at `gh_open_pr`, not here: a push is not
+        # yet a PR, and running it on every intermediate push would cost an
+        # hour each time.
         _run_pre_publish_bun_fix(bindings, args, tool_name="gh_push_branch", stage="push", skip_checks=skip)
         _run_pre_publish_bun_check(bindings, args, tool_name="gh_push_branch", stage="push", skip_checks=skip)
         head = _guarded_push_branch(bindings, args, "gh_push_branch", branch)
@@ -784,6 +844,15 @@ def _build_open_pr(bindings: ToolBindings) -> HostTool[Any, Any]:
         skip = bool(args.get("skip_checks", False))
         _run_pre_publish_bun_fix(bindings, args, tool_name="gh_open_pr", stage="open PR", skip_checks=skip)
         _run_pre_publish_bun_check(bindings, args, tool_name="gh_open_pr", stage="open PR", skip_checks=skip)
+        # Last and slowest: the suite runs against the tree that is actually
+        # published, after the formatter commit. The explicit bypass is reported below.
+        _run_pre_publish_bun_test(bindings, args, tool_name="gh_open_pr", stage="open PR", skip_checks=skip)
+        if skip:
+            body += (
+                "\n\n> Pre-publish checks SKIPPED (`skip_checks=true`): "
+                "`bun run fix`, `bun check`, and `bun run test` were not run by the host. "
+                "This is a bypass, not a passing check result.\n"
+            )
         # Make sure the branch is pushed (idempotent) using the same preflight as gh_push_branch.
         _guarded_push_branch(bindings, args, "gh_open_pr", bindings.workspace.branch)
         base = args.get("base") or bindings.repo.default_branch
@@ -820,11 +889,11 @@ def _build_open_pr(bindings: ToolBindings) -> HostTool[Any, Any]:
             ),
             encoding="utf-8",
         )
-        result: dict[str, Any] = {"pr_number": pr.number, "url": pr.html_url}
+        result: dict[str, Any] = {"pr_number": pr.number, "url": pr.html_url, "checks_skipped": skip}
         if needs_info_label_cleared:
             result["cleared_needs_info"] = True
         _audit(bindings, "gh_open_pr", args, result=result)
-        return f"opened #{pr.number}: {pr.html_url}"
+        return f"opened #{pr.number}: {pr.html_url}" + ("; pre-publish checks SKIPPED, not passed" if skip else "")
 
     return host_tool(
         name="gh_open_pr",
@@ -1095,6 +1164,222 @@ def _build_fetch_thread(bindings: ToolBindings) -> HostTool[Any, Any]:
         parameters={
             "type": "object",
             "properties": {},
+            "additionalProperties": False,
+        },
+        execute=execute,
+    )
+
+
+# ---------- gh_search_issues ----------
+_REPO_QUALIFIER_RE = re.compile(r"(?i)\brepo\s*:|\bOR\b")
+
+
+def _render_search_matches(
+    query: str, repo: str, rows: list[tuple[bool, int, str, str, str, tuple[str, ...], str]]
+) -> str:
+    """Render (is_pr, number, state_display, title, author, labels, updated) rows."""
+    lines = [f"# {len(rows)} match(es) for {query!r} in {repo}"]
+    for is_pr, number, state, title, author, labels, updated in rows:
+        kind = "PR" if is_pr else "issue"
+        label_sfx = f" [{', '.join(labels)}]" if labels else ""
+        lines.append(f"- #{number} ({kind}, {state}) {title} — @{author}, updated {updated[:10]}{label_sfx}")
+    return "\n".join(lines)
+
+
+def _build_search_issues(bindings: ToolBindings) -> HostTool[Any, Any]:
+    """Issue/PR search scoped to the current repo, served from the local index.
+
+    Exists so triage can find duplicates and already-merged fixes instead of
+    classifying blind. Queries hit the SQLite FTS index refreshed on demand; unsupported queries, stale or
+    incomplete indexes fall back to GitHub search. The inbound issue is filtered out of results.
+    """
+
+    def execute(args: dict[str, Any], _ctx: HostToolContext[Any]) -> str:
+        query = args.get("query")
+        if not isinstance(query, str) or not query.strip():
+            msg = "gh_search_issues requires a non-empty 'query'."
+            _audit(bindings, "gh_search_issues", args, error=msg)
+            _raise_command(msg)
+        query = query.strip()
+        if _REPO_QUALIFIER_RE.search(query):
+            msg = (
+                "gh_search_issues scopes to the current repo automatically; drop 'repo:' qualifiers and OR expressions."
+            )
+            _audit(bindings, "gh_search_issues", args, error=msg)
+            _raise_command(msg)
+        limit_raw = args.get("limit")
+        limit = max(1, min(int(limit_raw), 20)) if isinstance(limit_raw, int) else 10
+        repo = bindings.repo.full_name
+
+        rows: list[tuple[bool, int, str, str, str, tuple[str, ...], str]]
+        parsed = parse_search_query(query)
+        try:
+            ready = parsed is not None and _run_coro(
+                bindings.loop, IssueIndexSync(db=bindings.db, github=bindings.github).ensure_fresh(repo)
+            )
+        except (GitHubError, httpx.HTTPError, TimeoutError) as exc:
+            _audit(bindings, "gh_search_issues", args, result={"index_refresh_failed": str(exc)})
+            ready = False
+        if ready and parsed is not None:
+            entries = bindings.db.search_issue_index(
+                repo,
+                keywords=parsed.keywords,
+                is_pr=parsed.is_pr,
+                state=parsed.state,
+                merged=parsed.merged,
+                label=parsed.label,
+                author=parsed.author,
+                limit=limit + 1,  # headroom for the self-filter below
+            )
+            entries = [e for e in entries if e.number != bindings.issue.number][:limit]
+            rows = []
+            for e in entries:
+                if e.is_pull_request and e.merged_at:
+                    state = "merged"
+                elif e.state_reason:
+                    state = f"{e.state} ({e.state_reason})"
+                else:
+                    state = e.state
+                rows.append((e.is_pull_request, e.number, state, e.title, e.author, e.labels, e.updated_at))
+            source = "local"
+        else:
+            # Index not backfilled yet — fall through to the GitHub search API.
+            try:
+                found = _run_coro(
+                    bindings.loop,
+                    bindings.github.search_issues(repo, query, limit=limit + 1),
+                )
+            except GitHubError as exc:
+                _audit(bindings, "gh_search_issues", args, error=str(exc))
+                _raise_command(f"GitHub search failed: {exc.status} {exc.message}")
+            found = [s for s in found if s.number != bindings.issue.number][:limit]
+            rows = [
+                (
+                    s.is_pull_request,
+                    s.number,
+                    f"{s.state} ({s.state_reason})" if s.state_reason else s.state,
+                    s.title,
+                    s.author,
+                    s.labels,
+                    s.updated_at,
+                )
+                for s in found
+            ]
+            source = "remote"
+        if not rows:
+            _audit(bindings, "gh_search_issues", args, result={"matches": 0, "source": source})
+            return f"No issues or PRs in {repo} match {query!r}."
+        _audit(bindings, "gh_search_issues", args, result={"matches": len(rows), "source": source})
+        return _render_search_matches(query, repo, rows)
+
+    return host_tool(
+        name="gh_search_issues",
+        description=persona.host_tool_description("gh_search_issues"),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": persona.host_tool_parameter_description("gh_search_issues", "query"),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": persona.host_tool_parameter_description("gh_search_issues", "limit"),
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        execute=execute,
+    )
+
+
+# ---------- search_commits ----------
+_COMMIT_SEARCH_TIMEOUT_SECONDS = 120.0
+
+
+def _build_search_commits(bindings: ToolBindings) -> HostTool[Any, Any]:
+    """Local `git log` search over the default branch's history.
+
+    Two modes: `message` greps commit subjects/bodies (case-insensitive
+    regex), `patch` runs the pickaxe (`-S`) to find commits whose diff adds or
+    removes the literal string — the sharp tool for "was this already fixed".
+    The search interface (query in, ranked commits out) is deliberately opaque
+    about its backend so a semantic index can replace git plumbing later.
+    """
+
+    def execute(args: dict[str, Any], _ctx: HostToolContext[Any]) -> str:
+        query = args.get("query")
+        if not isinstance(query, str) or not query.strip():
+            msg = "search_commits requires a non-empty 'query'."
+            _audit(bindings, "search_commits", args, error=msg)
+            _raise_command(msg)
+        query = query.strip()
+        mode = args.get("mode") or "message"
+        if mode not in ("message", "patch"):
+            msg = "search_commits 'mode' must be 'message' or 'patch'."
+            _audit(bindings, "search_commits", args, error=msg)
+            _raise_command(msg)
+        limit_raw = args.get("limit")
+        limit = max(1, min(int(limit_raw), 30)) if isinstance(limit_raw, int) else 10
+        paths = [p for p in (args.get("paths") or ()) if isinstance(p, str) and p.strip()]
+
+        rev = f"origin/{bindings.repo.default_branch}"
+        probe = _run_repo_command(bindings, ["git", "rev-parse", "--verify", "--quiet", rev], timeout=30.0)
+        if probe.returncode != 0:
+            rev = "HEAD"
+        cmd = ["git", "log", rev, "-n", str(limit), "--date=short", "--pretty=format:%h %ad %an — %s"]
+        if mode == "message":
+            cmd += [f"--grep={query}", "--regexp-ignore-case"]
+        else:
+            cmd += ["-S", query]
+        if paths:
+            cmd += ["--", *paths]
+        try:
+            proc = _run_repo_command(bindings, cmd, timeout=_COMMIT_SEARCH_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            msg = f"search_commits timed out after {_COMMIT_SEARCH_TIMEOUT_SECONDS:.0f}s; narrow with 'paths' or a shorter history window."
+            _audit(bindings, "search_commits", args, error=msg)
+            _raise_command(msg)
+        if proc.returncode != 0:
+            msg = f"git log failed: {(proc.stderr or proc.stdout).strip()[:500]}"
+            _audit(bindings, "search_commits", args, error=msg)
+            _raise_command(msg)
+        out = proc.stdout.strip()
+        if not out:
+            _audit(bindings, "search_commits", args, result={"matches": 0})
+            return f"No commits on {rev} match {query!r} (mode={mode})."
+        matches = out.splitlines()
+        _audit(bindings, "search_commits", args, result={"matches": len(matches)})
+        header = f"# {len(matches)} commit(s) on {rev} matching {query!r} (mode={mode})"
+        return "\n".join([header, *matches])
+
+    return host_tool(
+        name="search_commits",
+        description=persona.host_tool_description("search_commits"),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": persona.host_tool_parameter_description("search_commits", "query"),
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["message", "patch"],
+                    "description": persona.host_tool_parameter_description("search_commits", "mode"),
+                },
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": persona.host_tool_parameter_description("search_commits", "paths"),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": persona.host_tool_parameter_description("search_commits", "limit"),
+                },
+            },
+            "required": ["query"],
             "additionalProperties": False,
         },
         execute=execute,
@@ -1680,6 +1965,8 @@ def build(bindings: ToolBindings) -> tuple[HostTool[Any, Any], ...]:
         _build_mark_unable(bindings),
         _build_abort_task(bindings),
         _build_fetch_thread(bindings),
+        _build_search_issues(bindings),
+        _build_search_commits(bindings),
     )
 
 

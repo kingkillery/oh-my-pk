@@ -243,7 +243,8 @@ async def triage_issue(
         log.info("skip: triage on PR-like issue", extra={"repo": repo.full_name, "n": issue.number})
         return
     key = issue_key(repo.full_name, issue.number)
-    if db.get_issue(key) is None:
+    existing = db.get_issue(key)
+    if existing is None:
         # First-time triage: bail if a PR (human or another bot) already
         # claims to close this issue via Closes/Fixes/Resolves syntax or
         # the Development panel. We never replay closing-PR detection on
@@ -265,6 +266,9 @@ async def triage_issue(
                 extra={"key": key, "prs": list(closing_prs)},
             )
             return
+    elif payload.get("action") == "reopened" and existing.state in ("merged", "closed", "abandoned"):
+        sandbox.remove_workspace(repo=repo.full_name, number=issue.number)
+        db.reset_issue_for_retriage(key)
     db.upsert_issue(key=key, repo=repo.full_name, number=issue.number, state="reproducing")
     clone_url = repo.clone_url
     workspace = sandbox.ensure_workspace(

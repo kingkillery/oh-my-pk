@@ -2133,7 +2133,7 @@ async def test_handle_comment_directive_bootstraps_untriaged_issue(
     await tasks.handle_comment(
         settings=settings,
         db=db,
-        github=GitHubClient("t"),
+        github=GitHubClient("t", transport=httpx.MockTransport(lambda request: httpx.Response(404))),
         git_transport=LocalGitTransport(token=None),
         sandbox=sandbox,
         payload=payload,
@@ -2203,7 +2203,7 @@ async def test_handle_comment_directive_reopens_finalized_issue(
     await tasks.handle_comment(
         settings=settings,
         db=db,
-        github=GitHubClient("t"),
+        github=GitHubClient("t", transport=httpx.MockTransport(lambda request: httpx.Response(404))),
         git_transport=LocalGitTransport(token=None),
         sandbox=sandbox,
         payload=payload,

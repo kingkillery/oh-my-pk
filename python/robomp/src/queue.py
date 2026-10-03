@@ -353,7 +353,7 @@ class WorkerPool:
                 "recovered": row.attempts >= 2,
             },
         )
-        if event == "issues" and action == "opened":
+        if event == "issues" and action in ("opened", "reopened"):
             await tasks.triage_issue(
                 settings=self.settings,
                 db=self.db,

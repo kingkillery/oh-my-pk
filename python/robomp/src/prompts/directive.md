@@ -38,3 +38,5 @@ All side effects via `gh_*` host tools. NEVER shell out to `gh` or `git push`.
 `classify_issue` and `set_issue_labels` are unavailable here — the originating issue is already triaged.
 
 Terse. Technical. No emoji.
+
+`gh_open_pr` also runs the full repository `bun run test` before publishing. `skip_checks=true` bypasses fix/check/test only for verified baseline breakage; report every bypass explicitly, never as a pass.

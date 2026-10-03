@@ -16,7 +16,7 @@ Worktree is at cwd; the branch above is checked out and ready for commits **if**
 the classification calls for code. Drive the todo list to completion:
 
 1. **Triage first.** Read the body and any comments via `read` /
-   `fetch_issue_thread`, then call
+   `fetch_issue_thread`; search with `gh_search_issues` and, where helpful, `search_commits` for duplicates and verified prior fixes. Then call
    `classify_issue(primary=..., priority=..., functional=[...], rationale=...)`.
    You NEVER post a comment, push, or open a PR before this step.
 
