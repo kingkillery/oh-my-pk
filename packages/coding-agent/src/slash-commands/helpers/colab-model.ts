@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { Server } from "bun";
 import { kNoAuth } from "../../config/model-registry";
 import type { SlashCommandRuntime } from "../types";
@@ -227,6 +228,18 @@ export interface GgufArtifact {
 	totalSize: number;
 }
 
+/**
+ * LoRA GGUF applied on top of the base GGUF with `--lora-scaled`. It is staged
+ * in the same VM directory as the base file; the VM re-checks size and SHA-256.
+ */
+export interface ColabLoraAdapter {
+	/** Basename only, so it can sit beside the base GGUF and never names a path. */
+	file: string;
+	sha256: string;
+	size: number;
+	scale: number;
+}
+
 export type ColabRuntimeProfileId = "upstream" | "prism" | "diffusion";
 
 /** How the serving `llama-server` was obtained on the VM. */
@@ -429,6 +442,10 @@ export interface ColabModelLaunchResult {
 	/** Chat mode verifies visible generation without checking tool support. */
 	readinessMode?: ColabReadinessMode;
 	chatReady?: boolean;
+	/** Verified LoRA adapters served on top of the base GGUF; omitted for a base-only launch. */
+	adapters?: readonly ColabLoraAdapter[];
+	/** Custom served alias that was requested and echoed by the VM; omitted when the GGUF stem is used. */
+	alias?: string;
 }
 export interface ColabModelCommandRequest {
 	accelerator?: ColabAccelerator;
@@ -458,6 +475,9 @@ interface RemoteReadyPayload {
 	toolCallReady: boolean;
 	readinessMode?: ColabReadinessMode;
 	chatReady?: boolean;
+	/** LoRA adapters the VM loaded, as file, sha256 and scale; absent from VMs that predate adapters. */
+	adapters?: readonly Pick<ColabLoraAdapter, "file" | "sha256" | "scale">[];
+	alias?: string | null;
 }
 
 interface HttpMetadata {
@@ -471,8 +491,15 @@ interface ColabModelLaunchOptions {
 	fetch?: typeof globalThis.fetch;
 	sessionName?: string;
 	localPort?: number;
-	/** Stage a verified cache after session acquisition, returning its exact VM directory. */
-	prepareModelCache?: () => Promise<string>;
+	/**
+	 * Stage a verified cache after session acquisition, returning its exact VM directory.
+	 * An object may also name the LoRA adapters staged beside the base GGUF.
+	 */
+	prepareModelCache?: () => Promise<string | { directory: string; adapters?: readonly ColabLoraAdapter[] }>;
+	/** LoRA adapters staged by `prepareModelCache`, validated before any Colab CLI call. */
+	adapters?: readonly ColabLoraAdapter[];
+	/** Served model alias; defaults to the GGUF file stem. */
+	alias?: string;
 	/** Opt-in timing evidence. Remote elapsed times use a separate monotonic clock. */
 	onStage?: (event: ColabLaunchStageEvent) => Promise<void> | void;
 	/** Explicit argv routes keep account isolation local to this launch. */
@@ -1009,6 +1036,71 @@ function summarizeRuntime(
 	};
 }
 
+const MAX_COLAB_ADAPTERS = 4;
+const MAX_COLAB_ADAPTER_SCALE = 4;
+// Basename only: no comma, colon, slash, backslash or quote, which --lora-scaled FNAME:SCALE cannot carry safely.
+const COLAB_ADAPTER_FILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.gguf$/;
+const COLAB_ALIAS_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$/;
+
+/** Undefined keeps the served alias at the GGUF file stem. */
+function resolveColabAlias(alias: string | undefined): string | undefined {
+	if (alias === undefined) return undefined;
+	if (typeof alias !== "string" || !COLAB_ALIAS_PATTERN.test(alias)) {
+		throw new Error(
+			"Invalid Colab model alias; expected up to 128 letters, digits, . _ : + - starting with a letter or digit.",
+		);
+	}
+	return alias;
+}
+
+/** An absent or empty list means a base-only launch; anything else must pass `validateColabAdapters`. */
+function hasColabAdapters(adapters: readonly ColabLoraAdapter[] | undefined): adapters is readonly ColabLoraAdapter[] {
+	return adapters !== undefined && !(Array.isArray(adapters) && adapters.length === 0);
+}
+
+/**
+ * Enforces the LoRA adapter contract and returns canonical copies. Adapters ride
+ * on the upstream llama-server only, so the prism and diffusion lanes are refused.
+ * Callers still require a staged model cache directory: adapters never download.
+ */
+export function validateColabAdapters(
+	adapters: readonly ColabLoraAdapter[],
+	artifact: Pick<GgufArtifact, "files" | "primaryFile">,
+	runtime: Pick<ColabRuntimeProfile, "id">,
+): ColabLoraAdapter[] {
+	if (runtime.id !== "upstream") {
+		throw new Error(`LoRA adapters need the upstream llama.cpp runtime; ${runtime.id} was selected for this model.`);
+	}
+	if (!Array.isArray(adapters) || adapters.length < 1 || adapters.length > MAX_COLAB_ADAPTERS) {
+		throw new Error(`Expected 1-${MAX_COLAB_ADAPTERS} LoRA adapters.`);
+	}
+	const baseFiles = new Set([artifact.primaryFile, ...artifact.files].map(file => path.posix.basename(file)));
+	const seen = new Set<string>();
+	return adapters.map((adapter, index) => {
+		const label = `LoRA adapter ${index + 1}`;
+		if (typeof adapter !== "object" || adapter === null) throw new Error(`${label} must be an object.`);
+		const { file, sha256, size, scale } = adapter;
+		if (typeof file !== "string" || !COLAB_ADAPTER_FILE_PATTERN.test(file)) {
+			throw new Error(
+				`${label} needs a plain .gguf file name (letters, digits, . _ -; no path, comma, colon or quote).`,
+			);
+		}
+		if (baseFiles.has(file)) throw new Error(`${label} ${file} has the same name as a base GGUF file.`);
+		if (seen.has(file)) throw new Error(`${label} ${file} is listed more than once.`);
+		seen.add(file);
+		if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) {
+			throw new Error(`${label} ${file} needs a 64-character lowercase hex sha256.`);
+		}
+		if (typeof size !== "number" || !Number.isSafeInteger(size) || size <= 0) {
+			throw new Error(`${label} ${file} needs a positive integer size.`);
+		}
+		if (typeof scale !== "number" || !Number.isFinite(scale) || scale <= 0 || scale > MAX_COLAB_ADAPTER_SCALE) {
+			throw new Error(`${label} ${file} needs a finite scale above 0 and at most ${MAX_COLAB_ADAPTER_SCALE}.`);
+		}
+		return { file, size, sha256, scale };
+	});
+}
+
 export function buildColabCommand(
 	args: readonly string[],
 	platform = process.platform,
@@ -1349,15 +1441,28 @@ export function buildRemoteSetupScript(config: {
 	modelProfile?: ColabModelProfile;
 	modelCacheDirectory?: string;
 	readinessMode?: ColabReadinessMode;
+	/** LoRA GGUFs staged beside the base GGUF in `modelCacheDirectory`. */
+	adapters?: readonly ColabLoraAdapter[];
+	/** Served model alias; defaults to the GGUF file stem. */
+	alias?: string;
 }): string {
 	const readinessMode = resolveColabReadinessMode(config.readinessMode);
+	const alias = resolveColabAlias(config.alias);
 	const runtime = config.runtime ?? selectColabRuntimeProfile(config.reference, config.artifact);
+	const adapters = hasColabAdapters(config.adapters)
+		? validateColabAdapters(config.adapters, config.artifact, runtime)
+		: [];
+	if (adapters.length > 0 && !config.modelCacheDirectory) {
+		throw new Error("LoRA adapters are only read from the staged model cache directory; pass modelCacheDirectory.");
+	}
 	const prebuilt = selectColabPrebuiltRuntime(runtime, config.accelerator);
 	const modelProfile = config.modelProfile ?? getColabModelProfile(config.reference, config.artifact);
 	const persistentCacheBucket = Bun.env.OMPK_GCS_MODEL_BUCKET?.trim() || Bun.env.GCS_BUCKET?.trim();
 	const payload = {
 		readinessMode,
 		modelCacheDirectory: config.modelCacheDirectory ?? null,
+		adapters,
+		alias: alias ?? null,
 		accelerator: config.accelerator,
 		cmakeArchitecture: getColabAcceleratorProfile(config.accelerator).cmakeArchitecture,
 		contextWindow: config.contextWindow,
@@ -1426,6 +1531,7 @@ TIMING_PREFIX = ${JSON.stringify(TIMING_PREFIX)}
 TRACE_STARTED = time.perf_counter()
 RUNTIME = CONFIG["runtime"]
 MODEL_PROFILE = CONFIG.get("modelProfile") or {}
+ADAPTERS = CONFIG.get("adapters") or []
 PREBUILT = RUNTIME["prebuilt"]
 # CPU runtimes have no CUDA: build GGML_CUDA=OFF and offload zero layers.
 CPU_ONLY = CONFIG["accelerator"] == "CPU"
@@ -1949,15 +2055,37 @@ def target_for_process(targets, running):
     return None
 
 
+def served_adapters_match(argv, model_path):
+    """True when argv loads exactly ADAPTERS: same files beside the model, same scales, same order. A base-only launch matches only a server without adapters."""
+    served = []
+    for index, token in enumerate(argv):
+        if token == "--lora-scaled":
+            path, _separator, scale = (argv[index + 1] if index + 1 < len(argv) else "").rpartition(":")
+            try:
+                served.append((Path(path), float(scale)))
+            except ValueError:
+                return False
+        elif token.startswith("--lora"):
+            # Plain --lora, --lora-init-without-apply and similar are never what this script launches, so never reusable.
+            return False
+    if len(served) != len(ADAPTERS):
+        return False
+    directory = model_path.parent.resolve()
+    return all(
+        path.name == adapter["file"] and path.parent.resolve() == directory and path.is_file() and scale == float(adapter["scale"])
+        for (path, scale), adapter in zip(served, ADAPTERS)
+    )
+
+
 def served_model_matches(argv, primary_name, required_names):
-    """True when the process serves this exact GGUF: same file name, every split still present beside it."""
+    """True when the process serves this exact GGUF and LoRA set: same file name, every split present beside it, same adapters."""
     model = argv_option(argv, "--model")
     if not model:
         return False
     model_path = Path(model)
     if CONFIG.get("modelCacheDirectory") and model_path.parent.resolve() != Path(CONFIG["modelCacheDirectory"]).resolve():
         return False
-    return model_path.name == primary_name and model_path.is_file() and all((model_path.parent / name).is_file() for name in required_names)
+    return model_path.name == primary_name and model_path.is_file() and all((model_path.parent / name).is_file() for name in required_names) and served_adapters_match(argv, model_path)
 
 
 def request_json(url, payload=None, timeout=30):
@@ -1966,6 +2094,14 @@ def request_json(url, payload=None, timeout=30):
     request = urllib.request.Request(url, data=data, headers=headers)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read())
+
+
+def adapter_echo():
+    """READY fields the host cross-checks against its validated request: adapters (file, sha256, scale only) and the alias."""
+    return {
+        "adapters": [{"file": adapter["file"], "sha256": adapter["sha256"], "scale": float(adapter["scale"])} for adapter in ADAPTERS],
+        "alias": CONFIG.get("alias"),
+    }
 
 
 @measured("remote-readiness-probe")
@@ -2008,6 +2144,7 @@ def announce_ready(model_id, primary_name, base_url, target):
             "readinessMode": "chat",
             "chatReady": True,
             "toolCallReady": False,
+            **adapter_echo(),
         }), flush=True)
         return
     if RUNTIME["id"] == "diffusion":
@@ -2024,6 +2161,7 @@ def announce_ready(model_id, primary_name, base_url, target):
             "runtimeSource": target.source,
             "toolCallReady": False,
             "readinessMode": CONFIG["readinessMode"],
+            **adapter_echo(),
         }), flush=True)
         return
 
@@ -2094,6 +2232,7 @@ def announce_ready(model_id, primary_name, base_url, target):
         "runtimeSource": target.source,
         "toolCallReady": True,
         "readinessMode": CONFIG["readinessMode"],
+        **adapter_echo(),
     }), flush=True)
 
 
@@ -2233,9 +2372,32 @@ def assert_port_unused():
             raise RuntimeError("Existing server is not a validated reusable match. It was left running; stop it explicitly only after checking ownership and activity.")
 
 
+def adapter_argv(model_path):
+    """One --lora-scaled PATH:SCALE per adapter, after re-verifying each file beside the base GGUF. Errors and progress name files and scales, never paths."""
+    if ADAPTERS and RUNTIME["id"] != "upstream":
+        raise RuntimeError("LoRA adapters need the upstream llama-server runtime.")
+    argv = []
+    for adapter in ADAPTERS:
+        name = adapter["file"]
+        path = Path(os.path.abspath(model_path.parent / name))
+        if not path.is_file():
+            raise RuntimeError(f"LoRA adapter {name} is missing beside the base GGUF; stage it again before launch.")
+        if path.stat().st_size != adapter["size"]:
+            raise RuntimeError(f"LoRA adapter {name} has the wrong size; stage it again before launch.")
+        if sha256_of(path) != adapter["sha256"]:
+            raise RuntimeError(f"LoRA adapter {name} failed its sha256 check; stage it again before launch.")
+        scale = float(adapter["scale"])
+        if not 0 < scale <= 4:  # also rejects NaN and infinity
+            raise RuntimeError(f"LoRA adapter {name} has an invalid scale.")
+        progress(f"verified LoRA adapter {name} at scale {scale!r}")
+        argv.extend(["--lora-scaled", f"{path}:{scale!r}"])
+    return argv
+
+
 @measured("load-compile")
 def start_server(target, model_path, primary_name, base_url):
-    alias = Path(primary_name).stem
+    alias = CONFIG.get("alias") or Path(primary_name).stem
+    lora_args = adapter_argv(model_path)
     progress(f"loading {alias} on the {'CPU' if CPU_ONLY else 'GPU'} with {target.source} {runtime_label()}")
     log_handle = LOG_FILE.open("w", buffering=1)
     if RUNTIME["id"] == "diffusion":
@@ -2265,6 +2427,7 @@ def start_server(target, model_path, primary_name, base_url):
             server_args.extend(["--ubatch-size", str(MODEL_PROFILE["physicalMicrobatch"])])
         if MODEL_PROFILE.get("cachePrompt"):
             server_args.append("--cache-prompt")
+        server_args.extend(lora_args)
     server_process = subprocess.Popen(server_args, env=library_env(target.server), stdout=log_handle, stderr=subprocess.STDOUT, start_new_session=True)
     PID_FILE.write_text(str(server_process.pid))
     for attempt in range(180):
@@ -2320,7 +2483,8 @@ def main():
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
         pass
     running_ids = [item.get("id", "") for item in (models_payload or {}).get("data", []) if isinstance(item, dict)]
-    matching_names = {primary_name, Path(primary_name).stem}
+    # A custom alias is what the server advertises, so only that id can be the same launch.
+    matching_names = {CONFIG["alias"]} if CONFIG.get("alias") else {primary_name, Path(primary_name).stem}
     matching_id = next((model_id for model_id in running_ids if Path(model_id).name in matching_names), None)
     targets = validated_targets()
     if matching_id is not None:
@@ -2593,9 +2757,28 @@ export function assertColabModelReadiness(
 	ready: RemoteReadyPayload | undefined,
 	runtimeId: ColabRuntimeProfile["id"],
 	mode: ColabReadinessMode = "tools",
+	expected?: { adapters?: readonly ColabLoraAdapter[]; alias?: string },
 ): asserts ready is RemoteReadyPayload {
 	const readinessMode = resolveColabReadinessMode(mode);
 	if (!ready?.modelId || !ready.port) throw new Error("Colab setup completed without a validated readiness probe.");
+	if (expected) {
+		// The VM must serve exactly the validated adapters in order, under the requested alias.
+		const echoed = ready.adapters ?? [];
+		const wanted = expected.adapters ?? [];
+		if (
+			!Array.isArray(echoed) ||
+			echoed.length !== wanted.length ||
+			echoed.some(
+				(item, index) =>
+					item?.file !== wanted[index].file ||
+					item.sha256 !== wanted[index].sha256 ||
+					item.scale !== wanted[index].scale,
+			) ||
+			(ready.alias ?? undefined) !== expected.alias
+		) {
+			throw new Error("Colab runtime reported LoRA adapters or an alias that differ from the validated request.");
+		}
+	}
 	if (readinessMode === "chat") {
 		if (ready.readinessMode !== "chat" || ready.chatReady !== true || ready.toolCallReady !== false) {
 			throw new Error("Colab setup did not verify visible chat readiness; tool support remains unverified.");
@@ -2611,6 +2794,11 @@ export async function launchColabModel(
 	options: ColabModelLaunchOptions = {},
 ): Promise<ColabModelLaunchResult> {
 	const readinessMode = resolveColabReadinessMode(options.readinessMode);
+	const alias = resolveColabAlias(options.alias);
+	const requestedAdapters = hasColabAdapters(options.adapters) ? options.adapters : undefined;
+	if (requestedAdapters && !options.prepareModelCache) {
+		throw new Error("LoRA adapters are only read from a staged model cache; pass prepareModelCache.");
+	}
 	const reference = parseHuggingFaceModelReference(modelReference);
 	await emit(`Colab: resolving ${reference.repoId}@${reference.revision}…`);
 	const entries = await measureLaunchStage("discovery-auth", options.onStage, () =>
@@ -2636,18 +2824,43 @@ export async function launchColabModel(
 			`No GGUF in ${reference.repoId} fits an automatic T4, L4, or A100 launch. Pass --gpu H100 or --gpu G4, or use a smaller GGUF.`,
 		);
 	}
+	if (requestedAdapters) {
+		// Reject a bad adapter set before ensureColabSession can allocate a billed runtime.
+		for (const candidate of acquisitionCandidates) {
+			const candidateArtifact = selectGgufArtifact(entries, reference, candidate);
+			validateColabAdapters(
+				requestedAdapters,
+				candidateArtifact,
+				selectColabRuntimeProfile(reference, candidateArtifact),
+			);
+		}
+	}
 	const accelerator = await measureLaunchStage("allocation", options.onStage, () =>
 		ensureColabSession(sessionName, acquisitionCandidates, options.accelerator, emit, options.cliCommand),
 	);
-	const modelCacheDirectory = options.prepareModelCache
+	const rawCache = options.prepareModelCache
 		? await measureLaunchStage("cache-staging", options.onStage, options.prepareModelCache)
 		: undefined;
+	const staged = typeof rawCache === "string" ? { directory: rawCache, adapters: undefined } : rawCache;
+	const modelCacheDirectory = staged?.directory;
 	const artifact = selectGgufArtifact(entries, reference, accelerator);
 	const modelProfile = getColabModelProfile(reference, artifact);
 	const contextWindow = modelProfile
 		? resolveColabContextWindow(accelerator, artifact, modelProfile)
 		: getColabAcceleratorProfile(accelerator).defaultContextWindow;
 	const runtime = selectColabRuntimeProfile(reference, artifact);
+	// Adapters named only by the staging callback are unknown until now; the acquired runtime may also differ from the candidates checked above.
+	const optionAdapters = requestedAdapters ? validateColabAdapters(requestedAdapters, artifact, runtime) : undefined;
+	const stagedAdapters = hasColabAdapters(staged?.adapters)
+		? validateColabAdapters(staged.adapters, artifact, runtime)
+		: undefined;
+	if (optionAdapters && stagedAdapters && !isDeepStrictEqual(optionAdapters, stagedAdapters)) {
+		throw new Error("LoRA adapters from the launch options differ from the adapters reported by cache staging.");
+	}
+	const adapters = optionAdapters ?? stagedAdapters ?? [];
+	if (adapters.length > 0 && !modelCacheDirectory) {
+		throw new Error("LoRA adapters are only read from the staged model cache directory.");
+	}
 	const prebuilt = selectColabPrebuiltRuntime(runtime, accelerator);
 	await emit(
 		`Colab: selected ${artifact.quantization} (${artifact.totalSize > 0 ? `${(artifact.totalSize / 1_000_000_000).toFixed(1)} GB` : "size unknown"}) for ${accelerator} on ${runtime.id} llama.cpp${runtime.pinnedTag ? ` ${runtime.pinnedTag}` : ""}${prebuilt ? ` (prebuilt CUDA ${prebuilt.cuda} release, source fallback)` : ""}.`,
@@ -2663,6 +2876,8 @@ export async function launchColabModel(
 		input: buildRemoteSetupScript({
 			readinessMode,
 			modelCacheDirectory,
+			adapters,
+			alias,
 			accelerator,
 			artifact,
 			contextWindow,
@@ -2680,7 +2895,7 @@ export async function launchColabModel(
 		);
 	}
 	const ready = parseMarkedJson<RemoteReadyPayload>(setup.stdout, READY_PREFIX);
-	assertColabModelReadiness(ready, runtime.id, readinessMode);
+	assertColabModelReadiness(ready, runtime.id, readinessMode, { adapters, alias });
 	if (runtime.pinnedCommit && ready.runtimeCommit !== runtime.pinnedCommit) {
 		throw new Error(
 			`Colab runtime reported commit ${ready.runtimeCommit ?? "unknown"}; expected pinned ${runtime.pinnedTag ?? runtime.pinnedCommit}.`,
@@ -2739,6 +2954,8 @@ export async function launchColabModel(
 		repoId: reference.repoId,
 		runtime: summarizeRuntime(runtime, ready),
 		sessionName,
+		...(adapters.length > 0 ? { adapters } : {}),
+		...(alias ? { alias } : {}),
 	};
 }
 
