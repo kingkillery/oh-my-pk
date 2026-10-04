@@ -1624,10 +1624,24 @@ def prebuilt_label():
     return f"prebuilt {PREBUILT['archive']}"
 
 
+CUDA_TOOLKIT_PARENT = Path("/usr/local")
+
+
+def toolkit_library_dirs(parent=None):
+    """Library directories of the CUDA toolkit matching the prebuilt archive. Colab images install the toolkit
+    (e.g. /usr/local/cuda-12.8) but leave it off the loader path, so a matching prebuilt looked broken and was rebuilt."""
+    cuda = (PREBUILT or {}).get("cuda")
+    if not cuda:
+        return []
+    root = (parent or CUDA_TOOLKIT_PARENT) / ("cuda-" + cuda)
+    return [str(path) for path in (root / "lib64", root / "targets" / "x86_64-linux" / "lib") if path.is_dir()]
+
+
 def library_env(server):
-    """Resolve the shared libraries bundled beside the executable ahead of anything else on the host."""
+    """Resolve the shared libraries bundled beside the executable first, then the matching CUDA toolkit, then the host's."""
     env = dict(os.environ)
-    env["LD_LIBRARY_PATH"] = os.pathsep.join(part for part in (str(server.parent), env.get("LD_LIBRARY_PATH", "")) if part)
+    parts = [str(server.parent), *toolkit_library_dirs(), env.get("LD_LIBRARY_PATH", "")]
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(part for part in parts if part)
     return env
 
 

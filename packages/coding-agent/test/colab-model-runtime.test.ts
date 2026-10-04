@@ -142,3 +142,47 @@ print("EXACT_CACHE_OK")
 	expect(exitCode, stderr).toBe(0);
 	expect(stdout).toContain("EXACT_CACHE_OK");
 }, 10_000);
+
+test("the prebuilt's CUDA toolkit libraries are searched when the image leaves them off the loader path", async () => {
+	const python = Bun.which("python") ?? Bun.which("python3");
+	if (!python) throw new Error("Python 3 required");
+	const l4Setup = buildRemoteSetupScript({
+		accelerator: "L4",
+		reference: { repoId: "ggml-org/gemma-4-E4B-it-GGUF", revision: "main" },
+		artifact: {
+			primaryFile: "gemma-4-E4B-it-Q4_K_M.gguf",
+			files: ["gemma-4-E4B-it-Q4_K_M.gguf"],
+			quantization: "Q4_K_M",
+			totalSize: 5_000_000_000,
+		},
+		contextWindow: 32768,
+		remotePort: 8081,
+	});
+	const exercise = `import os, pathlib, sys, tempfile
+ns = {"__name__": "colab_cuda_path_test"}
+exec(compile(sys.stdin.read(), "<colab-setup>", "exec"), ns)
+assert ns["PREBUILT"]["cuda"] == "12.8"
+with tempfile.TemporaryDirectory() as folder:
+    parent = pathlib.Path(folder)
+    assert ns["toolkit_library_dirs"](parent) == []
+    lib64 = parent / "cuda-12.8" / "lib64"
+    lib64.mkdir(parents=True)
+    (parent / "cuda-13.0" / "lib64").mkdir(parents=True)
+    assert ns["toolkit_library_dirs"](parent) == [str(lib64)]
+    ns["CUDA_TOOLKIT_PARENT"] = parent
+    os.environ["LD_LIBRARY_PATH"] = "/usr/lib64-nvidia"
+    parts = ns["library_env"](pathlib.Path("/opt/llama/bin/llama-server"))["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert parts == [str(pathlib.Path("/opt/llama/bin")), str(lib64), "/usr/lib64-nvidia"], parts
+print("CUDA_PATH_OK")
+`;
+	const child = Bun.spawn([python, "-c", exercise], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+	child.stdin.write(l4Setup);
+	child.stdin.end();
+	const [exitCode, stdout, stderr] = await Promise.all([
+		child.exited,
+		new Response(child.stdout).text(),
+		new Response(child.stderr).text(),
+	]);
+	expect(exitCode, stderr).toBe(0);
+	expect(stdout).toContain("CUDA_PATH_OK");
+}, 10_000);
