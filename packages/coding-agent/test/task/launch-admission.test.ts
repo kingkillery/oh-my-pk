@@ -56,10 +56,13 @@ async function fixture() {
 	});
 	if (!plan.ok) throw new Error(plan.diagnostics.map(item => item.message).join("; "));
 	const baseline = await captureLaunchBaseline(directory, path.join(directory, "evidence"));
-	const admit = async (key: string): Promise<PendingLifecycleLaunch> => {
+	const admit = async (
+		key: string,
+		owner: { readonly store?: LifecycleStore; readonly issuer?: typeof issuer } = {},
+	): Promise<PendingLifecycleLaunch> => {
 		const result = await admitBoundChildLaunch({
-			issuer,
-			store,
+			issuer: owner.issuer ?? issuer,
+			store: owner.store ?? store,
 			spawnPlan: plan.plan,
 			entryPoint: LAUNCH_ENTRY_POINTS.taskSpawn,
 			reason: "Contract test",
@@ -82,7 +85,7 @@ async function fixture() {
 		if (!result.ok) throw new Error(`${result.code}: ${result.diagnostics.map(item => item.message).join("; ")}`);
 		return result.pending;
 	};
-	return { directory, store, issuer, admit };
+	return { directory, settings, capabilities, store, issuer, admit };
 }
 
 describe("host launch admission and executable dispatch", () => {
@@ -93,6 +96,37 @@ describe("host launch admission and executable dispatch", () => {
 		expect(replay.launch.binding.bindingId).toBe(original.launch.binding.bindingId);
 		expect(store.countLiveChildBindings(getLifecycleRegistration(issuer)!.root!.rootPrincipalId)).toBe(1);
 		await expect(admit("over-capacity")).rejects.toThrow("spawn_children_exhausted");
+	});
+
+	it("releases children a previous process left live before its first admission", async () => {
+		const { directory, settings, capabilities, store, issuer, admit } = await fixture();
+		const principal = getLifecycleRegistration(issuer)!.root!.rootPrincipalId;
+		// A live child, then the process exits without settling it.
+		const orphan = await admit("before-exit");
+		await activateLifecycleLaunch(
+			orphan,
+			"exited-child-session",
+			directory,
+			{ child: "exited-eval", parent: "parent-eval" },
+			path.join(directory, "evidence"),
+		);
+		// Within one process a live child is never released: the one-child
+		// ceiling holds.
+		await expect(admit("same-process")).rejects.toThrow("spawn_children_exhausted");
+		store.close();
+		stores.splice(stores.indexOf(store), 1);
+
+		// The resumed session reopens the store in a new process and mints its
+		// root issuer for the same session again. Its first admission releases
+		// the orphan instead of failing at the ceiling.
+		const reopened = await LifecycleStore.open({ dbPath: store.dbPath });
+		stores.push(reopened);
+		const resumedIssuer = createLifecycleRootIssuer("root-session", settings, capabilities);
+		expect(getLifecycleRegistration(resumedIssuer)!.root!.rootPrincipalId).toBe(principal);
+		const resumed = await admit("after-exit", { store: reopened, issuer: resumedIssuer });
+		expect(reopened.getLaunchBinding(orphan.launch.binding.bindingId).state).toBe("failed");
+		expect(reopened.getLaunchBinding(resumed.launch.binding.bindingId).state).toBe("authorized");
+		expect(reopened.countLiveChildBindings(principal)).toBe(1);
 	});
 
 	it("does not terminalize the live owner when a replay attempts a foreign activation", async () => {

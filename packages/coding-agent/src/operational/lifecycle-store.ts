@@ -64,7 +64,7 @@ export class LifecycleStore {
 	#closed = false;
 
 	private constructor(options: LifecycleStoreOptions) {
-		this.dbPath = options.dbPath ?? path.join(getAgentDir(), "lifecycle.db");
+		this.dbPath = options.dbPath ?? path.join(getAgentDir(), "lifecycle-authority.db");
 		this.#db = new Database(this.dbPath, { create: true });
 		try {
 			if (
@@ -90,7 +90,7 @@ export class LifecycleStore {
 	}
 
 	static async open(options: LifecycleStoreOptions = {}): Promise<LifecycleStore> {
-		const dbPath = options.dbPath ?? path.join(getAgentDir(), "lifecycle.db");
+		const dbPath = options.dbPath ?? path.join(getAgentDir(), "lifecycle-authority.db");
 		if (!dbPath.trim()) throw new Error("LifecycleStore database path is required.");
 		if (dbPath !== ":memory:") await mkdir(path.dirname(dbPath), { recursive: true });
 		for (let attempt = 0; ; attempt++) {
@@ -1000,6 +1000,62 @@ CREATE TABLE IF NOT EXISTS launch_binding_events (
 		if (!row)
 			throw new LifecycleReadError("launch_binding_not_found", `binding for attempt '${attemptId}' not found`);
 		return this.#launchBindingFromRow(row);
+	}
+
+	/**
+	 * Fail every child binding a root principal still holds live.
+	 *
+	 * The caller invokes this once per process before its first admission
+	 * under the principal. A root principal belongs to one session, and a
+	 * session has one writing process, so any binding still live for it at
+	 * that point was left by a process that exited without settling it.
+	 * Without this, a crashed session's children would count against
+	 * `maxChildren` for as long as the session is resumed.
+	 */
+	releaseOrphanedChildBindings(input: {
+		readonly guard: LaunchMutationGuard;
+		readonly reason: string;
+	}): { readonly ok: true; readonly released: number } | LaunchAuthorityFailure {
+		this.#assertOpen();
+		const principalId = getLifecycleRegistration(input.guard.actor)?.root?.rootPrincipalId;
+		if (!principalId) {
+			return this.#authorityFailure(
+				"unauthenticated_actor",
+				"only a root issuer may release the children it left live",
+			);
+		}
+		const now = Date.now();
+		try {
+			return this.#db
+				.transaction(() => {
+					const denied = this.#authenticateActor(input.guard, {
+						rootPrincipalId: principalId,
+						parentPrincipalId: principalId,
+					});
+					if (denied) return denied;
+					const live = this.#db
+						.query(
+							"SELECT binding_id, policy_epoch FROM launch_bindings WHERE parent_principal_id = ? AND state IN ('authorized','bound','active','suspended')",
+						)
+						.all(principalId) as { binding_id: string; policy_epoch: number }[];
+					for (const row of live) {
+						this.#db
+							.query(
+								"UPDATE launch_bindings SET state = 'failed', policy_epoch = policy_epoch + 1, updated_at = ? WHERE binding_id = ?",
+							)
+							.run(now, row.binding_id);
+						this.#db
+							.query(
+								"INSERT INTO launch_binding_events (binding_id, kind, reason, policy_epoch, occurred_at) VALUES (?, 'failed', ?, ?, ?)",
+							)
+							.run(row.binding_id, input.reason, row.policy_epoch + 1, now);
+					}
+					return { ok: true as const, released: live.length };
+				})
+				.immediate();
+		} catch (error) {
+			return this.#authorityFailure("orphan_release_failed", error instanceof Error ? error.message : String(error));
+		}
 	}
 
 	/**

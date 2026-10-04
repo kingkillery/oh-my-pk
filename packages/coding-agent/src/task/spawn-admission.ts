@@ -198,6 +198,9 @@ function contractAuthorityEnvelope(contract: CompiledLaunchContract): AuthorityE
 	});
 }
 
+/** Root principals whose orphaned children this process already released, per store. */
+const releasedOrphanPrincipals = new WeakMap<LifecycleStore, Set<string>>();
+
 /** Admit authority, persist evidence, and return a pending launch for later runtime activation. */
 export async function admitBoundChildLaunch(request: BoundChildLaunchRequest): Promise<BoundChildLaunchResult> {
 	const registration = getLifecycleRegistration(request.issuer);
@@ -573,6 +576,27 @@ export async function admitBoundChildLaunch(request: BoundChildLaunchRequest): P
 			provenanceId: "host-runtime-backend-declaration",
 		}),
 	]);
+
+	// Before this process's first admission under a root principal, release
+	// any children a previous process left live for it (see
+	// releaseOrphanedChildBindings). Synchronous from the check to the release,
+	// so concurrent admissions in this process never release each other's.
+	if (registration.root) {
+		const released = releasedOrphanPrincipals.get(request.store) ?? new Set<string>();
+		releasedOrphanPrincipals.set(request.store, released);
+		if (!released.has(registration.root.rootPrincipalId)) {
+			const result = request.store.releaseOrphanedChildBindings({
+				guard: {
+					actor: request.issuer,
+					expectedPolicyEpoch: registration.policyEpoch,
+					idempotencyKey: `release-orphans-${registration.root.rootPrincipalId}`,
+				},
+				reason: "Released at first admission: left live by a process that exited without settling it.",
+			});
+			if (!result.ok) return { ok: false, code: result.code, diagnostics: result.diagnostics };
+			released.add(registration.root.rootPrincipalId);
+		}
+	}
 
 	return prepareLifecycleLaunch(
 		request.store,
