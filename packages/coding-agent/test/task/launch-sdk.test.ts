@@ -362,34 +362,53 @@ describe("real SDK launch authority wiring", () => {
 		}
 	});
 
-	it("denies unsupported async and fork routes before Task output/job allocation even after the flag is disabled", async () => {
+	it("runs Task in the foreground with async enabled and denies fork, even after the flag is disabled", async () => {
 		const f = await fixture();
 		registerTaskProvider(f);
 		f.settings.override("async.enabled", true);
-		const { session } = await f.create(undefined, { toolNames: ["task"] });
-		f.settings.override("task.lifecycle.enabled", false);
-		const allocate = spyOn(AgentOutputManager.prototype, "allocate");
+		const { session } = await f.create(undefined, { toolNames: ["task", "yield"] });
 		const register = spyOn(session.asyncJobManager!, "register");
+		const createSpy = spyOn(sdk, "createAgentSession");
 		try {
-			const result = await session.getToolByName("task")!.execute("async-denied", {
+			const result = await session.getToolByName("task")!.execute("async-foreground", {
 				agent: "task",
-				assignment: "Do work",
+				assignment: "Yield completed",
 				model: "launch-test/worker",
-				id: "Denied",
+				id: "Foreground",
 			});
-			expect(JSON.stringify(result)).toContain("unsupported_lifecycle_launch_route");
-			expect(allocate).not.toHaveBeenCalled();
+			// Admitted and run to completion in the foreground, never handed to
+			// the async job manager.
+			expect(result).toMatchObject({
+				details: { results: [{ exitCode: 0, output: expect.stringContaining("completed") }] },
+			});
 			expect(register).not.toHaveBeenCalled();
-			f.settings.override("async.enabled", false);
-			const fork = await session
-				.getToolByName("task")!
-				.execute("fork-denied", { agent: "task", assignment: "Do work", model: "launch-test/worker", fork: true });
-			expect(JSON.stringify(fork)).toContain("unsupported_lifecycle_launch_route");
-			expect(allocate).not.toHaveBeenCalled();
-			expect(f.requests).toHaveLength(0);
+			const admission = createSpy.mock.calls[0]?.[0]?.lifecycleLaunch;
+			expect(admission).toBeDefined();
+			cleanups.push(async () => admission!.store.close());
+			expect(f.requests).toHaveLength(1);
+
+			// The session already holds an issuer, so its routes stay checked
+			// after the setting is turned off.
+			f.settings.override("task.lifecycle.enabled", false);
+			const allocate = spyOn(AgentOutputManager.prototype, "allocate");
+			try {
+				const fork = await session
+					.getToolByName("task")!
+					.execute("fork-denied", {
+						agent: "task",
+						assignment: "Do work",
+						model: "launch-test/worker",
+						fork: true,
+					});
+				expect(JSON.stringify(fork)).toContain("unsupported_lifecycle_launch_route");
+				expect(allocate).not.toHaveBeenCalled();
+				expect(f.requests).toHaveLength(1);
+			} finally {
+				allocate.mockRestore();
+			}
 		} finally {
-			allocate.mockRestore();
 			register.mockRestore();
+			createSpy.mockRestore();
 		}
 	});
 	it("leaves default-off startup and registry execution ordinary without opening authority storage", async () => {

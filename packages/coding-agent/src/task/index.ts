@@ -1270,7 +1270,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 		const spawnItems = resolveSpawnItems(params);
 		const selectedAgent = this.#discoveredAgents.find(agent => agent.name === params.agent);
-		const asyncEnabled = !this.session.nativeTaskExecution && this.session.settings.get("async.enabled");
+		// The lifecycle launch lane admits foreground workers only, so while it is
+		// active Task runs in the foreground even when async execution is enabled.
+		const lifecycleActive = Boolean(
+			this.session.settings.get("task.lifecycle.enabled") || this.session.getLifecycleIssuerContext?.(),
+		);
+		const asyncEnabled =
+			!lifecycleActive && !this.session.nativeTaskExecution && this.session.settings.get("async.enabled");
 		const manager = asyncEnabled ? this.session.asyncJobManager : undefined;
 		const depthCapacity = this.session.settings.get("task.simpleMode")
 			? false
@@ -1282,20 +1288,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// call returns (async). In the sync fallback they have already completed,
 		// so a "coordinate while they run" hint would misfire.
 		const willRunAsync = !!manager && selectedAgent?.blocking !== true;
-		if (
-			(this.session.settings.get("task.lifecycle.enabled") || this.session.getLifecycleIssuerContext?.()) &&
-			willRunAsync
-		) {
-			return {
-				content: [
-					{
-						type: "text",
-						text: "unsupported_lifecycle_launch_route: async Task workers are not supported by this launch lane",
-					},
-				],
-				details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
-			};
-		}
 		const advisory =
 			this.session.settings.get("task.simpleMode") ||
 			this.session.suppressSpawnAdvisory ||
