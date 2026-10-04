@@ -866,6 +866,7 @@ export function buildParams(
 		maxTokens: options?.maxTokens,
 		maxTokensExplicit: options?.maxTokensExplicit ?? options?.maxTokens !== undefined,
 		modelMaxTokens: model.maxTokens,
+		contextWindow: model.contextWindow,
 		omitMaxOutputTokens: model.omitMaxOutputTokens ?? false,
 		isOpenRouterHost: model.compat.isOpenRouterHost,
 		alwaysSendMaxTokens: model.compat.alwaysSendMaxTokens,

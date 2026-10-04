@@ -111,6 +111,22 @@ describe("resolveOpenAIOutputTokenParam", () => {
 	it("treats a null caller cap like an omitted one", () => {
 		expect(resolveOpenAIOutputTokenParam(tokenInput({ maxTokens: null }))).toBeUndefined();
 	});
+
+	it("reserves prompt tokens when the output cap would consume the context window", () => {
+		expect(
+			resolveOpenAIOutputTokenParam(
+				tokenInput({ field: "max_tokens", maxTokens: 8192, modelMaxTokens: 8192, contextWindow: 8192 }),
+			),
+		).toEqual({ field: "max_tokens", value: 7168 });
+	});
+
+	it("leaves a cap below the context window unchanged", () => {
+		expect(
+			resolveOpenAIOutputTokenParam(
+				tokenInput({ field: "max_tokens", maxTokens: 1024, modelMaxTokens: 8192, contextWindow: 8192 }),
+			),
+		).toEqual({ field: "max_tokens", value: 1024 });
+	});
 });
 
 function routingParams(): OpenAIGatewayRoutingParams {

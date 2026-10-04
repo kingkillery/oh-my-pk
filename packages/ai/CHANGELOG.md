@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Chat Completions and Responses requests now leave 1024 tokens of prompt room when a requested output cap would consume the served context window. llama.cpp and vLLM reject `max_tokens` equal to the window before reading the prompt.
+
 ## [16.4.28] - 2026-09-30
 
 ### Fixed

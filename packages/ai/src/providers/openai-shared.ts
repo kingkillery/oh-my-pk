@@ -509,6 +509,9 @@ export function applyWireModelIdTransform(
 	}
 }
 
+/** Tokens left for the prompt when a requested output cap would otherwise consume the whole context window. */
+export const OPENAI_CONTEXT_PROMPT_RESERVE_TOKENS = 1024;
+
 export interface OpenAIOutputTokenParam {
 	field: "max_tokens" | "max_completion_tokens" | "max_output_tokens";
 	value: number;
@@ -531,6 +534,12 @@ export interface ResolveOpenAIOutputTokenInput {
 	alwaysSendMaxTokens: boolean;
 	/** Hard provider clamp; defaults to {@link OPENAI_MAX_OUTPUT_TOKENS}. */
 	providerOutputClamp?: number;
+	/**
+	 * Served context window. When the requested output cap would consume it,
+	 * the cap is reduced so the prompt still fits. llama.cpp and vLLM reject
+	 * `max_tokens === n_ctx` before reading the prompt.
+	 */
+	contextWindow?: number | null;
 }
 
 /**
@@ -547,6 +556,8 @@ export interface ResolveOpenAIOutputTokenInput {
  *    (explicit caller caps still win) so `provider.order`/`only` is honored.
  *  - model/provider clamp: never exceed `model.maxTokens` or the provider clamp
  *    (`OPENAI_MAX_OUTPUT_TOKENS`, raised for GLM-5.2 reasoning by the caller).
+ *  - context headroom: a cap that meets or exceeds `contextWindow` is reduced
+ *    by {@link OPENAI_CONTEXT_PROMPT_RESERVE_TOKENS} so prompt plus output fit.
  *  - `omitMaxOutputTokens`: proxies (Ollama) with unknown upstream caps drop it.
  */
 export function resolveOpenAIOutputTokenParam(
@@ -557,10 +568,16 @@ export function resolveOpenAIOutputTokenParam(
 		input.maxTokens ?? (input.alwaysSendMaxTokens ? (input.modelMaxTokens ?? OPENAI_MAX_OUTPUT_TOKENS) : undefined);
 	if (requested === undefined) return undefined;
 	if (input.isOpenRouterHost && !input.alwaysSendMaxTokens && !input.maxTokensExplicit) return undefined;
+	const contextWindow = input.contextWindow ?? Number.POSITIVE_INFINITY;
+	const contextHeadroom =
+		Number.isFinite(contextWindow) && contextWindow > OPENAI_CONTEXT_PROMPT_RESERVE_TOKENS
+			? contextWindow - OPENAI_CONTEXT_PROMPT_RESERVE_TOKENS
+			: Number.POSITIVE_INFINITY;
 	const value = Math.min(
 		requested,
 		input.modelMaxTokens ?? Number.POSITIVE_INFINITY,
 		input.providerOutputClamp ?? OPENAI_MAX_OUTPUT_TOKENS,
+		contextHeadroom,
 	);
 	if (!(value > 0)) return undefined;
 	return { field: input.field, value };
