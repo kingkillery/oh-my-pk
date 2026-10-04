@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add a separately opened lifecycle authority database for immutable launch contracts, authenticated bounded admission, real session activation, and durable revocation. Legacy operational storage remains at schema v1; runtime launch integration follows separately.
+
 ### Fixed
 
 - Withhold the captured stdout/stderr of Python `subprocess.CalledProcessError` and `TimeoutExpired` from eval error output and `processError`; the command, return code and traceback still show. To recover output, catch the exception in the cell, redact it, and print the safe result.
