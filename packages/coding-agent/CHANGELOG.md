@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add opt-in lifecycle execution (`task.lifecycle.enabled`, off by default). When on, subagents launched by the task tool, eval `agent()`, `/subagent` and the Fusion sidekick are admitted through a compiled launch contract recorded in `lifecycle-authority.db` next to `operational.db`. A bound child's tool calls are authorized against the contract's capabilities, its provider requests are projected through that authority, and a revived child rebinds to its recorded binding instead of being admitted again. `operational.db` keeps schema 1, so older builds still open it.
+
 ### Fixed
 
+- Start the gopk-clips ingest daemon without top-level await, which made `--bytecode` builds fail. A startup error still prints and exits with status 1.
 - Withhold the captured stdout/stderr of Python `subprocess.CalledProcessError` and `TimeoutExpired` from eval error output and `processError`; the command, return code and traceback still show. To recover output, catch the exception in the cell, redact it, and print the safe result.
 - Recognize read selectors (`:raw`, `:N-M`, continuation `:N`) on `history://<id>` and the `history://` index instead of treating them as part of the agent id. System-printed transcript hints percent-encode `:` in agent ids, so ids such as `background:1` stay readable.
 - Refuse to create a Colab runtime (`colab new` on any GPU or CPU, from `/colab-model` or cache staging) unless the caller supplies an explicit Colab CLI command; unbudgeted launches had no armed session cutoff. Reusing an existing session still works. Launch new runtimes through the mesh-inference dashboard after arming a cutoff.
