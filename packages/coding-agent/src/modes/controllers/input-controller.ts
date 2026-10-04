@@ -494,6 +494,8 @@ export class InputController {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showSessionSelector());
 		}
 		for (const key of this.ctx.keybindings.getKeys("app.message.followUp")) {
+			// Ctrl+Enter always inserts a newline, even if an older settings file lists it here.
+			if (key === "ctrl+enter" || key === "ctrl+return") continue;
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.handleFollowUp());
 		}
 		for (const key of this.ctx.keybindings.getKeys("app.stt.toggle")) {

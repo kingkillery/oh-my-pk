@@ -12,6 +12,7 @@ import { getEditorTheme, theme } from "../../modes/theme/theme";
 import {
 	matchesAppExternalEditor,
 	matchesAppFollowUp,
+	matchesAppFollowUpIgnored,
 	matchesAppInterrupt,
 } from "../../modes/utils/keybinding-matchers";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
@@ -68,7 +69,7 @@ export class HookEditorComponent extends Container {
 		// Hint
 		const hint = this.#promptStyle
 			? "enter or ctrl+q submit  esc cancel  ctrl+g external editor"
-			: "ctrl+q/ctrl+enter submit  esc cancel  ctrl+g external editor";
+			: "ctrl+q submit  esc cancel  ctrl+g external editor";
 		this.addChild(new Text(theme.fg("dim", hint), 1, 0));
 
 		this.addChild(new Spacer(1));
@@ -97,15 +98,13 @@ export class HookEditorComponent extends Container {
 
 	/**
 	 * Prompt-style: raw Enter submits; Editor owns newline-producing sequences.
-	 * The follow-up chord (`app.message.followUp` → Ctrl+Q / Ctrl+Enter) also
-	 * submits, so muscle memory from the main editor / hook-style surface works
-	 * here and Windows Terminal — which can't deliver a distinct Ctrl+Enter
-	 * event (#1903) — still has a working chord via Ctrl+Q (#3353).
+	 * The follow-up chord (`app.message.followUp`, Ctrl+Q by default) submits.
+	 * Ctrl+Enter is never the chord — it always inserts a newline.
 	 */
 	#handlePromptStyleInput(keyData: string): void {
-		// Submit on the follow-up chord first so it wins over Editor's own
-		// Ctrl+Enter newline handling. Mirrors #handleHookStyleInput.
-		if (matchesAppFollowUp(keyData)) {
+		// Ignore Ctrl+Enter before the chord check so it can never be pressed into
+		// a send. Mirrors #handleHookStyleInput.
+		if (!matchesAppFollowUpIgnored(keyData) && matchesAppFollowUp(keyData)) {
 			this.#submitCurrentText();
 			return;
 		}
@@ -132,12 +131,11 @@ export class HookEditorComponent extends Container {
 		this.#editor.handleInput(keyData);
 	}
 
-	/** Hook-style: Enter=newline, app.message.followUp chord (Ctrl+Q/Ctrl+Enter) submits. */
+	/** Hook-style: Enter=newline, the `app.message.followUp` chord (Ctrl+Q) submits. */
 	#handleHookStyleInput(keyData: string): void {
-		// Submit on the follow-up chord. Uses the shared keybinding so Ctrl+Q works
-		// on Windows Terminal (#1903) and any user remap of `app.message.followUp`
-		// applies here too.
-		if (matchesAppFollowUp(keyData)) {
+		// Ctrl+Enter always inserts a newline, so it is ignored even when a legacy
+		// settings file still lists it under `app.message.followUp`.
+		if (!matchesAppFollowUpIgnored(keyData) && matchesAppFollowUp(keyData)) {
 			this.#submitCurrentText();
 			return;
 		}

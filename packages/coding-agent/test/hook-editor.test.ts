@@ -102,24 +102,28 @@ describe("HookEditorComponent default (hook) mode", () => {
 		component.handleInput("d");
 		component.handleInput("\x1b[13;5u");
 
+		expect(onSubmit).not.toHaveBeenCalled();
+		component.handleInput("\x11");
+
 		expect(onSubmit).toHaveBeenCalledTimes(1);
-		expect(onSubmit).toHaveBeenCalledWith("ab\ncd");
+		expect(onSubmit).toHaveBeenCalledWith("ab\ncd\n");
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 
-	it("submits the current text on Ctrl+Enter", () => {
+	it("inserts a newline on Ctrl+Enter instead of submitting", () => {
 		const onSubmit = vi.fn();
 		const onCancel = vi.fn();
 		const component = new HookEditorComponent(createTui(), "Prompt", "line 1\nline 2", onSubmit, onCancel);
 
 		component.handleInput("\x1b[13;5u");
 
-		expect(onSubmit).toHaveBeenCalledTimes(1);
-		expect(onSubmit).toHaveBeenCalledWith("line 1\nline 2");
+		expect(onSubmit).not.toHaveBeenCalled();
+		component.handleInput("\x11");
+		expect(onSubmit).toHaveBeenCalledWith("line 1\nline 2\n");
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 
-	it("submits Ctrl+Enter variants with NumLock or keypad Enter metadata", () => {
+	it("inserts a newline for Ctrl+Enter variants instead of submitting", () => {
 		const variants = ["\x1b[13;133u", "\x1b[57414;5u", "\x1b[57414;133u"];
 
 		for (const variant of variants) {
@@ -129,21 +133,19 @@ describe("HookEditorComponent default (hook) mode", () => {
 
 			component.handleInput(variant);
 
-			expect(onSubmit).toHaveBeenCalledTimes(1);
-			expect(onSubmit).toHaveBeenCalledWith("draft");
+			expect(onSubmit).not.toHaveBeenCalled();
 			expect(onCancel).not.toHaveBeenCalled();
 		}
 	});
 
-	it("submits LF-prefixed modified Enter sequences", () => {
+	it("does not submit LF-prefixed modified Enter sequences", () => {
 		const onSubmit = vi.fn();
 		const onCancel = vi.fn();
 		const component = new HookEditorComponent(createTui(), "Prompt", "draft", onSubmit, onCancel);
 
 		component.handleInput("\n\x1b[13;5u");
 
-		expect(onSubmit).toHaveBeenCalledTimes(1);
-		expect(onSubmit).toHaveBeenCalledWith("draft");
+		expect(onSubmit).not.toHaveBeenCalled();
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 	it("submits the current text on Ctrl+Q (Windows Terminal fallback for #2118)", () => {
@@ -182,20 +184,18 @@ describe("HookEditorComponent default (hook) mode", () => {
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 
-	it("expands large paste markers when submitting on Ctrl+Enter", () => {
+	it("does not submit a large paste on Ctrl+Enter", () => {
 		const onSubmit = vi.fn();
 		const onCancel = vi.fn();
 		const component = new HookEditorComponent(createTui(), "Prompt", undefined, onSubmit, onCancel);
 		const pasted = largePasteText();
 
 		component.handleInput(`\x1b[200~${pasted}\x1b[201~`);
-
-		expect(renderText(component)).toContain("[Paste #1, +11 lines]");
-
 		component.handleInput("\x1b[13;5u");
 
-		expect(onSubmit).toHaveBeenCalledTimes(1);
-		expect(onSubmit).toHaveBeenCalledWith(pasted);
+		expect(onSubmit).not.toHaveBeenCalled();
+		component.handleInput("\x11");
+		expect(onSubmit).toHaveBeenCalledWith(`${pasted}\n`);
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 
@@ -320,7 +320,7 @@ describe("HookEditorComponent prompt-style mode", () => {
 		expect(onSubmit).toHaveBeenCalledWith("a\nb");
 	});
 
-	it("submits on the Ctrl+Enter chord in prompt-style mode (#3353)", () => {
+	it("inserts a newline on Ctrl+Enter in prompt-style mode", () => {
 		const onSubmit = vi.fn();
 		const onCancel = vi.fn();
 		const component = new HookEditorComponent(createTui(), "Prompt", undefined, onSubmit, onCancel, {
@@ -331,8 +331,9 @@ describe("HookEditorComponent prompt-style mode", () => {
 		component.handleInput("y");
 		component.handleInput("\x1b[13;5u");
 
-		expect(onSubmit).toHaveBeenCalledTimes(1);
-		expect(onSubmit).toHaveBeenCalledWith("xy");
+		expect(onSubmit).not.toHaveBeenCalled();
+		component.handleInput("\r");
+		expect(onSubmit).toHaveBeenCalledWith("xy\n");
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 

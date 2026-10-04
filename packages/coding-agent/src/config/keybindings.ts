@@ -133,10 +133,9 @@ export const KEYBINDINGS = {
 		description: "Open external editor",
 	},
 	"app.message.followUp": {
-		// Ctrl+Enter is preserved for terminals that deliver it (Kitty/iTerm2/WezTerm/Ghostty),
-		// but Windows Terminal does not emit a distinct event for Ctrl+Enter — Ctrl+Q is listed
-		// first so the default binding works there without remapping (#1903).
-		defaultKeys: ["ctrl+q", "ctrl+enter"],
+		// Ctrl+Enter always inserts a newline. Ctrl+Q is the follow-up chord,
+		// including on Windows Terminal, which cannot deliver a distinct Ctrl+Enter.
+		defaultKeys: ["ctrl+q"],
 		description: "Send follow-up message",
 	},
 	"app.retry": {

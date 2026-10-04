@@ -65,22 +65,28 @@ function matchesEffectiveKeys(data: string, keys: readonly KeyId[]): boolean {
 }
 
 /**
- * Match the "submit multi-line text input" keybinding (`app.message.followUp`).
+ * Match the follow-up chord (`app.message.followUp`).
  *
- * Used by forms where plain Enter inserts a newline and a modified-Enter chord
- * submits — the main editor's follow-up handler, the agent dashboard's new-agent
- * description, and the hook editor's hook-style mode. The keybinding defaults to
- * `["ctrl+q", "ctrl+enter"]` so Windows Terminal (which can't deliver a distinct
- * Ctrl+Enter event; #1903) still has a working chord without user remapping.
- *
- * Also recognizes modifier-tagged LF as Ctrl+Enter only when Ctrl+Enter is an
- * effective follow-up binding.
+ * Ctrl+Enter is never a follow-up. It always inserts a newline, even when a saved
+ * binding still lists it. Ctrl+Q remains the default chord.
  */
 export function matchesAppFollowUp(data: string): boolean {
+	if (matchesKey(data, "ctrl+enter") || matchesKey(data, "ctrl+return")) return false;
 	const keybindings = getKeybindings();
-	const keys = keybindings.getKeys("app.message.followUp");
-	if (keys.length > 0) {
-		return matchesEffectiveKeys(data, keys);
-	}
-	return matchesEffectiveKeys(data, ["ctrl+enter", "ctrl+q"]);
+	const registered = keybindings.getDefinition("app.message.followUp") !== undefined;
+	const keys = keybindings
+		.getKeys("app.message.followUp")
+		.filter(key => key !== "ctrl+enter" && key !== "ctrl+return");
+	if (keys.length > 0) return matchesEffectiveKeys(data, keys);
+	if (registered) return false;
+	return matchesEffectiveKeys(data, ["ctrl+q"]);
+}
+
+/**
+ * Key ids that must never act as the follow-up chord because they insert a
+ * newline instead. Matched against raw input so they are ignored even when a
+ * legacy settings file still lists them under `app.message.followUp`.
+ */
+export function matchesAppFollowUpIgnored(data: string): boolean {
+	return matchesKey(data, "ctrl+enter") || matchesKey(data, "ctrl+return");
 }

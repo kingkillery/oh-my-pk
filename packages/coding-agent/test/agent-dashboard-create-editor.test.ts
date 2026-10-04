@@ -72,12 +72,12 @@ describe("AgentDashboard create editor", () => {
 
 		expect(rendered).toContain("> first line");
 		expect(rendered).toContain("  second line");
-		expect(rendered).toContain("Ctrl+Q/Ctrl+Enter: generate");
+		expect(rendered).toContain("Ctrl+Q: generate");
 		expect(rendered).toContain("Enter: newline");
 		expect(rendered).not.toContain("Description is required.");
 	});
 
-	test("submits multiline new-agent descriptions on CSI-u Ctrl+Enter", async () => {
+	test("inserts a newline on CSI-u Ctrl+Enter and generates on Ctrl+Q", async () => {
 		await initTheme(false);
 		const dashboard = await AgentDashboard.create(await makeTempCwd(), settingsStub, 24, {});
 
@@ -86,6 +86,11 @@ describe("AgentDashboard create editor", () => {
 		dashboard.handleInput("\r");
 		typeText(dashboard, "second line");
 		dashboard.handleInput("\x1b[13;5u");
+		await Bun.sleep(0);
+		const afterNewline = dashboard.render(80).join("\n").replace(ANSI_PATTERN, "");
+		expect(afterNewline).not.toContain("Model registry unavailable in current session.");
+
+		dashboard.handleInput("\x11");
 		await Bun.sleep(0);
 		const rendered = dashboard.render(80).join("\n").replace(ANSI_PATTERN, "");
 
@@ -106,7 +111,7 @@ describe("AgentDashboard create editor", () => {
 
 		expect(rendered).toContain("> first line");
 		expect(rendered).toContain("  second line");
-		expect(rendered).toContain("Ctrl+Q/Ctrl+Enter: generate");
+		expect(rendered).toContain("Ctrl+Q: generate");
 		expect(rendered).toContain("Enter: newline");
 		expect(rendered).not.toContain("Model registry unavailable in current session.");
 		expect(rendered).not.toContain("Description is required.");

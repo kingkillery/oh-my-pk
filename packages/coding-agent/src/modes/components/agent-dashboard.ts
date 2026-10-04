@@ -53,6 +53,7 @@ import { shortenPath } from "../../tools/render-utils";
 import { getEditorTheme, theme } from "../theme/theme";
 import {
 	matchesAppFollowUp,
+	matchesAppFollowUpIgnored,
 	matchesAppInterrupt,
 	matchesSelectDown,
 	matchesSelectUp,
@@ -899,7 +900,7 @@ export class AgentDashboard extends Container {
 		this.addChild(new Spacer(1));
 		const hints = this.#createGenerating
 			? " Generating..."
-			: " Ctrl+Q/Ctrl+Enter: generate  Enter: newline  Tab: toggle scope  Esc: cancel";
+			: " Ctrl+Q: generate  Enter: newline  Tab: toggle scope  Esc: cancel";
 		this.addChild(new Text(theme.fg("dim", hints), 0, 0));
 	}
 
@@ -1090,7 +1091,7 @@ export class AgentDashboard extends Container {
 				}
 				return;
 			}
-			if (!this.#createGenerating && matchesAppFollowUp(data)) {
+			if (!this.#createGenerating && !matchesAppFollowUpIgnored(data) && matchesAppFollowUp(data)) {
 				this.#submitCreateDescription();
 				return;
 			}

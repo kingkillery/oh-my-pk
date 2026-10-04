@@ -174,41 +174,39 @@ describe("KeybindingsManager.create", () => {
 		expect(manager.getKeys("app.display.reset")).toEqual(["ctrl+l"]);
 	});
 
-	it("defaults the follow-up shortcut to both Ctrl+Q and Ctrl+Enter (#1903)", async () => {
+	it("defaults the follow-up shortcut to Ctrl+Q and keeps Ctrl+Enter for newline", async () => {
 		const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-keybindings-"));
 
 		try {
 			const manager = KeybindingsManager.create(agentDir);
 
-			// Both chords must be registered so Windows Terminal users (which swallow
-			// Ctrl+Enter at the terminal layer) get a working follow-up binding out
-			// of the box, without breaking users on Kitty/iTerm2/WezTerm/Ghostty.
-			expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+q", "ctrl+enter"]);
+			expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+q"]);
+			setKeybindings(manager);
+			expect(matchesAppFollowUp("\x1b[13;5u")).toBe(false);
+			expect(matchesAppFollowUp("\x11")).toBe(true);
 		} finally {
 			await removeWithRetries(agentDir);
 		}
 	});
 
-	it("removes the Ctrl+Q follow-up default when a user remap already claims it (#1903)", () => {
+	it("does not fall back to Ctrl+Enter when Ctrl+Q is already claimed", () => {
 		const manager = KeybindingsManager.inMemory({
 			"app.plan.toggle": "ctrl+q",
 		});
 		setKeybindings(manager);
 
 		expect(manager.getKeys("app.plan.toggle")).toEqual(["ctrl+q"]);
-		expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+enter"]);
-		expect(manager.getDisplayString("app.message.followUp")).toBe("Ctrl+Enter");
-		expect(manager.getEffectiveConfig()["app.message.followUp"]).toBe("ctrl+enter");
+		expect(manager.getKeys("app.message.followUp")).toEqual([]);
 		expect(matchesAppFollowUp(ctrl("q"))).toBe(false);
-		expect(matchesAppFollowUp("\x1b[13;5u")).toBe(true);
+		expect(matchesAppFollowUp("\x1b[13;5u")).toBe(false);
 	});
 
-	it("keeps the Ctrl+Q follow-up default when only an unknown config key claims it (#1903)", () => {
+	it("keeps the Ctrl+Q follow-up default when only an unknown config key claims it", () => {
 		const manager = KeybindingsManager.inMemory({
 			"unknown.action": "ctrl+q",
 		});
 
-		expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+q", "ctrl+enter"]);
+		expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+q"]);
 	});
 
 	it("keeps Ctrl+Q when the user explicitly assigns it to follow-up (#1903)", () => {

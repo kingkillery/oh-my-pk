@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Ctrl+Enter inserts a newline. Paste no longer adds a trailing newline, and an Enter that arrives in the same chunk as a paste does not submit.
+
 ## [16.2.0] - 2026-06-27
 
 ### Added

@@ -23,6 +23,8 @@
 ### Changed
 
 - Require the installed PK-Herdr skill for interactive terminal creation and control, expose its instructions before invocation, and fail closed when it is missing, unreadable, disabled, or changed. Terminal launches use the caller's Herdr workspace or a unique tool-owned headless session with four-hour idle cleanup; psmux and system-terminal fallbacks are removed, and legacy terminal backend preferences migrate to PK-Herdr. Failed or cancelled launches close only their owned resources.
+- Prefer one eval cell that calls `tool.<name>(args)` over a series of individual tool calls. The system prompt and eval description tell the model to batch independent calls, chain them, and filter large output in the cell, and to use a separate tool call only when the next step needs that result or the user asked for that tool.
+- Ctrl+Enter always inserts a newline and no longer sends a follow-up. Ctrl+Q remains the follow-up chord. Paste inserts text only: it does not add a trailing newline, and an Enter that arrives in the same chunk does not send the chat.
 
 ### Documentation
 

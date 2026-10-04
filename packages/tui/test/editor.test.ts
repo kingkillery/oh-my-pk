@@ -2115,6 +2115,20 @@ describe("Editor component", () => {
 			expect(submitted).toBe(pastedText);
 		});
 
+		it("does not submit or add a trailing newline when paste arrives with Enter", () => {
+			const editor = new Editor(defaultEditorTheme);
+			let submitted = "";
+			editor.onSubmit = text => {
+				submitted = text;
+			};
+
+			editor.handleInput("\x1b[200~hello\nworld\n\x1b[201~\r");
+			editor.handleInput("line1\r\nline2\r");
+
+			expect(submitted).toBe("");
+			expect(editor.getText()).toBe("hello\nworldline1\nline2");
+		});
+
 		it("formats a large single-line paste as a char-count marker", () => {
 			const editor = new Editor(defaultEditorTheme);
 			const pastedText = "a".repeat(1500);

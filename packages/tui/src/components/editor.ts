@@ -33,6 +33,16 @@ const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 	overflowSearch: false,
 	wrapDescription: true,
 };
+/** Text that arrived without bracketed-paste markers. Insert it; never treat it as Enter or newline. */
+function isUnbracketedPaste(data: string): boolean {
+	if (data.length < 2 || data.startsWith("\x1b")) return false;
+	return /[\r\n]/.test(data) && /[^\x00-\x1F\x7F]/.test(data);
+}
+
+/** Drop an Enter or newline that arrived in the same chunk as a paste. */
+function withoutPasteSubmit(remaining: string): string {
+	return remaining.replace(/^(?:\r\n|\r|\n)+/, "");
+}
 
 function sanitizeLoadedText(text: string): string {
 	// Normalize CRLF/CR → LF, then strip C0 control chars except \n.
@@ -1136,10 +1146,15 @@ export class Editor implements Component, Focusable {
 		if (paste.handled) {
 			if (paste.pasteContent !== undefined) {
 				this.#handlePaste(paste.pasteContent);
-				if (paste.remaining.length > 0) {
-					this.handleInput(paste.remaining);
+				const remaining = withoutPasteSubmit(paste.remaining);
+				if (remaining.length > 0) {
+					this.handleInput(remaining);
 				}
 			}
+			return;
+		}
+		if (isUnbracketedPaste(data)) {
+			this.#handlePaste(data);
 			return;
 		}
 
@@ -1978,7 +1993,7 @@ export class Editor implements Component, Focusable {
 		// Strip control characters except newline (tabs already expanded above, CRs already
 		// normalized). Single regex pass instead of split/filter/join to avoid allocating a
 		// per-code-unit array for large pastes.
-		return tabExpandedText.replace(/[\x00-\x09\x0B-\x1F]/g, "");
+		return tabExpandedText.replace(/[\x00-\x09\x0B-\x1F]/g, "").replace(/\n+$/, "");
 	}
 
 	/** Store `content` in the paste buffer and insert a collapsed `[Paste #N]` marker that expands

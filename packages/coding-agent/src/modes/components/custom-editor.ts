@@ -736,7 +736,8 @@ export class CustomEditor extends Editor {
 					() => this.#onPasteImageSettled(),
 				);
 			} else if (remaining.length > 0) {
-				this.handleInput(remaining);
+				const rest = remaining.replace(/^(?:\r\n|\r|\n)+/, "");
+				if (rest.length > 0) this.handleInput(rest);
 			}
 			return;
 		}
@@ -750,7 +751,8 @@ export class CustomEditor extends Editor {
 		} else {
 			this.pasteText(payload);
 		}
-		if (remaining.length > 0) this.handleInput(remaining);
+		const rest = remaining.replace(/^(?:\r\n|\r|\n)+/, "");
+		if (rest.length > 0) this.handleInput(rest);
 	}
 
 	/** Drain input queued behind the in-flight image read, in arrival order. Stops if a
