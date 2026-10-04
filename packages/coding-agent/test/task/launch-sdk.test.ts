@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentTool } from "@pk-nerdsaver-ai/pi-agent-core";
@@ -415,7 +415,15 @@ describe("real SDK launch authority wiring", () => {
 		expect(session.sessionFile?.startsWith(path.join(f.directory, "sessions"))).toBe(true);
 		expect(session.getEvalSessionId()).not.toBe("parent-eval-state");
 		await session.getToolByName("probe")!.execute("allowed", {});
-		await expect(session.getToolByName("read")!.execute("no-scopes", { path: "file.ts" })).rejects.toThrow(
+		// Path tools are contained to the worker's working directory: a file
+		// inside it reads, one outside it is denied before the tool runs.
+		await Bun.write(path.join(f.directory, "inside.txt"), "inside workspace");
+		const inside = await session.getToolByName("read")!.execute("in-scope", { path: "inside.txt" });
+		expect(JSON.stringify(inside.content)).toContain("inside workspace");
+		const outside = path.join(path.dirname(f.directory), `outside-${path.basename(f.directory)}.txt`);
+		await Bun.write(outside, "outside workspace");
+		cleanups.push(async () => rm(outside, { force: true }));
+		await expect(session.getToolByName("read")!.execute("out-of-scope", { path: outside })).rejects.toThrow(
 			"target_outside_scope",
 		);
 		expect(f.bodies()).toBe(1);
@@ -638,9 +646,9 @@ describe("real SDK launch authority wiring", () => {
 		await expect(f.create(undefined, { sessionManager: session.sessionManager })).rejects.toThrow(
 			"lifecycle_setting_required",
 		);
-		await expect(session.getToolByName("read")!.execute("still-bound", { path: "file.ts" })).rejects.toThrow(
-			"target_outside_scope",
-		);
+		await expect(
+			session.getToolByName("read")!.execute("still-bound", { path: path.join(path.dirname(f.directory), "x.ts") }),
+		).rejects.toThrow("target_outside_scope");
 		await expect(session.newSession()).rejects.toThrow("lifecycle_session_transition_unavailable");
 		expect(session.sessionManager.getSessionId()).toBe(id);
 		const count = session.state.messages.length;

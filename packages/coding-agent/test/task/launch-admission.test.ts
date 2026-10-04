@@ -136,7 +136,7 @@ describe("host launch admission and executable dispatch", () => {
 		expect(store.getLaunchBinding(pending.launch.binding.bindingId).state).toBe("failed");
 		await admit("after-evidence-failure");
 	});
-	it("binds actual session identity, denies empty resource scopes and observes durable revocation", async () => {
+	it("binds actual session identity, contains path targets to the workspace and observes durable revocation", async () => {
 		const { directory, store, admit } = await fixture();
 		const pending = await admit("first");
 		expect(store.getLaunchBinding(pending.launch.binding.bindingId).state).toBe("authorized");
@@ -161,10 +161,15 @@ describe("host launch admission and executable dispatch", () => {
 			},
 		};
 		const guarded = guardLifecycleTool(tool, context, "builtin");
-		expect(() => guarded.execute("read-1", { path: "src/file.ts" })).toThrow("target_outside_scope");
-		expect(calls).toBe(0);
+		// The worker's scope is its working directory: inside it the tool runs,
+		// outside it the call is denied before the tool body.
+		await guarded.execute("read-1", { path: "src/file.ts" });
+		expect(calls).toBe(1);
+		expect(() => guarded.execute("read-outside", { path: "../escape.ts" })).toThrow("target_outside_scope");
+		expect(calls).toBe(1);
 		terminateLifecycleLaunch(pending, "revoked", "Test durable revocation");
 		expect(() => guarded.execute("read-2", { path: "src/file.ts" })).toThrow("launch_authority_revoked");
+		expect(calls).toBe(1);
 	});
 
 	it("rejects shared eval activation, records failure and releases real capacity", async () => {

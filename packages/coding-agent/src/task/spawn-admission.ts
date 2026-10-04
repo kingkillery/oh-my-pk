@@ -387,8 +387,11 @@ export async function admitBoundChildLaunch(request: BoundChildLaunchRequest): P
 		nonGoals: Object.freeze([]),
 		baselineRef: request.baseline,
 		inputs: Object.freeze([]),
-		readableScope: Object.freeze([]),
-		writableScope: Object.freeze([]),
+		// The worker's own working directory, resolved against the child's cwd at
+		// activation. Path tools are contained to it; with no scope at all every
+		// read/edit/grep/glob would be denied while exec-tier tools still ran.
+		readableScope: Object.freeze(["."]),
+		writableScope: Object.freeze(["."]),
 		acceptance: Object.freeze([
 			Object.freeze({
 				id: "criterion-assignment-complete",
