@@ -392,14 +392,12 @@ describe("real SDK launch authority wiring", () => {
 			f.settings.override("task.lifecycle.enabled", false);
 			const allocate = spyOn(AgentOutputManager.prototype, "allocate");
 			try {
-				const fork = await session
-					.getToolByName("task")!
-					.execute("fork-denied", {
-						agent: "task",
-						assignment: "Do work",
-						model: "launch-test/worker",
-						fork: true,
-					});
+				const fork = await session.getToolByName("task")!.execute("fork-denied", {
+					agent: "task",
+					assignment: "Do work",
+					model: "launch-test/worker",
+					fork: true,
+				});
 				expect(JSON.stringify(fork)).toContain("unsupported_lifecycle_launch_route");
 				expect(allocate).not.toHaveBeenCalled();
 				expect(f.requests).toHaveLength(1);
@@ -411,6 +409,22 @@ describe("real SDK launch authority wiring", () => {
 			createSpy.mockRestore();
 		}
 	});
+	it("lets an enabled root session change sessions and re-mints its issuer for each session", async () => {
+		const f = await fixture();
+		const { session } = await f.create();
+		const principalOf = () => getLifecycleRegistration(session.getLifecycleIssuerContext()!)?.root?.rootPrincipalId;
+		const first = session.getLifecycleIssuerContext()!;
+		expect(principalOf()).toBe(`principal-root-${session.sessionManager.getSessionId()}`);
+
+		expect(await session.newSession()).toBe(true);
+		expect(principalOf()).toBe(`principal-root-${session.sessionManager.getSessionId()}`);
+		// The previous session's issuer no longer authorizes anything.
+		expect(getLifecycleRegistration(first)).toBeUndefined();
+
+		expect(await session.fork()).toBe(true);
+		expect(principalOf()).toBe(`principal-root-${session.sessionManager.getSessionId()}`);
+	});
+
 	it("leaves default-off startup and registry execution ordinary without opening authority storage", async () => {
 		const f = await fixture(false);
 		const { session } = await f.create();

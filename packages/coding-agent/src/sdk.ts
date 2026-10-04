@@ -1409,6 +1409,7 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 	const lifecycleEnabled = settings.get("task.lifecycle.enabled");
 	let lifecycleContext: LifecycleExecutionContext | undefined;
 	let lifecycleIssuer: LifecycleExecutionContext | RootExecutionContext | undefined;
+	let mintRootIssuer: ((sessionId: string) => RootExecutionContext) | undefined;
 	try {
 		if (options.lifecycleLaunch && !lifecycleEnabled)
 			throw new Error("lifecycle_setting_required: admission requires launch authority enabled");
@@ -1797,7 +1798,7 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 				session?.getEvalSessionId() ??
 				(lifecycleContext ? undefined : options.parentEvalSessionId) ??
 				defaultEvalSessionId(toolSession),
-			getLifecycleIssuerContext: () => lifecycleIssuer,
+			getLifecycleIssuerContext: () => session?.getLifecycleIssuerContext() ?? lifecycleIssuer,
 			getLifecycleAgentDir: () => agentDir,
 			assertEvalExecutionAllowed: () => session?.assertEvalExecutionAllowed(),
 			trackEvalExecution: (execution, abortController) =>
@@ -2864,7 +2865,8 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 			const uniqueCatalog = Array.from(
 				new Map(catalog.map(capability => [`${capability.source}:${capability.name}`, capability])).values(),
 			);
-			lifecycleIssuer = createLifecycleRootIssuer(sessionManager.getSessionId(), settings, uniqueCatalog);
+			mintRootIssuer = sessionId => createLifecycleRootIssuer(sessionId, settings, uniqueCatalog);
+			lifecycleIssuer = mintRootIssuer(sessionManager.getSessionId());
 		}
 		for (const name of alwaysInclude) {
 			if (mcpDiscoveryEnabled && name.startsWith("mcp__")) {
@@ -3393,6 +3395,7 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 			toolSourceOf: resolveToolSource,
 			lifecycleContext,
 			lifecycleIssuer,
+			lifecycleRootIssuerFactory: mintRootIssuer,
 			lifecycleAgentDir: agentDir,
 			agentKind,
 			providerSessionId: options.providerSessionId,
@@ -3439,6 +3442,7 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 						if (options.lifecycleLaunch && !hasExecutorSettlement(options.lifecycleLaunch))
 							terminateLifecycleLaunch(options.lifecycleLaunch, "revoked", "Session disposed.");
 					} finally {
+						session.revokeLifecycleIssuer();
 						if (lifecycleIssuer) revokeLifecycleExecutionContext(lifecycleIssuer);
 						unregisterUnlessParked();
 						unsubscribeCredentialDisabled?.();

@@ -22,6 +22,7 @@ import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { JobExecutorContext } from "../operational/runner";
+import type { LifecycleExecutionContext, RootExecutionContext } from "../orchestration/lifecycle-authority";
 import type { PlanModeState } from "../plan-mode/state";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
@@ -319,10 +320,7 @@ export interface ToolSession {
 	/** Settings instance for passing to subagents */
 	settings: Settings;
 	/** Host-only lifecycle issuer; absent on ordinary default-off sessions. */
-	getLifecycleIssuerContext?: () =>
-		| import("../orchestration/lifecycle-authority").LifecycleExecutionContext
-		| import("../orchestration/lifecycle-authority").RootExecutionContext
-		| undefined;
+	getLifecycleIssuerContext?: () => LifecycleExecutionContext | RootExecutionContext | undefined;
 	getLifecycleAgentDir?: () => string;
 	/** Effective session-local Fusion I/O threshold, including the validated environment override. */
 	getFusionIoMinLines?: () => number;

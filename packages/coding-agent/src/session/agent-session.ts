@@ -252,6 +252,11 @@ import {
 	patchContractFromAnswer,
 	type QuestionSpec,
 } from "../orchestration/intent-compiler";
+import {
+	type LifecycleExecutionContext,
+	type RootExecutionContext,
+	revokeLifecycleExecutionContext,
+} from "../orchestration/lifecycle-authority";
 import { guardLifecycleTool } from "../orchestration/lifecycle-tool-guard";
 import {
 	createOrchestrationTelemetrySink,
@@ -659,10 +664,14 @@ export interface AgentSessionConfig {
 	/** Source resolver captured when the registry is built; unknown sources fail closed under a profile. */
 	toolSourceOf?: (name: string) => ToolSource | undefined;
 	/** Host-minted bound authority; its guard survives feature-setting changes. */
-	lifecycleContext?: import("../orchestration/lifecycle-authority").LifecycleExecutionContext;
-	lifecycleIssuer?:
-		| import("../orchestration/lifecycle-authority").LifecycleExecutionContext
-		| import("../orchestration/lifecycle-authority").RootExecutionContext;
+	lifecycleContext?: LifecycleExecutionContext;
+	lifecycleIssuer?: LifecycleExecutionContext | RootExecutionContext;
+	/**
+	 * Mints the root issuer for a session id. A root principal is tied to the
+	 * session it was minted for, so after a session change the root issues
+	 * children under a fresh principal for the new session.
+	 */
+	lifecycleRootIssuerFactory?: (sessionId: string) => RootExecutionContext;
 	lifecycleAgentDir?: string;
 	/** Whether this session is the top-level agent or a subagent. Drives eager-task
 	 *  prelude gating so a top-level session created with a custom `agentId` still
@@ -1452,12 +1461,11 @@ export class AgentSession {
 	#collaborationPolicy: CollaborationPolicy | undefined;
 	#toolProfile: ResolvedToolProfile | undefined;
 	#toolSourceOf: ((name: string) => ToolSource | undefined) | undefined;
-	#lifecycleContext: import("../orchestration/lifecycle-authority").LifecycleExecutionContext | undefined;
+	#lifecycleContext: LifecycleExecutionContext | undefined;
 	#lifecyclePromptStarted = false;
-	#lifecycleIssuer:
-		| import("../orchestration/lifecycle-authority").LifecycleExecutionContext
-		| import("../orchestration/lifecycle-authority").RootExecutionContext
-		| undefined;
+	#lifecycleIssuer: LifecycleExecutionContext | RootExecutionContext | undefined;
+	#lifecycleRootIssuerFactory: ((sessionId: string) => RootExecutionContext) | undefined;
+	#lifecycleIssuerSessionId: string | undefined;
 	#lifecycleAgentDir: string | undefined;
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
@@ -1929,6 +1937,8 @@ export class AgentSession {
 		this.#toolSourceOf = config.toolSourceOf;
 		this.#lifecycleContext = config.lifecycleContext;
 		this.#lifecycleIssuer = config.lifecycleIssuer;
+		this.#lifecycleRootIssuerFactory = config.lifecycleRootIssuerFactory;
+		this.#lifecycleIssuerSessionId = config.lifecycleIssuer ? config.sessionManager.getSessionId() : undefined;
 		this.#lifecycleAgentDir = config.lifecycleAgentDir;
 		this.#reconcileXdevRegistry();
 		this.#providerSessionId = config.providerSessionId;
@@ -6196,8 +6206,22 @@ export class AgentSession {
 		});
 	}
 
-	getLifecycleIssuerContext() {
+	getLifecycleIssuerContext(): LifecycleExecutionContext | RootExecutionContext | undefined {
+		const mint = this.#lifecycleRootIssuerFactory;
+		if (mint && !this.#lifecycleContext) {
+			const sessionId = this.sessionManager.getSessionId();
+			if (sessionId !== this.#lifecycleIssuerSessionId) {
+				if (this.#lifecycleIssuer) revokeLifecycleExecutionContext(this.#lifecycleIssuer);
+				this.#lifecycleIssuer = mint(sessionId);
+				this.#lifecycleIssuerSessionId = sessionId;
+			}
+		}
 		return this.#lifecycleIssuer;
+	}
+
+	/** Revoke the current root issuer without minting a new one (session disposal). */
+	revokeLifecycleIssuer(): void {
+		if (this.#lifecycleIssuer && !this.#lifecycleContext) revokeLifecycleExecutionContext(this.#lifecycleIssuer);
 	}
 
 	getLifecycleAgentDir(): string | undefined {
@@ -7912,7 +7936,7 @@ export class AgentSession {
 	 * @returns true if completed, false if cancelled by hook
 	 */
 	async newSession(options?: NewSessionOptions): Promise<boolean> {
-		if (this.#lifecycleIssuer)
+		if (this.#lifecycleContext)
 			throw new Error("lifecycle_session_transition_unavailable: this authority is pinned to its current session");
 		const previousSessionFile = this.sessionFile;
 
@@ -8088,7 +8112,7 @@ export class AgentSession {
 	 * @returns true if completed, false if cancelled by hook or not persisting
 	 */
 	async fork(): Promise<boolean> {
-		if (this.#lifecycleIssuer)
+		if (this.#lifecycleContext)
 			throw new Error("lifecycle_session_transition_unavailable: this authority is pinned to its current session");
 		const previousSessionFile = this.sessionFile;
 
@@ -9435,7 +9459,7 @@ export class AgentSession {
 	 * @returns The handoff document text, or undefined if cancelled/failed
 	 */
 	async handoff(customInstructions?: string, options?: SessionHandoffOptions): Promise<HandoffResult | undefined> {
-		if (this.#lifecycleIssuer)
+		if (this.#lifecycleContext)
 			throw new Error("lifecycle_session_transition_unavailable: this authority is pinned to its current session");
 		const entries = this.sessionManager.getBranch();
 		const messageCount = entries.filter(e => e.type === "message").length;
@@ -13496,7 +13520,7 @@ export class AgentSession {
 	 * @returns true if switch completed, false if cancelled by hook
 	 */
 	async switchSession(sessionPath: string): Promise<boolean> {
-		if (this.#lifecycleIssuer)
+		if (this.#lifecycleContext)
 			throw new Error("lifecycle_session_transition_unavailable: this authority is pinned to its current session");
 		const previousSessionFile = this.sessionManager.getSessionFile();
 		const switchingToDifferentSession = previousSessionFile
@@ -13761,7 +13785,7 @@ export class AgentSession {
 		selectedText: string;
 		cancelled: boolean;
 	}> {
-		if (this.#lifecycleIssuer)
+		if (this.#lifecycleContext)
 			throw new Error("lifecycle_session_transition_unavailable: this authority is pinned to its current session");
 		const previousSessionFile = this.sessionFile;
 		const selectedEntry = this.sessionManager.getEntry(entryId);
@@ -13858,7 +13882,7 @@ export class AgentSession {
 		question: string,
 		assistantMessage: AssistantMessage,
 	): Promise<{ cancelled: boolean; sessionFile: string | undefined }> {
-		if (this.#lifecycleIssuer)
+		if (this.#lifecycleContext)
 			throw new Error("lifecycle_session_transition_unavailable: this authority is pinned to its current session");
 		const previousSessionFile = this.sessionFile;
 		if (!this.sessionManager.getSessionFile()) {
@@ -13973,8 +13997,8 @@ export class AgentSession {
 		/** Raw session context built during navigation — pass to renderInitialMessages to skip a second O(N) walk. */
 		sessionContext?: SessionContext;
 	}> {
-		if (this.#lifecycleContext || this.#lifecycleIssuer)
-			throw new Error("lifecycle_session_transition_unavailable: lifecycle actors cannot navigate session history");
+		if (this.#lifecycleContext)
+			throw new Error("lifecycle_session_transition_unavailable: bound workers cannot navigate session history");
 		const oldLeafId = this.sessionManager.getLeafId();
 
 		// No-op if already at target
