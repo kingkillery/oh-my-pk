@@ -120,4 +120,11 @@ export async function runIngestDaemon(argv: string[] = process.argv.slice(2)): P
 	await Promise.withResolvers<void>().promise;
 }
 
-if (import.meta.main) await runIngestDaemon();
+// Floating call instead of top-level await, as in cli.ts: TLA makes `--bytecode`
+// builds fail. The catch reproduces an unhandled TLA rejection (dump, exit 1).
+if (import.meta.main) {
+	runIngestDaemon().catch((err: unknown) => {
+		process.stderr.write(`${Bun.inspect(err, { colors: process.stderr.isTTY === true })}\n`);
+		process.exit(1);
+	});
+}
