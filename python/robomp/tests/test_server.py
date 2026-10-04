@@ -481,7 +481,7 @@ def test_trigger_triage_replaces_inactive_manual_delivery(env, monkeypatch: pyte
             )
         return httpx.Response(404)
 
-    app = create_app(cfg)
+    app = create_app(cfg, start_dispatcher=False)
     with TestClient(app) as client:
         db = get_database(cfg.sqlite_path)
         db.record_event(
@@ -640,7 +640,7 @@ def test_trigger_retry_by_delivery_id_requeues(env, monkeypatch: pytest.MonkeyPa
     token = _enable_replay(monkeypatch)
     cfg = Settings()  # type: ignore[call-arg]
     cfg.ensure_paths()
-    app = create_app(cfg)
+    app = create_app(cfg, start_dispatcher=False)
     with TestClient(app) as client:
         db = get_database(cfg.sqlite_path)
         db.record_event(
@@ -676,7 +676,7 @@ def test_trigger_retry_by_issue_finds_latest_non_skipped_event(env, monkeypatch:
     token = _enable_replay(monkeypatch)
     cfg = Settings()  # type: ignore[call-arg]
     cfg.ensure_paths()
-    app = create_app(cfg)
+    app = create_app(cfg, start_dispatcher=False)
     with TestClient(app) as client:
         db = get_database(cfg.sqlite_path)
         key = issue_key("octo/widget", 9)
@@ -1516,7 +1516,7 @@ def _post_issue_comment(
 def test_webhook_directive_on_unknown_issue_is_queued_with_metadata(env) -> None:
     cfg = Settings()  # type: ignore[call-arg]
     cfg.ensure_paths()
-    app = create_app(cfg)
+    app = create_app(cfg, start_dispatcher=False)
     with TestClient(app) as client:
         resp = _post_issue_comment(
             client,

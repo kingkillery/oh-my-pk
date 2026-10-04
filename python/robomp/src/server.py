@@ -265,8 +265,13 @@ def _build_state(settings: Settings) -> dict[str, Any]:
     }
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    """Build the FastAPI app. `settings` parameter is for tests."""
+def create_app(settings: Settings | None = None, *, start_dispatcher: bool = True) -> FastAPI:
+    """Build the FastAPI app. `settings` and `start_dispatcher` are for tests.
+
+    `start_dispatcher=False` keeps the worker pool from claiming events, so a
+    test can assert the stored state an endpoint left behind without racing
+    the live dispatcher.
+    """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -275,7 +280,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.bag = _build_state(cfg)
         app.state.bag["started_at"] = time.time()
         pool: WorkerPool = app.state.bag["pool"]
-        await pool.start()
+        if start_dispatcher:
+            await pool.start()
         autoclose: AutocloseScheduler = app.state.bag["autoclose"]
         await autoclose.start()
         try:
