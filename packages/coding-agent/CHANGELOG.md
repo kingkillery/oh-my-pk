@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add opt-in launch authority for Task workers (`task.lifecycle.enabled`, off by default). Each Task worker is admitted through an immutable launch contract recorded in `lifecycle-authority.db`, next to `operational.db`, which stays at schema v1. Its tool calls are checked against the contract before they run, and its file tools are confined to its working directory. It gets its own eval session and finite request, runtime and output limits, and its binding is revoked when it finishes. While the setting is on, Task runs workers in the foreground; fork, native, code-write and other routes the contract cannot cover are refused. Children left live by a process that exited are released the next time that session spawns.
+
 ### Fixed
 
+- Start the gopk-clips ingest daemon without top-level await, which made `--bytecode` builds fail. A startup error still prints and exits with status 1.
 - Withhold the captured stdout/stderr of Python `subprocess.CalledProcessError` and `TimeoutExpired` from eval error output and `processError`; the command, return code and traceback still show. To recover output, catch the exception in the cell, redact it, and print the safe result.
 - Recognize read selectors (`:raw`, `:N-M`, continuation `:N`) on `history://<id>` and the `history://` index instead of treating them as part of the agent id. System-printed transcript hints percent-encode `:` in agent ids, so ids such as `background:1` stay readable.
 - Refuse to create a Colab runtime (`colab new` on any GPU or CPU, from `/colab-model` or cache staging) unless the caller supplies an explicit Colab CLI command; unbudgeted launches had no armed session cutoff. Reusing an existing session still works. Launch new runtimes through the mesh-inference dashboard after arming a cutoff.

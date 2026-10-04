@@ -67,7 +67,29 @@ import { CursorExecHandlers } from "./cursor";
 import { getJevBashToolBlockReason } from "./lib/jev-bash-gate";
 import type { AgentExecutionProfile } from "./orchestration/agent-execution-profile";
 import type { CollaborationPolicy } from "./orchestration/collaboration-policy";
+import {
+	type LifecycleExecutionContext,
+	type RootExecutionContext,
+	revokeLifecycleExecutionContext,
+} from "./orchestration/lifecycle-authority";
+import {
+	getRecordedToolProvenance,
+	guardLifecycleTool,
+	recordToolProvenance,
+} from "./orchestration/lifecycle-tool-guard";
 import { FastStreamRouter } from "./routing";
+import {
+	activateLifecycleLaunch,
+	hasExecutorSettlement,
+	type PendingLifecycleLaunch,
+	terminateLifecycleLaunch,
+} from "./task/launch-admission";
+import {
+	createLifecycleRootIssuer,
+	LIFECYCLE_SESSION_ENTRY,
+	lifecycleRefOf,
+	lifecycleSessionRef,
+} from "./task/lifecycle-session";
 import { TRUNCATE_LENGTHS } from "./tools/render-utils";
 import type { ResolvedToolProfile, ToolSource } from "./tools/tool-profiles";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
@@ -653,6 +675,8 @@ export interface CreateAgentSessionOptions {
 	parentAgentId?: string;
 	/** Inherited eval executor session id for subagents sharing parent eval state. */
 	parentEvalSessionId?: string;
+	/** Internal host-issued admission for an opt-in delegated launch. */
+	lifecycleLaunch?: PendingLifecycleLaunch;
 
 	/** Session manager. Default: session stored under the configured agentDir sessions root */
 	sessionManager?: SessionManager;
@@ -1060,10 +1084,15 @@ function customToolToDefinition(tool: CustomTool): ToolDefinition {
 	return definition;
 }
 
-function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
+function createCustomToolsExtension(
+	tools: CustomTool[],
+	captureSource?: (definition: ToolDefinition, tool: CustomTool) => void,
+): ExtensionFactory {
 	return api => {
 		for (const tool of tools) {
-			api.registerTool(customToolToDefinition(tool));
+			const definition = customToolToDefinition(tool);
+			captureSource?.(definition, tool);
+			api.registerTool(definition);
 		}
 
 		const runOnSession = async (event: CustomToolSessionEvent, ctx: ExtensionContext) => {
@@ -1230,6 +1259,16 @@ function buildMCPPromptCommands(manager: MCPManager): LoadedCustomCommand[] {
  * ```
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
+	try {
+		return await createAgentSessionImplementation(options);
+	} catch (error) {
+		if (options.lifecycleLaunch)
+			terminateLifecycleLaunch(options.lifecycleLaunch, "failed", "Session startup failed.");
+		throw error;
+	}
+}
+
+async function createAgentSessionImplementation(options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> {
 	const cwd = options.cwd ?? getProjectDir();
 	const agentDir = options.agentDir ?? getAgentDir();
 	const eventBus = options.eventBus ?? new EventBus();
@@ -1366,6 +1405,52 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			SessionManager.create(cwd, SessionManager.getDefaultSessionDir(cwd, agentDir)),
 		);
 	const providerSessionId = options.providerSessionId ?? sessionManager.getSessionId();
+	const savedLifecycleRef = lifecycleSessionRef(sessionManager);
+	const lifecycleEnabled = settings.get("task.lifecycle.enabled");
+	let lifecycleContext: LifecycleExecutionContext | undefined;
+	let lifecycleIssuer: LifecycleExecutionContext | RootExecutionContext | undefined;
+	let mintRootIssuer: ((sessionId: string) => RootExecutionContext) | undefined;
+	try {
+		if (options.lifecycleLaunch && !lifecycleEnabled)
+			throw new Error("lifecycle_setting_required: admission requires launch authority enabled");
+		if (savedLifecycleRef && !settings.get("task.lifecycle.enabled")) {
+			throw new Error(
+				"lifecycle_setting_required: a previously bound session cannot resume without launch authority enabled",
+			);
+		}
+		if (options.lifecycleLaunch) {
+			if (settings.get("moa.enabled") || (settings.get("advisor.enabled") && settings.get("advisor.subagents"))) {
+				throw new Error("unsupported_lifecycle_companion: bound workers cannot allocate MOA or advisor companions");
+			}
+			await sessionManager.ensureOnDisk();
+			const childEvalSessionId = defaultEvalSessionId({
+				cwd,
+				getSessionFile: () => sessionManager.getSessionFile() ?? null,
+			});
+			if (!sessionManager.getSessionFile())
+				throw new Error("required_eval_ownership_unavailable: launch requires a durable child session");
+			lifecycleContext = await activateLifecycleLaunch(
+				options.lifecycleLaunch,
+				sessionManager.getSessionId(),
+				cwd,
+				{ child: childEvalSessionId, parent: options.parentEvalSessionId },
+				path.join(agentDir, "launch-evidence"),
+			);
+			sessionManager.appendCustomEntry(LIFECYCLE_SESSION_ENTRY, lifecycleRefOf(lifecycleContext));
+		} else if (savedLifecycleRef) {
+			throw new Error("unsupported_lifecycle_resume: this launch lane requires its original host admission owner");
+		}
+		lifecycleIssuer = lifecycleContext;
+		if (lifecycleEnabled && !lifecycleIssuer && ((options.taskDepth ?? 0) > 0 || options.parentTaskPrefix)) {
+			throw new Error("missing_lifecycle_binding: delegated session requires a host-issued admission");
+		}
+	} catch (error) {
+		unsubscribeCredentialDisabled?.();
+		if (ownsAuthStorage) authStorage.close();
+		if (!options.sessionManager) await sessionManager.close();
+		throw error;
+	}
+	let lifecycleRequestCount = 0;
 	// Startup model *selection* only needs to know whether auth is configured for
 	// a candidate's provider — never the resolved key bytes. Use the synchronous,
 	// side-effect-free probe (`hasConfiguredAuth`): it refreshes no OAuth tokens,
@@ -1710,7 +1795,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getSessionFile: () => sessionManager.getSessionFile() ?? null,
 			getEvalKernelOwnerId: () => evalKernelOwnerId,
 			getEvalSessionId: () =>
-				session?.getEvalSessionId() ?? options.parentEvalSessionId ?? defaultEvalSessionId(toolSession),
+				session?.getEvalSessionId() ??
+				(lifecycleContext ? undefined : options.parentEvalSessionId) ??
+				defaultEvalSessionId(toolSession),
+			getLifecycleIssuerContext: () => session?.getLifecycleIssuerContext() ?? lifecycleIssuer,
+			getLifecycleAgentDir: () => agentDir,
 			assertEvalExecutionAllowed: () => session?.assertEvalExecutionAllowed(),
 			trackEvalExecution: (execution, abortController) =>
 				session ? session.trackEvalExecution(execution, abortController) : execution,
@@ -1864,6 +1953,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const mcpHostInteraction = options.hasUI === true ? createMCPHostInteractionBridge() : undefined;
 		let deferredMCPDiscoveryStarted = false;
 		const customTools: CustomTool[] = [];
+		const lifecycleCustomSources = lifecycleEnabled ? new WeakMap<CustomTool, ToolSource>() : undefined;
 		let startDeferredMCPDiscovery:
 			| ((liveSession: AgentSession, activation: DeferredMCPActivation) => void)
 			| undefined;
@@ -1944,7 +2034,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 											toolRegistry.set(
 												searchTool.name,
 												new ExtensionToolWrapper(
-													wrapToolWithMetaNotice(searchTool),
+													guardLifecycleTool(
+														wrapToolWithMetaNotice(searchTool),
+														lifecycleContext,
+														"builtin",
+													),
 													extensionRunner,
 												) as Tool,
 											);
@@ -2001,6 +2095,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				if (mcpResult.tools.length > 0) {
 					// MCP tools are LoadedCustomTool, extract the tool property
 					customTools.push(...mcpResult.tools.map(loaded => loaded.tool));
+					for (const loaded of mcpResult.tools) lifecycleCustomSources?.set(loaded.tool, "mcp");
 				}
 			}
 		}
@@ -2052,7 +2147,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const inlineExtensions: ExtensionFactory[] = options.extensions ? [...options.extensions] : [];
 		inlineExtensions.push((await import("./autoresearch")).createAutoresearchExtension);
 		if (customTools.length > 0) {
-			inlineExtensions.push(createCustomToolsExtension(customTools));
+			inlineExtensions.push(
+				createCustomToolsExtension(
+					customTools,
+					lifecycleEnabled
+						? (definition, tool) =>
+								recordToolProvenance(definition, lifecycleCustomSources?.get(tool) ?? "custom")
+						: undefined,
+				),
+			);
 		}
 
 		// Load extensions. Three paths:
@@ -2369,19 +2472,31 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// Built-in tools get it in `createTools`; extension, SDK-custom, image-gen,
 		// TTS, and startup (non-deferred) MCP tools all funnel through here, so apply
 		// it once at this adapter boundary (idempotent — a no-op if already wrapped).
-		const wrappedExtensionTools: Tool[] = wrapRegisteredTools(allCustomTools, extensionRunner).map(
-			wrapToolWithMetaNotice,
-		);
+		const wrappedExtensionTools: Tool[] = wrapRegisteredTools(allCustomTools, extensionRunner).map((tool, index) => {
+			const registered = allCustomTools[index];
+			const source =
+				registered.extensionPath === "<sdk>"
+					? (options.customToolSources?.get(tool.name) ?? "custom")
+					: (getRecordedToolProvenance(registered.definition) ?? "extension");
+			const wrapped = wrapToolWithMetaNotice(guardLifecycleTool(tool, lifecycleContext, source));
+			if (lifecycleEnabled) {
+				recordToolProvenance(wrapped, source);
+			}
+			return wrapped;
+		});
 
 		// All built-in tools are active (conditional tools like git/ask return null from factory if disabled)
 		const toolRegistry = new Map<string, Tool>();
 		for (const tool of builtinTools) {
+			if (lifecycleEnabled) recordToolProvenance(tool, tool.name in HIDDEN_TOOLS ? "hidden" : "builtin");
 			toolRegistry.set(tool.name, tool);
 		}
 		if (!toolRegistry.has("goal") && settings.get("goal.enabled")) {
 			const goalTool = await logger.time("createTools:goal:session", HIDDEN_TOOLS.goal, toolSession);
 			if (goalTool) {
-				toolRegistry.set(goalTool.name, wrapToolWithMetaNotice(goalTool));
+				const wrapped = wrapToolWithMetaNotice(goalTool);
+				if (lifecycleEnabled) recordToolProvenance(wrapped, "hidden");
+				toolRegistry.set(goalTool.name, wrapped);
 			}
 		}
 		for (const tool of wrappedExtensionTools) {
@@ -2390,7 +2505,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (deferMCPDiscoveryForUI && mcpManager) {
 			for (const name of collectPendingMCPToolNames(options.toolNames, existingSession.selectedMCPToolNames)) {
 				if (!toolRegistry.has(name)) {
-					toolRegistry.set(name, createPendingMCPTool(name));
+					const pendingTool = createPendingMCPTool(name);
+					if (lifecycleEnabled) recordToolProvenance(pendingTool, "mcp");
+					toolRegistry.set(name, pendingTool);
 				}
 			}
 		}
@@ -2404,7 +2521,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// call site, regardless of whether any user extensions are loaded. See the runner-construction
 		// comment above for the safety invariant this enforces.
 		for (const tool of toolRegistry.values()) {
-			toolRegistry.set(tool.name, new ExtensionToolWrapper(tool, extensionRunner));
+			const source = getRecordedToolProvenance(tool);
+			const guarded = guardLifecycleTool(tool, lifecycleContext, source);
+			const wrapped = new ExtensionToolWrapper(guarded, extensionRunner);
+			if (lifecycleEnabled) recordToolProvenance(wrapped, source);
+			toolRegistry.set(tool.name, wrapped);
 		}
 		if (model?.provider === "cursor") {
 			toolRegistry.delete("edit");
@@ -2423,7 +2544,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		} else if (!toolRegistry.has("resolve")) {
 			const resolveTool = await logger.time("createTools:resolve:session", HIDDEN_TOOLS.resolve, toolSession);
 			if (resolveTool) {
-				toolRegistry.set(resolveTool.name, wrapToolWithMetaNotice(resolveTool));
+				toolRegistry.set(
+					resolveTool.name,
+					guardLifecycleTool(wrapToolWithMetaNotice(resolveTool), lifecycleContext, "hidden"),
+				);
 			}
 		}
 
@@ -2440,7 +2564,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (searchTool) {
 				toolRegistry.set(
 					searchTool.name,
-					new ExtensionToolWrapper(wrapToolWithMetaNotice(searchTool), extensionRunner) as Tool,
+					new ExtensionToolWrapper(
+						guardLifecycleTool(wrapToolWithMetaNotice(searchTool), lifecycleContext, "builtin"),
+						extensionRunner,
+					) as Tool,
 				);
 			}
 		}
@@ -2454,7 +2581,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			})) as unknown as AgentTool | null;
 			if (!sshTool) return null;
 			const wrapped = wrapToolWithMetaNotice(sshTool);
-			return new ExtensionToolWrapper(wrapped, extensionRunner) as AgentTool;
+			return new ExtensionToolWrapper(
+				guardLifecycleTool(wrapped, lifecycleContext, "builtin"),
+				extensionRunner,
+			) as AgentTool;
 		};
 
 		let cursorEventEmitter: ((event: AgentEvent) => void) | undefined;
@@ -2723,6 +2853,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			return undefined;
 		};
 		const alwaysInclude: string[] = [...customToolNames, ...extensionToolNames];
+		if (lifecycleEnabled && !lifecycleIssuer) {
+			const catalog = [
+				...Object.keys(BUILTIN_TOOLS).map(name => ({ source: "builtin" as const, name })),
+				...Object.keys(HIDDEN_TOOLS).map(name => ({ source: "hidden" as const, name })),
+				...Array.from(toolRegistry.values()).flatMap(tool => {
+					const source = getRecordedToolProvenance(tool);
+					return source ? [{ source, name: tool.name }] : [];
+				}),
+			];
+			const uniqueCatalog = Array.from(
+				new Map(catalog.map(capability => [`${capability.source}:${capability.name}`, capability])).values(),
+			);
+			mintRootIssuer = sessionId => createLifecycleRootIssuer(sessionId, settings, uniqueCatalog);
+			lifecycleIssuer = mintRootIssuer(sessionManager.getSessionId());
+		}
 		for (const name of alwaysInclude) {
 			if (mcpDiscoveryEnabled && name.startsWith("mcp__")) {
 				continue;
@@ -2997,7 +3142,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			sessionId: providerSessionId,
 			promptCacheKey: options.providerPromptCacheKey,
 			deadline: options.deadline,
-			maxModelRequestsPerRun: options.maxModelRequestsPerRun,
+			maxModelRequestsPerRun:
+				options.lifecycleLaunch?.launch.compiled.policy.limits.maxRequests ?? options.maxModelRequestsPerRun,
 			transformContext,
 			transformProviderContext,
 			steeringMode: settings.get("steeringMode") ?? "one-at-a-time",
@@ -3033,6 +3179,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					openrouterRoutingPreset && openrouterRoutingPreset !== "default" ? openrouterRoutingPreset : undefined;
 				const antigravityEndpointMode = settings.get("providers.antigravityEndpoint");
 				const dispatchStream = (modelToStream: Model, ctx: Context, opts?: SimpleStreamOptions) => {
+					if (options.lifecycleLaunch) {
+						if (lifecycleRequestCount >= options.lifecycleLaunch.launch.compiled.policy.limits.maxRequests) {
+							throw new Error("lifecycle_request_limit: bound worker lifetime request budget exhausted");
+						}
+						lifecycleRequestCount++;
+					}
 					return streamSimple(modelToStream, ctx, {
 						...opts,
 						openrouterVariant: opts?.openrouterVariant ?? openrouterVariant,
@@ -3241,9 +3393,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			collaborationPolicy: options.collaborationPolicy,
 			toolProfile: options.toolProfile,
 			toolSourceOf: resolveToolSource,
+			lifecycleContext,
+			lifecycleIssuer,
+			lifecycleRootIssuerFactory: mintRootIssuer,
+			lifecycleAgentDir: agentDir,
 			agentKind,
 			providerSessionId: options.providerSessionId,
-			parentEvalSessionId: options.parentEvalSessionId,
+			parentEvalSessionId: lifecycleContext ? undefined : options.parentEvalSessionId,
 			advisorReadOnlyTools,
 		});
 		hasSession = true;
@@ -3282,8 +3438,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					}
 					await originalDispose();
 				} finally {
-					unregisterUnlessParked();
-					unsubscribeCredentialDisabled?.();
+					try {
+						if (options.lifecycleLaunch && !hasExecutorSettlement(options.lifecycleLaunch))
+							terminateLifecycleLaunch(options.lifecycleLaunch, "revoked", "Session disposed.");
+					} finally {
+						session.revokeLifecycleIssuer();
+						if (lifecycleIssuer) revokeLifecycleExecutionContext(lifecycleIssuer);
+						unregisterUnlessParked();
+						unsubscribeCredentialDisabled?.();
+					}
 				}
 			};
 		}
@@ -3498,6 +3661,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			logger.warn("Failed to clean up createAgentSession resources after startup error", {
 				error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
 			});
+		} finally {
+			if (options.lifecycleLaunch && !options.sessionManager) await sessionManager.close();
 		}
 		throw error;
 	}

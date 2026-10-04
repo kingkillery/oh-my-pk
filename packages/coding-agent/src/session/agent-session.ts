@@ -253,6 +253,12 @@ import {
 	type QuestionSpec,
 } from "../orchestration/intent-compiler";
 import {
+	type LifecycleExecutionContext,
+	type RootExecutionContext,
+	revokeLifecycleExecutionContext,
+} from "../orchestration/lifecycle-authority";
+import { guardLifecycleTool } from "../orchestration/lifecycle-tool-guard";
+import {
 	createOrchestrationTelemetrySink,
 	type OrchestrationTelemetrySink,
 	recordAdvisorInterventionTelemetry,
@@ -657,6 +663,16 @@ export interface AgentSessionConfig {
 	toolProfile?: ResolvedToolProfile;
 	/** Source resolver captured when the registry is built; unknown sources fail closed under a profile. */
 	toolSourceOf?: (name: string) => ToolSource | undefined;
+	/** Host-minted bound authority; its guard survives feature-setting changes. */
+	lifecycleContext?: LifecycleExecutionContext;
+	lifecycleIssuer?: LifecycleExecutionContext | RootExecutionContext;
+	/**
+	 * Mints the root issuer for a session id. A root principal is tied to the
+	 * session it was minted for, so after a session change the root issues
+	 * children under a fresh principal for the new session.
+	 */
+	lifecycleRootIssuerFactory?: (sessionId: string) => RootExecutionContext;
+	lifecycleAgentDir?: string;
 	/** Whether this session is the top-level agent or a subagent. Drives eager-task
 	 *  prelude gating so a top-level session created with a custom `agentId` still
 	 *  receives the always-mode reminder. Defaults to "main". */
@@ -1445,6 +1461,12 @@ export class AgentSession {
 	#collaborationPolicy: CollaborationPolicy | undefined;
 	#toolProfile: ResolvedToolProfile | undefined;
 	#toolSourceOf: ((name: string) => ToolSource | undefined) | undefined;
+	#lifecycleContext: LifecycleExecutionContext | undefined;
+	#lifecyclePromptStarted = false;
+	#lifecycleIssuer: LifecycleExecutionContext | RootExecutionContext | undefined;
+	#lifecycleRootIssuerFactory: ((sessionId: string) => RootExecutionContext) | undefined;
+	#lifecycleIssuerSessionId: string | undefined;
+	#lifecycleAgentDir: string | undefined;
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
 	#isDisposed = false;
@@ -1913,6 +1935,11 @@ export class AgentSession {
 		this.#collaborationPolicy = config.collaborationPolicy;
 		this.#toolProfile = config.toolProfile;
 		this.#toolSourceOf = config.toolSourceOf;
+		this.#lifecycleContext = config.lifecycleContext;
+		this.#lifecycleIssuer = config.lifecycleIssuer;
+		this.#lifecycleRootIssuerFactory = config.lifecycleRootIssuerFactory;
+		this.#lifecycleIssuerSessionId = config.lifecycleIssuer ? config.sessionManager.getSessionId() : undefined;
+		this.#lifecycleAgentDir = config.lifecycleAgentDir;
 		this.#reconcileXdevRegistry();
 		this.#providerSessionId = config.providerSessionId;
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
@@ -2109,6 +2136,7 @@ export class AgentSession {
 	}
 
 	#buildAdvisorRuntime(seedToCurrent = false): boolean {
+		if (this.#lifecycleContext) return false;
 		if (this.#isDisposed) return false;
 		if (this.#advisorRuntime) return true;
 		if (!this.#advisorEnabled) return false;
@@ -5821,10 +5849,15 @@ export class AgentSession {
 
 			for (const customTool of mcpTools) {
 				const wrapped = wrapToolWithMetaNotice(
-					CustomToolAdapter.wrap(customTool, getCustomToolContext) as AgentTool,
+					guardLifecycleTool(
+						CustomToolAdapter.wrap(customTool, getCustomToolContext) as AgentTool,
+						this.#lifecycleContext,
+						"mcp",
+					),
 				);
+				const guarded = guardLifecycleTool(wrapped, this.#lifecycleContext, "mcp");
 				const finalTool = (
-					this.#extensionRunner ? new ExtensionToolWrapper(wrapped, this.#extensionRunner) : wrapped
+					this.#extensionRunner ? new ExtensionToolWrapper(guarded, this.#extensionRunner) : guarded
 				) as AgentTool;
 				this.#toolRegistry.set(finalTool.name, finalTool);
 			}
@@ -5891,9 +5924,10 @@ export class AgentSession {
 		this.#rpcHostToolNames.clear();
 
 		for (const tool of rpcTools) {
-			const metaWrapped = wrapToolWithMetaNotice(tool);
+			const metaWrapped = wrapToolWithMetaNotice(guardLifecycleTool(tool, this.#lifecycleContext, "custom"));
+			const guarded = guardLifecycleTool(metaWrapped, this.#lifecycleContext, "custom");
 			const finalTool = (
-				this.#extensionRunner ? new ExtensionToolWrapper(metaWrapped, this.#extensionRunner) : metaWrapped
+				this.#extensionRunner ? new ExtensionToolWrapper(guarded, this.#extensionRunner) : guarded
 			) as AgentTool;
 			this.#toolRegistry.set(finalTool.name, finalTool);
 			this.#rpcHostToolNames.add(finalTool.name);
@@ -6170,6 +6204,28 @@ export class AgentSession {
 			cwd: this.sessionManager.getCwd(),
 			getSessionFile: () => this.sessionManager.getSessionFile() ?? null,
 		});
+	}
+
+	getLifecycleIssuerContext(): LifecycleExecutionContext | RootExecutionContext | undefined {
+		const mint = this.#lifecycleRootIssuerFactory;
+		if (mint && !this.#lifecycleContext) {
+			const sessionId = this.sessionManager.getSessionId();
+			if (sessionId !== this.#lifecycleIssuerSessionId) {
+				if (this.#lifecycleIssuer) revokeLifecycleExecutionContext(this.#lifecycleIssuer);
+				this.#lifecycleIssuer = mint(sessionId);
+				this.#lifecycleIssuerSessionId = sessionId;
+			}
+		}
+		return this.#lifecycleIssuer;
+	}
+
+	/** Revoke the current root issuer without minting a new one (session disposal). */
+	revokeLifecycleIssuer(): void {
+		if (this.#lifecycleIssuer && !this.#lifecycleContext) revokeLifecycleExecutionContext(this.#lifecycleIssuer);
+	}
+
+	getLifecycleAgentDir(): string | undefined {
+		return this.#lifecycleAgentDir;
 	}
 
 	/** Current session display name, if set */
@@ -6456,6 +6512,7 @@ export class AgentSession {
 		normalizedImages: ImageContent[],
 		signal?: AbortSignal,
 	): Promise<CustomMessage | undefined> {
+		if (this.#lifecycleContext) return undefined;
 		const model = this.model;
 		const shouldDescribe =
 			!!model &&
@@ -6702,6 +6759,11 @@ export class AgentSession {
 	 * the ACP agent) use this to know whether to expect an `agent_end` event.
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
+		if (this.#lifecycleContext) {
+			if (this.#lifecyclePromptStarted)
+				throw new Error("lifecycle_prompt_limit: bound workers accept one assignment prompt");
+			this.#lifecyclePromptStarted = true;
+		}
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const userInitiated = options?.userInitiated ?? !options?.synthetic;
 		if (!this.isStreaming && userInitiated) {
@@ -7874,6 +7936,8 @@ export class AgentSession {
 	 * @returns true if completed, false if cancelled by hook
 	 */
 	async newSession(options?: NewSessionOptions): Promise<boolean> {
+		if (this.#lifecycleContext)
+			throw new Error("lifecycle_session_transition_unavailable: this authority is pinned to its current session");
 		const previousSessionFile = this.sessionFile;
 
 		// Emit session_before_switch event with reason "new" (can be cancelled)
@@ -8048,6 +8112,8 @@ export class AgentSession {
 	 * @returns true if completed, false if cancelled by hook or not persisting
 	 */
 	async fork(): Promise<boolean> {
+		if (this.#lifecycleContext)
+			throw new Error("lifecycle_session_transition_unavailable: this authority is pinned to its current session");
 		const previousSessionFile = this.sessionFile;
 
 		// Emit session_before_switch event with reason "fork" (can be cancelled)
@@ -8478,6 +8544,7 @@ export class AgentSession {
 	 * throws into the turn, and never clears `#autoThinking` (auto stays active).
 	 */
 	async #applyAutoThinkingLevel(promptText: string, generation: number): Promise<void> {
+		if (this.#lifecycleContext) return;
 		const model = this.model;
 		if (!model?.reasoning) return;
 
@@ -8975,6 +9042,8 @@ export class AgentSession {
 	 * @param options Optional callbacks for completion/error handling
 	 */
 	async compact(customInstructions?: string, options?: CompactOptions): Promise<CompactionResult> {
+		if (this.#lifecycleContext)
+			throw new Error("unsupported_lifecycle_maintenance: bound workers cannot allocate compaction side calls");
 		if (this.#compactionAbortController) {
 			throw new Error("Compaction already in progress");
 		}
@@ -9287,6 +9356,7 @@ export class AgentSession {
 		signal: AbortSignal | undefined,
 		context: AgentTurnEndContext | undefined,
 	): Promise<void> {
+		if (this.#lifecycleContext) return;
 		if (!context?.willContinue || signal?.aborted) return;
 		const message = context.message;
 		if (message.role !== "assistant") return;
@@ -9389,6 +9459,8 @@ export class AgentSession {
 	 * @returns The handoff document text, or undefined if cancelled/failed
 	 */
 	async handoff(customInstructions?: string, options?: SessionHandoffOptions): Promise<HandoffResult | undefined> {
+		if (this.#lifecycleContext)
+			throw new Error("lifecycle_session_transition_unavailable: this authority is pinned to its current session");
 		const entries = this.sessionManager.getBranch();
 		const messageCount = entries.filter(e => e.type === "message").length;
 
@@ -9577,6 +9649,7 @@ export class AgentSession {
 	}
 
 	async #runPrePromptCompactionIfNeeded(messages: AgentMessage[]): Promise<void> {
+		if (this.#lifecycleContext) return;
 		const model = this.model;
 		if (!model) return;
 		const contextWindow = model.contextWindow ?? 0;
@@ -9859,6 +9932,7 @@ export class AgentSession {
 		});
 	}
 	async #handleUnexpectedAssistantStop(assistantMessage: AssistantMessage): Promise<boolean> {
+		if (this.#lifecycleContext) return false;
 		if (!this.settings.get("features.unexpectedStopDetection")) {
 			return false;
 		}
@@ -11422,6 +11496,7 @@ export class AgentSession {
 		allowDefer = true,
 		options: { autoContinue?: boolean; forceInPlace?: boolean; triggerContextTokens?: number } = {},
 	): Promise<CompactionCheckResult> {
+		if (this.#lifecycleContext) return COMPACTION_CHECK_NONE;
 		const compactionSettings = this.#getCompactionSettings();
 		if (compactionSettings.strategy === "off") return COMPACTION_CHECK_NONE;
 		if (reason !== "idle" && !compactionSettings.enabled) return COMPACTION_CHECK_NONE;
@@ -13131,6 +13206,8 @@ export class AgentSession {
 	 * behalf.
 	 */
 	async deliverIrcMessage(msg: IrcMessage, opts?: { expectsReply?: boolean }): Promise<"injected" | "woken"> {
+		if (this.#lifecycleContext)
+			throw new Error("unsupported_lifecycle_delivery_channel: this launch has no authorized inbox channel");
 		if (this.#isDisposed) {
 			throw new Error("Recipient session is disposed.");
 		}
@@ -13265,6 +13342,8 @@ export class AgentSession {
 		signal?: AbortSignal;
 		dedupeReply?: boolean;
 	}): Promise<{ replyText: string; assistantMessage: AssistantMessage }> {
+		if (this.#lifecycleContext)
+			throw new Error("unsupported_lifecycle_companion: bound workers cannot allocate ephemeral turns");
 		const model = this.model;
 		if (!model) {
 			throw new Error("No active model on session");
@@ -13441,6 +13520,8 @@ export class AgentSession {
 	 * @returns true if switch completed, false if cancelled by hook
 	 */
 	async switchSession(sessionPath: string): Promise<boolean> {
+		if (this.#lifecycleContext)
+			throw new Error("lifecycle_session_transition_unavailable: this authority is pinned to its current session");
 		const previousSessionFile = this.sessionManager.getSessionFile();
 		const switchingToDifferentSession = previousSessionFile
 			? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
@@ -13704,6 +13785,8 @@ export class AgentSession {
 		selectedText: string;
 		cancelled: boolean;
 	}> {
+		if (this.#lifecycleContext)
+			throw new Error("lifecycle_session_transition_unavailable: this authority is pinned to its current session");
 		const previousSessionFile = this.sessionFile;
 		const selectedEntry = this.sessionManager.getEntry(entryId);
 
@@ -13799,6 +13882,8 @@ export class AgentSession {
 		question: string,
 		assistantMessage: AssistantMessage,
 	): Promise<{ cancelled: boolean; sessionFile: string | undefined }> {
+		if (this.#lifecycleContext)
+			throw new Error("lifecycle_session_transition_unavailable: this authority is pinned to its current session");
 		const previousSessionFile = this.sessionFile;
 		if (!this.sessionManager.getSessionFile()) {
 			throw new Error("Cannot branch /btw: session is not persisted");
@@ -13912,6 +13997,8 @@ export class AgentSession {
 		/** Raw session context built during navigation — pass to renderInitialMessages to skip a second O(N) walk. */
 		sessionContext?: SessionContext;
 	}> {
+		if (this.#lifecycleContext)
+			throw new Error("lifecycle_session_transition_unavailable: bound workers cannot navigate session history");
 		const oldLeafId = this.sessionManager.getLeafId();
 
 		// No-op if already at target
@@ -14652,6 +14739,8 @@ export class AgentSession {
 	 * @returns true when the advisor is actively running after the call.
 	 */
 	setAdvisorEnabled(enabled: boolean): boolean {
+		if (this.#lifecycleContext && enabled)
+			throw new Error("unsupported_lifecycle_companion: bound workers cannot enable advisors");
 		this.#advisorEnabled = enabled;
 		if (enabled) {
 			return this.#buildAdvisorRuntime(true);

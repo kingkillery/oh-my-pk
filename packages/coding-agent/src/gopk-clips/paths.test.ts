@@ -5,16 +5,24 @@ import * as path from "node:path";
 import { resolveSharedGopkClipsCapturePolicy, sharedConfigPath } from "./paths";
 
 const originalLocalAppData = process.env.LOCALAPPDATA;
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
 let root = "";
+
+function restoreEnv(name: string, value: string | undefined): void {
+	if (value === undefined) delete process.env[name];
+	else process.env[name] = value;
+}
 
 beforeEach(async () => {
 	root = await fs.mkdtemp(path.join(os.tmpdir(), "gopk-shared-policy-"));
+	// sharedConfigPath() reads LOCALAPPDATA on Windows and XDG_CONFIG_HOME elsewhere.
 	process.env.LOCALAPPDATA = root;
+	process.env.XDG_CONFIG_HOME = root;
 });
 
 afterEach(async () => {
-	if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
-	else process.env.LOCALAPPDATA = originalLocalAppData;
+	restoreEnv("LOCALAPPDATA", originalLocalAppData);
+	restoreEnv("XDG_CONFIG_HOME", originalXdgConfigHome);
 	await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -24,6 +32,10 @@ async function persistConfig(value: unknown): Promise<void> {
 }
 
 describe("shared gopk capture policy", () => {
+	it("writes only inside the per-test config root", () => {
+		expect(sharedConfigPath().startsWith(root + path.sep)).toBe(true);
+	});
+
 	it("fails closed when config or current consent is missing", async () => {
 		expect(resolveSharedGopkClipsCapturePolicy()).toEqual({ enabled: false, ocrEnabled: false });
 		await persistConfig({

@@ -76,6 +76,8 @@ import { formatBytes, formatDuration } from "../tools/render-utils";
 import type { ResolvedToolProfile } from "../tools/tool-profiles";
 import { type CodeWriteReceipt, observeCodeWrite, type PreparedCodeWrite, prepareCodeWrite } from "./code-write";
 import { integrateTaskResult } from "./integration";
+import { type PendingLifecycleLaunch, terminateLifecycleLaunch } from "./launch-admission";
+import { LAUNCH_ENTRY_POINTS, prepareSessionChildLaunch } from "./spawn-admission";
 import {
 	composeTaskSpawnPolicyResult,
 	createSpawnPlan,
@@ -823,6 +825,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				details: { projectAgentsDir, results: [], totalDurationMs: Date.now() - startedAt },
 			},
 		});
+		if (
+			(this.session.settings.get("task.lifecycle.enabled") || this.session.getLifecycleIssuerContext?.()) &&
+			(this.session.nativeTaskExecution || params.codeWrite || params.evidenceDigest || params.fork)
+		) {
+			return fail("unsupported_lifecycle_launch_route: this lane supports foreground Task workers only");
+		}
 		if (signal?.aborted) return fail("Task spawn aborted before policy evaluation.");
 
 		const agentName = params.agent ?? "";
@@ -1262,7 +1270,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 		const spawnItems = resolveSpawnItems(params);
 		const selectedAgent = this.#discoveredAgents.find(agent => agent.name === params.agent);
-		const asyncEnabled = !this.session.nativeTaskExecution && this.session.settings.get("async.enabled");
+		// The lifecycle launch lane admits foreground workers only, so while it is
+		// active Task runs in the foreground even when async execution is enabled.
+		const lifecycleActive = Boolean(
+			this.session.settings.get("task.lifecycle.enabled") || this.session.getLifecycleIssuerContext?.(),
+		);
+		const asyncEnabled =
+			!lifecycleActive && !this.session.nativeTaskExecution && this.session.settings.get("async.enabled");
 		const manager = asyncEnabled ? this.session.asyncJobManager : undefined;
 		const depthCapacity = this.session.settings.get("task.simpleMode")
 			? false
@@ -2070,7 +2084,52 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					localProtocolOptions,
 				);
 
+		let lifecycleLaunch: PendingLifecycleLaunch | undefined;
+		let lifecycleHandedToExecutor = false;
 		try {
+			const lifecycleActive =
+				this.session.settings.get("task.lifecycle.enabled") || this.session.getLifecycleIssuerContext?.();
+			if (lifecycleActive && detached)
+				throw new Error("unsupported_lifecycle_launch_route: detached Task workers are not supported");
+			const parentSessionId = this.session.getSessionId?.();
+			if (lifecycleActive && !parentSessionId)
+				throw new Error("missing_admission_identity: a stable parent session ID is required");
+			const lifecycleAgentDir = lifecycleActive ? this.session.getLifecycleAgentDir?.() : undefined;
+			if (lifecycleActive && !lifecycleAgentDir)
+				throw new Error("missing_admission_identity: the host authority agent directory is required");
+			if (
+				lifecycleActive &&
+				Buffer.byteLength(
+					JSON.stringify({
+						assignment,
+						context: sharedContext,
+						systemPrompt: effectiveAgent.systemPrompt,
+						planReference,
+					}),
+					"utf8",
+				) > 1_048_576
+			) {
+				throw new Error(
+					"lifecycle_handoff_limit: assignment and inherited context exceed the supported byte limit",
+				);
+			}
+			lifecycleLaunch = lifecycleActive
+				? await prepareSessionChildLaunch({
+						settings: this.session.settings,
+						issuer: this.session.getLifecycleIssuerContext?.(),
+						agentDir: lifecycleAgentDir,
+						cwd: spawnCwd,
+						agentDefinition: effectiveAgent,
+						assignment,
+						idempotencyKey: `${parentSessionId}:${toolCallId}:${spawnIndex}`,
+						entryPoint: LAUNCH_ENTRY_POINTS.taskSpawn,
+						spawnPlan,
+						executionProfile: spawnPlan.profile,
+						toolProfile,
+						collaborationPolicy,
+						signal,
+					})
+				: undefined;
 			await fs.mkdir(effectiveArtifactsDir, { recursive: true });
 
 			// Allocation is the first externally visible spawn side effect. Planning,
@@ -2169,9 +2228,27 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				evidenceDigest: params.evidenceDigest,
 				codeWrite: params.codeWrite,
 			});
+			if (
+				lifecycleLaunch &&
+				Buffer.byteLength(
+					JSON.stringify({
+						task: renderedTask,
+						context: sharedContext,
+						systemPrompt: effectiveAgent.systemPrompt,
+						planReference,
+					}),
+					"utf8",
+				) > lifecycleLaunch.launch.compiled.policy.limits.maxHandoffBytes
+			) {
+				throw new Error(
+					"lifecycle_handoff_limit: rendered assignment and inherited context exceed the committed byte limit",
+				);
+			}
 
 			let generatedReceipt: CodeWriteReceipt | undefined;
 			const sharedRunOptions = {
+				lifecycleLaunch,
+				lifecycleAgentDir,
 				cwd: spawnCwd,
 				agent: effectiveAgent,
 				task: renderedTask,
@@ -2259,6 +2336,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const runTask = async (): Promise<SingleResult> => {
 				if (!isIsolated) {
 					nativeRuntime?.executing(null);
+					lifecycleHandedToExecutor = true;
 					return runSubprocess(sharedRunOptions);
 				}
 
@@ -2301,6 +2379,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					if (delegatedIo?.kind === "code-write") await assertCodeWriteTarget(delegatedIo);
 					// Isolated runs re-discover extensions/custom tools inside the
 					// worktree instead of reusing the parent's source paths.
+					lifecycleHandedToExecutor = true;
 					const result = await runSubprocess({
 						...sharedRunOptions,
 						worktree: isolatedCwd,
@@ -2497,11 +2576,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			}
 			return this.#buildResultPayload(result, projectAgentsDir, Date.now() - startTime, mergeSummary);
 		} catch (err) {
+			if (lifecycleLaunch) terminateLifecycleLaunch(lifecycleLaunch, "failed", "Task launch failed.");
 			return {
 				content: [{ type: "text", text: `Task execution failed: ${err}` }],
 				details: { projectAgentsDir, results: [], totalDurationMs: Date.now() - startTime },
 			};
 		} finally {
+			if (lifecycleLaunch && !lifecycleHandedToExecutor)
+				terminateLifecycleLaunch(lifecycleLaunch, "failed", "Task did not enter executor.");
 			if (params.assignmentContract) {
 				this.session.setActiveTaskContract?.(undefined);
 			}

@@ -8,7 +8,7 @@
  * this function MUST return undefined gracefully without throwing or blocking.
  */
 
-import { logger } from "@pk-nerdsaver-ai/pi-utils";
+import { $env, logger } from "@pk-nerdsaver-ai/pi-utils";
 import { systemOne, type TypeSafeQuestion } from "../lib/typesafe-http";
 import type { BlockerType, WatchdogConfig, WatchdogEvaluation } from "./types";
 
@@ -98,7 +98,7 @@ export async function evaluateAgentTelemetry(
 				latencyMs: Math.round(performance.now() - startMs),
 				provider: /(^|\/)clef(?:-|$)/i.test(data.model)
 					? "clef"
-					: process.env.OPENROUTER_API_KEY && !process.env.TYPESAFE_API_KEY
+					: $env.OPENROUTER_API_KEY && !$env.TYPESAFE_API_KEY
 						? "openrouter"
 						: "typesafe",
 			};
@@ -106,13 +106,12 @@ export async function evaluateAgentTelemetry(
 			logger.debug(
 				`[Watchdog] Shared SystemOne path unavailable: ${error instanceof Error ? error.message : String(error)}`,
 			);
-			if (!process.env.AI_GATEWAY_API_KEY) return undefined;
+			if (!$env.AI_GATEWAY_API_KEY) return undefined;
 		}
 	}
 
 	// 3. Resolve API key and endpoint
-	const apiKey =
-		config.apiKey || process.env.TYPESAFE_API_KEY || process.env.OPENROUTER_API_KEY || process.env.AI_GATEWAY_API_KEY;
+	const apiKey = config.apiKey || $env.TYPESAFE_API_KEY || $env.OPENROUTER_API_KEY || $env.AI_GATEWAY_API_KEY;
 
 	// If no API key or endpoint configured, fail silent immediately
 	if (!apiKey && !config.baseUrl) {
@@ -120,10 +119,9 @@ export async function evaluateAgentTelemetry(
 	}
 
 	const isExplicitOpenRouter =
-		config.provider === "openrouter" || Boolean(process.env.OPENROUTER_API_KEY && !process.env.TYPESAFE_API_KEY);
+		config.provider === "openrouter" || Boolean($env.OPENROUTER_API_KEY && !$env.TYPESAFE_API_KEY);
 
-	const isVercelGateway =
-		Boolean(process.env.AI_GATEWAY_API_KEY) && !process.env.TYPESAFE_API_KEY && !process.env.OPENROUTER_API_KEY;
+	const isVercelGateway = Boolean($env.AI_GATEWAY_API_KEY) && !$env.TYPESAFE_API_KEY && !$env.OPENROUTER_API_KEY;
 
 	let endpoint = config.baseUrl;
 	let model = "jev-latest";
