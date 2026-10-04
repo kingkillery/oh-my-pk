@@ -143,7 +143,7 @@ print("EXACT_CACHE_OK")
 	expect(stdout).toContain("EXACT_CACHE_OK");
 }, 10_000);
 
-test("the prebuilt's CUDA toolkit libraries are searched when the image leaves them off the loader path", async () => {
+test("the prebuilt's CUDA runtime libraries are searched in the toolkit and pip locations that actually hold them", async () => {
 	const python = Bun.which("python") ?? Bun.which("python3");
 	if (!python) throw new Error("Python 3 required");
 	const l4Setup = buildRemoteSetupScript({
@@ -158,21 +158,36 @@ test("the prebuilt's CUDA toolkit libraries are searched when the image leaves t
 		contextWindow: 32768,
 		remotePort: 8081,
 	});
-	const exercise = `import os, pathlib, sys, tempfile
+	const exercise = `import importlib, os, pathlib, sys, tempfile
 ns = {"__name__": "colab_cuda_path_test"}
 exec(compile(sys.stdin.read(), "<colab-setup>", "exec"), ns)
 assert ns["PREBUILT"]["cuda"] == "12.8"
-with tempfile.TemporaryDirectory() as folder:
-    parent = pathlib.Path(folder)
-    assert ns["toolkit_library_dirs"](parent) == []
-    lib64 = parent / "cuda-12.8" / "lib64"
-    lib64.mkdir(parents=True)
-    (parent / "cuda-13.0" / "lib64").mkdir(parents=True)
-    assert ns["toolkit_library_dirs"](parent) == [str(lib64)]
+
+def lib(folder, name):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / name).write_bytes(b"")
+
+with tempfile.TemporaryDirectory() as scratch:
+    parent = pathlib.Path(scratch) / "usr-local"
+    site = pathlib.Path(scratch) / "site"
+    sys.path.insert(0, str(site))
+    assert ns["cuda_library_dirs"](parent) == []
+    toolkit = parent / "cuda-12.8" / "lib64"
+    lib(toolkit, "libcublas.so.12")
+    lib(parent / "cuda-13.0" / "lib64", "libcublas.so.13")
+    pip_blas = site / "nvidia" / "cublas" / "lib"
+    pip_runtime = site / "nvidia" / "cuda_runtime" / "lib"
+    lib(pip_blas, "libcublas.so.12")
+    lib(pip_runtime, "libcudart.so.12")
+    importlib.invalidate_caches()
+    assert ns["cuda_library_dirs"](parent) == [str(toolkit), str(pip_blas), str(pip_runtime)], ns["cuda_library_dirs"](parent)
+    (pip_blas / "libcublas.so.12").unlink()
+    lib(pip_blas, "libcublas.so.13")
+    assert ns["cuda_library_dirs"](parent) == [str(toolkit), str(pip_runtime)]
     ns["CUDA_TOOLKIT_PARENT"] = parent
     os.environ["LD_LIBRARY_PATH"] = "/usr/lib64-nvidia"
     parts = ns["library_env"](pathlib.Path("/opt/llama/bin/llama-server"))["LD_LIBRARY_PATH"].split(os.pathsep)
-    assert parts == [str(pathlib.Path("/opt/llama/bin")), str(lib64), "/usr/lib64-nvidia"], parts
+    assert parts == [str(pathlib.Path("/opt/llama/bin")), str(toolkit), str(pip_runtime), "/usr/lib64-nvidia"], parts
 print("CUDA_PATH_OK")
 `;
 	const child = Bun.spawn([python, "-c", exercise], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
