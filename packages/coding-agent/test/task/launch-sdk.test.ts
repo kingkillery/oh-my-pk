@@ -635,6 +635,12 @@ describe("real SDK launch authority wiring", () => {
 		const { session } = await f.create(pending);
 		const id = session.sessionManager.getSessionId();
 		f.settings.override("task.lifecycle.enabled", false);
+		await expect(f.create(undefined, { sessionManager: session.sessionManager })).rejects.toThrow(
+			"lifecycle_setting_required",
+		);
+		await expect(session.getToolByName("read")!.execute("still-bound", { path: "file.ts" })).rejects.toThrow(
+			"target_outside_scope",
+		);
 		await expect(session.newSession()).rejects.toThrow("lifecycle_session_transition_unavailable");
 		expect(session.sessionManager.getSessionId()).toBe(id);
 		const count = session.state.messages.length;
