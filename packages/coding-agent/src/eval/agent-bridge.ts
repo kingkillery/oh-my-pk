@@ -308,6 +308,8 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		throw new ToolError("eval agent() is unavailable in simple mode; use the general task tool instead.");
 	}
 
+	if (options.session.settings.get("task.lifecycle.enabled") || options.session.getLifecycleIssuerContext?.())
+		throw new ToolError("unsupported_lifecycle_launch_route: eval agent() is not supported by this launch lane");
 	assertNotPlanMode(options.session);
 	assertDepthAllowed(options.session);
 	assertSpawnAllowed(options.session, agentName);

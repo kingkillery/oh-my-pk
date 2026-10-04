@@ -318,6 +318,12 @@ export interface ToolSession {
 	localProtocolOptions?: LocalProtocolOptions;
 	/** Settings instance for passing to subagents */
 	settings: Settings;
+	/** Host-only lifecycle issuer; absent on ordinary default-off sessions. */
+	getLifecycleIssuerContext?: () =>
+		| import("../orchestration/lifecycle-authority").LifecycleExecutionContext
+		| import("../orchestration/lifecycle-authority").RootExecutionContext
+		| undefined;
+	getLifecycleAgentDir?: () => string;
 	/** Effective session-local Fusion I/O threshold, including the validated environment override. */
 	getFusionIoMinLines?: () => number;
 	/** Plan mode state (if active) */

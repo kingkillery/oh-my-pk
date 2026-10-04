@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add opt-in foreground Task launch admission and durable tool-dispatch checks under `task.lifecycle.enabled` (default off), with child-owned eval sessions, finite request/runtime/result controls, and fail-closed unsupported launch and session transitions.
 - Add a separately opened lifecycle authority database for immutable launch contracts, authenticated bounded admission, real session activation, and durable revocation. Legacy operational storage remains at schema v1; runtime launch integration follows separately.
 
 ### Fixed

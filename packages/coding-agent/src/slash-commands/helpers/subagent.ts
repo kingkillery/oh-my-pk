@@ -252,6 +252,10 @@ export async function spawnSubagent(
 		return "";
 	}
 
+	if (ctx.settings.get("task.lifecycle.enabled") || ctx.session.getLifecycleIssuerContext?.()) {
+		ctx.showError("unsupported_lifecycle_launch_route: /subagent is not supported by this launch lane");
+		return "";
+	}
 	await ctx.sessionManager.ensureOnDisk();
 	const cwd = ctx.sessionManager.getCwd();
 	const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
