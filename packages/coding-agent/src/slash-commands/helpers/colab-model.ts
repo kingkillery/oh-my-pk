@@ -1624,10 +1624,36 @@ def prebuilt_label():
     return f"prebuilt {PREBUILT['archive']}"
 
 
+CUDA_TOOLKIT_PARENT = Path("/usr/local")
+
+
+def cuda_library_dirs(parent=None):
+    """Directories holding the CUDA runtime libraries the prebuilt archive links (libcublas.so.<major>, libcudart.so.<major>).
+    Colab images drift: one had the matching toolkit at /usr/local/cuda-<version> but off the loader path; the current one has
+    only CUDA 13 there but ships the CUDA 12 runtime through pip (nvidia-cublas-cu12, nvidia-cuda-runtime-cu12). Either way ldd
+    rejected a matching prebuilt and the lane rebuilt llama.cpp from source (about 9 minutes)."""
+    cuda = (PREBUILT or {}).get("cuda")
+    if not cuda:
+        return []
+    major = cuda.split(".")[0]
+    root = (parent or CUDA_TOOLKIT_PARENT) / ("cuda-" + cuda)
+    candidates = [root / "lib64", root / "targets" / "x86_64-linux" / "lib"]
+    import importlib.util
+    for module in ("nvidia.cublas", "nvidia.cuda_runtime"):
+        try:
+            spec = importlib.util.find_spec(module)
+        except (ImportError, ValueError):
+            continue
+        if spec:
+            candidates += [Path(location) / "lib" for location in (spec.submodule_search_locations or [])]
+    return list(dict.fromkeys(str(path) for path in candidates if path.is_dir() and any(path.glob("*.so." + major))))
+
+
 def library_env(server):
-    """Resolve the shared libraries bundled beside the executable ahead of anything else on the host."""
+    """Resolve the shared libraries bundled beside the executable first, then the CUDA runtime matching the prebuilt, then the host's."""
     env = dict(os.environ)
-    env["LD_LIBRARY_PATH"] = os.pathsep.join(part for part in (str(server.parent), env.get("LD_LIBRARY_PATH", "")) if part)
+    parts = [str(server.parent), *cuda_library_dirs(), env.get("LD_LIBRARY_PATH", "")]
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(part for part in parts if part)
     return env
 
 
