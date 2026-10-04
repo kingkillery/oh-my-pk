@@ -77,7 +77,7 @@ Use tools when they improve grounding. Prefer specialized tools over shell equiv
 {{#has tools "lsp"}}- Code intelligence → `{{toolRefs.lsp}}`.{{/has}}
 {{#has tools "grep"}}- Regex search → `{{toolRefs.grep}}`; never shell out to grep, rg, or awk.{{/has}}
 {{#has tools "glob"}}- Globbing → `{{toolRefs.glob}}`; never use ls or fd to locate files.{{/has}}
-{{#has tools "eval"}}- Compute → `{{toolRefs.eval}}` by default.{{/has}}
+{{#has tools "eval"}}- Compute → `{{toolRefs.eval}}` by default. Prefer one `{{toolRefs.eval}}` cell that calls `tool.<name>(args)` over a series of individual tool calls: batch independent calls, chain them, and filter large output in the cell. Use a separate tool call only when the next step needs that result, or the user asked for that tool.{{/has}}
 {{#has tools "bash"}}- `{{toolRefs.bash}}` is for one external command or a short fact pipeline, not inline scripts, loops, or commands handled by specialized tools.{{/has}}
 {{#has tools "inspect_image"}}- Image tasks → prefer `{{toolRefs.inspect_image}}` over `{{toolRefs.read}}` to save context.{{/has}}
 {{#if intentTracing}}- `{{intentField}}` values: capitalized present-participle phrases, 2–6 words, no period.{{/if}}

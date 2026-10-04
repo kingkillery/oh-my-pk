@@ -1,11 +1,10 @@
 // Replay labeled bash commands through the Jev gate and report precision/recall.
-// Usage: TYPESAFE_API_KEY=... (or OPENROUTER_API_KEY=...) bun bench/jev-bash-gate/replay.ts [file.jsonl ...]   (default: seed.jsonl)
+// Usage: TYPESAFE_API_KEY=... (or OPENROUTER_API_KEY=..., or a live /decision-model Clef endpoint) bun bench/jev-bash-gate/replay.ts [file.jsonl ...]   (default: seed.jsonl)
 // Rows are {command, cwd, label: "allow"|"block", category?}; unlabeled rows are skipped.
 // Files: seed.jsonl (textbook cases), messy.jsonl (trace-shaped, per-category report).
 // Verdicts are cached in results-<file>.json so threshold sweeps cost no API calls
 // (delete the cache to re-judge). A failed call is fail-open, i.e. counts as allow.
 import * as path from "node:path";
-import { resolveTypeSafeApiKey } from "../../src/lib/typesafe-http";
 import {
 	type BashVerdict,
 	BLOCK_CONFIDENCE,
@@ -63,7 +62,6 @@ function score(rows: Judged[], conf: number, destr: number) {
 }
 
 if (import.meta.main) {
-	if (!resolveTypeSafeApiKey()) throw new Error("Set TYPESAFE_API_KEY or OPENROUTER_API_KEY");
 	for (const file of files) {
 		const text = await Bun.file(file).text();
 		const rows = text
@@ -76,6 +74,11 @@ if (import.meta.main) {
 			path.join(path.dirname(file), `results-${path.basename(file, ".jsonl")}.json`),
 		);
 		const failed = judged.filter(r => !r.verdict).length;
+		if (failed === judged.length) {
+			throw new Error(
+				"No backend answered: run /decision-model launch (Clef on Colab over Tailscale) or set TYPESAFE_API_KEY / OPENROUTER_API_KEY",
+			);
+		}
 		const lat = judged.flatMap(r => (r.verdict ? [r.verdict.latencyMs] : [])).sort((a, b) => a - b);
 		const pct = (p: number) => lat[Math.min(lat.length - 1, Math.floor(lat.length * p))] ?? 0;
 

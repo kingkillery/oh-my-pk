@@ -4,6 +4,7 @@ Run one step of code in a persistent kernel.
 **One eval call = one cell = one logical step.** State persists per language across separate eval calls, tool calls, and `task` subagents — define helpers/datasets/clients in one call, then later calls reuse them directly.
 
 Work incrementally: imports in one call, define in the next, test, then use — each its own eval call. Re-run setup ONLY after `reset`, a kernel crash, or a `NameError`/`ReferenceError` proving the state is gone. Parallelize work *within* a cell with the `parallel(thunks)` helper, not by batching steps.
+Prefer `tool.<name>(args)` in this cell over separate tool calls. Batch independent calls with `parallel()` or `Promise.allSettled()`, chain calls, and filter large output here. Use a separate tool call only when the next step needs that result, or the user asked for that tool.
 
 Fields:
 
