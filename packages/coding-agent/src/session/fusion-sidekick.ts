@@ -246,6 +246,10 @@ async function spawnFusionSidekick(host: FusionSidekickHost, sidekickModel: stri
 	// Warm-sidekick plans deliberately skip task_spawn_policy so the optional
 	// Qwen classifier performs no fetch and installs no suppression bridge.
 
+	if (settings.get("task.lifecycle.enabled") || session.getLifecycleIssuerContext?.()) {
+		logger.warn("unsupported_lifecycle_launch_route: Fusion sidekick is not supported by this launch lane");
+		return "";
+	}
 	await sessionManager.ensureOnDisk();
 	const cwd = sessionManager.getCwd();
 	const parentSessionFile = sessionManager.getSessionFile() ?? null;

@@ -83,6 +83,12 @@ import {
 	type AssignmentVerifierRunners,
 	verifyAssignment,
 } from "./assignment-verifier";
+import {
+	claimExecutorSettlement,
+	type PendingLifecycleLaunch,
+	releaseExecutorSettlement,
+	terminateLifecycleLaunch,
+} from "./launch-admission";
 import { Semaphore } from "./parallel";
 import {
 	type AssignmentFailureClass,
@@ -545,6 +551,8 @@ export interface ExecutorOptions {
 	parentMnemopiSessionState?: MnemopiSessionState;
 	/** Parent agent's eval executor session id. Subagents reuse it so eval state is shared. */
 	parentEvalSessionId?: string;
+	lifecycleLaunch?: PendingLifecycleLaunch;
+	lifecycleAgentDir?: string;
 	/**
 	 * Parent agent's OpenTelemetry configuration. When defined, the subagent's
 	 * loop is started with the same tracer/hooks but its own agent identity
@@ -1056,6 +1064,10 @@ export interface RunMonitorArgs {
 	softRequestBudget: number;
 	/** Wall-clock cap in ms; 0 disables the timer. */
 	maxRuntimeMs: number;
+	/** Bound worker result retention ceiling. Absent preserves ordinary output capture. */
+	maxOutputBytes?: number;
+	/** Bound workers cannot issue out-of-band evaluator model requests. */
+	disableWatchdog?: boolean;
 	/** Optional System 1 watchdog configuration. */
 	watchdogConfig?: WatchdogConfig;
 }
@@ -1092,6 +1104,7 @@ export interface SubagentRunMonitor {
 	lastAssistantSalvageText(): string | undefined;
 	/** Final raw output: end-of-run assistant text when available, else accumulated chunks. */
 	rawOutput(): string;
+	outputLimitExceeded(): boolean;
 	scheduleProgress(flush?: boolean): void;
 	/** Stop processing events and clear listeners/timers. Call once the run settled. */
 	finish(): void;
@@ -1154,6 +1167,24 @@ export function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonit
 	let budgetSteerSent = false;
 	let budgetLimitExceeded = false;
 	let lastAssistantSalvageText: string | undefined;
+	let outputBytes = 0;
+	let finalOutputBytes = 0;
+	let outputLimitExceeded = false;
+	const appendBoundedOutput = (text: string, final: boolean) => {
+		const bytes = Buffer.byteLength(text, "utf8");
+		if (args.maxOutputBytes !== undefined && (final ? finalOutputBytes : outputBytes) + bytes > args.maxOutputBytes) {
+			outputLimitExceeded = true;
+			requestAbort("terminate");
+			return;
+		}
+		if (final) {
+			finalOutputBytes += bytes;
+			finalOutputChunks.push(text);
+		} else {
+			outputBytes += bytes;
+			outputChunks.push(text);
+		}
+	};
 
 	const requestAbort = (reason: AbortReason) => {
 		if (reason === "timeout") {
@@ -1474,6 +1505,7 @@ export function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonit
 				// System 1 Watchdog evaluation (out-of-band, non-blocking)
 				const watchdogCfg = args.watchdogConfig;
 				const shouldCheckWatchdog =
+					!args.disableWatchdog &&
 					!watchdogEvaluating &&
 					!resolved &&
 					!abortSent &&
@@ -1591,7 +1623,7 @@ export function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonit
 					if (messageContent && Array.isArray(messageContent)) {
 						for (const block of messageContent) {
 							if (block.type === "text" && block.text) {
-								outputChunks.push(block.text);
+								appendBoundedOutput(block.text, false);
 							}
 						}
 					}
@@ -1641,7 +1673,7 @@ export function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonit
 						if (messageContent && Array.isArray(messageContent)) {
 							for (const block of messageContent) {
 								if (block.type === "text" && block.text) {
-									finalOutputChunks.push(block.text);
+									appendBoundedOutput(block.text, true);
 								}
 							}
 						}
@@ -1760,6 +1792,7 @@ export function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonit
 		captureSalvage,
 		lastAssistantSalvageText: () => lastAssistantSalvageText,
 		rawOutput: () => (finalOutputChunks.length > 0 ? finalOutputChunks.join("") : outputChunks.join("")),
+		outputLimitExceeded: () => outputLimitExceeded,
 		scheduleProgress,
 		finish: () => {
 			resolved = true;
@@ -1794,6 +1827,7 @@ async function driveSessionToYield(
 	session: AgentSession,
 	monitor: SubagentRunMonitor,
 	task: string,
+	boundLaunch: boolean,
 ): Promise<DriveOutcome> {
 	const abortSignal = monitor.abortSignal;
 	let exitCode = 0;
@@ -1823,6 +1857,7 @@ async function driveSessionToYield(
 		// fresh `maxModelRequestsPerRun` counter, so retrying after a budget cut
 		// would let the run spend a multiple of the configured cap.
 		while (
+			!boundLaunch &&
 			!monitor.yieldCalled() &&
 			retryCount < MAX_YIELD_RETRIES &&
 			!abortSignal.aborted &&
@@ -2037,6 +2072,8 @@ function seedFailedRecoveryAttempt(options: ExecutorOptions, result: SingleResul
 }
 
 interface FinalizeRunArgs {
+	maxOutputBytes?: number;
+	maxHandoffBytes?: number;
 	monitor: SubagentRunMonitor;
 	done: { exitCode: number; error?: string; aborted?: boolean; abortReason?: string; durationMs: number };
 	index: number;
@@ -2138,6 +2175,18 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 				.filter(Boolean)
 				.join("\n");
 		}
+	}
+	if (
+		args.maxOutputBytes !== undefined &&
+		(monitor.outputLimitExceeded() ||
+			Buffer.byteLength(rawOutput, "utf8") > args.maxOutputBytes ||
+			Buffer.byteLength(JSON.stringify({ output: rawOutput, details: progress.extractedToolData }), "utf8") >
+				(args.maxHandoffBytes ?? args.maxOutputBytes))
+	) {
+		exitCode = 1;
+		rawOutput = "lifecycle_output_limit: bound worker result exceeds its committed byte limit";
+		stderr = rawOutput;
+		progress.extractedToolData = undefined;
 	}
 	const { content: truncatedOutput, truncated } = truncateTail(rawOutput, {
 		maxBytes: MAX_OUTPUT_BYTES,
@@ -2257,6 +2306,29 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
  * Run a single agent in-process.
  */
 export async function runSubprocess(options: ExecutorOptions): Promise<SingleResult> {
+	if (options.settings?.get("task.lifecycle.enabled") && !options.lifecycleLaunch)
+		throw new Error("missing_lifecycle_binding: executor requires Task pre-admission");
+	if (options.lifecycleLaunch) claimExecutorSettlement(options.lifecycleLaunch);
+	try {
+		if (options.lifecycleLaunch && !options.lifecycleAgentDir)
+			throw new Error("missing_admission_identity: executor requires the host authority agent directory");
+		const result = await runAdmittedSubprocess(options);
+		if (options.lifecycleLaunch)
+			terminateLifecycleLaunch(
+				options.lifecycleLaunch,
+				result.exitCode === 0 ? "revoked" : "failed",
+				"Foreground Task settled.",
+			);
+		return result;
+	} catch (error) {
+		if (options.lifecycleLaunch) terminateLifecycleLaunch(options.lifecycleLaunch, "failed", "Task executor failed.");
+		throw error;
+	} finally {
+		if (options.lifecycleLaunch) releaseExecutorSettlement(options.lifecycleLaunch);
+	}
+}
+
+async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleResult> {
 	const {
 		cwd,
 		agent,
@@ -2369,7 +2441,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const subagentDisplayName = resolveSubagentDisplayName(options.role, agent.name);
 	const maxRuntimeMs = Math.max(
 		0,
-		Math.trunc(Number(options.maxRuntimeMs ?? settings.get("task.maxRuntimeMs") ?? 0) || 0),
+		Math.trunc(
+			Number(
+				options.lifecycleLaunch?.launch.compiled.policy.limits.maxRuntimeMs ??
+					options.maxRuntimeMs ??
+					settings.get("task.maxRuntimeMs") ??
+					0,
+			) || 0,
+		),
 	);
 	// TTL before an adopted idle subagent is parked by the lifecycle manager.
 	// <= 0 disables parking (the session stays live until process teardown).
@@ -2457,7 +2536,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		delegatedIo: options.delegatedIo,
 		softRequestBudget,
 		maxRuntimeMs,
+		maxOutputBytes: options.lifecycleLaunch?.launch.compiled.authority.result.maxOutputBytes,
 		watchdogConfig: options.watchdogConfig,
+		disableWatchdog: options.lifecycleLaunch !== undefined,
 	});
 	const progress = monitor.progress;
 	progress.executionProfile = executionProfile;
@@ -2618,14 +2699,22 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			checkAbort();
 
 			const effectiveCwd = worktree ?? cwd;
-			const openingManager = sessionFile
-				? SessionManager.open(sessionFile, undefined, undefined, {
-						initialCwd: effectiveCwd,
-						suppressBreadcrumb: true,
-					})
-				: Promise.resolve(SessionManager.inMemory(effectiveCwd));
+			const openingManager =
+				options.lifecycleLaunch && !sessionFile
+					? Promise.resolve(
+							SessionManager.create(
+								effectiveCwd,
+								SessionManager.getDefaultSessionDir(effectiveCwd, options.lifecycleAgentDir),
+							),
+						)
+					: sessionFile
+						? SessionManager.open(sessionFile, undefined, undefined, {
+								initialCwd: effectiveCwd,
+								suppressBreadcrumb: true,
+							})
+						: Promise.resolve(SessionManager.inMemory(effectiveCwd));
 			const sessionManager = options.pinnedModel ? await openingManager : await awaitAbortable(openingManager);
-			if (options.pinnedModel) startupManager = sessionManager;
+			if (options.pinnedModel || options.lifecycleLaunch) startupManager = sessionManager;
 			checkAbort();
 			if (options.parentArtifactManager) {
 				sessionManager.adoptArtifactManager(options.parentArtifactManager);
@@ -2682,7 +2771,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				fusionSidekick && settings.get("fusion.enabled") === true && settings.get("fusion.mode") !== "off"
 					? settings.get("fusion.sidekickRequestBudget")
 					: 0;
-			const maxModelRequestsPerRun = fusionRequestBudget > 0 ? fusionRequestBudget : undefined;
+			const maxModelRequestsPerRun =
+				options.lifecycleLaunch?.launch.compiled.policy.limits.maxRequests ??
+				(fusionRequestBudget > 0 ? fusionRequestBudget : undefined);
 
 			// Captured by the lifecycle reviver: rebuilding an equivalent session from
 			// the same JSONL file re-invokes createAgentSession with the exact options
@@ -2780,6 +2871,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				localProtocolOptions: options.localProtocolOptions,
 				telemetry: subagentTelemetry,
 				parentEvalSessionId: options.parentEvalSessionId,
+				lifecycleLaunch: options.lifecycleLaunch,
+				agentDir: options.lifecycleLaunch ? options.lifecycleAgentDir : undefined,
 				executionProfile,
 				toolProfile,
 				collaborationPolicy,
@@ -2804,7 +2897,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			let session: AgentSession;
 			try {
 				// Durable execution must settle SDK ownership before closing its store/artifact roots.
-				({ session } = options.pinnedModel ? await sessionPromise : await awaitAbortable(sessionPromise));
+				({ session } =
+					options.pinnedModel || options.lifecycleLaunch
+						? await sessionPromise
+						: await awaitAbortable(sessionPromise));
 			} catch (err) {
 				// Abort raced session startup. The session may still resolve later
 				// holding live LSP/MCP child processes — dispose it when it does so
@@ -2976,7 +3072,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 
 			readyAt = performance.now();
-			const outcome = await driveSessionToYield(session, monitor, task);
+			const outcome = await driveSessionToYield(session, monitor, task, options.lifecycleLaunch !== undefined);
 			exitCode = outcome.exitCode;
 			error = outcome.error;
 			aborted = outcome.aborted;
@@ -3012,7 +3108,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					id,
 					session,
 					aborted,
-					keepAlive: options.keepAlive !== false,
+					keepAlive: options.lifecycleLaunch ? false : options.keepAlive !== false,
 					isolated: worktree !== undefined,
 					agentIdleTtlMs,
 					reviveSession,
@@ -3063,6 +3159,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	monitor.finish();
 
 	const settled = await finalizeRunResult({
+		maxOutputBytes: options.lifecycleLaunch?.launch.compiled.authority.result.maxOutputBytes,
+		maxHandoffBytes: options.lifecycleLaunch?.launch.compiled.policy.limits.maxHandoffBytes,
 		monitor,
 		done,
 		index,
@@ -3096,6 +3194,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		return settled;
 	}
 
+	if (options.lifecycleLaunch) return settled;
 	const failure = recoveryFailureFacts(settled);
 	const requestFallbackExhausted = failure.class !== "spawn_transport" || settled.retryFailure !== undefined;
 	if (!requestFallbackExhausted) return settled;
@@ -3159,6 +3258,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const invokedAt = Date.now();
 	return runSubprocess({
 		...options,
+		lifecycleLaunch: undefined,
 		id: recoveryId,
 		modelOverride: [decision.attempt.selector],
 		maxRuntimeMs: decision.attempt.maxRuntimeMs,

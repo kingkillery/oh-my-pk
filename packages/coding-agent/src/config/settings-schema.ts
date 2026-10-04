@@ -4433,6 +4433,16 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"task.lifecycle.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Launch Authority",
+			description: "Require durable admission and enforce immutable tool capabilities for delegated agents.",
+		},
+	},
 	"task.simpleMode": {
 		type: "boolean",
 		default: false,
