@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add a separately opened lifecycle authority database for immutable launch contracts, authenticated bounded admission, real session activation, and durable revocation. Legacy operational storage remains at schema v1; runtime launch integration follows separately.
+
 ### Fixed
 
 - Start the gopk-clips ingest daemon without top-level await, which made `--bytecode` builds fail. A startup error still prints and exits with status 1.
