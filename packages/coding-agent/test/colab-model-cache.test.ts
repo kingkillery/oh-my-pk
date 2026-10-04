@@ -319,6 +319,7 @@ with tempfile.TemporaryDirectory() as folder:
     ns["LLAMA_DIR"] = root / "llama.cpp"
     ns["LOG_FILE"] = root / "server.log"
     ns["PID_FILE"] = root / "server.pid"
+    ns["ADAPTER_STATE_FILE"] = root / "adapters.json"
     commands = []
     ns["run"] = lambda args, cwd=None: commands.append(list(args))
     ns["prepare_runtime_source"] = lambda: None
