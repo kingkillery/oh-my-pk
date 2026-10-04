@@ -1,4 +1,3 @@
-import * as fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { LaunchMutationGuard } from "../operational/launch-authority-types";
@@ -11,6 +10,7 @@ import {
 	resolvePersistedLifecycleContext,
 } from "../orchestration/lifecycle-authority";
 import { registerLifecycleDispatchLimits } from "../orchestration/lifecycle-tool-guard";
+import { writeContentAddressedFile } from "../utils/content-addressed-file";
 import {
 	type ArtifactRefV1,
 	canonicalJson,
@@ -125,9 +125,8 @@ export async function activateLifecycleLaunch(
 		const measured: RuntimeGuaranteesV1 = { ...pending.actualRuntimeGuarantees, evalState: "child-owned" };
 		const canonical = canonicalJson({ sessionId, evalSessionId: evalIdentity.child, sharedWithParent: false });
 		const digest = sha256Hex(canonical);
-		await fs.mkdir(evidenceDir, { recursive: true });
 		const evidencePath = path.join(evidenceDir, `eval-ownership-${digest}.json`);
-		await Bun.write(evidencePath, canonical);
+		await writeContentAddressedFile(evidencePath, canonical);
 		const evidence: ArtifactRefV1 = {
 			schemaVersion: 1,
 			artifactId: `eval-ownership-${digest}`,

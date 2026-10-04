@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentTool } from "@pk-nerdsaver-ai/pi-agent-core";
 import { type } from "arktype";
 import { Settings } from "../../src/config/settings";
@@ -87,6 +88,40 @@ async function fixture() {
 	};
 	return { directory, settings, capabilities, store, issuer, admit };
 }
+
+describe("launch baseline evidence", () => {
+	it("pins workspace state by digest without persisting file contents", async () => {
+		const directory = await mkdtemp(path.join(tmpdir(), "ompk-launch-baseline-"));
+		directories.push(directory);
+		const git = (...args: string[]) => {
+			const result = Bun.spawnSync(["git", ...args], { cwd: directory, stdout: "pipe", stderr: "pipe" });
+			if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+		};
+		git("init", "-q");
+		git("config", "user.email", "test@example.com");
+		git("config", "user.name", "Test");
+		await Bun.write(path.join(directory, "tracked.txt"), "tracked\n");
+		git("add", "tracked.txt");
+		git("commit", "-q", "-m", "init");
+		await Bun.write(path.join(directory, "tracked.txt"), "tracked\nEDITED-CONTENT-MARKER\n");
+		await Bun.write(path.join(directory, "secret.env"), "API_TOKEN=UNTRACKED-SECRET-MARKER\n");
+
+		const ref = await captureLaunchBaseline(directory, path.join(directory, "evidence"));
+		const manifest = await Bun.file(fileURLToPath(ref.manifestUri)).text();
+		expect(manifest).not.toContain("UNTRACKED-SECRET-MARKER");
+		expect(manifest).not.toContain("EDITED-CONTENT-MARKER");
+		const parsed = JSON.parse(manifest) as {
+			root: { untracked: string[]; unstagedDigest: string; untrackedPatchDigest: string };
+		};
+		expect(parsed.root.untracked).toContain("secret.env");
+		expect(parsed.root.unstagedDigest).toMatch(/^[0-9a-f]{64}$/);
+		expect(parsed.root.untrackedPatchDigest).toMatch(/^[0-9a-f]{64}$/);
+		// The ref still identifies the exact state: changing the file changes it.
+		await Bun.write(path.join(directory, "secret.env"), "API_TOKEN=ROTATED\n");
+		const after = await captureLaunchBaseline(directory, path.join(directory, "evidence"));
+		expect(after.manifestHash).not.toBe(ref.manifestHash);
+	});
+});
 
 describe("host launch admission and executable dispatch", () => {
 	it("replays at full capacity and refuses a distinct admission without duplicating the child", async () => {

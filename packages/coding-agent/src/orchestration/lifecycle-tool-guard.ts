@@ -1,14 +1,14 @@
-﻿/**
+/**
  * Capability authorization for tool dispatch (W3, action/target/effect slice).
  *
  * Scope: this guard authorizes a tool invocation against the lifecycle
- * capability dictionary ΓÇö capability membership (whether the principal bound
+ * capability dictionary — capability membership (whether the principal bound
  * to the session may invoke the executable that is about to run, identified
  * by the provenance captured when that executable was registered) plus the
  * semantic action, effect class and normalized target refs of the request.
  *
  * Semantics are derived ONLY from:
- *   1. the tool's own declared metadata ΓÇö `approval` (the same ToolApproval
+ *   1. the tool's own declared metadata — `approval` (the same ToolApproval
  *      declaration the approval gate enforces) for the effect class, and
  *      `matcherPaths` for declared path targets; or
  *   2. the bounded host adapter table below, which maps canonical builtin
@@ -22,7 +22,7 @@
  *
  * Absence of a host-minted context preserves legacy behaviour. A context that
  * is present but unknown or revoked fails closed, because the authority
- * registry ΓÇö not the caller ΓÇö decides what a context may do.
+ * registry — not the caller — decides what a context may do.
  */
 import * as path from "node:path";
 import type { AgentTool, ToolTier } from "@pk-nerdsaver-ai/pi-agent-core";
@@ -72,7 +72,7 @@ interface DispatchSemantics {
  * dictionary. `exec` maps to `control`: an exec-tier call is uncontainable
  * by path roots by definition, so the capability-membership check is the
  * whole gate and no target containment is claimed. `external-write` is never
- * produced here ΓÇö it is reserved for explicit publish/mutate actions that
+ * produced here — it is reserved for explicit publish/mutate actions that
  * carry their own authorization, not for tool dispatch.
  */
 const TIER_SEMANTICS: Readonly<Record<ToolTier, DispatchSemantics>> = {
@@ -93,12 +93,12 @@ const HIDDEN_NO_PATH_CONTROLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Bounded trusted adapter: canonical builtin tool name ΓåÆ how its invocation
+ * Bounded trusted adapter: canonical builtin tool name → how its invocation
  * arguments map to authority targets. `"none"` declares the tool has no
  * repository path targets (session state, memory, network resources); the
  * target list is then empty and no containment is claimed. `"fields"` lists
  * the argument fields that carry path targets; when a fields-adapted call
- * extracts no path, the target defaults to `"."` ΓÇö the tool's default scope
+ * extracts no path, the target defaults to `"."` — the tool's default scope
  * is the working tree, so the check is honest rather than vacuous.
  *
  * Only canonical builtin names appear here; aliases are resolved before the
@@ -185,7 +185,7 @@ export type LifecycleToolGuard = (toolCallId: string, params?: unknown) => void;
 /**
  * Evaluate the tool's declared approval into a tier. Returns `undefined`
  * when the tool declares nothing, `null` when the declaration is malformed
- * (a tier outside the ToolTier union ΓÇö never silently promoted to exec).
+ * (a tier outside the ToolTier union — never silently promoted to exec).
  */
 function declaredTier(tool: ToolDispatchSubject, params: unknown): ToolTier | undefined | null {
 	const approval = tool.approval;
@@ -341,8 +341,8 @@ export function authorizeToolInvocation(
 }
 
 /**
- * Bind a guard to one executable. Both halves of the identity ΓÇö the tool
- * object whose declared metadata is evaluated and the captured source ΓÇö are
+ * Bind a guard to one executable. Both halves of the identity — the tool
+ * object whose declared metadata is evaluated and the captured source — are
  * frozen here, so a callback that swaps registry entries between two checks
  * of the same call cannot change which capability is being authorized.
  * `getContext` stays a callback so a revocation between those checks is

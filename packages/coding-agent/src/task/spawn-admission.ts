@@ -25,6 +25,7 @@ import {
 	resolveToolProfile,
 	type ToolCapability,
 } from "../tools/tool-profiles";
+import { writeContentAddressedFile } from "../utils/content-addressed-file";
 import * as git from "../utils/git";
 import { type LifecycleLaunchResult, type PendingLifecycleLaunch, prepareLifecycleLaunch } from "./launch-admission";
 import {
@@ -52,7 +53,7 @@ export const LAUNCH_ENTRY_POINTS = Object.freeze({
 } as const);
 
 export interface BoundChildLaunchRequest {
-	/** Issuer context from `session.getLifecycleIssuerContext?.()` ΓÇö never undefined here. */
+	/** Issuer context from `session.getLifecycleIssuerContext?.()` — never undefined here. */
 	readonly issuer: LifecycleExecutionContext | RootExecutionContext;
 	/** Open operational store (lazy `OperationalStore.open()` at the caller). */
 	readonly store: LifecycleStore;
@@ -64,7 +65,7 @@ export interface BoundChildLaunchRequest {
 	readonly reason: string;
 	readonly agentName: string;
 	readonly assignment: string;
-	/** Resolved agent definition ΓÇö pinned as the contract's agentTemplateRef. */
+	/** Resolved agent definition — pinned as the contract's agentTemplateRef. */
 	readonly agentDefinition: AgentDefinition;
 	readonly executionProfile: AgentExecutionProfile;
 	readonly toolProfile: ResolvedToolProfile;
@@ -100,15 +101,15 @@ function fail(
 }
 
 /**
- * Persist canonical JSON evidence asynchronously and return its resolvable
- * `file://` URI. Content-addressed by digest: the same bytes always land at
- * the same path, so a published ref is never a dangling identifier.
+ * Persist canonical JSON evidence and return its resolvable `file://` URI.
+ * Content-addressed by digest: the same bytes always land at the same path,
+ * so a published ref is never a dangling identifier. Written once and
+ * atomically, so a concurrent reader never sees a partial record.
  */
 async function persistLaunchEvidence(dir: string, name: string, canonical: string): Promise<string> {
 	const digest = sha256Hex(canonical);
-	await fs.mkdir(dir, { recursive: true });
 	const filePath = path.join(dir, `${name}-${digest.slice(0, 16)}.json`);
-	await Bun.write(filePath, canonical);
+	await writeContentAddressedFile(filePath, canonical);
 	return pathToFileURL(filePath).href;
 }
 
@@ -116,10 +117,15 @@ async function persistLaunchEvidence(dir: string, name: string, canonical: strin
  * Content-addressed baseline for the launch capsule. A Git workspace gets a
  * real `captureBaseline` digest (head + staged + unstaged + untracked, nested
  * repos included, absolute host paths excluded); a positively detected
- * non-Git workspace records an honest empty manifest ΓÇö never a symbolic
+ * non-Git workspace records an honest empty manifest — never a symbolic
  * `HEAD` and never a fabricated snapshot. A real capture failure (missing
  * binary, permission, I/O) propagates rather than masquerading as an empty
  * workspace. The canonical manifest is persisted before the ref returns.
+ *
+ * The persisted manifest records digests of the staged, unstaged and
+ * untracked patches, never the patch text: it still pins the exact workspace
+ * state, but launch evidence does not accumulate copies of file contents
+ * (including untracked files that may hold secrets) for every spawn.
  */
 export async function captureLaunchBaseline(cwd: string, evidenceDir?: string): Promise<SnapshotRefV1> {
 	const dir = evidenceDir ?? path.join(getAgentDir(), "launch-evidence");
@@ -137,18 +143,18 @@ export async function captureLaunchBaseline(cwd: string, evidenceDir?: string): 
 		schemaVersion: 1 as const,
 		root: {
 			headCommit: baseline.root.headCommit,
-			staged: baseline.root.staged,
-			unstaged: baseline.root.unstaged,
+			stagedDigest: sha256Hex(baseline.root.staged),
+			unstagedDigest: sha256Hex(baseline.root.unstaged),
 			untracked: baseline.root.untracked,
-			untrackedPatch: baseline.root.untrackedPatch,
+			untrackedPatchDigest: sha256Hex(baseline.root.untrackedPatch),
 		},
 		nested: baseline.nested.map(entry => ({
 			relativePath: entry.relativePath,
 			headCommit: entry.baseline.headCommit,
-			staged: entry.baseline.staged,
-			unstaged: entry.baseline.unstaged,
+			stagedDigest: sha256Hex(entry.baseline.staged),
+			unstagedDigest: sha256Hex(entry.baseline.unstaged),
 			untracked: entry.baseline.untracked,
-			untrackedPatch: entry.baseline.untrackedPatch,
+			untrackedPatchDigest: sha256Hex(entry.baseline.untrackedPatch),
 		})),
 	};
 	const canonical = canonicalJson(normalized);
@@ -238,8 +244,8 @@ export async function admitBoundChildLaunch(request: BoundChildLaunchRequest): P
 				"issuer",
 			);
 		}
-		// A revoked/superseded/terminal issuer ΓÇö or one whose durable epoch
-		// moved past the registration's pin ΓÇö cannot admit children, even
+		// A revoked/superseded/terminal issuer — or one whose durable epoch
+		// moved past the registration's pin — cannot admit children, even
 		// while its in-process registration survives.
 		if (issuerBinding.state !== "bound" && issuerBinding.state !== "active") {
 			return fail(
@@ -272,8 +278,8 @@ export async function admitBoundChildLaunch(request: BoundChildLaunchRequest): P
 	}
 
 	// --- Issuer spawn rights (unconditional, before any compilation) ------
-	// The child is deliberately a leaf, so the compiler's spawn guards ΓÇö
-	// gated on the CHILD's maySpawn ΓÇö can never fire. The issuer's own
+	// The child is deliberately a leaf, so the compiler's spawn guards —
+	// gated on the CHILD's maySpawn — can never fire. The issuer's own
 	// rights are the only enforcement left and must be checked here.
 	if (!parentDelegable.spawn.maySpawn) {
 		return fail("spawn_not_permitted", "issuer authority does not permit spawning children.", "issuer.spawn");
@@ -305,7 +311,7 @@ export async function admitBoundChildLaunch(request: BoundChildLaunchRequest): P
 	}
 	// The authenticated store transaction handles replay before checking live capacity.
 
-	// --- Host-derived contract + principal identities (┬º14.2) --------------
+	// --- Host-derived contract + principal identities (§14.2) --------------
 	const contractId = sha256Hex(`contract:${rootPrincipalId}:${issuerPrincipalId}:${request.idempotencyKey}`);
 	const contractRevision = 1;
 	const childPrincipalId = sha256Hex(`principal:${contractId}:${contractRevision}`);
@@ -469,7 +475,7 @@ export async function admitBoundChildLaunch(request: BoundChildLaunchRequest): P
 				}),
 			]),
 		}),
-		// A leaf worker: no spawn rights ΓÇö recursion stays bounded by role AND
+		// A leaf worker: no spawn rights — recursion stays bounded by role AND
 		// by authority (spawn.maxDepth 0 < issuer ceiling, maySpawn false).
 		spawn: Object.freeze({
 			maySpawn: false,

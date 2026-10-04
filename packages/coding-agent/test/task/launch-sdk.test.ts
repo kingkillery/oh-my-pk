@@ -13,6 +13,7 @@ import { initializeExtensions } from "../../src/modes/runtime-init";
 import { getAvailableThemesWithPaths, getThemeByName } from "../../src/modes/theme/theme";
 import { LifecycleStore } from "../../src/operational/lifecycle-store";
 import { getLifecycleRegistration } from "../../src/orchestration/lifecycle-authority";
+import { getRecordedToolProvenance } from "../../src/orchestration/lifecycle-tool-guard";
 import * as sdk from "../../src/sdk";
 import { type CreateAgentSessionResult, createAgentSession } from "../../src/sdk";
 import { AuthStorage } from "../../src/session/auth-storage";
@@ -429,6 +430,13 @@ describe("real SDK launch authority wiring", () => {
 		const f = await fixture(false);
 		const { session } = await f.create();
 		expect(session.getLifecycleIssuerContext()).toBeUndefined();
+		// Nothing is recorded on the registered tools while the setting is off;
+		// the enabled control below records a source for every one of them.
+		expect(session.agent.state.tools.length).toBeGreaterThan(0);
+		for (const tool of session.agent.state.tools) expect(getRecordedToolProvenance(tool)).toBeUndefined();
+		const enabled = await fixture(true);
+		const control = (await enabled.create()).session;
+		for (const tool of control.agent.state.tools) expect(getRecordedToolProvenance(tool)).toBeDefined();
 		await session.getToolByName("probe")!.execute("ordinary", {});
 		expect(f.bodies()).toBe(1);
 		expect(await Bun.file(path.join(f.directory, "lifecycle-authority.db")).exists()).toBe(false);
