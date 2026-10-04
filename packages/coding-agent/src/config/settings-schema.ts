@@ -4462,6 +4462,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"task.lifecycle.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Lifecycle Execution",
+			description:
+				"Admit new subagents through durable launch contracts recorded in lifecycle-authority.db. Off by default; sessions recorded under lifecycle still resume with their recorded authority.",
+		},
+	},
+
 	"task.eager": {
 		type: "enum",
 		values: ["default", "preferred", "always"] as const,

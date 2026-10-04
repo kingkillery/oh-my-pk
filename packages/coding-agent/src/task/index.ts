@@ -49,6 +49,11 @@ import { shouldRejectDuplicateBlockedSpawn } from "../orchestration/approach-reg
 import { type CollaborationPolicy, clampCollaborationPolicyForContext } from "../orchestration/collaboration-policy";
 import { compileLanePolicy, resolveWorkerMode } from "../orchestration/context-policy";
 import {
+	authorizeLifecycleAction,
+	getLifecycleRegistration,
+	type LifecycleExecutionContext,
+} from "../orchestration/lifecycle-authority";
+import {
 	recordApproachUpdateTelemetry,
 	recordBlockerTelemetry,
 	recordSpawnResultTelemetry,
@@ -76,6 +81,12 @@ import { formatBytes, formatDuration } from "../tools/render-utils";
 import type { ResolvedToolProfile } from "../tools/tool-profiles";
 import { type CodeWriteReceipt, observeCodeWrite, type PreparedCodeWrite, prepareCodeWrite } from "./code-write";
 import { integrateTaskResult } from "./integration";
+import {
+	admitBoundChildLaunch,
+	captureLaunchBaseline,
+	LAUNCH_ENTRY_POINTS,
+	lifecycleAuthorityStore,
+} from "./spawn-admission";
 import {
 	composeTaskSpawnPolicyResult,
 	createSpawnPlan,
@@ -110,6 +121,7 @@ import type { AssignmentVerifierRunners } from "./assignment-verifier";
 import { projectDelegatedIoResult, projectEvidenceDigest } from "./delegated-output";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { runSubprocess } from "./executor";
+import { type CleanupPermitHandle, captureLifecycleArtifacts, mintCleanupPermit } from "./lifecycle-capture";
 import { generateTaskName } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimit, Semaphore } from "./parallel";
@@ -123,6 +135,7 @@ import {
 	captureDeltaPatch,
 	cleanupIsolation,
 	commitToBranch,
+	type DeltaPatchResult,
 	ensureIsolation,
 	getRepoRoot,
 	type IsolationHandle,
@@ -851,6 +864,29 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (parentSpawns === "" || (parentSpawns !== "*" && !allowedSpawns.includes(agentName))) {
 			const allowed = parentSpawns === "" ? "none (spawns disabled for this agent)" : parentSpawns;
 			return fail(`Cannot spawn '${agentName}'. Allowed: ${allowed}`);
+		}
+
+		// W3 lifecycle guard: when this session runs as a delegated child with
+		// a registered binding, the spawn must be authorized BEFORE any
+		// allocation or isolation work below (codeWrite prep, output
+		// allocation, agent-directory resolution beyond this read). The
+		// structural checks above are pure reads; everything after this point
+		// allocates. An absent accessor is the legacy path, unchanged.
+		const lifecycleContext = this.session.getLifecycleExecutionContext?.();
+		if (lifecycleContext) {
+			const decision = authorizeLifecycleAction(lifecycleContext, {
+				tool: null,
+				action: "spawn_agent",
+				targets: [agentName],
+				effect: "control",
+				invocationId:
+					typeof params.id === "string" && params.id.trim() !== "" ? params.id : `spawn-${agentName}-${startedAt}`,
+			});
+			if (!decision.allowed) {
+				return fail(
+					`Spawn denied by lifecycle authority (${decision.code}): ${decision.reason} Request an escalation to the owning planner if this work is required.`,
+				);
+			}
 		}
 
 		const planModeState = this.session.getPlanModeState?.();
@@ -2171,6 +2207,52 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			});
 
 			let generatedReceipt: CodeWriteReceipt | undefined;
+			// W3 (§14.6): the issuer context under which this child is admitted.
+			// A bound child issues under its own bound context; a root session
+			// issues under the root-branded context installed at bootstrap. The
+			// accessor falls back to the bound context so sessions that expose
+			// only getLifecycleExecutionContext still admit durably. Absent
+			// issuer = legacy passthrough, byte-identical to today.
+			const lifecycleIssuer =
+				this.session.getLifecycleIssuerContext?.() ?? this.session.getLifecycleExecutionContext?.();
+			let lifecycleChild: LifecycleExecutionContext | undefined;
+			if (lifecycleIssuer) {
+				const admission = await admitBoundChildLaunch({
+					issuer: lifecycleIssuer,
+					store: lifecycleAuthorityStore(),
+					spawnPlan,
+					entryPoint: LAUNCH_ENTRY_POINTS.taskSpawn,
+					reason: `task tool spawn of '${agentName}'`,
+					agentName,
+					assignment,
+					agentDefinition: effectiveAgent,
+					executionProfile: spawnPlan.profile,
+					toolProfile,
+					collaborationPolicy,
+					contextStrategy: params.contextPolicy,
+					repoRoot: repoRoot ?? spawnCwd,
+					baseline: await captureLaunchBaseline(spawnCwd),
+					idempotencyKey: `spawn-${spawnPlan.correlationId}-${agentId || "child"}`,
+					sessionId: `session-${agentId || spawnPlan.correlationId}`,
+					artifactManager: parentArtifactManager ?? { getPath: () => Promise.resolve(null) },
+					outputSchemaRef: effectiveOutputSchema ? `output-schema://${agentId}` : null,
+					signal,
+				});
+				if (!admission.ok) {
+					// Strict rejection: the authorized binding stays as the
+					// failed-attempt audit identity; never fall back to legacy.
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Task spawn denied by launch admission (${admission.code}):\n${admission.diagnostics.map(d => `- [${d.code}] ${d.message}`).join("\n")}`,
+							},
+						],
+						details: { projectAgentsDir, results: [], totalDurationMs: Date.now() - startTime },
+					};
+				}
+				lifecycleChild = admission.context;
+			}
 			const sharedRunOptions = {
 				cwd: spawnCwd,
 				agent: effectiveAgent,
@@ -2252,8 +2334,17 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				parentHindsightSessionState: this.session.getHindsightSessionState?.(),
 				parentMnemopiSessionState: this.session.getMnemopiSessionState?.(),
 				parentTelemetry: this.session.getTelemetry?.(),
-				parentEvalSessionId,
+				// W3 (§5.3): a lifecycle-bound child owns a scoped eval kernel —
+				// never inherit the parent's shared JS/Python state. Omitting the
+				// id makes the child fall back to its own session-file-scoped
+				// defaultEvalSessionId (same isolation agent-bridge.ts uses).
+				// Legacy (unbound) children keep the inherited parent session.
+				parentEvalSessionId: lifecycleChild ? undefined : parentEvalSessionId,
 				parentAgentId: this.session.getAgentId?.() ?? MAIN_AGENT_ID,
+				// W3 (§14.6): the durably admitted bound-child context minted
+				// above (compile → admit → activate → projection bind). Absent
+				// issuer = legacy path, child context omitted.
+				lifecycle: lifecycleChild,
 			};
 
 			const runTask = async (): Promise<SingleResult> => {
@@ -2264,6 +2355,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 				const taskStart = Date.now();
 				let isolationHandle: IsolationHandle | undefined;
+				let quarantined = false;
+				let permitHandle: CleanupPermitHandle | null = null;
 				try {
 					if (!repoRoot || !baseline) {
 						throw new Error("Isolated task execution not initialized.");
@@ -2279,6 +2372,51 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					);
 					const isolationDir = isolationHandle.mergedDir;
 					nativeRuntime?.executing(isolationDir);
+
+					const lifecycleReg = lifecycleChild ? getLifecycleRegistration(lifecycleChild) : undefined;
+					const launchAuthority = lifecycleReg?.authority ?? null;
+					const captureLifecycle =
+						launchAuthority && lifecycleReg?.runId && lifecycleReg.nodeId && lifecycleReg.attemptId
+							? {
+									runId: lifecycleReg.runId,
+									nodeId: lifecycleReg.nodeId,
+									attemptId: lifecycleReg.attemptId,
+									launchAuthority,
+								}
+							: null;
+					if (captureLifecycle) {
+						permitHandle = mintCleanupPermit({
+							attemptId: captureLifecycle.attemptId,
+							workspaceRoot: path.dirname(isolationDir),
+							artifactRoot: effectiveArtifactsDir,
+							deadlineMs: 60_000,
+						});
+					}
+
+					const recordLifecycleManifest = async (
+						current: SingleResult,
+						delta?: DeltaPatchResult,
+					): Promise<void> => {
+						if (!captureLifecycle || !isolationHandle) return;
+						try {
+							const captureRes = await captureLifecycleArtifacts({
+								runId: captureLifecycle.runId,
+								nodeId: captureLifecycle.nodeId,
+								attemptId: captureLifecycle.attemptId,
+								launchAuthority: captureLifecycle.launchAuthority,
+								baseline: taskBaseline,
+								isolation: isolationHandle,
+								result: current,
+								artifactRoot: effectiveArtifactsDir,
+								artifactManager: parentArtifactManager ?? null,
+								permit: permitHandle?.permit,
+								delta,
+							});
+							if (!captureRes.ok) quarantined = true;
+						} catch {
+							quarantined = true;
+						}
+					};
 
 					// Mirror the spawn cwd inside the worktree only when it lives
 					// under the repo root; an outside cwd (or the root itself) maps to
@@ -2348,13 +2486,19 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							);
 							result.branchName = committed?.branchName;
 						}
+						await recordLifecycleManifest(result, delta);
 					} catch (error) {
 						result.error = error instanceof Error ? error.message : String(error);
 						result.exitCode = 1;
 						result.isError = true;
+						await recordLifecycleManifest(result);
 					}
 					return result;
 				} catch (err) {
+					// `runSubprocess` can reject before producing a SingleResult. A
+					// bound child must retain that worktree for capture/recovery rather
+					// than letting the finally block delete unacknowledged evidence.
+					if (lifecycleChild && isolationHandle) quarantined = true;
 					const message = err instanceof Error ? err.message : String(err);
 					return {
 						index: spawnIndex,
@@ -2376,7 +2520,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						error: message,
 					};
 				} finally {
-					if (isolationHandle) {
+					permitHandle?.dispose();
+					if (isolationHandle && !quarantined) {
 						await cleanupIsolation(isolationHandle);
 					}
 				}

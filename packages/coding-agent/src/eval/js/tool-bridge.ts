@@ -1,5 +1,6 @@
 import type { AgentTool, AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
 import { INTENT_FIELD } from "@pk-nerdsaver-ai/pi-wire";
+import { authorizeToolInvocation } from "../../orchestration/lifecycle-tool-guard";
 import type { ToolSession } from "../../tools";
 import { ToolError } from "../../tools/tool-errors";
 import { EVAL_AGENT_BRIDGE_NAME, runEvalAgent } from "../agent-bridge";
@@ -120,9 +121,19 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 	if (name === EVAL_CONCURRENCY_BRIDGE_NAME) {
 		return runEvalConcurrency(args, options);
 	}
+
+	// All language bridges converge here. Capability identity comes from
+	// authenticated registration provenance, never the caller's tool name, and
+	// action/effect/targets derive from the executable's declared metadata via
+	// the same dispatch guard every other path uses.
 	const tool = getTool(options.session, name);
 	const normalizedArgs = normalizeArgs(args);
 	const toolCallId = `js-${name}-${crypto.randomUUID()}`;
+	const lifecycleContext = options.session.getLifecycleExecutionContext?.();
+	if (lifecycleContext) {
+		const source = options.session.getToolSource?.(name);
+		authorizeToolInvocation(lifecycleContext, source, tool, toolCallId, normalizedArgs);
+	}
 	try {
 		const result = await tool.execute(toolCallId, normalizedArgs, options.signal);
 		const textBlocks = result.content.filter(

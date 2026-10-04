@@ -140,6 +140,26 @@ export interface MCPToolSelectionEntry extends SessionEntryBase {
 /** JSON-safe source-aware tool ceiling persisted for subagent revival. */
 export type SessionToolCeiling = readonly ToolCapability[];
 
+/**
+ * §4.3 launch-authority pin persisted in session_init: the durable reference a
+ * cold revive resolves back to its launch_bindings row. This is a pointer, not
+ * authority — the store remains the source of truth and a missing/revoked
+ * binding fails closed at resolve time.
+ */
+export interface SessionLaunchAuthorityV1 {
+	readonly schemaVersion: 1;
+	/** Which launch path minted the binding this pin resolves to. */
+	readonly kind: "delegated-child";
+	readonly bindingId: string;
+	readonly principalId: string;
+	readonly attemptId: string;
+	readonly contractId: string;
+	readonly contractRevision: number;
+	readonly contractDigest: string;
+	readonly policyEpoch: number;
+	readonly contextGeneration: number;
+}
+
 /** Session init entry - captures initial context for subagent sessions (debugging/replay). */
 export interface SessionInitEntry extends SessionEntryBase {
 	type: "session_init";
@@ -165,6 +185,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	collaborationPolicy?: PersistedCollaborationPolicy;
 	/** Source-aware tool ceiling restored before tool construction or activation. */
 	toolCeiling?: SessionToolCeiling;
+	/** §4.3 launch-authority pin resolved (not re-minted) on cold revive. */
+	launchAuthority?: SessionLaunchAuthorityV1;
 }
 
 /** Mode change entry - tracks agent mode transitions (e.g. plan mode). */

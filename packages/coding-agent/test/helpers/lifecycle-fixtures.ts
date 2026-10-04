@@ -5,6 +5,7 @@
 
 import type { AgentExecutionProfile } from "../../src/orchestration/agent-execution-profile";
 import type { CollaborationPolicy } from "../../src/orchestration/collaboration-policy";
+import { computeHarnessManifestHash, type HarnessManifestV1 } from "../../src/orchestration/harness-manifest";
 import type {
 	ArtifactRefV1,
 	AuthorityEnvelopeV1,
@@ -193,6 +194,31 @@ export function createTestCompiledContract(
 }
 
 /** Deny-all-by-default authority envelope; widen explicitly per scenario. */
+export function createTestHarnessManifest(overrides?: Partial<HarnessManifestV1>): HarnessManifestV1 {
+	// manifestHash is derived, never a literal: a fixture carrying an arbitrary
+	// digest would not survive its own parser's integrity check.
+	const body = {
+		schemaVersion: 1 as const,
+		profile: "implementation" as const,
+		kind: "full" as const,
+		maxTools: Object.freeze([{ source: "builtin" as const, name: "read" }]),
+		skillPolicy: Object.freeze({ mode: "none" as const, allowNames: Object.freeze([]), maxSkills: 0 }),
+		projectionVersion: 1 as const,
+		observationPolicy: "raw-retained" as const,
+		memoryPolicy: "local-only" as const,
+		checkpointContract: "durable" as const,
+		modelRoute: Object.freeze([{ provider: "default", model: "default" }]),
+		returnSchemaRef: "schema://none",
+		skillRefs: Object.freeze([]),
+		...overrides,
+	};
+	return Object.freeze({
+		...body,
+		harnessVersion: overrides?.harnessVersion ?? "harness-1.0.0",
+		manifestHash: computeHarnessManifestHash(body),
+	});
+}
+
 export function createTestEnvelope(overrides?: Partial<AuthorityEnvelopeV1>): AuthorityEnvelopeV1 {
 	return Object.freeze({
 		schemaVersion: 1 as const,

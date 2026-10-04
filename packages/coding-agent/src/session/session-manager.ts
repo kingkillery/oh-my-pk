@@ -1375,6 +1375,7 @@ export class SessionManager {
 		executionProfile?: SessionInitEntry["executionProfile"];
 		collaborationPolicy?: SessionInitEntry["collaborationPolicy"];
 		toolCeiling?: SessionInitEntry["toolCeiling"];
+		launchAuthority?: SessionInitEntry["launchAuthority"];
 	}): string {
 		const entry: SessionInitEntry = {
 			type: "session_init",
@@ -1860,6 +1861,7 @@ export class SessionManager {
 			executionProfile?: SessionInitEntry["executionProfile"];
 			collaborationPolicy?: SessionInitEntry["collaborationPolicy"];
 			toolCeiling?: SessionInitEntry["toolCeiling"];
+			launchAuthority?: SessionInitEntry["launchAuthority"];
 		} | null;
 	} | null> {
 		let loaded: FileEntry[];
@@ -1883,6 +1885,7 @@ export class SessionManager {
 			executionProfile?: SessionInitEntry["executionProfile"];
 			collaborationPolicy?: SessionInitEntry["collaborationPolicy"];
 			toolCeiling?: SessionInitEntry["toolCeiling"];
+			launchAuthority?: SessionInitEntry["launchAuthority"];
 		} | null = null;
 		for (let index = loaded.length - 1; index >= 0; index--) {
 			const entry = loaded[index];
@@ -1897,6 +1900,7 @@ export class SessionManager {
 					fusionSidekick: entry.fusionSidekick,
 					maxModelRequestsPerRun: entry.maxModelRequestsPerRun,
 					executionProfile: freezeExecutionProfile(entry.executionProfile),
+					launchAuthority: entry.launchAuthority,
 					collaborationPolicy: freezeCollaborationPolicy(entry.collaborationPolicy),
 					toolCeiling: freezeToolCeiling(entry.toolCeiling),
 				};

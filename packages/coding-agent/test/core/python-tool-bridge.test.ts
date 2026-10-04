@@ -5,6 +5,7 @@ import {
 	ensurePyToolBridge,
 	registerPyToolBridge,
 } from "@pk-nerdsaver-ai/pi-coding-agent/eval/py/tool-bridge";
+import { registerLifecycleExecutionContext } from "@pk-nerdsaver-ai/pi-coding-agent/orchestration/lifecycle-authority";
 import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
 import { INTENT_FIELD } from "@pk-nerdsaver-ai/pi-wire";
 
@@ -14,12 +15,18 @@ interface FakeCall {
 	signal?: AbortSignal;
 }
 
-function makeFakeTool(name: string, calls: FakeCall[], result: AgentToolResult): AgentTool {
+function makeFakeTool(
+	name: string,
+	calls: FakeCall[],
+	result: AgentToolResult,
+	approval: "read" | "write" | "exec" = "read",
+): AgentTool {
 	const tool = {
 		name,
 		label: name,
 		description: name,
 		parameters: { type: "object" },
+		approval,
 		async execute(id: string, args: unknown, signal?: AbortSignal): Promise<AgentToolResult> {
 			calls.push({ id, args, signal });
 			return result;
@@ -150,6 +157,48 @@ describe("Python tool bridge HTTP server", () => {
 			expect(res.status).toBe(200);
 			expect(statusEvents).toHaveLength(1);
 			expect(statusEvents[0]!.op).toBe("read");
+		} finally {
+			unregister();
+		}
+	});
+	it("preserves source-qualified authority through the shared kernel HTTP transport", async () => {
+		const calls: FakeCall[] = [];
+		const tool = makeFakeTool("read", calls, { content: [{ type: "text", text: "custom body" }] }, "exec");
+		const context = registerLifecycleExecutionContext({
+			mode: "hierarchical-v1",
+			role: "worker",
+			runId: "source-run",
+			nodeId: "source-node",
+			attemptId: "source-attempt",
+			policyEpoch: 1,
+			usableCapabilities: [{ source: "custom", name: "read" }],
+			repoRoot: "/tmp",
+			readableRoots: [],
+			writableRoots: [],
+			allowExternalWrite: false,
+		});
+		let source: "builtin" | "custom" = "builtin";
+		const session: ToolSession = {
+			...makeSession(new Map([["read", tool]])),
+			getToolSource: () => source,
+			getLifecycleExecutionContext: () => context,
+		};
+		const info = await ensurePyToolBridge();
+		const controller = new AbortController();
+		const unregister = registerPyToolBridge("source-session", "source-run", {
+			toolSession: session,
+			signal: controller.signal,
+		});
+		try {
+			const request = { session: "source-session", run: "source-run", name: "read", args: {} };
+			const denied = (await (await call(info, request)).json()) as { ok: boolean; error: string };
+			expect(denied.ok).toBe(false);
+			expect(denied.error).toContain("capability_not_granted");
+			expect(calls).toHaveLength(0);
+			source = "custom";
+			expect(await (await call(info, request)).json()).toEqual({ ok: true, value: "custom body" });
+			expect(calls).toHaveLength(1);
+			expect(calls[0]!.signal).toBe(controller.signal);
 		} finally {
 			unregister();
 		}

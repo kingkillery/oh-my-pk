@@ -9,6 +9,12 @@ import { type } from "arktype";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
+import { resolveAgentHarness } from "../orchestration/agent-harness";
+import {
+	authorizeLifecycleAction,
+	getLifecycleRegistration,
+	type LifecycleExecutionContext,
+} from "../orchestration/lifecycle-authority";
 import {
 	resolveSubagentModelRouting,
 	type SubagentModelRoutingDecision,
@@ -29,6 +35,13 @@ import {
 	runIsolatedSubprocess,
 } from "../task/isolation-runner";
 import { AgentOutputManager } from "../task/output-manager";
+import {
+	admitBoundChildLaunch,
+	captureLaunchBaseline,
+	LAUNCH_ENTRY_POINTS,
+	lifecycleAuthorityStore,
+} from "../task/spawn-admission";
+import { createSpawnPlan } from "../task/spawn-plan";
 import type { AgentDefinition, AgentProgress, SingleResult } from "../task/types";
 import { type NestedRepoPatch, parseIsolationMode } from "../task/worktree";
 import type { ToolSession } from "../tools";
@@ -360,9 +373,85 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 	};
 	const parentArtifactManager = options.session.getArtifactManager?.() ?? undefined;
 	const mcpManager = options.session.mcpManager ?? MCPManager.instance();
+
+	// W3 lifecycle guard (§14.6 eval/programmatic row): when the parent
+	// session carries a registered lifecycle context, this agent() call IS a
+	// delegated child spawn and must be authorized before any allocation
+	// below (artifacts dir, output id reservation). Everything above is pure
+	// reads. An absent accessor is the legacy path, unchanged.
+	const lifecycleContext = options.session.getLifecycleExecutionContext?.();
+	if (lifecycleContext) {
+		const decision = authorizeLifecycleAction(lifecycleContext, {
+			tool: null,
+			action: "spawn_agent",
+			targets: [agentName],
+			effect: "control",
+			invocationId: outputIdBase(parsed.label, agentName),
+		});
+		if (!decision.allowed) {
+			throw new ToolError(
+				`agent() denied by lifecycle authority (${decision.code}): ${decision.reason} Escalate to the owning planner if this work is required.`,
+			);
+		}
+	}
 	const { sessionFile, artifactsDir, unregisterArtifactsDir, tempArtifactsDir } = await getArtifacts(options.session);
 	const outputManager = getOutputManager(options.session);
 	const id = await outputManager.allocate(outputIdBase(parsed.label, agentName));
+	// W3 (§14.6): a bound issuer produces a durably admitted bound child —
+	// compile → admit → activate → projection bind via the shared spawn
+	// admission builder. The issuer accessor falls back to the bound context
+	// (a bound child issues under itself); absent issuer stays legacy. A
+	// strict rejection throws — never a legacy fallback after admission ran.
+	const lifecycleIssuer =
+		options.session.getLifecycleIssuerContext?.() ?? options.session.getLifecycleExecutionContext?.();
+	let lifecycleChild: LifecycleExecutionContext | undefined;
+	if (lifecycleIssuer) {
+		const planned = createSpawnPlan({
+			correlationId: `eval-agent-${Snowflake.next()}`,
+			agentName,
+			assignment: parsed.prompt.trim(),
+			modelPatterns: modelOverride.length > 0 ? modelOverride : undefined,
+			manualModelSelection: Boolean(parsed.model),
+			fusionSidekick: false,
+		});
+		if (!planned.ok) {
+			throw new ToolError(`agent() spawn plan rejected: ${planned.diagnostics.map(d => d.message).join("; ")}`);
+		}
+		const harness = resolveAgentHarness({
+			execution: planned.plan.profile,
+			agentName,
+			agentTools: effectiveAgent.tools,
+			autoloadSkills: effectiveAgent.autoloadSkills,
+			parentId: options.session.getAgentId?.() ?? MAIN_AGENT_ID,
+			requireYield: true,
+		});
+		const admission = await admitBoundChildLaunch({
+			issuer: lifecycleIssuer,
+			store: lifecycleAuthorityStore(),
+			spawnPlan: planned.plan,
+			entryPoint: LAUNCH_ENTRY_POINTS.evalAgent,
+			reason: `eval agent() spawn of '${agentName}'`,
+			agentName,
+			assignment: parsed.prompt.trim(),
+			agentDefinition: effectiveAgent,
+			executionProfile: planned.plan.profile,
+			toolProfile: harness.toolProfile,
+			collaborationPolicy: harness.collaborationPolicy,
+			repoRoot: options.session.cwd,
+			baseline: await captureLaunchBaseline(options.session.cwd),
+			idempotencyKey: `eval-agent-${id}`,
+			sessionId: `session-${id}`,
+			artifactManager: parentArtifactManager ?? { getPath: () => Promise.resolve(null) },
+			outputSchemaRef: structured ? `output-schema://${id}` : null,
+			signal: options.signal,
+		});
+		if (!admission.ok) {
+			throw new ToolError(
+				`agent() denied by launch admission (${admission.code}): ${admission.diagnostics.map(d => d.message).join("; ")}`,
+			);
+		}
+		lifecycleChild = admission.context;
+	}
 	const assignment = parsed.prompt.trim();
 
 	// Isolation gating. Strict opt-in: only the explicit `isolated=true`
@@ -442,6 +531,9 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		// (subagent queues behind the parent's in-flight execution, parent waits
 		// for subagent → circular). Each bridge-spawned subagent gets its own
 		// eval session with an independent kernel.
+		// W3 (§14.6): host-minted child authority context derived above. Bound
+		// parent → bound child; legacy parent → undefined (legacy passthrough).
+		lifecycle: lifecycleChild,
 	};
 
 	// Suspend eval timeout accounting through the WHOLE bridge call: the
@@ -467,6 +559,16 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 				return taskExecutor.runSubprocess(baseRunOptions);
 			}
 			const taskStart = Date.now();
+			const lifecycleReg = lifecycleChild ? getLifecycleRegistration(lifecycleChild) : undefined;
+			const isolatedLifecycle =
+				lifecycleReg?.runId && lifecycleReg.nodeId && lifecycleReg.attemptId && lifecycleReg.authority
+					? {
+							runId: lifecycleReg.runId,
+							nodeId: lifecycleReg.nodeId,
+							attemptId: lifecycleReg.attemptId,
+							launchAuthority: lifecycleReg.authority,
+						}
+					: undefined;
 			return runIsolatedSubprocess({
 				baseOptions: baseRunOptions,
 				context: isolationContext,
@@ -475,6 +577,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 				mergeMode,
 				artifactsDir,
 				description: trimToUndefined(parsed.label),
+				lifecycle: isolatedLifecycle,
 				buildCommitMessage,
 				buildFailureResult: err => {
 					const message = err instanceof Error ? err.message : String(err);
@@ -569,13 +672,11 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		}
 
 		// Clean up the temp artifacts dir we created for this call only when the
-		// caller will not need files from it later. Keep it when the runtime helper
-		// will return an `agent://` handle (the `.md`/`.jsonl` backing files live
-		// here) and on `apply=false` (`changesApplied === null`) where the caller
-		// consumes `details.patchPath` / `details.branchName` /
-		// `details.nestedPatches` out of band. Failed isolated applies throw
-		// earlier with a recovery hint, so they never reach this gate.
-		const shouldCleanupTempArtifacts = tempArtifactsDir && !parsed.handle && (!isIsolated || changesApplied === true);
+		// caller will not need files from it later. A bound lifecycle child has
+		// just written its manifest/ref acknowledgement there, so it must retain
+		// that evidence even when its patch applied successfully.
+		const shouldCleanupTempArtifacts =
+			tempArtifactsDir && !lifecycleChild && !parsed.handle && (!isIsolated || changesApplied === true);
 		if (shouldCleanupTempArtifacts) {
 			await fs.rm(artifactsDir, { recursive: true, force: true });
 			unregisterArtifactsDir?.();

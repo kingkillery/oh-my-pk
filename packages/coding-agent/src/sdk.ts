@@ -67,6 +67,9 @@ import { CursorExecHandlers } from "./cursor";
 import { getJevBashToolBlockReason } from "./lib/jev-bash-gate";
 import type { AgentExecutionProfile } from "./orchestration/agent-execution-profile";
 import type { CollaborationPolicy } from "./orchestration/collaboration-policy";
+import { projectLifecycleSideRequest } from "./orchestration/context-projector";
+import type { LifecycleExecutionContext } from "./orchestration/lifecycle-authority";
+import { createLifecycleToolGuard, markToolGuarded, recordToolProvenance } from "./orchestration/lifecycle-tool-guard";
 import { FastStreamRouter } from "./routing";
 import { TRUNCATE_LENGTHS } from "./tools/render-utils";
 import type { ResolvedToolProfile, ToolSource } from "./tools/tool-profiles";
@@ -90,6 +93,7 @@ import {
 	ExtensionRunner,
 	ExtensionToolWrapper,
 	type ExtensionUIContext,
+	LifecycleToolWrapper,
 	type LoadExtensionsResult,
 	loadExtensionFromFactory,
 	loadExtensions,
@@ -508,6 +512,15 @@ export interface CreateAgentSessionOptions {
 	spawns?: string;
 	/** External client bridge installed before this session can execute tools. */
 	clientBridge?: ClientBridge;
+
+	/**
+	 * W3 (§14.6): host-minted lifecycle authority context for this session.
+	 * Opaque handle minted by the host (never model/extension-settable); when
+	 * present, the session's ToolSession exposes it via
+	 * getLifecycleExecutionContext and guarded dispatch paths run through
+	 * authorizeLifecycleAction. Absent = legacy session.
+	 */
+	lifecycleExecutionContext?: LifecycleExecutionContext;
 
 	/** Auth storage for credentials. Default: discoverAuthStorage(agentDir) */
 	authStorage?: AuthStorage;
@@ -1060,10 +1073,21 @@ function customToolToDefinition(tool: CustomTool): ToolDefinition {
 	return definition;
 }
 
-function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
+/** The source `createTools` declares for a built-in tool: hidden-catalog entries are `hidden`. */
+function builtinToolSource(name: string): ToolSource {
+	return name in HIDDEN_TOOLS && !(name in BUILTIN_TOOLS) ? "hidden" : "builtin";
+}
+
+function createCustomToolsExtension(
+	tools: CustomTool[],
+	sources: ReadonlyMap<CustomTool, ToolSource>,
+	definitionSources: WeakMap<ToolDefinition, ToolSource>,
+): ExtensionFactory {
 	return api => {
 		for (const tool of tools) {
-			api.registerTool(customToolToDefinition(tool));
+			const definition = customToolToDefinition(tool);
+			definitionSources.set(definition, sources.get(tool) ?? "custom");
+			api.registerTool(definition);
 		}
 
 		const runOnSession = async (event: CustomToolSessionEvent, ctx: ExtensionContext) => {
@@ -1728,6 +1752,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						}
 					: undefined,
 			getToolByName: name => session?.getToolByName(name),
+			getToolSource: name => session?.getToolSource(name),
+			// W3: host-minted, never model-settable. Guarded dispatch paths
+			// (TaskTool spawn, eval agent(), further §14.6 rows) read this.
+			getLifecycleExecutionContext: () => options.lifecycleExecutionContext,
+			// W3 §14.6: issuer for delegated-child admissions. A bound child
+			// issues under its own bound context (the AgentSession accessor
+			// falls back to it); a root session returns the root-branded
+			// context installed at bootstrap. Never copied into
+			// lifecycleExecutionContext — a root context is unbound.
+			getLifecycleIssuerContext: () => session?.getLifecycleIssuerContext() ?? options.lifecycleExecutionContext,
 			agentRegistry,
 			ircIpc,
 			ircEnabled: () => ircIpc.enabled,
@@ -1864,6 +1898,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const mcpHostInteraction = options.hasUI === true ? createMCPHostInteractionBridge() : undefined;
 		let deferredMCPDiscoveryStarted = false;
 		const customTools: CustomTool[] = [];
+		const customToolProvenance = new Map<CustomTool, ToolSource>();
+		const definitionSources = new WeakMap<ToolDefinition, ToolSource>();
 		let startDeferredMCPDiscovery:
 			| ((liveSession: AgentSession, activation: DeferredMCPActivation) => void)
 			| undefined;
@@ -1943,11 +1979,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 										if (searchTool) {
 											toolRegistry.set(
 												searchTool.name,
-												new ExtensionToolWrapper(
-													wrapToolWithMetaNotice(searchTool),
-													extensionRunner,
-												) as Tool,
+												guardRegisteredTool(wrapToolWithMetaNotice(searchTool), "builtin") as Tool,
 											);
+											toolSources.set(searchTool.name, "builtin");
 										}
 									}
 									await liveSession.setActiveToolsByName([
@@ -2001,6 +2035,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				if (mcpResult.tools.length > 0) {
 					// MCP tools are LoadedCustomTool, extract the tool property
 					customTools.push(...mcpResult.tools.map(loaded => loaded.tool));
+					for (const loaded of mcpResult.tools) {
+						customToolProvenance.set(loaded.tool, "mcp");
+					}
 				}
 			}
 		}
@@ -2052,7 +2089,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const inlineExtensions: ExtensionFactory[] = options.extensions ? [...options.extensions] : [];
 		inlineExtensions.push((await import("./autoresearch")).createAutoresearchExtension);
 		if (customTools.length > 0) {
-			inlineExtensions.push(createCustomToolsExtension(customTools));
+			inlineExtensions.push(createCustomToolsExtension(customTools, customToolProvenance, definitionSources));
 		}
 
 		// Load extensions. Three paths:
@@ -2342,6 +2379,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			void extensionRunner.emitCredentialDisabled(event);
 		}
 
+		// Wraps one registry entry in `ExtensionToolWrapper` (the approval gate). A lifecycle-bound
+		// session also gets the capability guard inside that wrapper, plus the executable's recorded
+		// registration provenance; an unbound session gets the plain wrapper, as before.
+		const guardRegisteredTool = (tool: AgentTool, source: ToolSource | undefined): AgentTool => {
+			const lifecycle = options.lifecycleExecutionContext;
+			if (!lifecycle) return new ExtensionToolWrapper(tool, extensionRunner) as AgentTool;
+			const guarded = new ExtensionToolWrapper(
+				tool,
+				extensionRunner,
+				createLifecycleToolGuard(() => lifecycle, source, tool),
+			) as AgentTool;
+			return markToolGuarded(recordToolProvenance(guarded, source), lifecycle);
+		};
+
 		const getSessionContext = () => ({
 			sessionManager,
 			modelRegistry,
@@ -2362,6 +2413,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			...registeredTools,
 			...sdkCustomTools.map(tool => {
 				const definition = isCustomTool(tool) ? customToolToDefinition(tool) : tool;
+				definitionSources.set(definition, options.customToolSources?.get(tool.name) ?? "custom");
 				return { definition, extensionPath: "<sdk>" };
 			}),
 		];
@@ -2375,22 +2427,27 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 		// All built-in tools are active (conditional tools like git/ask return null from factory if disabled)
 		const toolRegistry = new Map<string, Tool>();
+		const toolSources = new Map<string, ToolSource>();
 		for (const tool of builtinTools) {
 			toolRegistry.set(tool.name, tool);
+			toolSources.set(tool.name, builtinToolSource(tool.name));
 		}
 		if (!toolRegistry.has("goal") && settings.get("goal.enabled")) {
 			const goalTool = await logger.time("createTools:goal:session", HIDDEN_TOOLS.goal, toolSession);
 			if (goalTool) {
 				toolRegistry.set(goalTool.name, wrapToolWithMetaNotice(goalTool));
+				toolSources.set(goalTool.name, "hidden");
 			}
 		}
-		for (const tool of wrappedExtensionTools) {
+		for (const [index, tool] of wrappedExtensionTools.entries()) {
 			toolRegistry.set(tool.name, tool);
+			toolSources.set(tool.name, definitionSources.get(allCustomTools[index]!.definition) ?? "extension");
 		}
 		if (deferMCPDiscoveryForUI && mcpManager) {
 			for (const name of collectPendingMCPToolNames(options.toolNames, existingSession.selectedMCPToolNames)) {
 				if (!toolRegistry.has(name)) {
 					toolRegistry.set(name, createPendingMCPTool(name));
+					toolSources.set(name, "mcp");
 				}
 			}
 		}
@@ -2398,16 +2455,25 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (options.delegatedIo) {
 			// Restricted contracts use native implementations only, never same-name extension overrides.
 			toolRegistry.clear();
-			for (const tool of builtinTools) toolRegistry.set(tool.name, tool);
+			toolSources.clear();
+			for (const tool of builtinTools) {
+				toolRegistry.set(tool.name, tool);
+				toolSources.set(tool.name, builtinToolSource(tool.name));
+			}
 		}
 		// Wrap every tool with `ExtensionToolWrapper` so the per-tool approval gate runs on every
 		// call site, regardless of whether any user extensions are loaded. See the runner-construction
 		// comment above for the safety invariant this enforces.
+		//
+		// Under a lifecycle binding the capability guard is bound here with the provenance captured
+		// for THIS executable, so a later same-named registration (MCP/RPC refresh) can neither
+		// relabel a handle already held by a caller nor lend its own authority to it.
 		for (const tool of toolRegistry.values()) {
-			toolRegistry.set(tool.name, new ExtensionToolWrapper(tool, extensionRunner));
+			toolRegistry.set(tool.name, guardRegisteredTool(tool, toolSources.get(tool.name)) as Tool);
 		}
 		if (model?.provider === "cursor") {
 			toolRegistry.delete("edit");
+			toolSources.delete("edit");
 		}
 
 		// `resolve` is hidden but must stay in the registry whenever any code path can invoke it:
@@ -2420,10 +2486,30 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const needsResolveTool = hasDeferrableTools || planModeAvailable;
 		if (options.delegatedIo || !needsResolveTool) {
 			toolRegistry.delete("resolve");
+			toolSources.delete("resolve");
 		} else if (!toolRegistry.has("resolve")) {
 			const resolveTool = await logger.time("createTools:resolve:session", HIDDEN_TOOLS.resolve, toolSession);
 			if (resolveTool) {
-				toolRegistry.set(resolveTool.name, wrapToolWithMetaNotice(resolveTool));
+				const wrapped = wrapToolWithMetaNotice(resolveTool);
+				const lifecycle = options.lifecycleExecutionContext;
+				// Registered after the wrap pass above, so under a lifecycle binding it carries its
+				// own capability guard; an unbound session keeps the plain tool.
+				toolRegistry.set(
+					resolveTool.name,
+					lifecycle
+						? markToolGuarded(
+								recordToolProvenance(
+									new LifecycleToolWrapper(
+										wrapped,
+										createLifecycleToolGuard(() => lifecycle, "hidden", resolveTool),
+									) as Tool,
+									"hidden",
+								),
+								lifecycle,
+							)
+						: wrapped,
+				);
+				toolSources.set(resolveTool.name, "hidden");
 			}
 		}
 
@@ -2440,8 +2526,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (searchTool) {
 				toolRegistry.set(
 					searchTool.name,
-					new ExtensionToolWrapper(wrapToolWithMetaNotice(searchTool), extensionRunner) as Tool,
+					guardRegisteredTool(wrapToolWithMetaNotice(searchTool), "builtin") as Tool,
 				);
+				toolSources.set(searchTool.name, "builtin");
 			}
 		}
 		let mcpDiscoveryEnabled = effectiveDiscoveryMode !== "off"; // back-compat: true when any discovery active
@@ -2453,8 +2540,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				cwd: sessionManager.getCwd(),
 			})) as unknown as AgentTool | null;
 			if (!sshTool) return null;
-			const wrapped = wrapToolWithMetaNotice(sshTool);
-			return new ExtensionToolWrapper(wrapped, extensionRunner) as AgentTool;
+			return guardRegisteredTool(wrapToolWithMetaNotice(sshTool), "builtin");
 		};
 
 		let cursorEventEmitter: ((event: AgentEvent) => void) | undefined;
@@ -2709,7 +2795,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const extensionToolNames = new Set(
 			registeredTools.filter(t => !t.definition.defaultInactive).map(t => t.definition.name),
 		);
+		// Under a lifecycle binding a tool's source is the provenance recorded when it was
+		// registered (the W3 source slice: every executable has a known source). An unbound
+		// session keeps resolving by name, exactly as before.
 		const resolveToolSource = (name: string): ToolSource | undefined => {
+			if (options.lifecycleExecutionContext) return toolSources.get(name);
 			// Registration provenance wins over spelling. In particular, mcp__ is
 			// never authority by itself: an SDK custom/extension tool cannot
 			// self-promote into an MCP-only capability ceiling by choosing a name.
@@ -2873,7 +2963,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			logger.warn(message);
 			if (backgroundPackHasUi) backgroundPackUiContext?.notify(message, "warning");
 		};
-		const transformProviderContext = async (context: Context, transformModel: Model): Promise<Context> => {
+		const transformProviderContextBase = async (context: Context, transformModel: Model): Promise<Context> => {
 			const transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
 			const backgroundPacksEnabled: unknown = settings.getGlobal("backgroundPacks.enabled");
 			if (backgroundPacksEnabled !== true) return transformed;
@@ -2911,8 +3001,29 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				return transformed;
 			}
 		};
+		// §5.2: projection composes AFTER extension transforms/obfuscation and
+		// background packs, so the authorized view is computed over the exact
+		// bytes the provider will receive. A lifecycle-bound session runs the
+		// assembled context through the bound authority; an absent lifecycle
+		// stays on the legacy path unchanged.
+		const lifecycleContext = options.lifecycleExecutionContext;
+		const transformProviderContext = lifecycleContext
+			? async (context: Context, transformModel: Model): Promise<Context> => {
+					const transformed = await transformProviderContextBase(context, transformModel);
+					return projectLifecycleSideRequest(transformed, "completion", lifecycleContext);
+				}
+			: transformProviderContextBase;
 		const onPayload = async (payload: unknown, _model?: Model) => {
-			return await extensionRunner.emitBeforeProviderRequest(payload);
+			const result = await extensionRunner.emitBeforeProviderRequest(payload);
+			// §5.2 late-injection closure: under a bound lifecycle an onPayload
+			// hook that returns a mutated payload is an unprojectable provider
+			// hook — the mutation would bypass the authorized projection.
+			// Observational hooks (returning undefined) and identity returns
+			// remain the explicit compatible exception.
+			if (options.lifecycleExecutionContext !== undefined && result !== undefined && result !== payload) {
+				throw new Error("unprojectable_provider_hook");
+			}
+			return result;
 		};
 		const onResponse: SimpleStreamOptions["onResponse"] = async (response, model) => {
 			await extensionRunner.emitAfterProviderResponse(response, model);
@@ -3241,6 +3352,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			collaborationPolicy: options.collaborationPolicy,
 			toolProfile: options.toolProfile,
 			toolSourceOf: resolveToolSource,
+			toolSources,
+			lifecycleExecutionContext: options.lifecycleExecutionContext,
 			agentKind,
 			providerSessionId: options.providerSessionId,
 			parentEvalSessionId: options.parentEvalSessionId,

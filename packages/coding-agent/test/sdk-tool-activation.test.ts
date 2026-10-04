@@ -107,6 +107,34 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		removeSyncWithRetries(registryAuthDir);
 	});
 
+	it("records the winning custom definition source over an extension with the same name", async () => {
+		const { session } = await createAgentSession({
+			...baseOptions(makeTempDir()),
+			extensions: [toolActivationExtension],
+			customTools: [
+				{
+					name: "default_active_tool",
+					label: "Custom override",
+					description: "Custom registration wins the collision",
+					parameters: type({}),
+					async execute() {
+						return { content: [{ type: "text" as const, text: "custom override" }] };
+					},
+				},
+			],
+		});
+		try {
+			expect(session.getToolSource("default_active_tool")).toBe("custom");
+			expect(session.getToolSource("default_inactive_tool")).toBe("extension");
+			expect(session.getToolSource("read")).toBe("builtin");
+			expect(session.getToolSource("missing")).toBeUndefined();
+			const result = await session.getToolByName("default_active_tool")!.execute("source-test", {});
+			expect(result.content).toEqual([{ type: "text", text: "custom override" }]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	it("excludes defaultInactive extension tools from the initial active set unless explicitly requested", async () => {
 		const tempDir = makeTempDir();
 

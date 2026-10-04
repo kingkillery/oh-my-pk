@@ -40,6 +40,8 @@ import {
 	resolveCollaborationPolicy,
 	serializeCollaborationPolicy,
 } from "../orchestration/collaboration-policy";
+import type { LifecycleExecutionContext } from "../orchestration/lifecycle-authority";
+import { getLifecycleRegistration } from "../orchestration/lifecycle-authority";
 import type { SubagentModelRoutingDecision } from "../orchestration/subagent-model-routing";
 import { snapshotFromAssignmentFields } from "../orchestration/task-contract";
 import assignmentContractPromptTemplate from "../prompts/system/assignment-contract.md" with { type: "text" };
@@ -54,6 +56,7 @@ import type { AuthStorage } from "../session/auth-storage";
 import type { ClientBridge } from "../session/client-bridge";
 import { type DelegatedIo, delegatedIoToolNames } from "../session/delegated-io";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
+import type { SessionLaunchAuthorityV1 } from "../session/session-entries";
 import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
 import type { ContextFileEntry, ForkContextSnapshot } from "../tools";
@@ -93,6 +96,7 @@ import {
 	type RecoveryFailureFacts,
 } from "./recovery-policy";
 import { simpleSpawnError } from "./simple-mode";
+import { lifecycleAuthorityStore } from "./spawn-admission";
 import type { SpawnPlan, SpawnRouteCandidate } from "./spawn-plan";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import {
@@ -393,6 +397,15 @@ export interface ExecutorOptions {
 	assignment?: string;
 	/** Shared background from the task call (`task.batch`), rendered into the subagent's system prompt. */
 	context?: string;
+	/**
+	 * W3 (§14.6): host-minted lifecycle authority context for the CHILD
+	 * session this run creates. Opaque handle — minted only via
+	 * registerLifecycleExecutionContext/deriveChildLifecycleContext, never
+	 * constructible from data. When present, the child session's tool
+	 * dispatch runs through authorizeLifecycleAction, bounding recursion and
+	 * capability use. Absent = legacy run, unchanged.
+	 */
+	lifecycle?: LifecycleExecutionContext;
 	/**
 	 * The session's active overall plan, handed off so subagents spawned during
 	 * plan execution share the same plan context as the main agent. Omitted when
@@ -2713,6 +2726,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				cwd: worktree ?? cwd,
 				delegatedIo: options.delegatedIo,
 				authStorage,
+				lifecycleExecutionContext: options.lifecycle,
 				modelRegistry,
 				settings: subagentSettings,
 				model: fork && !options.modelOverride ? (fork.model ?? model) : model,
@@ -2868,6 +2882,33 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				await awaitAbortable(session.setActiveToolsByName(filteredSubagentTools));
 			}
 
+			// §4.3: a bound child session pins its durable launch authority in
+			// session_init so a cold revive resolves the SAME binding (never a
+			// second admission). The ref fields come from the context's
+			// registration; contextGeneration lives only on the store row, so
+			// it is read back through the shared authority store. A bound
+			// context whose row cannot be read fails the spawn rather than
+			// persisting a corrupt pin — never a legacy fallback.
+			let launchAuthorityPin: SessionLaunchAuthorityV1 | undefined;
+			if (options.lifecycle) {
+				const authority = getLifecycleRegistration(options.lifecycle)?.authority;
+				if (authority) {
+					const boundRow = lifecycleAuthorityStore().getLaunchBinding(authority.bindingId);
+					launchAuthorityPin = {
+						schemaVersion: 1,
+						kind: "delegated-child",
+						bindingId: authority.bindingId,
+						principalId: authority.principalId,
+						attemptId: authority.attemptId,
+						contractId: authority.contractId,
+						contractRevision: authority.contractRevision,
+						contractDigest: authority.contractDigest,
+						policyEpoch: authority.policyEpoch,
+						contextGeneration: boundRow.contextGeneration,
+					};
+				}
+			}
+
 			session.sessionManager.appendSessionInit({
 				systemPrompt: session.agent.state.systemPrompt.join("\n\n"),
 				task,
@@ -2880,6 +2921,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				executionProfile,
 				collaborationPolicy: collaborationPolicy ? serializeCollaborationPolicy(collaborationPolicy) : undefined,
 				toolCeiling: toolProfile?.maximum,
+				launchAuthority: launchAuthorityPin,
 			});
 
 			abortSignal.addEventListener(

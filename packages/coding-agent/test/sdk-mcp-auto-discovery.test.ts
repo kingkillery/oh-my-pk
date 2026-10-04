@@ -108,6 +108,26 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 		hasUI: true,
 	});
 
+	it("retains MCP provenance through the nondeferred custom-tool adapter", async () => {
+		writeMcpConfig();
+		const { session } = await createAgentSession({
+			...baseOptions(),
+			hasUI: false,
+			toolNames: ["read"],
+		});
+		try {
+			const names = session.getAllToolNames().filter(name => name.startsWith("mcp__"));
+			expect(names).toHaveLength(MANY_TOOL_COUNT);
+			for (const name of names) {
+				expect(session.getToolSource(name)).toBe("mcp");
+			}
+			expect(session.getToolSource("read")).toBe("builtin");
+			expect(session.getToolSource("search_tool_bm25")).toBe("builtin");
+		} finally {
+			await session.dispose();
+		}
+	}, 40_000);
+
 	it("flips auto discovery on when the deferred MCP toolset crosses the threshold", async () => {
 		writeMcpConfig();
 		// A small explicit toolset keeps the pre-discovery registry far below the
@@ -127,6 +147,7 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 			expect(session.isMCPDiscoveryEnabled()).toBe(true);
 			const activeNames = session.getActiveToolNames();
 			expect(activeNames).toContain("search_tool_bm25");
+			expect(session.getToolSource("search_tool_bm25")).toBe("builtin");
 			// Discovery mode means the MCP tools are searchable, NOT force-activated.
 			expect(activeNames.filter(name => name.startsWith("mcp__"))).toEqual([]);
 			const discoverable = session.getDiscoverableTools({ source: "mcp" });

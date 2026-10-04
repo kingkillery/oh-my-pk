@@ -3,7 +3,10 @@ import * as fs from "node:fs/promises";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import { MCPManager } from "../mcp/manager";
+import type { LifecycleAuthorityStore } from "../operational/lifecycle-authority-store";
 import { hydrateCollaborationPolicy } from "../orchestration/collaboration-policy";
+import { activateBoundSessionAuthority } from "../orchestration/context-projector";
+import type { LifecycleExecutionContext } from "../orchestration/lifecycle-authority";
 import type { PersistedSubagentReviverFactory } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { createAgentSession } from "../sdk";
@@ -13,6 +16,7 @@ import { SessionManager } from "../session/session-manager";
 import { inferToolSource, isAllowedByToolProfile } from "../tools/index";
 import { isToolCapabilityAllowed, resolveToolProfile } from "../tools/tool-profiles";
 import { createMCPProxyTools, createSubagentSettings } from "./executor";
+import { lifecycleAuthorityStore } from "./spawn-admission";
 
 /**
  * Ambient context the reviver needs at revive time. The top-level session is
@@ -27,6 +31,12 @@ export interface PersistedSubagentReviveContext {
 	settings: Settings;
 	/** LSP policy of the top-level session; revived subagents inherit it rather than defaulting on. */
 	enableLsp: boolean;
+	/**
+	 * Store used to resolve a persisted §4.3 launchAuthority pin back to its
+	 * binding. Defaults to the process-lifetime lifecycle authority store, which
+	 * is only opened when a revived session actually carries a pin.
+	 */
+	store?: LifecycleAuthorityStore;
 }
 
 /**
@@ -114,7 +124,52 @@ export function createPersistedSubagentReviverFactory(
 			taskDepth++;
 			parentId = registry.get(parentId)?.parentId;
 		}
+		// §4.3 resolve-existing: a persisted launchAuthority pin means this
+		// session was launched under a bound contract. The revive must rebind to
+		// THAT binding — never admit a second one — so resolution happens inside
+		// the revive closure against the live store, and any missing, revoked or
+		// mismatched record fails closed instead of reviving unbound. A session
+		// without a pin revives exactly as before.
+		const launchAuthority = init.launchAuthority;
+		// A pin minted by a different launch path is not this reviver's
+		// authority to resolve — fail closed, never guess.
+		if (launchAuthority && launchAuthority.kind !== "delegated-child") {
+			throw new Error(
+				`lifecycle_authority_mismatch: launchAuthority kind '${launchAuthority.kind}' cannot be revived as a delegated child`,
+			);
+		}
 		return async () => {
+			// The projection delegates below resolve through the revived session
+			// lazily; they run per provider request, never before it exists.
+			let revived: AgentSession | undefined;
+			let lifecycleExecutionContext: LifecycleExecutionContext | undefined;
+			if (launchAuthority) {
+				// Resolve BEFORE taking the session writer lock: a failed resolve
+				// must not strand the lock.
+				const store = ctx.store ?? lifecycleAuthorityStore();
+				const binding = store.getLaunchBindingByAttempt(launchAuthority.attemptId);
+				const contract = store.getLaunchContract(binding.contractDigest);
+				// One-seam activation (§14.6): re-materialize the bound context AND
+				// attach its projection binding, so the revived session's provider
+				// requests project instead of failing closed `untrusted_context`.
+				lifecycleExecutionContext = activateBoundSessionAuthority({
+					store,
+					binding,
+					contract,
+					repoRoot: ctx.session.sessionManager.getCwd(),
+					// The session's artifact space is the parent's adopted
+					// ArtifactManager. Absent manager → artifact:// refs fail closed
+					// `content_unresolvable`, never fabricated.
+					artifactManager: {
+						getPath: id => revived?.sessionManager.getArtifactManager()?.getPath(id) ?? Promise.resolve(null),
+					},
+					// Source-qualify tools through the revived session's own
+					// registry; before it exists the source is unprovable and the
+					// request fails closed.
+					toolSourceOf: name => revived?.getToolSource(name),
+					pin: launchAuthority,
+				});
+			}
 			// Re-open fresh on every revive: park closes the writer, so this takes
 			// the single-writer lock cleanly and restores the full message history.
 			const reopened = await SessionManager.open(sessionFile, undefined, undefined, {
@@ -166,12 +221,14 @@ export function createPersistedSubagentReviverFactory(
 							? new Map(mcpProxyTools.map(tool => [tool.name, "mcp" as const]))
 							: undefined,
 					clientBridge: ctx.session.clientBridge,
+					lifecycleExecutionContext,
 				});
 			} catch (error) {
 				await reopened.close();
 				throw error;
 			}
 			const { session } = created;
+			revived = session;
 			if (session.sessionManager !== reopened) {
 				await reopened.close();
 			}
