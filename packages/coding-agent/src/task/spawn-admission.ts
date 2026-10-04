@@ -42,6 +42,7 @@ import {
 } from "../orchestration/lifecycle-authority";
 import type { ToolSource } from "../tools";
 import type { ResolvedToolProfile, ToolCapability } from "../tools/tool-profiles";
+import { writeContentAddressedFile } from "../utils/content-addressed-file";
 import * as git from "../utils/git";
 import { prepareLifecycleLaunch } from "./launch-admission";
 import {
@@ -134,12 +135,13 @@ function fail(
 /**
  * Persist canonical JSON evidence and return its resolvable `file://` URI.
  * Content-addressed by digest: the same bytes always land at the same path,
- * so a published ref is never a dangling identifier.
+ * so a published ref is never a dangling identifier, and the write is
+ * atomic so a concurrent reader never sees a partial file.
  */
 async function persistLaunchEvidence(dir: string, name: string, canonical: string): Promise<string> {
 	const digest = sha256Hex(canonical);
 	const filePath = path.join(dir, `${name}-${digest.slice(0, 16)}.json`);
-	await Bun.write(filePath, canonical, { createPath: true });
+	await writeContentAddressedFile(filePath, canonical);
 	return `file://${filePath}`;
 }
 
@@ -348,16 +350,6 @@ export async function admitBoundChildLaunch(request: BoundChildLaunchRequest): P
 			"spawn_launch_class_not_permitted",
 			`issuer authority does not permit launch class '${CHILD_LAUNCH_CLASS}'.`,
 			"issuer.spawn.allowedLaunchClasses",
-		);
-	}
-	// Concurrency ceiling, read from the durable record rather than trusted
-	// from the caller: a crashed parent's live children still count.
-	const liveChildren = request.store.countLiveChildBindings(issuerPrincipalId);
-	if (liveChildren >= parentDelegable.spawn.maxChildren) {
-		return fail(
-			"spawn_children_exhausted",
-			`issuer already holds ${liveChildren} live children at a ceiling of ${parentDelegable.spawn.maxChildren}.`,
-			"issuer.spawn.maxChildren",
 		);
 	}
 
@@ -621,6 +613,19 @@ export async function admitBoundChildLaunch(request: BoundChildLaunchRequest): P
 			provenanceId: "host-runtime-probe",
 		}),
 	]);
+
+	// Concurrency ceiling, read from the durable record rather than trusted
+	// from the caller: a crashed parent's live children still count. Checked
+	// after every await above, so the count and the admission below run
+	// synchronously and concurrent spawns in this process cannot both pass it.
+	const liveChildren = request.store.countLiveChildBindings(issuerPrincipalId);
+	if (liveChildren >= parentDelegable.spawn.maxChildren) {
+		return fail(
+			"spawn_children_exhausted",
+			`issuer already holds ${liveChildren} live children at a ceiling of ${parentDelegable.spawn.maxChildren}.`,
+			"issuer.spawn.maxChildren",
+		);
+	}
 
 	const prepared = prepareLifecycleLaunch(
 		request.store,

@@ -44,6 +44,7 @@ import {
 	TOOL_CAPABILITY_SOURCES,
 	type ToolCapabilitySource,
 } from "../task/launch-contract";
+import { writeContentAddressedFile } from "../utils/content-addressed-file";
 import {
 	createSessionRecordResolver,
 	createStoreRecordSource,
@@ -350,13 +351,14 @@ export async function projectLifecycleSideRequest(
 		});
 	};
 	const systemBlocks = context.systemPrompt ?? [];
-	for (let i = 0; i < systemBlocks.length; i++) {
-		fragments.push(await issueOne(`sys:${i}`, systemBlocks[i]!));
-	}
-	for (let i = 0; i < context.messages.length; i++) {
-		const message = context.messages[i]!;
-		fragments.push(await issueOne(`msg:${i}:${message.role}`, serializeMessageForProjection(message)));
-	}
+	fragments.push(
+		...(await Promise.all([
+			...systemBlocks.map((block, i) => issueOne(`sys:${i}`, block)),
+			...context.messages.map((message, i) =>
+				issueOne(`msg:${i}:${message.role}`, serializeMessageForProjection(message)),
+			),
+		])),
+	);
 
 	const tools: ProjectedToolCandidate[] = [];
 	if (context.tools !== undefined) {
@@ -834,7 +836,9 @@ export function activateBoundSessionAuthority(input: {
 			try {
 				const digest = sha256Hex(fragment.content);
 				const filePath = path.join(fragmentDir, `${digest}.txt`);
-				await Bun.write(filePath, fragment.content, { createPath: true });
+				// Content-addressed and atomic: requests sharing a block reuse one
+				// record, and a concurrent reader never sees a partial file.
+				await writeContentAddressedFile(filePath, fragment.content);
 				return { contentRef: `file://${filePath}`, sourceHash: digest };
 			} catch {
 				return null;

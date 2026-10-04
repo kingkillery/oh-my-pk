@@ -283,7 +283,14 @@ export class LifecycleAuthorityStore {
 		this.#db.run("PRAGMA journal_mode = WAL");
 		this.#db.run(`PRAGMA synchronous = ${options.durability === "normal" ? "NORMAL" : "FULL"}`);
 		this.#db.run("PRAGMA foreign_keys = ON");
-		this.#initializeSchema();
+		try {
+			this.#initializeSchema();
+		} catch (error) {
+			// A refused or failed open must not leave the connection (and, on
+			// Windows, the file lock) behind.
+			this.#db.close();
+			throw error;
+		}
 	}
 
 	/** Open (or create) the lifecycle authority SQLite database. */

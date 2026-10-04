@@ -132,6 +132,31 @@ describe("lifecycle authority database (§14.5)", () => {
 		expect(() => LifecycleAuthorityStore.open({ dbPath })).toThrow(/newer than supported/);
 	});
 
+	it.skipIf(process.platform !== "linux")("releases the connection when it refuses to open a file", () => {
+		const dbPath = tempPath("authority-refused");
+		LifecycleAuthorityStore.open({ dbPath }).close();
+		const bumped = new Database(dbPath);
+		bumped.run("INSERT INTO schema_version(version) VALUES (99)");
+		bumped.close();
+
+		for (let i = 0; i < 3; i++) {
+			expect(() => LifecycleAuthorityStore.open({ dbPath })).toThrow(/newer than supported/);
+		}
+		// Every refused open closed its handle: no descriptor of this process
+		// still points at the database or its WAL files.
+		const openOnFile = fs
+			.readdirSync("/proc/self/fd")
+			.map(fd => {
+				try {
+					return fs.readlinkSync(path.join("/proc/self/fd", fd));
+				} catch {
+					return "";
+				}
+			})
+			.filter(target => target.startsWith(dbPath));
+		expect(openOnFile).toEqual([]);
+	});
+
 	it("is idempotent across repeated opens", () => {
 		const dbPath = tempPath("authority-reopen");
 		for (let i = 0; i < 3; i++) {

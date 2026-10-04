@@ -953,6 +953,22 @@ describe("LC live: issuer spawn envelope is enforced at admission", () => {
 		expect(countBindings(path.join(dir.path(), "op.db"))).toBe(0);
 	});
 
+	it("holds the live-children ceiling when spawns are admitted concurrently", async () => {
+		const issuer = issuerWithSpawn("lc-issuer-concurrent", { maxChildren: 1 });
+		// Task fan-out admits children concurrently; the ceiling check and the
+		// admission must not interleave, so exactly one of these may bind.
+		const results = await Promise.all([
+			admit(issuer, "concurrent-1"),
+			admit(issuer, "concurrent-2"),
+			admit(issuer, "concurrent-3"),
+		]);
+		expect(results.filter(result => result.ok)).toHaveLength(1);
+		for (const result of results) {
+			if (!result.ok) expect(result.code).toBe("spawn_children_exhausted");
+		}
+		expect(countBindings(path.join(dir.path(), "op.db"))).toBe(1);
+	});
+
 	it("denies a spawn past the issuer's live-children ceiling, counted from the store", async () => {
 		const issuer = issuerWithSpawn("lc-issuer-fanout", { maxChildren: 1 });
 		const first = await admit(issuer, "fanout-1");

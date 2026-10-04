@@ -13,7 +13,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
-import { AsyncJobManager } from "@pk-nerdsaver-ai/pi-coding-agent/async/job-manager";
 import { ModelRegistry } from "@pk-nerdsaver-ai/pi-coding-agent/config/model-registry";
 import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import {
@@ -139,6 +138,7 @@ describe("lifecycle execution with task.lifecycle.enabled off", () => {
 				const tools = session.agent.state.tools;
 				expect(tools.length).toBeGreaterThan(0);
 				for (const tool of tools) {
+					expect(getRecordedToolProvenance(tool)).toBeDefined();
 					expect(getRecordedToolProvenance(tool)).toBe(session.getToolSource(tool.name));
 				}
 			} finally {
@@ -148,7 +148,6 @@ describe("lifecycle execution with task.lifecycle.enabled off", () => {
 	});
 
 	describe("TaskTool spawn", () => {
-		const managers: AsyncJobManager[] = [];
 		const taskAgent: AgentDefinition = {
 			name: "task",
 			description: "General-purpose task agent",
@@ -222,10 +221,7 @@ describe("lifecycle execution with task.lifecycle.enabled off", () => {
 			});
 		});
 
-		afterEach(async () => {
-			for (const manager of managers.splice(0)) {
-				await manager.dispose({ timeoutMs: 1000 });
-			}
+		afterEach(() => {
 			AgentLifecycleManager.resetGlobalForTests();
 			AgentRegistry.resetGlobalForTests();
 		});
@@ -236,8 +232,6 @@ describe("lifecycle execution with task.lifecycle.enabled off", () => {
 				captured = options;
 				return makeResult(options.id ?? "?");
 			});
-			const manager = new AsyncJobManager({ onJobComplete: () => {} });
-			managers.push(manager);
 			const tool = await TaskTool.create(session);
 			await tool.execute("tc-default-off", {
 				agent: "task",

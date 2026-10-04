@@ -51,7 +51,9 @@ const procs = objectives.map((objective, index) =>
 	}),
 );
 
-const readyDeadline = Date.now() + 120_000;
+// Below the 90s test timeout, so a stalled contender fails with this message
+// rather than a bare test timeout.
+const readyDeadline = Date.now() + 60_000;
 for (;;) {
 	const readyFile = Bun.file(`${barrierPath}.ready`);
 	const text = (await readyFile.exists()) ? await readyFile.text() : "";
