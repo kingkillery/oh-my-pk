@@ -1540,6 +1540,7 @@ PERSISTENT_CACHE = CONFIG.get("persistentCache") or {}
 LLAMA_DIR = Path(RUNTIME["directory"])
 MODEL_ROOT = Path("/content/ompk-models")
 PID_FILE = Path("/content/ompk-colab-model.pid")
+ADAPTER_STATE_FILE = Path("/content/ompk-colab-model.adapters.json")
 LOG_FILE = Path("/content/ompk-colab-model.log")
 HEX_DIGITS = frozenset("0123456789abcdef")
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
@@ -2077,6 +2078,17 @@ def served_adapters_match(argv, model_path):
     )
 
 
+def served_adapters_verified(pid):
+    """A same-named adapter file may have been replaced after the running server read it. Only the server this script started, with exactly the adapters it verified at start, is reusable."""
+    if not ADAPTERS:
+        return True
+    try:
+        state = json.loads(ADAPTER_STATE_FILE.read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(state, dict) and state.get("pid") == pid and state.get("adapters") == adapter_echo()["adapters"]
+
+
 def served_model_matches(argv, primary_name, required_names):
     """True when the process serves this exact GGUF and LoRA set: same file name, every split present beside it, same adapters."""
     model = argv_option(argv, "--model")
@@ -2430,6 +2442,7 @@ def start_server(target, model_path, primary_name, base_url):
         server_args.extend(lora_args)
     server_process = subprocess.Popen(server_args, env=library_env(target.server), stdout=log_handle, stderr=subprocess.STDOUT, start_new_session=True)
     PID_FILE.write_text(str(server_process.pid))
+    ADAPTER_STATE_FILE.write_text(json.dumps({"pid": server_process.pid, "adapters": adapter_echo()["adapters"]}))
     for attempt in range(180):
         if server_process.poll() is not None:
             log_handle.close()
@@ -2490,7 +2503,7 @@ def main():
     if matching_id is not None:
         running = serving_process(CONFIG["remotePort"])
         target = target_for_process(targets, running) if running else None
-        if target is not None and served_model_matches(running[2], primary_name, required_names):
+        if target is not None and served_model_matches(running[2], primary_name, required_names) and served_adapters_verified(running[0]):
             progress(f"reusing running {Path(primary_name).stem} on validated {target.source} {runtime_label()}")
             PID_FILE.write_text(str(running[0]))
             record_runtime_manifest(target, primary_name)

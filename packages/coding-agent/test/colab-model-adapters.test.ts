@@ -89,11 +89,14 @@ def stage(root):
 def launch(root, directory):
     ns["LOG_FILE"] = root / "server.log"
     ns["PID_FILE"] = root / "server.pid"
+    ns["ADAPTER_STATE_FILE"] = root / "adapters.json"
     launched = []
     ns["subprocess"].Popen = lambda args, **kwargs: launched.append(list(args)) or Process()
     ns["request_json"] = lambda url, payload=None, timeout=30: {"status": "ok"}
     target = ns["RuntimeTarget"]("source", root / "llama-server", None)
     ns["start_server"](target, directory / BASE, BASE, "http://127.0.0.1:8081")
+    # Reuse later trusts this record: the new server's pid and the adapters verified for it.
+    assert json.loads(ns["ADAPTER_STATE_FILE"].read_text()) == {"pid": 1, "adapters": ns["adapter_echo"]()["adapters"]}
     return launched[-1]
 `;
 
@@ -456,7 +459,7 @@ with tempfile.TemporaryDirectory() as folder:
     stem = BASE[:-len(".gguf")]
     target = ns["RuntimeTarget"]("source", pathlib.Path("/opt/llama-server"), "commit")
 
-    def run_main(alias, requested, server_id, loras):
+    def run_main(alias, requested, server_id, loras, state="started"):
         ns["CONFIG"]["alias"] = alias
         ns["CONFIG"]["modelCacheDirectory"] = str(directory)
         ns["ADAPTERS"] = [everything[name] for name in requested]
@@ -466,6 +469,19 @@ with tempfile.TemporaryDirectory() as folder:
         announced = []
         stopped = []
         ns["PID_FILE"] = root / "server.pid"
+        # What start_server recorded when it launched the running server: its pid and the adapters it verified then.
+        sidecar = root / "adapters.json"
+        sidecar.unlink(missing_ok=True)
+        ns["ADAPTER_STATE_FILE"] = sidecar
+        recorded = [{"file": name, "sha256": everything[name]["sha256"], "scale": float(scale)} for name, scale in loras]
+        if state == "started":
+            sidecar.write_text(json.dumps({"pid": 4242, "adapters": recorded}))
+        elif state == "other pid":
+            sidecar.write_text(json.dumps({"pid": 1, "adapters": recorded}))
+        elif state == "older bytes":
+            sidecar.write_text(json.dumps({"pid": 4242, "adapters": [{**item, "sha256": "0" * 64} for item in recorded]}))
+        elif state == "garbage":
+            sidecar.write_text("not json")
         ns["run"] = lambda args, cwd=None: None
         ns["request_json"] = lambda url, payload=None, timeout=30: {"data": [{"id": server_id}]}
         ns["validated_targets"] = lambda: [target]
@@ -498,6 +514,11 @@ with tempfile.TemporaryDirectory() as folder:
     ]
     for label, alias, requested, server_id, loras, expected in rows:
         assert run_main(alias, requested, server_id, loras) == expected, label
+    # The argv matches, but the adapter bytes the running server holds are not provably the ones now on disk and in the manifest.
+    for state in ("missing", "other pid", "older bytes", "garbage"):
+        assert run_main("quant-dsl", ["one.gguf"], "quant-dsl", [("one.gguf", "1.0")], state) == "replaced", state
+    # A base-only launch never consults the sidecar.
+    assert run_main(None, [], stem, [], "missing") == "reused"
 print("MAIN_REUSE_OK")`,
 	);
 	expect(result.exitCode, result.stderr).toBe(0);
