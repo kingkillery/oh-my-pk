@@ -38,6 +38,7 @@ export const DISCOVERY_DEFAULT_MAX_TOKENS = OPENAI_COMPAT_DISCOVERY_DEFAULT_MAX_
 const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const OLLAMA_HOST_DEFAULT_PORT = "11434";
 const DEFAULT_9ROUTER_BASE_URL = "http://127.0.0.1:20128/v1";
+const DEFAULT_COLAB_BASE_URL = "https://orca.pkking.computer/v1";
 /** Colab bridges often sit across WSL localhost forwarding; 300ms misses a live /v1/models. */
 const COLAB_MODELS_DISCOVERY_TIMEOUT_MS = 5_000;
 
@@ -99,6 +100,14 @@ export function getImplicitOllamaBaseUrl(): string {
 
 export function getImplicit9RouterBaseUrl(): string {
 	return Bun.env["9ROUTER_BASE_URL"]?.trim() || Bun.env.NINEROUTER_BASE_URL?.trim() || DEFAULT_9ROUTER_BASE_URL;
+}
+
+export function getColabBaseUrlOverride(): string | undefined {
+	return Bun.env.OMPK_COLAB_BASE_URL?.trim().replace(/\/+$/, "") || undefined;
+}
+
+export function getImplicitColabBaseUrl(): string {
+	return getColabBaseUrlOverride() ?? DEFAULT_COLAB_BASE_URL;
 }
 
 export function getOllamaContextLengthOverride(): number | undefined {
@@ -445,23 +454,32 @@ export async function discoverLlamaCppModels(
 }
 
 /**
- * Resolve candidate base URLs for an active Colab bridge.
- * Windows WSL localhost relay can drop connections while the WSL host address
- * keeps working, so both are probed.
+ * Resolve candidate base URLs for public Colab inference or an explicit bridge.
+ * Explicit loopback bridges can also use the WSL host address when Windows
+ * localhost forwarding drops connections.
  */
 export async function getColabBridgeCandidateBaseUrls(baseUrl?: string): Promise<string[]> {
-	const envBaseUrl = Bun.env.OMPK_COLAB_BASE_URL?.trim();
-	if (envBaseUrl) {
-		return [envBaseUrl.replace(/\/+$/, "")];
+	const override = getColabBaseUrlOverride();
+	if (override) {
+		return [override];
 	}
-	const candidates: string[] = [];
 	const explicit = baseUrl?.trim();
-	if (explicit) {
-		candidates.push(explicit.replace(/\/+$/, ""));
-	} else {
-		candidates.push("http://127.0.0.1:18082/v1");
+	if (!explicit) {
+		return [getImplicitColabBaseUrl()];
 	}
-	if (process.platform === "win32") {
+	const candidates = [explicit.replace(/\/+$/, "")];
+	let endpoint: URL;
+	try {
+		endpoint = new URL(explicit);
+	} catch {
+		return candidates;
+	}
+	const isLoopback =
+		(endpoint.protocol === "http:" || endpoint.protocol === "https:") &&
+		(endpoint.hostname === "localhost" ||
+			endpoint.hostname === "[::1]" ||
+			/^127(?:\.\d{1,3}){3}$/.test(endpoint.hostname));
+	if (process.platform === "win32" && isLoopback) {
 		try {
 			const probe = Bun.spawn(["wsl.exe", "-d", "Ubuntu", "-e", "hostname", "-I"], {
 				stdout: "pipe",
@@ -474,14 +492,7 @@ export async function getColabBridgeCandidateBaseUrls(baseUrl?: string): Promise
 				.split(/\s+/)
 				.find(entry => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(entry));
 			if (address) {
-				let port = "18082";
-				if (explicit) {
-					try {
-						port = new URL(explicit).port || "18082";
-					} catch {
-						// keep default port
-					}
-				}
+				const port = endpoint.port || "18082";
 				const wslUrl = `http://${address}:${port}/v1`;
 				if (!candidates.includes(wslUrl)) {
 					candidates.push(wslUrl);
