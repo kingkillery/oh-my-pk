@@ -104,7 +104,7 @@ providers:
 ### Allowed auth/discovery values
 
 - `auth`: `apiKey` (default), `none`, or `oauth`; for `models.yml` custom models, `oauth` is accepted by schema but does not waive the `apiKey` requirement
-- `discovery.type`: `ollama`, `llama.cpp`, `lm-studio`, `openai-models-list`, or `proxy`
+- `discovery.type`: `ollama`, `llama.cpp`, `lm-studio`, `openai-models-list`, `proxy`, `litellm`, or `colab`
 - `transport`: `pi-native` only. When set, every model under that provider is sent to an `omp auth-gateway` compatible `baseUrl` via `POST /v1/pi/stream`; `apiKey` is the gateway bearer.
 
 ## Validation rules (current)
@@ -277,6 +277,35 @@ If `llama.cpp` is not explicitly configured, registry adds an implicit discovera
 
 Runtime discovery calls llama.cpp model endpoints and synthesizes model entries with local defaults.
 
+### Shared deployed Colab/rig discovery
+
+The designated shared public inference base for deployed Colab/rig backends is **`https://orca.pkking.computer/v1`**, independent of the deployed backend or model mode (including upstream, prism, and diffusion). The implicit `llama.cpp (colab)` provider uses this remote default with `api: openai-completions` and `discovery.type: colab`. Discovery requests **`https://orca.pkking.computer/v1/models`** (`GET /models` relative to the `/v1` base), using the live model IDs returned by the endpoint rather than assuming a particular model is loaded.
+
+Colab discovery resolves its base URL in this order:
+
+1. A nonempty `OMPK_COLAB_BASE_URL` override (trimmed, with trailing slashes normalized).
+2. An explicitly registered runtime bridge or configured provider `baseUrl`.
+3. The shared public default above.
+
+Set `OMPK_COLAB_BASE_URL` to an inference base ending in `/v1`, not the `/models` URL. It takes precedence over a configured endpoint for Colab discovery; unset it when you want the configured endpoint to win. Remote endpoints do not fall back to a local bridge. Explicit loopback bridge endpoints may use WSL address fallback on Windows.
+
+To configure discovery without pinning stale model IDs, omit the `models` list:
+
+```yaml
+providers:
+  "llama.cpp (colab)":
+    baseUrl: https://orca.pkking.computer/v1
+    api: openai-completions
+    discovery:
+      type: colab
+```
+
+For an authenticated endpoint, store credentials for the exact provider key (`llama.cpp (colab)` here) through the existing auth storage, or configure `apiKey` with an existing environment-variable name or command-resolved secret (see the auth and command-resolved-secret sections). Do not paste tokens into the URL, this example, or inline headers. If using an environment-variable name, ensure that variable is set: an unresolved name is otherwise treated as a literal key. Use `auth: none` only for an endpoint intentionally requiring no credentials; the implicit provider is keyless by default, which does not establish that the remote service accepts unauthenticated requests.
+
+The unconfigured shared default deliberately does **not** reuse stored `llama.cpp (colab)` credentials that may belong to an older private bridge. For authenticated shared serving, explicitly opt into the public endpoint using the provider configuration above or `OMPK_COLAB_BASE_URL=https://orca.pkking.computer/v1`, then supply its credentials through the existing auth mechanisms. Private runtime registrations keep discovering their own bridge and are removed from the available inventory when that bridge goes offline; a refresh does not redirect their credentials to the shared public origin.
+
+The default identifies where to discover deployed models; it does not create a public tunnel, deploy a backend, or prove endpoint/model availability. It is separate from the private bridge explicitly opened by `/colab-model` below.
+
 ### Launching a Hugging Face GGUF on Colab
 
 Use the built-in command with a public Hugging Face GGUF repository or a direct GGUF file URL:
@@ -292,9 +321,9 @@ The command owns the interactive lifecycle:
 1. Resolve the repository and choose a GGUF that fits the accelerator. Automatic launches try the cheapest viable T4, L4, then A100 runtime; `--gpu T4|L4|A100|H100|G4` requests a specific accelerator. A direct file URL overrides automatic quantization selection.
 2. Reuse an existing Colab CLI session. Set `OMPK_COLAB_SESSION` before starting OMPK to choose a reusable session name. On Windows, OMPK invokes the Colab CLI through WSL; on Linux it invokes `colab` directly. An explicit `--gpu` request never replaces a working session on a different accelerator. `/colab-model` never creates a runtime (GPU or CPU): with no session it fails and directs you to arm a session cutoff and launch through the mesh-inference dashboard (`http://127.0.0.1:18084/`), whose budget-wrapping CLI is the only path allowed to run `colab new`.
 3. Reuse a healthy server or existing build when possible. On a cold runtime, download the model while building CUDA-enabled llama.cpp with native-only GPU code, then start `llama-server` and run a warmup completion.
-4. Open a loopback-only OpenAI Chat Completions bridge, register the warmed model under the existing `llama.cpp` provider, select it, and print the local `/v1` base URL. No Colab runtime token or public unauthenticated tunnel is exposed.
+4. Open a private local/WSL OpenAI Chat Completions bridge, register the warmed model under `llama.cpp (colab)` with that explicit bridge base URL, select it, and print the `/v1` base URL. This launch path does not publish the bridge at the shared public endpoint or expose a Colab runtime token or public unauthenticated tunnel.
 
-The command supports public repositories without forwarding Hugging Face credentials. Gated repositories fail closed. The loopback API bridge lives only for the current OMPK process; the Colab GPU session remains allocated after OMPK exits. Release it explicitly (from WSL on Windows):
+The command supports public repositories without forwarding Hugging Face credentials. Gated repositories fail closed. A newly created bridge is tied to its owning OMPK process and stops when that owner exits; a healthy existing bridge may be reused and remains owned by its original launcher. The Colab GPU session remains allocated after OMPK exits. Release it explicitly (from WSL on Windows):
 
 ```bash
 colab stop --session ompk-colab-model
