@@ -79,6 +79,7 @@ import {
 	discoverLlamaCppModelContextWindow,
 	discoverModelsByProviderType,
 	getImplicit9RouterBaseUrl,
+	getImplicitColabBaseUrl,
 	getImplicitOllamaBaseUrl,
 	getOllamaContextLengthOverride,
 	normalizeLiteLLMDiscoveryBaseUrl,
@@ -688,6 +689,8 @@ export class ModelRegistry {
 	#canonicalIndexDirty: boolean = true;
 	#customProviderApiKeys: Map<string, string> = new Map();
 	#keylessProviders: Set<string> = new Set();
+	#configuredProviders: Set<string> = new Set();
+	#runtimeRegisteredProviders: Set<string> = new Set();
 	#discoverableProviders: DiscoveryProviderConfig[] = [];
 	#customModelOverlays: CustomModelOverlay[] = [];
 	#providerOverrides: Map<string, ProviderOverride> = new Map();
@@ -937,6 +940,7 @@ export class ModelRegistry {
 			routing,
 			error: configError,
 		} = this.#loadCustomModels();
+		this.#configuredProviders = configuredProviders;
 		this.#configError = configError;
 		this.#keylessProviders = keylessProviders;
 		this.#discoverableProviders = discoverableProviders;
@@ -954,6 +958,12 @@ export class ModelRegistry {
 		this.#equivalenceConfig = equivalence;
 
 		this.#addImplicitDiscoverableProviders(configuredProviders);
+		// Runtime bridge routing survives static reloads, including configured discovery.
+		for (const provider of this.#discoverableProviders) {
+			if (provider.discovery.type !== "colab") continue;
+			const baseUrl = this.#runtimeProviderOverrides.get(provider.provider)?.baseUrl;
+			if (baseUrl) provider.baseUrl = baseUrl;
+		}
 		let builtInModels = this.#applyHardcodedModelPolicies(this.#loadBuiltInModels(overrides));
 		const cachedStandardResult = this.#loadCachedStandardProviderModels();
 		const cachedStandardModels = this.#applyHardcodedModelPolicies(cachedStandardResult.models);
@@ -1258,7 +1268,7 @@ export class ModelRegistry {
 			this.#discoverableProviders.push({
 				provider: "llama.cpp (colab)",
 				api: "openai-completions",
-				baseUrl: Bun.env.OMPK_COLAB_BASE_URL || "http://127.0.0.1:18082/v1",
+				baseUrl: getImplicitColabBaseUrl(),
 				discovery: { type: "colab" },
 				optional: true,
 				compat: {
@@ -1440,13 +1450,16 @@ export class ModelRegistry {
 			return;
 		}
 		const discoveredModels = this.#applyHardcodedModelPolicies(
-			discovered.map(model =>
-				mergeDiscoveredModel(
+			discovered.map(model => {
+				const providerOverride = this.#providerOverrides.get(model.provider);
+				return mergeDiscoveredModel(
 					model,
 					this.find(model.provider, model.id),
-					this.#providerOverrides.get(model.provider),
-				),
-			),
+					liveColabProviders.has(model.provider) && providerOverride
+						? { ...providerOverride, baseUrl: model.baseUrl }
+						: providerOverride,
+				);
+			}),
 		);
 		const authoritativeProviders = providersWithAuthoritativeProjectCatalog(discoveredModels);
 		for (const provider of reconciledColabProviders) {
@@ -1467,7 +1480,7 @@ export class ModelRegistry {
 				: this.#runtimeModelOverlays.filter(overlay => !reconciledColabProviders.has(overlay.provider));
 		const combined = this.#mergeCustomModels(withConfigModels, runtimeModels);
 		const withModelOverrides = this.#applyModelOverrides(collapseBuiltModelVariants(combined), this.#modelOverrides);
-		this.#models = this.#applyRuntimeProviderOverrides(withModelOverrides);
+		this.#models = this.#applyRuntimeProviderOverrides(withModelOverrides, liveColabProviders);
 		this.#rebuildCanonicalIndex();
 	}
 
@@ -1842,12 +1855,18 @@ export class ModelRegistry {
 			remoteCompaction: mergeProviderRemoteCompactionConfig(entry.remoteCompaction, override.remoteCompaction),
 		};
 	}
-	#applyRuntimeProviderOverrides(models: Model<Api>[]): Model<Api>[] {
+	#applyRuntimeProviderOverrides(
+		models: Model<Api>[],
+		preserveBaseUrlForProviders?: ReadonlySet<string>,
+	): Model<Api>[] {
 		if (this.#runtimeProviderOverrides.size === 0) return models;
 		return models.map(model => {
 			const override = this.#runtimeProviderOverrides.get(model.provider);
 			if (!override) return model;
-			return this.#applyProviderTransportOverride(model, override);
+			return this.#applyProviderTransportOverride(
+				model,
+				preserveBaseUrlForProviders?.has(model.provider) ? { ...override, baseUrl: model.baseUrl } : override,
+			);
 		});
 	}
 	#resolveLiveModelOverride(model: Model<Api>): ModelOverride | undefined {
@@ -2181,10 +2200,21 @@ export class ModelRegistry {
 		return this.#models.find(m => m.provider === provider && m.baseUrl)?.baseUrl;
 	}
 
+	/** Stored provider credentials predate the implicit shared-public Colab origin. */
+	#usesImplicitPublicColab(provider: string): boolean {
+		return (
+			provider === "llama.cpp (colab)" &&
+			!Bun.env.OMPK_COLAB_BASE_URL?.trim() &&
+			!this.#configuredProviders.has(provider) &&
+			!this.#runtimeRegisteredProviders.has(provider)
+		);
+	}
+
 	/**
 	 * Get API key for a model.
 	 */
 	async getApiKey(model: Model<Api>, sessionId?: string): Promise<string | undefined> {
+		if (this.#usesImplicitPublicColab(model.provider)) return kNoAuth;
 		const commandKey = this.#resolveCommandBackedApiKey(model.provider);
 		if (commandKey.configured) return commandKey.value;
 		if (this.#keylessProviders.has(model.provider) && !this.authStorage.hasAuth(model.provider)) {
@@ -2205,6 +2235,7 @@ export class ModelRegistry {
 		sessionId?: string,
 		options?: { baseUrl?: string; modelId?: string; forceRefresh?: boolean; signal?: AbortSignal },
 	): Promise<string | undefined> {
+		if (this.#usesImplicitPublicColab(provider)) return kNoAuth;
 		const commandKey = this.#resolveCommandBackedApiKey(provider);
 		if (commandKey.configured) return commandKey.value;
 		if (this.#keylessProviders.has(provider) && !this.authStorage.hasAuth(provider)) {
@@ -2229,17 +2260,17 @@ export class ModelRegistry {
 	resolver(model: ApiKeyResolverModel, sessionId?: string): ApiKeyResolver;
 	resolver(target: string | ApiKeyResolverModel, optionsOrSessionId?: ApiKeyResolverOptions | string): ApiKeyResolver {
 		const options = typeof optionsOrSessionId === "string" ? { sessionId: optionsOrSessionId } : optionsOrSessionId;
-		if (typeof target === "string") {
-			return createApiKeyResolver(this, target, options);
-		}
-		return createApiKeyResolver(this, target.provider, {
-			...options,
-			baseUrl: target.baseUrl,
-			modelId: target.id,
-		});
+		const provider = typeof target === "string" ? target : target.provider;
+		const resolve = createApiKeyResolver(
+			this,
+			provider,
+			typeof target === "string" ? options : { ...options, baseUrl: target.baseUrl, modelId: target.id },
+		);
+		return context => (this.#usesImplicitPublicColab(provider) ? Promise.resolve(kNoAuth) : resolve(context));
 	}
 
 	async #peekApiKeyForProvider(provider: string): Promise<string | undefined> {
+		if (this.#usesImplicitPublicColab(provider)) return kNoAuth;
 		const commandKey = this.#resolveCommandBackedApiKey(provider);
 		if (commandKey.configured) return commandKey.value;
 		if (this.#keylessProviders.has(provider) && !this.authStorage.hasAuth(provider)) {
@@ -2256,6 +2287,7 @@ export class ModelRegistry {
 	}
 
 	#clearRuntimeProviderState(providerName: string): void {
+		this.#runtimeRegisteredProviders.delete(providerName);
 		this.#runtimeProviderApiKeys.delete(providerName);
 		this.#runtimeProviderOverrides.delete(providerName);
 		this.#runtimeModelOverlays = this.#runtimeModelOverlays.filter(overlay => overlay.provider !== providerName);
@@ -2362,6 +2394,24 @@ export class ModelRegistry {
 		if (sourceHandoff) {
 			this.#lastStaticLoadMtime = null;
 			this.#reloadStaticModels();
+		}
+
+		this.#runtimeRegisteredProviders.add(providerName);
+		if (providerName === "llama.cpp (colab)" && config.baseUrl) {
+			// Keep discovery authoritative, but probe the registered bridge rather
+			// than the implicit public origin with runtime credentials. Persist this
+			// before the model-registration branch returns so reloads keep routing.
+			this.#runtimeProviderOverrides.set(
+				providerName,
+				this.#mergeProviderOverride(this.#runtimeProviderOverrides.get(providerName), {
+					baseUrl: config.baseUrl,
+				}),
+			);
+			for (const provider of this.#discoverableProviders) {
+				if (provider.provider === providerName && provider.discovery.type === "colab") {
+					provider.baseUrl = config.baseUrl;
+				}
+			}
 		}
 
 		if (config.apiKey) {
