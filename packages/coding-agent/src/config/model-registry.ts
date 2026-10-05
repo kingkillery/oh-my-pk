@@ -1471,7 +1471,11 @@ export class ModelRegistry {
 		const baseModels =
 			authoritativeProviders.size > 0 ? dropProviderModels(this.#models, authoritativeProviders) : this.#models;
 		const resolved = this.#mergeResolvedModels(baseModels, discoveredModels);
-		const withConfigModels = this.#mergeCustomModels(resolved, this.#customModelOverlays);
+		const configuredModels =
+			reconciledColabProviders.size === 0
+				? this.#customModelOverlays
+				: this.#customModelOverlays.filter(overlay => !reconciledColabProviders.has(overlay.provider));
+		const withConfigModels = this.#mergeCustomModels(resolved, configuredModels);
 		// A Colab bridge is authoritative both when it reports a live model and
 		// when it is unavailable; either case must not retain a stale overlay.
 		const runtimeModels =

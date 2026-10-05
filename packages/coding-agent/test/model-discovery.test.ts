@@ -1156,6 +1156,7 @@ describe("ModelRegistry runtime discovery", () => {
 			contextWindow: 32768,
 			nativeMetadata: true,
 			online: true,
+			empty: false,
 		};
 		const paths: string[] = [];
 		const receivedRequests: { pathname: string; authorization: string | null }[] = [];
@@ -1169,7 +1170,9 @@ describe("ModelRegistry runtime discovery", () => {
 				receivedRequests.push({ pathname, authorization: request.headers.get("authorization") });
 				if (!state.online) return new Response("Unavailable", { status: 503 });
 				if (pathname === "/v1/models") {
-					return Response.json({ data: [{ id: state.modelId, meta: { n_ctx: state.contextWindow } }] });
+					return Response.json({
+						data: state.empty ? [] : [{ id: state.modelId, meta: { n_ctx: state.contextWindow } }],
+					});
 				}
 				if (pathname === "/props" && state.nativeMetadata) {
 					return Response.json({ default_generation_settings: { n_ctx: state.contextWindow } });
@@ -1194,6 +1197,11 @@ describe("ModelRegistry runtime discovery", () => {
 			else Bun.env.OMPK_COLAB_BASE_URL = envValue;
 			const provider = "llama.cpp (colab)";
 			authStorage.setRuntimeApiKey(provider, "synthetic-old-private-colab-key");
+			await authStorage.set(provider, [
+				{ type: "api_key", key: "synthetic-stored-private-colab-key-a" },
+				{ type: "api_key", key: "synthetic-stored-private-colab-key-b" },
+			]);
+			const storedCredentials = structuredClone(authStorage.listStoredCredentials(provider));
 			const fixture = serveColabDiscovery("https://orca.pkking.computer/v1");
 			fixture.state.modelId = "public-colab-credential-regression";
 			const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fixture.transport });
@@ -1214,6 +1222,29 @@ describe("ModelRegistry runtime discovery", () => {
 			).toBe(kNoAuth);
 			expect(await registry.resolver(provider)({ lastChance: false, error: undefined })).toBe(kNoAuth);
 			expect(await registry.resolver(model!)({ lastChance: false, error: undefined })).toBe(kNoAuth);
+			expect(
+				await registry.getApiKeyForProvider(provider, "implicit-public-retry", {
+					baseUrl: model!.baseUrl,
+					modelId: model!.id,
+					forceRefresh: true,
+				}),
+			).toBe(kNoAuth);
+			for (const resolver of [
+				registry.resolver(provider, {
+					sessionId: "implicit-public-retry",
+					baseUrl: model!.baseUrl,
+					modelId: model!.id,
+				}),
+				registry.resolver(model!, "implicit-public-retry"),
+			]) {
+				for (const lastChance of [false, true]) {
+					expect(await resolver({ lastChance, error: new Error("Synthetic authentication failure") })).toBe(
+						kNoAuth,
+					);
+				}
+			}
+			expect(authStorage.listStoredCredentials(provider)).toEqual(storedCredentials);
+			expect(await authStorage.peekApiKey(provider)).toBe("synthetic-old-private-colab-key");
 		});
 	}
 
@@ -1314,6 +1345,69 @@ describe("ModelRegistry runtime discovery", () => {
 		}
 	});
 
+	test("returns to shared public keyless Colab routing after clearing a private source registration", async () => {
+		const provider = "llama.cpp (colab)";
+		const sourceId = "colab-private-cleanup-regression";
+		const publicBaseUrl = "https://orca.pkking.computer/v1";
+		const privateBaseUrl = "http://127.0.0.1:18082/v1";
+		await authStorage.set(provider, { type: "api_key", key: "synthetic-stored-private-cleanup-key" });
+		const storedCredentials = structuredClone(authStorage.listStoredCredentials(provider));
+		const publicFixture = serveColabDiscovery(publicBaseUrl);
+		publicFixture.state.modelId = "public-after-source-cleanup";
+		const privateFixture = serveColabDiscovery(privateBaseUrl);
+		privateFixture.state.modelId = "private-before-source-cleanup";
+		const transport: FetchImpl = (input, init) =>
+			new URL(String(input)).origin === new URL(privateBaseUrl).origin
+				? privateFixture.transport(input, init)
+				: publicFixture.transport(input, init);
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: transport });
+		try {
+			registry.registerProvider(
+				provider,
+				{
+					api: "openai-completions",
+					apiKey: kNoAuth,
+					baseUrl: privateBaseUrl,
+					models: [
+						{
+							id: privateFixture.state.modelId,
+							name: "Source-scoped private model",
+							reasoning: false,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 32768,
+							maxTokens: 8192,
+						},
+					],
+				},
+				sourceId,
+			);
+			await registry.refresh();
+			expect(
+				getModelsForProvider(registry, provider).map(model => ({ id: model.id, baseUrl: model.baseUrl })),
+			).toEqual([{ id: privateFixture.state.modelId, baseUrl: privateBaseUrl }]);
+			expect(publicFixture.requestedUrls).toEqual([]);
+			const privateRequestCount = privateFixture.requestedUrls.length;
+
+			registry.clearSourceRegistrations(sourceId);
+			await registry.refresh();
+			const models = getModelsForProvider(registry, provider);
+			expect(models.map(model => ({ id: model.id, baseUrl: model.baseUrl }))).toEqual([
+				{ id: publicFixture.state.modelId, baseUrl: publicBaseUrl },
+			]);
+			expect(privateFixture.requestedUrls).toHaveLength(privateRequestCount);
+			expect(publicFixture.requestedUrls).toContain(`${publicBaseUrl}/models`);
+			expect(publicFixture.receivedRequests.every(request => request.authorization === null)).toBe(true);
+			expect(await registry.getApiKey(models[0])).toBe(kNoAuth);
+			expect(
+				await registry.resolver(models[0])({ lastChance: true, error: new Error("Synthetic auth failure") }),
+			).toBe(kNoAuth);
+			expect(authStorage.listStoredCredentials(provider)).toEqual(storedCredentials);
+		} finally {
+			registry.clearSourceRegistrations(sourceId);
+		}
+	});
+
 	for (const envValue of [undefined, "", " \t\n "]) {
 		test(`discovers the shared public Colab endpoint with ${envValue === undefined ? "unset" : JSON.stringify(envValue)} env`, async () => {
 			if (envValue === undefined) delete Bun.env.OMPK_COLAB_BASE_URL;
@@ -1390,6 +1484,64 @@ describe("ModelRegistry runtime discovery", () => {
 		await registry.refresh();
 		expect(getModelsForProvider(registry, "llama.cpp (colab)")).toEqual([]);
 		expect(registry.getProviderDiscoveryState("llama.cpp (colab)")?.status).toBe("empty");
+	});
+
+	test("keeps configured Colab model overlays live-only at the env-selected public endpoint", async () => {
+		const provider = "llama.cpp (colab)";
+		const publicBaseUrl = "https://orca.pkking.computer/v1";
+		Bun.env.OMPK_COLAB_BASE_URL = publicBaseUrl;
+		writeRawModelsJson({
+			[provider]: {
+				baseUrl: "http://127.0.0.1:18082/v1",
+				api: "openai-completions",
+				auth: "none",
+				discovery: { type: "colab" },
+				models: ["model-a", "model-old"].map(id => ({
+					id,
+					name: `Configured ${id}`,
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 32768,
+					maxTokens: 8192,
+				})),
+			},
+		});
+		const fixture = serveColabDiscovery(publicBaseUrl);
+		fixture.state.modelId = "model-a";
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fixture.transport });
+		for (const id of ["model-a", "model-b"]) {
+			fixture.state.modelId = id;
+			await registry.refresh();
+			expect(registry.getError()).toBeUndefined();
+			expect(
+				getModelsForProvider(registry, provider).map(model => ({ id: model.id, baseUrl: model.baseUrl })),
+			).toEqual([{ id, baseUrl: publicBaseUrl }]);
+			expect(registry.find(provider, "model-old")).toBeUndefined();
+			if (id === "model-b") expect(registry.find(provider, "model-a")).toBeUndefined();
+			expect(
+				registry
+					.getAvailable()
+					.filter(model => model.provider === provider)
+					.map(model => model.id),
+			).toEqual([id]);
+			expect(fixture.requestedUrls.filter(url => url.endsWith("/models"))).toEqual(
+				Array.from(
+					{ length: fixture.paths.filter(pathname => pathname === "/v1/models").length },
+					() => `${publicBaseUrl}/models`,
+				),
+			);
+		}
+		for (const state of [
+			{ empty: true, online: true },
+			{ empty: false, online: false },
+		]) {
+			Object.assign(fixture.state, state);
+			await registry.refresh();
+			expect(getModelsForProvider(registry, provider)).toEqual([]);
+			expect(registry.getAvailable().some(model => model.provider === provider)).toBe(false);
+			expect(registry.getProviderDiscoveryState(provider)?.status).toBe("empty");
+		}
 	});
 
 	for (const envValue of [undefined, "", " \t ", "  https://colab-override.example/v1///  "]) {
