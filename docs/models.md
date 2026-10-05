@@ -291,6 +291,22 @@ Set `OMPK_COLAB_BASE_URL` to an inference base ending in `/v1`, not the `/models
 
 A tailnet-local rig can be addressed directly instead, for example `http://colab-llamacpp:8000/v1`, by setting that as the provider `baseUrl` or `OMPK_COLAB_BASE_URL`. This is an explicit configuration choice, not an automatic fallback: nothing prefers the tailnet host over the shared public endpoint, because silently retargeting a request could send an endpoint's credentials to a different origin. It also requires a MagicDNS-resolvable tailnet name and network reachability from the machine running OMPK.
 
+A tailnet rig that requires a bearer resolves it from an environment variable named in `apiKey`:
+
+```yaml
+providers:
+  "llama.cpp (colab)":
+    baseUrl: http://colab-llamacpp:8000/v1
+    api: openai-completions
+    apiKey: ORCA_COLAB_API_KEY
+    discovery:
+      type: colab
+```
+
+`apiKey` is either the environment-variable **name** or a `!command` secret. `${VAR}` is **not** interpolated and is sent as the literal key, so do not use that form. For a rig that genuinely requires no credentials, replace `apiKey` with `auth: none`. `discovery.type: colab` requests `/models` (and `/props`) under this `baseUrl`. Store this file at the active agent config path (`~/.ompk/agent/models.yml` by default). Never commit a literal token.
+
+Note that a configured `apiKey` **outranks** stored credentials for that provider, so if you also launch a private rig through `/colab-model` under the same provider key, keep this entry's credential aligned with that rig or use `auth: none` when the private bridge needs none.
+
 To configure discovery without pinning stale model IDs, omit the `models` list:
 
 ```yaml
