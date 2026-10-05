@@ -1191,7 +1191,7 @@ describe("ModelRegistry runtime discovery", () => {
 		return { state, paths, requestedUrls, receivedRequests, transport, server };
 	}
 
-	for (const envValue of [undefined, "", " \t\n "]) {
+	for (const envValue of [undefined, "", " \t\n ", "/", " /// "]) {
 		test(`does not reuse stored Colab credentials at the implicit public endpoint with ${envValue === undefined ? "unset" : JSON.stringify(envValue)} env`, async () => {
 			if (envValue === undefined) delete Bun.env.OMPK_COLAB_BASE_URL;
 			else Bun.env.OMPK_COLAB_BASE_URL = envValue;
@@ -1408,7 +1408,7 @@ describe("ModelRegistry runtime discovery", () => {
 		}
 	});
 
-	for (const envValue of [undefined, "", " \t\n "]) {
+	for (const envValue of [undefined, "", " \t\n ", "/", " /// "]) {
 		test(`discovers the shared public Colab endpoint with ${envValue === undefined ? "unset" : JSON.stringify(envValue)} env`, async () => {
 			if (envValue === undefined) delete Bun.env.OMPK_COLAB_BASE_URL;
 			else Bun.env.OMPK_COLAB_BASE_URL = envValue;
@@ -1544,13 +1544,16 @@ describe("ModelRegistry runtime discovery", () => {
 		}
 	});
 
-	for (const envValue of [undefined, "", " \t ", "  https://colab-override.example/v1///  "]) {
+	for (const envValue of [undefined, "", " \t ", "/", " /// ", "  https://colab-override.example/v1///  "]) {
 		test(`resolves configured Colab endpoints with ${envValue === undefined ? "unset" : JSON.stringify(envValue)} env`, async () => {
 			if (envValue === undefined) delete Bun.env.OMPK_COLAB_BASE_URL;
 			else Bun.env.OMPK_COLAB_BASE_URL = envValue;
 			const configuredBaseUrl = "https://configured-colab.example/v1";
-			const expectedBaseUrl = envValue?.trim() ? "https://colab-override.example/v1" : configuredBaseUrl;
-			expect(getImplicitColabBaseUrl()).toBe(envValue?.trim() ? expectedBaseUrl : "https://orca.pkking.computer/v1");
+			const normalizedOverride = envValue?.trim().replace(/\/+$/, "");
+			const expectedBaseUrl = normalizedOverride ? "https://colab-override.example/v1" : configuredBaseUrl;
+			expect(getImplicitColabBaseUrl()).toBe(
+				normalizedOverride ? expectedBaseUrl : "https://orca.pkking.computer/v1",
+			);
 			writeRawModelsJson({
 				"llama.cpp (colab)": {
 					baseUrl: `${configuredBaseUrl}///`,

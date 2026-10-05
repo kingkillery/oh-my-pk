@@ -78,6 +78,7 @@ import {
 	type DiscoveryProviderConfig,
 	discoverLlamaCppModelContextWindow,
 	discoverModelsByProviderType,
+	getColabBaseUrlOverride,
 	getImplicit9RouterBaseUrl,
 	getImplicitColabBaseUrl,
 	getImplicitOllamaBaseUrl,
@@ -2208,7 +2209,7 @@ export class ModelRegistry {
 	#usesImplicitPublicColab(provider: string): boolean {
 		return (
 			provider === "llama.cpp (colab)" &&
-			!Bun.env.OMPK_COLAB_BASE_URL?.trim() &&
+			!getColabBaseUrlOverride() &&
 			!this.#configuredProviders.has(provider) &&
 			!this.#runtimeRegisteredProviders.has(provider)
 		);

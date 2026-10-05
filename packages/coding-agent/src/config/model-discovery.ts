@@ -102,8 +102,12 @@ export function getImplicit9RouterBaseUrl(): string {
 	return Bun.env["9ROUTER_BASE_URL"]?.trim() || Bun.env.NINEROUTER_BASE_URL?.trim() || DEFAULT_9ROUTER_BASE_URL;
 }
 
+export function getColabBaseUrlOverride(): string | undefined {
+	return Bun.env.OMPK_COLAB_BASE_URL?.trim().replace(/\/+$/, "") || undefined;
+}
+
 export function getImplicitColabBaseUrl(): string {
-	return Bun.env.OMPK_COLAB_BASE_URL?.trim().replace(/\/+$/, "") || DEFAULT_COLAB_BASE_URL;
+	return getColabBaseUrlOverride() ?? DEFAULT_COLAB_BASE_URL;
 }
 
 export function getOllamaContextLengthOverride(): number | undefined {
@@ -455,8 +459,9 @@ export async function discoverLlamaCppModels(
  * localhost forwarding drops connections.
  */
 export async function getColabBridgeCandidateBaseUrls(baseUrl?: string): Promise<string[]> {
-	if (Bun.env.OMPK_COLAB_BASE_URL?.trim()) {
-		return [getImplicitColabBaseUrl()];
+	const override = getColabBaseUrlOverride();
+	if (override) {
+		return [override];
 	}
 	const explicit = baseUrl?.trim();
 	if (!explicit) {

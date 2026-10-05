@@ -289,6 +289,8 @@ Colab discovery resolves its base URL in this order:
 
 Set `OMPK_COLAB_BASE_URL` to an inference base ending in `/v1`, not the `/models` URL. It takes precedence over a configured endpoint for Colab discovery; unset it when you want the configured endpoint to win. Remote endpoints do not fall back to a local bridge. Explicit loopback bridge endpoints may use WSL address fallback on Windows.
 
+A tailnet-local rig can be addressed directly instead, for example `http://colab-llamacpp:8000/v1`, by setting that as the provider `baseUrl` or `OMPK_COLAB_BASE_URL`. This is an explicit configuration choice, not an automatic fallback: nothing prefers the tailnet host over the shared public endpoint, because silently retargeting a request could send an endpoint's credentials to a different origin. It also requires a MagicDNS-resolvable tailnet name and network reachability from the machine running OMPK.
+
 To configure discovery without pinning stale model IDs, omit the `models` list:
 
 ```yaml
