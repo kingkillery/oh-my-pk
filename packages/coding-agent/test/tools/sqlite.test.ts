@@ -77,9 +77,9 @@ function buildFixtureBytes(): Uint8Array {
 			);
 		`);
 
-		const insertUser = db.prepare("INSERT INTO users (name, email, status, created) VALUES (?, ?, ?, ?)");
-		const insertSlug = db.prepare("INSERT INTO slugs (slug, title) VALUES (?, ?)");
-		const insertNote = db.prepare("INSERT INTO notes (body) VALUES (?)");
+		const insertUser = db.query("INSERT INTO users (name, email, status, created) VALUES (?, ?, ?, ?)");
+		const insertSlug = db.query("INSERT INTO slugs (slug, title) VALUES (?, ?)");
+		const insertNote = db.query("INSERT INTO notes (body) VALUES (?)");
 		const seed = db.transaction(() => {
 			insertUser.run("Alice", "alice@example.com", "active", 1);
 			insertUser.run("Bob", "bob@example.com", "inactive", 2);
@@ -95,8 +95,8 @@ function buildFixtureBytes(): Uint8Array {
 			insertNote.run("Second note");
 			insertNote.run("Third; note");
 
-			db.prepare("INSERT INTO composite (team_id, user_id, value) VALUES (?, ?, ?)").run(1, 2, "pair");
-			db.prepare("INSERT INTO wide_rows (id, payload) VALUES (?, ?)").run(1, "x".repeat(320));
+			db.query("INSERT INTO composite (team_id, user_id, value) VALUES (?, ?, ?)").run(1, 2, "pair");
+			db.query("INSERT INTO wide_rows (id, payload) VALUES (?, ?)").run(1, "x".repeat(320));
 		});
 		seed();
 
@@ -109,7 +109,7 @@ function buildFixtureBytes(): Uint8Array {
 function readUserEmail(dbPath: string, id: number): string | null {
 	const db = new Database(dbPath, { readonly: true });
 	try {
-		const row = db.prepare<{ email: string }, [number]>("SELECT email FROM users WHERE id = ?").get(id);
+		const row = db.query<{ email: string }, [number]>("SELECT email FROM users WHERE id = ?").get(id);
 		return row?.email ?? null;
 	} finally {
 		db.close();
@@ -119,7 +119,7 @@ function readUserEmail(dbPath: string, id: number): string | null {
 function readUserCount(dbPath: string): number {
 	const db = new Database(dbPath, { readonly: true });
 	try {
-		return db.prepare<{ count: number }, []>("SELECT COUNT(*) AS count FROM users").get()?.count ?? 0;
+		return db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM users").get()?.count ?? 0;
 	} finally {
 		db.close();
 	}
@@ -129,7 +129,7 @@ function readUserByEmail(dbPath: string, email: string): { name: string; email: 
 	const db = new Database(dbPath, { readonly: true });
 	try {
 		return db
-			.prepare<{ name: string; email: string }, [string]>("SELECT name, email FROM users WHERE email = ?")
+			.query<{ name: string; email: string }, [string]>("SELECT name, email FROM users WHERE email = ?")
 			.get(email);
 	} finally {
 		db.close();
@@ -332,7 +332,7 @@ describe("SQLite tool support", () => {
 		const db = new Database(capDbPath);
 		try {
 			db.run("CREATE TABLE big (id INTEGER PRIMARY KEY, value TEXT NOT NULL)");
-			const insert = db.prepare("INSERT INTO big (value) VALUES (?)");
+			const insert = db.query("INSERT INTO big (value) VALUES (?)");
 			const fill = db.transaction(() => {
 				for (let i = 1; i <= 1200; i++) {
 					insert.run(`val_${i}_end`);
@@ -492,9 +492,9 @@ describe("SQLite table listing row counts", () => {
 		const db = new Database(":memory:");
 		db.run("CREATE TABLE big (id INTEGER PRIMARY KEY, v TEXT NOT NULL)");
 		db.run("CREATE TABLE small (id INTEGER PRIMARY KEY)");
-		const bigStmt = db.prepare("INSERT INTO big (v) VALUES (?)");
+		const bigStmt = db.query("INSERT INTO big (v) VALUES (?)");
 		for (let i = 0; i < 10; i++) bigStmt.run("x");
-		const smallStmt = db.prepare("INSERT INTO small DEFAULT VALUES");
+		const smallStmt = db.query("INSERT INTO small DEFAULT VALUES");
 		for (let i = 0; i < 2; i++) smallStmt.run();
 		if (analyze) db.run("ANALYZE");
 		return db;
