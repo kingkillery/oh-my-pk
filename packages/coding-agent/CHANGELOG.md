@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Refresh full URL reads while preserving cached snapshots for line-range continuation, and release SQLite handles immediately after read/write operations on Windows.
 - Share artifact initialization across concurrent results so fresh and resumed sessions allocate unique IDs.
 - Preserve top-level JavaScript `var` and function bindings in async eval cells.
 - Refuse Python kernel resets while another owner is attached.

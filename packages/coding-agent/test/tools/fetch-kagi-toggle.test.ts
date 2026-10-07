@@ -558,7 +558,7 @@ describe("read tool URL handling", () => {
 		expect(htmlToMarkdownSpy).not.toHaveBeenCalled();
 	});
 
-	it("reuses cached output for repeated plain URL reads", async () => {
+	it("refreshes output for repeated plain URL reads", async () => {
 		const session = createSession();
 		const tool = new ReadTool(session);
 		const pageUrl = "https://example.com/repeated-read-cache";
@@ -571,6 +571,13 @@ describe("read tool URL handling", () => {
 		});
 
 		const firstResult = await tool.execute("fetch-cache-first", { path: pageUrl });
+		loadPageSpy.mockResolvedValue({
+			ok: true,
+			status: 200,
+			contentType: "text/plain",
+			finalUrl: pageUrl,
+			content: "Updated deployment",
+		});
 		const secondResult = await tool.execute("fetch-cache-second", { path: pageUrl });
 		const firstText = firstResult.content.find(content => content.type === "text");
 		const secondText = secondResult.content.find(content => content.type === "text");
@@ -578,8 +585,8 @@ describe("read tool URL handling", () => {
 		expect(firstText?.type).toBe("text");
 		expect(firstText?.text).toContain("Cached line 1");
 		expect(secondText?.type).toBe("text");
-		expect(secondText?.text).toContain("Cached line 1");
-		expect(loadPageSpy).toHaveBeenCalledTimes(1);
+		expect(secondText?.text).toContain("Updated deployment");
+		expect(loadPageSpy).toHaveBeenCalledTimes(2);
 	});
 
 	it("supports offset and limit for URL reads using cached output", async () => {

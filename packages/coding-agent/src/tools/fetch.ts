@@ -1704,7 +1704,7 @@ export async function executeReadUrl(
 	params: { path: string; raw?: boolean },
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<ReadUrlToolDetails>> {
-	let cacheEntry = await loadReadUrlCacheEntry(session, params, signal, { preferCached: true });
+	let cacheEntry = await loadReadUrlCacheEntry(session, params, signal);
 	const truncation = truncateHead(cacheEntry.output, {
 		maxBytes: DEFAULT_MAX_BYTES,
 		maxLines: FETCH_DEFAULT_MAX_LINES,
