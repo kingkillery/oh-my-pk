@@ -19,6 +19,22 @@ describe("ArtifactManager tool-type sanitization", () => {
 		}
 	});
 
+	it("shares first initialization across concurrent saves in fresh and resumed directories", async () => {
+		const dir = freshDir();
+		for (const start of [0, 32]) {
+			const manager = new ArtifactManager(dir);
+			const payloads = Array.from({ length: 32 }, (_, index) => `sentinel-${start + index}`);
+			const ids = await Promise.all(payloads.map(payload => manager.save(payload, "read")));
+			expect(new Set(ids).size).toBe(payloads.length);
+			expect(ids.map(Number).sort((a, b) => a - b)).toEqual(payloads.map((_, index) => start + index));
+			for (const [index, id] of ids.entries()) {
+				const file = await manager.getPath(id);
+				expect(file).not.toBeNull();
+				expect(await Bun.file(file!).text()).toBe(payloads[index]);
+			}
+		}
+	});
+
 	// External tool names (MCP servers, extensions, RPC hosts) are arbitrary; the
 	// artifact filename is `${id}.${toolType}.log`. Path separators or traversal
 	// in the name must never let the file escape the artifacts directory.

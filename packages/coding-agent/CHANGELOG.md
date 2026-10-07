@@ -8,6 +8,11 @@
 
 ### Fixed
 
+- Share artifact initialization across concurrent results so fresh and resumed sessions allocate unique IDs.
+- Preserve top-level JavaScript `var` and function bindings in async eval cells.
+- Refuse Python kernel resets while another owner is attached.
+- Persist and announce todo mutations from one session path, including eval and slash commands, and retain completed tasks across compaction and reload.
+- Send Hugging Face file and revision URLs through generic fetching instead of repository metadata handling.
 - Start the gopk-clips ingest daemon without top-level await, which made `--bytecode` builds fail. A startup error still prints and exits with status 1.
 - Withhold the captured stdout/stderr of Python `subprocess.CalledProcessError` and `TimeoutExpired` from eval error output and `processError`; the command, return code and traceback still show. To recover output, catch the exception in the cell, redact it, and print the safe result.
 - Recognize read selectors (`:raw`, `:N-M`, continuation `:N`) on `history://<id>` and the `history://` index instead of treating them as part of the agent id. System-printed transcript hints percent-encode `:` in agent ids, so ids such as `background:1` stay readable.

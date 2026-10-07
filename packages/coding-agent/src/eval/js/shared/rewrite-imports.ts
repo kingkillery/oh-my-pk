@@ -47,7 +47,8 @@ type BabelClassDeclaration = {
 	id: { start: number; end: number; name: string } | null;
 };
 
-type BabelLexicalDecl = BabelVariableDeclaration | BabelClassDeclaration;
+type BabelFunctionDeclaration = Omit<BabelClassDeclaration, "type"> & { type: "FunctionDeclaration" };
+type BabelLexicalDecl = BabelVariableDeclaration | BabelClassDeclaration | BabelFunctionDeclaration;
 
 type BabelExpressionStatement = {
 	type: "ExpressionStatement";
@@ -349,14 +350,14 @@ function appendGlobalBindingPublish(source: string, names: readonly string[]): s
  *   class Foo extends Bar {} -> var Foo = class extends Bar {};
  *
  * When the source must run inside the async wrapper, demoted `var`s would normally become
- * function-scoped. In that mode we publish each top-level binding back to the wrapper's
- * lexical `this`, which is the worker global object.
+ * function-scoped. In that mode we publish each top-level binding, including original
+ * `var` and function declarations, back to the wrapper's lexical `this` (the worker global).
  *
  * Nested declarations (inside functions, blocks, classes) are left alone \u2014 they're
  * scoped to their enclosing function/block regardless of `var` vs `let`/`const`.
  */
 async function demoteTopLevelLexicals(code: string, options: { publishGlobals?: boolean } = {}): Promise<string> {
-	if (!/\b(?:const|let|class)\b/.test(code)) return code;
+	if (!/\b(?:const|let|class|var|function)\b/.test(code)) return code;
 
 	const ast = await parseProgram(code);
 	if (!ast) {
@@ -367,7 +368,10 @@ async function demoteTopLevelLexicals(code: string, options: { publishGlobals?: 
 	for (const node of ast.program.body) {
 		if (node.type === "VariableDeclaration") {
 			const decl = node as unknown as BabelVariableDeclaration;
-			if (decl.kind === "const" || decl.kind === "let") targets.push(decl);
+			if (decl.kind === "const" || decl.kind === "let" || options.publishGlobals) targets.push(decl);
+		} else if (node.type === "FunctionDeclaration" && options.publishGlobals) {
+			const decl = node as BabelFunctionDeclaration;
+			if (decl.id) targets.push(decl);
 		} else if (node.type === "ClassDeclaration") {
 			const decl = node as unknown as BabelClassDeclaration;
 			if (decl.id) targets.push(decl);
@@ -383,6 +387,8 @@ async function demoteTopLevelLexicals(code: string, options: { publishGlobals?: 
 		let replacement: string;
 		if (node.type === "VariableDeclaration") {
 			replacement = `var${segment.slice(node.kind.length)}`;
+		} else if (node.type === "FunctionDeclaration") {
+			replacement = segment;
 		} else {
 			const id = node.id;
 			if (!id) continue;

@@ -141,6 +141,7 @@ function normalizeInProgressTask(phases: TodoPhase[]): void {
 }
 
 export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
+export const TODO_STATE_CUSTOM_TYPE = "todo_state";
 
 /**
  * Resolve the target path for `/todo export|import [path]`: strips surrounding
@@ -167,6 +168,13 @@ export function resolveTodoMarkdownPath(rawArgs: string, cwd: string): string {
 }
 
 export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {
+	// A tool result may arrive after a newer mutation. Committed session state
+	// wins over those result snapshots; older sessions retain their mixed history.
+	const committed = entries.findLast(entry => entry.type === "custom" && entry.customType === TODO_STATE_CUSTOM_TYPE);
+	if (committed?.type === "custom") {
+		const data = committed.data as { phases?: unknown } | undefined;
+		if (data && Array.isArray(data.phases)) return clonePhases(data.phases as TodoPhase[]);
+	}
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {

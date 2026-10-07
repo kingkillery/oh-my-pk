@@ -93,6 +93,30 @@ describe("executeJs", () => {
 		expect(resetResult.output.trim()).toBe("undefined");
 	});
 
+	it("publishes wrapped var and function bindings while preserving state after failed cells", async () => {
+		const options = { sessionId, session, sessionFile };
+		const defined = await executeJs(
+			`
+			var { retainedVar } = await Promise.resolve({ retainedVar: 7 });
+			function retainedFn() { var privateName = 9; return retainedVar; }
+			async function retainedAsync() { return retainedFn(); }
+			function* retainedGenerator() { yield retainedVar; }
+			{ let blockOnly = 1; }
+			await Promise.resolve();
+		`,
+			options,
+		);
+		expect(defined.exitCode).toBe(0);
+		expect((await executeJs("const broken = ;", options)).exitCode).not.toBe(0);
+		expect((await executeJs('throw new Error("expected");', options)).exitCode).not.toBe(0);
+		const retained = await executeJs(
+			'return [retainedVar, retainedFn(), await retainedAsync(), retainedGenerator().next().value, typeof privateName, typeof blockOnly].join(",");',
+			options,
+		);
+		expect(retained.exitCode).toBe(0);
+		expect(retained.output.trim()).toBe("7,7,7,7,undefined,undefined");
+	});
+
 	it("parallel() barriers until every thunk settles and throws the lowest-index error", async () => {
 		const result = await executeJs(
 			[

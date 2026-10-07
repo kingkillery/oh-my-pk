@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { TodoCommandController } from "@pk-nerdsaver-ai/pi-coding-agent/modes/controllers/todo-command-controller";
 import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
-import { type TodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
+import type { TodoPhase } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
 import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 function createContext(cwd: string, phases: TodoPhase[]): InteractiveModeContext {
@@ -106,10 +106,9 @@ describe("TodoCommandController", () => {
 
 		const expected: TodoPhase[] = [{ name: "Imported", tasks: [{ content: "From cwd", status: "in_progress" }] }];
 		expect(ctx.session.setTodoPhases).toHaveBeenCalledWith(expected);
-		expect(ctx.setTodos).toHaveBeenCalledWith(expected);
-		expect(ctx.sessionManager.appendCustomEntry).toHaveBeenCalledWith(USER_TODO_EDIT_CUSTOM_TYPE, {
-			phases: expected,
-		});
+		// The real session setter owns persistence and UI notification.
+		expect(ctx.setTodos).not.toHaveBeenCalled();
+		expect(ctx.sessionManager.appendCustomEntry).not.toHaveBeenCalled();
 		expect(ctx.agent.appendMessage).toHaveBeenCalledWith(expect.objectContaining({ role: "developer" }));
 		expect(ctx.sessionManager.appendMessage).toHaveBeenCalledWith(expect.objectContaining({ role: "developer" }));
 		expect(ctx.showStatus).toHaveBeenCalledWith(`Imported 1 phase(s), 1 task(s) from ${target}.`);

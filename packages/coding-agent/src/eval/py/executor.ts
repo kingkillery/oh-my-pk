@@ -367,9 +367,14 @@ async function replaceSessionKernel(
 	session.kernel = next;
 }
 
-async function resetSession(sessionKey: string): Promise<void> {
+async function resetSession(sessionKey: string, ownerId: string): Promise<void> {
 	const existing = sessions.get(sessionKey) ?? (await startingSessions.get(sessionKey)?.catch(() => undefined));
 	if (!existing) return;
+	if (existing.ownerIds.size !== 1 || !existing.ownerIds.has(ownerId)) {
+		throw new Error(
+			"Cannot reset a shared Python kernel: other owners are attached. Dispose their sessions or use a separate session before resetting.",
+		);
+	}
 	sessions.delete(sessionKey);
 	await existing.kernel.shutdown().catch(() => undefined);
 }
@@ -597,13 +602,10 @@ async function executeOnSession(code: string, cwd: string, options: PythonExecut
 		// session, await it instead of throwing — the caller's intent ("start
 		// from a clean kernel") is satisfied once that reset settles.
 		const inFlight = resettingSessions.get(sessionKey);
-		if (inFlight) await inFlight.catch(() => undefined);
+		if (inFlight) await inFlight;
 		else {
-			const resetPromise = resetSession(sessionKey);
-			resettingSessions.set(
-				sessionKey,
-				resetPromise.then(() => undefined),
-			);
+			const resetPromise = resetSession(sessionKey, options.kernelOwnerId ?? sessionId);
+			resettingSessions.set(sessionKey, resetPromise);
 			try {
 				await resetPromise;
 			} finally {

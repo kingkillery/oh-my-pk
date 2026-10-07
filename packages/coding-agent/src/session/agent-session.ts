@@ -337,7 +337,7 @@ import { outputMeta, wrapToolWithMetaNotice } from "../tools/output-meta";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
 import { isAutoQaEnabled } from "../tools/report-tool-issue";
 import { buildResolveReminderMessage } from "../tools/resolve";
-import { getLatestTodoPhasesFromEntries, type TodoItem, type TodoPhase } from "../tools/todo";
+import { getLatestTodoPhasesFromEntries, TODO_STATE_CUSTOM_TYPE, type TodoItem, type TodoPhase } from "../tools/todo";
 import { ToolAbortError, ToolError } from "../tools/tool-errors";
 import type { ResolvedToolProfile, ToolSource } from "../tools/tool-profiles";
 import { clampTimeout } from "../tools/tool-timeouts";
@@ -437,6 +437,7 @@ export type AgentSessionEvent =
 	| { type: "ttsr_triggered"; rules: Rule[] }
 	| { type: "todo_reminder"; todos: TodoItem[]; attempt: number; maxAttempts: number }
 	| { type: "todo_auto_clear" }
+	| { type: "todo_updated"; phases: TodoPhase[] }
 	| { type: "irc_message"; message: CustomMessage }
 	| { type: "notice"; level: "info" | "warning" | "error"; message: string; source?: string }
 	| {
@@ -3110,9 +3111,6 @@ export class AgentSession {
 				// Invalidate streaming edit cache when edit tool completes to prevent stale data
 				if (toolName === "edit" && details?.path) {
 					this.#invalidateFileCacheForPath(details.path);
-				}
-				if (toolName === "todo" && !isError && Array.isArray(details?.phases)) {
-					this.setTodoPhases(details.phases);
 				}
 				if (toolName === "todo" && isError) {
 					const errorText = content?.find(part => part.type === "text")?.text;
@@ -7821,17 +7819,14 @@ export class AgentSession {
 	}
 
 	setTodoPhases(phases: TodoPhase[]): void {
+		this.sessionManager.appendCustomEntry(TODO_STATE_CUSTOM_TYPE, { phases: this.#cloneTodoPhases(phases) });
 		this.#todoPhases = this.#cloneTodoPhases(phases);
+		this.#emit({ type: "todo_updated", phases: this.getTodoPhases() });
 	}
 
 	#syncTodoPhasesFromBranch(): void {
 		const phases = getLatestTodoPhasesFromEntries(this.sessionManager.getBranch());
-		// Strip completed/abandoned tasks — they were done in a previous run,
-		// so they have no bearing on progress tracking for the new turn.
-		for (const phase of phases) {
-			phase.tasks = phase.tasks.filter(t => t.status !== "completed" && t.status !== "abandoned");
-		}
-		this.setTodoPhases(phases.filter(p => p.tasks.length > 0));
+		this.#todoPhases = this.#cloneTodoPhases(phases);
 	}
 
 	#cloneTodoPhases(phases: TodoPhase[]): TodoPhase[] {
@@ -7987,7 +7982,7 @@ export class AgentSession {
 			await this.sessionManager.flush();
 		}
 		await this.sessionManager.newSession(options);
-		this.setTodoPhases([]);
+		this.#todoPhases = [];
 		this.#freshProviderSessionId = undefined;
 		this.#syncAgentSessionId();
 		this.#rekeyHindsightMemoryForCurrentSessionId();

@@ -611,15 +611,14 @@ describe("wave 3 commands", () => {
 		expect(output[0]).toBe("No todos. Use /todo append <task> to start one.");
 	});
 
-	it("/todo append: stores phases and records custom entry", async () => {
+	it("/todo append: delegates persistence to the session setter", async () => {
 		const { session, fakeSessionManager, runtime } = createRuntime();
 		const result = await executeAcpBuiltinSlashCommand('/todo append "Build" "Wire setup"', runtime);
 		expect(result).toEqual({ consumed: true });
 		expect(session._todoPhases).toHaveLength(1);
 		expect(session._todoPhases[0]?.name).toBe("Build");
 		expect(session._todoPhases[0]?.tasks[0]?.content).toBe("Wire setup");
-		expect(fakeSessionManager._customEntries).toHaveLength(1);
-		expect(fakeSessionManager._customEntries[0]?.customType).toBe("user_todo_edit");
+		expect(fakeSessionManager._customEntries).toHaveLength(0);
 	});
 
 	it("/todo export: writes the default file under the active session cwd", async () => {
