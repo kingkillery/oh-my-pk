@@ -38,8 +38,7 @@ function sanitizeToolType(toolType: string): string {
 export class ArtifactManager {
 	#nextId = 0;
 	readonly #dir: string;
-	#dirCreated = false;
-	#initialized = false;
+	#initialization: Promise<void> | undefined;
 
 	/**
 	 * @param dir Directory that will hold artifact files. Created lazily on first save.
@@ -57,14 +56,14 @@ export class ArtifactManager {
 	}
 
 	async #ensureDir(): Promise<void> {
-		if (!this.#dirCreated) {
+		this.#initialization ??= (async () => {
 			await fs.mkdir(this.#dir, { recursive: true });
-			this.#dirCreated = true;
-		}
-		if (!this.#initialized) {
 			await this.#scanExistingIds();
-			this.#initialized = true;
-		}
+		})().catch(error => {
+			this.#initialization = undefined;
+			throw error;
+		});
+		await this.#initialization;
 	}
 
 	/**

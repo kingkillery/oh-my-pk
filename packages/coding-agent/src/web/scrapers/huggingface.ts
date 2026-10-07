@@ -63,7 +63,7 @@ interface HfUserData {
 /**
  * Parse Hugging Face URL and determine type
  */
-function parseHuggingFaceUrl(url: string): {
+export function parseHuggingFaceUrl(url: string): {
 	type: "model" | "dataset" | "space" | "model_or_user";
 	id: string; // Full ID (org/name or just name)
 } | null {
@@ -75,13 +75,15 @@ function parseHuggingFaceUrl(url: string): {
 		if (parts.length === 0) return null;
 
 		// huggingface.co/datasets/{org}/{dataset} or huggingface.co/datasets/{dataset}
-		if (parts[0] === "datasets" && parts.length >= 2) {
+		if (parts[0] === "datasets") {
+			if (parts.length !== 2 && parts.length !== 3) return null;
 			const id = parts.slice(1).join("/");
 			return { type: "dataset", id };
 		}
 
 		// huggingface.co/spaces/{org}/{space}
-		if (parts[0] === "spaces" && parts.length >= 3) {
+		if (parts[0] === "spaces") {
+			if (parts.length !== 3) return null;
 			return { type: "space", id: `${parts[1]}/${parts[2]}` };
 		}
 
@@ -92,7 +94,7 @@ function parseHuggingFaceUrl(url: string): {
 		}
 
 		// huggingface.co/{org}/{model} (two parts = definitely a model)
-		if (parts.length >= 2) {
+		if (parts.length === 2) {
 			return { type: "model", id: `${parts[0]}/${parts[1]}` };
 		}
 

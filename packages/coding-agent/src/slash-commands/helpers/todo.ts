@@ -1,12 +1,5 @@
 import type { TodoPhase } from "../../tools/todo";
-import {
-	applyOpsToPhases,
-	getLatestTodoPhasesFromEntries,
-	markdownToPhases,
-	phasesToMarkdown,
-	resolveTodoMarkdownPath,
-	USER_TODO_EDIT_CUSTOM_TYPE,
-} from "../../tools/todo";
+import { applyOpsToPhases, markdownToPhases, phasesToMarkdown, resolveTodoMarkdownPath } from "../../tools/todo";
 import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime } from "../types";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./parse";
 
@@ -91,13 +84,11 @@ function findTaskFuzzy(phases: TodoPhase[], query: string): TodoTaskMatch | unde
 }
 
 function currentPhases(runtime: SlashCommandRuntime): TodoPhase[] {
-	const fromEntries = getLatestTodoPhasesFromEntries(runtime.sessionManager.getBranch());
-	return fromEntries.length > 0 ? fromEntries : runtime.session.getTodoPhases();
+	return runtime.session.getTodoPhases();
 }
 
 function commitTodos(runtime: SlashCommandRuntime, phases: TodoPhase[]): void {
 	runtime.session.setTodoPhases(phases);
-	runtime.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 }
 
 const TODO_HELP_TEXT = [

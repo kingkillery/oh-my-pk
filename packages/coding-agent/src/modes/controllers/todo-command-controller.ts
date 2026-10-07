@@ -1,13 +1,11 @@
 import * as fs from "node:fs/promises";
 import {
 	applyOpsToPhases,
-	getLatestTodoPhasesFromEntries,
 	markdownToPhases,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
 	type TodoItem,
 	type TodoPhase,
-	USER_TODO_EDIT_CUSTOM_TYPE,
 } from "../../tools/todo";
 import { copyToClipboard } from "../../utils/clipboard";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
@@ -134,14 +132,7 @@ function buildSystemReminder(action: string, phases: TodoPhase[]): string {
 export class TodoCommandController {
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
-	/**
-	 * True latest todo state for the user-facing /todo verbs. Reads from session
-	 * entries so that completed/abandoned tasks remain visible after resume
-	 * (where `session.getTodoPhases()` would have stripped them).
-	 */
 	#currentPhases(): TodoPhase[] {
-		const fromEntries = getLatestTodoPhasesFromEntries(this.ctx.sessionManager.getBranch());
-		if (fromEntries.length > 0) return fromEntries;
 		return this.ctx.session.getTodoPhases();
 	}
 
@@ -468,14 +459,10 @@ export class TodoCommandController {
 	}
 
 	#commit(nextPhases: TodoPhase[], action: string): void {
-		// 1. In-memory + UI state
+		// Commit session state, persistence, and the UI event together.
 		this.ctx.session.setTodoPhases(nextPhases);
-		this.ctx.setTodos(nextPhases);
 
-		// 2. Persist for reload survival via custom session entry.
-		this.ctx.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: nextPhases });
-
-		// 3. Inject system reminder so the agent learns about the change next turn.
+		// Inject a reminder so the agent learns about the user's change next turn.
 		const reminderText = buildSystemReminder(action, nextPhases);
 		const message = {
 			role: "developer" as const,
