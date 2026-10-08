@@ -120,7 +120,7 @@ function createNoProgressOpenAIResponsesStream(signal: AbortSignal | undefined):
 	const encode = (event: unknown): Uint8Array => encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
 	const stream = new ReadableStream<Uint8Array>({
 		start(controller) {
-			controller.enqueue(encode({ type: "response.created", response: { id: "resp_stalled" } }));
+			// Start the idle deadline with the partial output this fixture must retain.
 			controller.enqueue(
 				encode({
 					type: "response.output_item.added",

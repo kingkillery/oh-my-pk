@@ -49,6 +49,45 @@ describe("read tool multi-range selector", () => {
 		await removeWithRetries(tmpDir);
 	});
 
+	it.each(["csv", "md"])("honors explicit selectors in %s files with summaries enabled", async extension => {
+		const filePath = path.join(tmpDir, `selected.${extension}`);
+		const lines =
+			extension === "csv"
+				? ["label,value", ...Array.from({ length: 12 }, (_, i) => `row-${i + 1},${i + 1}`)]
+				: [
+						"# Heading",
+						"",
+						"Introduction.",
+						"",
+						"```ts",
+						"function outer() {",
+						"  const first = 1;",
+						"  const second = 2;",
+						"  return first + second;",
+						"}",
+						"```",
+						"Afterward.",
+					];
+		await Bun.write(filePath, lines.join("\n"));
+		const session = createSession(tmpDir);
+		session.settings.set("read.summarize.enabled", true);
+		session.settings.set("read.summarize.prose", true);
+		session.settings.set("read.summarize.minTotalLines", 0);
+		const tool = new ReadTool(session);
+		for (const selector of ["7+1", "7-9", "raw:7+1", "7-9:raw"]) {
+			const result = await tool.execute(`${extension}-${selector}`, { path: `${filePath}:${selector}` });
+			expect(result.details?.summary).toBeUndefined();
+			expect(result.details?.displayContent?.startLine).toBe(7);
+			expect(result.details?.displayContent?.text).toBe(lines.slice(6, selector.includes("7-9") ? 9 : 7).join("\n"));
+		}
+		const disjoint = await tool.execute(`${extension}-disjoint`, { path: `${filePath}:3+1,7-9` });
+		expect(disjoint.details?.summary).toBeUndefined();
+		expect(disjoint.details?.displayContent?.lineNumbers).toEqual([3, null, 7, 8, 9]);
+		expect(disjoint.details?.displayContent?.text).toBe(`${lines[2]}\n…\n${lines.slice(6, 9).join("\n")}`);
+		const rawDisjoint = await tool.execute(`${extension}-raw-disjoint`, { path: `${filePath}:raw:3+1,7-9` });
+		expect(textOutput(rawDisjoint)).toBe(`${lines[2]}\n\n…\n\n${lines.slice(6, 9).join("\n")}`);
+	});
+
 	it.each([false, true])("returns exact single-line and inclusive ranges (ACP bridge: %s)", async useBridge => {
 		const filePath = path.join(tmpDir, "numbered.txt");
 		const content = makeNumberedContent(20);
