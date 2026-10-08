@@ -40,6 +40,7 @@ async function createGitRepo(): Promise<{ baseBranch: string; repo: string }> {
 	const repo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worktree-"));
 	tempDirs.push(repo);
 	await runGit(repo, ["init"]);
+	await runGit(repo, ["config", "core.autocrlf", "false"]);
 	await runGit(repo, ["config", "user.email", "test@example.com"]);
 	await runGit(repo, ["config", "user.name", "Test User"]);
 	await fs.writeFile(path.join(repo, "merged.txt"), "base version\n");
@@ -94,6 +95,7 @@ describe("worktree isolation helpers", () => {
 		beforeAll(async () => {
 			repo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worktree-"));
 			await runGit(repo, ["init", "-q", "-b", BASE_BRANCH]);
+			await runGit(repo, ["config", "core.autocrlf", "false"]);
 			await runGit(repo, ["config", "user.email", "test@example.com"]);
 			await runGit(repo, ["config", "user.name", "Test User"]);
 			await Promise.all([
@@ -290,6 +292,7 @@ describe("applyNestedPatches", () => {
 	beforeEach(async () => {
 		parentRepo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-nested-apply-"));
 		await runGit(parentRepo, ["init", "-q", "-b", "main"]);
+		await runGit(parentRepo, ["config", "core.autocrlf", "false"]);
 		await runGit(parentRepo, ["config", "user.email", "test@example.com"]);
 		await runGit(parentRepo, ["config", "user.name", "Test User"]);
 		await fs.writeFile(path.join(parentRepo, ".gitignore"), "sub/\n");
@@ -300,6 +303,7 @@ describe("applyNestedPatches", () => {
 		nestedDir = path.join(parentRepo, nestedRel);
 		await fs.mkdir(nestedDir, { recursive: true });
 		await runGit(nestedDir, ["init", "-q", "-b", "main"]);
+		await runGit(nestedDir, ["config", "core.autocrlf", "false"]);
 		await runGit(nestedDir, ["config", "user.email", "test@example.com"]);
 		await runGit(nestedDir, ["config", "user.name", "Test User"]);
 		await fs.writeFile(path.join(nestedDir, "file.txt"), "v1\n");

@@ -621,45 +621,66 @@ async function searchVirtualResources(
 				break;
 			}
 			const lines = multiline ? indexSearchLines(resource.content).lines : splitSearchLines(resource.content);
-			let matchedIndexes: number[];
-			if (Buffer.byteLength(resource.content, "utf8") > NATIVE_GREP_MAX_FILE_BYTES) {
-				// Native grep skips files above its 4 MiB cap. Search oversized content in
-				// line-boundary chunks so line-mode keeps RE2 parity; multiline can't be chunked
-				// without missing matches that span a chunk boundary, so it falls back to JS
-				// (dialect-as-JS only for these oversized multiline inputs).
-				matchedIndexes = (
-					multiline
-						? jsMatchedLineIndexes(resource.content, lines, pattern, ignoreCase, true)
-						: await nativeChunkedLineIndexes(dir, idx, resource.content, pattern, ignoreCase, signal)
-				).filter(lineIndex => lineAllowed(lineIndex + 1, resource.ranges));
-			} else {
-				const scratch = path.resolve(dir, `${idx}`);
-				await writeFile(scratch, resource.content);
-				const probe = await grep(
-					{
-						pattern,
-						path: scratch,
-						ignoreCase,
-						multiline,
-						hidden: true,
-						gitignore: false,
-						// A ranged selector must see every match so the range filter below never
-						// drops in-range hits that fall after the cap; matches can't exceed the
-						// line count. Unranged search keeps the overall result cap.
-						maxCount: resource.ranges ? Math.max(lines.length, 1) : INTERNAL_TOTAL_CAP,
-						contextBefore: 0,
-						contextAfter: 0,
-						maxColumns: DEFAULT_MAX_COLUMN,
-						mode: GrepOutputMode.Content,
-						signal,
-						timeoutMs: SEARCH_GREP_TIMEOUT_MS,
-					},
-					undefined,
-				);
-				matchedIndexes = [...new Set(probe.matches.map(match => match.lineNumber - 1))]
-					.filter(lineIndex => lineAllowed(lineIndex + 1, resource.ranges))
-					.sort((a, b) => a - b);
+			// Probe each contiguous multiline selection separately. The native sink
+			// trims trailing whitespace, so its display payload cannot prove match bounds.
+			const rawLines = multiline && resource.ranges ? resource.content.split("\n") : lines;
+			const slices =
+				multiline && resource.ranges
+					? resource.ranges.map(range => {
+							const endLine = Math.min(range.endLine ?? rawLines.length, rawLines.length);
+							return {
+								content:
+									rawLines.slice(range.startLine - 1, endLine).join("\n") +
+									(endLine < rawLines.length ? "\n" : ""),
+								lineOffset: range.startLine - 1,
+							};
+						})
+					: [{ content: resource.content, lineOffset: 0 }];
+			const matchedIndexes: number[] = [];
+			for (const [sliceIndex, slice] of slices.entries()) {
+				const sliceLines =
+					slice.lineOffset === 0 && slice.content === resource.content ? lines : splitSearchLines(slice.content);
+				let sliceIndexes: number[];
+				if (Buffer.byteLength(slice.content, "utf8") > NATIVE_GREP_MAX_FILE_BYTES) {
+					// Native grep skips files above its 4 MiB cap. Search oversized content in
+					// line-boundary chunks so line-mode keeps RE2 parity; multiline can't be chunked
+					// without missing matches that span a chunk boundary, so it falls back to JS
+					// (dialect-as-JS only for these oversized multiline inputs).
+					sliceIndexes = multiline
+						? jsMatchedLineIndexes(slice.content, sliceLines, pattern, ignoreCase, true)
+						: await nativeChunkedLineIndexes(dir, idx, slice.content, pattern, ignoreCase, signal);
+				} else {
+					const scratch = path.resolve(dir, `${idx}-${sliceIndex}`);
+					await writeFile(scratch, slice.content);
+					const probe = await grep(
+						{
+							pattern,
+							path: scratch,
+							ignoreCase,
+							multiline,
+							hidden: true,
+							gitignore: false,
+							// A ranged selector must see every match so the range filter below never
+							// drops in-range hits that fall after the cap; matches can't exceed the
+							// line count. Unranged search keeps the overall result cap.
+							maxCount: resource.ranges ? Math.max(sliceLines.length, 1) : INTERNAL_TOTAL_CAP,
+							contextBefore: 0,
+							contextAfter: 0,
+							maxColumns: DEFAULT_MAX_COLUMN,
+							mode: GrepOutputMode.Content,
+							signal,
+							timeoutMs: SEARCH_GREP_TIMEOUT_MS,
+						},
+						undefined,
+					);
+					sliceIndexes = [...new Set(probe.matches.map(match => match.lineNumber - 1))];
+				}
+				for (const lineIndex of sliceIndexes) {
+					const originalIndex = lineIndex + slice.lineOffset;
+					if (lineAllowed(originalIndex + 1, resource.ranges)) matchedIndexes.push(originalIndex);
+				}
 			}
+			matchedIndexes.sort((a, b) => a - b);
 			const resourceMatches = buildVirtualMatches(
 				resource,
 				lines,
@@ -899,7 +920,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					localProtocolOptions: this.session.localProtocolOptions,
 					skills: this.session.skills,
 				});
-				const searchablePaths = internalResolution.paths;
+				let searchablePaths = internalResolution.paths;
 				const { virtualResources, virtualPathSet, virtualInputIndexes } = internalResolution;
 				// Build the per-file line-range filter (keyed by absolute path) now that
 				// archive entries have been materialized to scratch files. Plain entries
@@ -944,6 +965,20 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					);
 				}
 				const normalizedContextBefore = this.session.settings.get("grep.contextBefore");
+				// Reuse the range-aware matcher so out-of-range hits cannot exhaust
+				// native per-file caps before the requested lines are considered.
+				const rangedVirtualPaths = new Set<string>();
+				for (const [filePath, ranges] of rangesByAbsPath) {
+					const file = Bun.file(filePath);
+					// Preserve native local-file size limits; oversized files stay in
+					// the native scan, which reports them without loading their contents.
+					if (file.size > NATIVE_GREP_MAX_FILE_BYTES) continue;
+					virtualResources.push({ path: filePath, content: await file.text(), ranges });
+					rangedVirtualPaths.add(filePath);
+				}
+				searchablePaths = searchablePaths.filter(
+					filePath => !rangedVirtualPaths.has(path.resolve(resolveReadPath(filePath, this.session.cwd))),
+				);
 				const normalizedContextAfter = this.session.settings.get("grep.contextAfter");
 				const ignoreCase = !(caseSensitive ?? true);
 				const useGitignore = gitignore ?? true;
@@ -992,7 +1027,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 						: physicalScopePath;
 				} else {
 					searchPath = this.session.cwd;
-					scopePath = internalResolution.virtualScopePath ?? ".";
+					scopePath = internalResolution.virtualScopePath ?? paths.join(", ");
 					globFilter = undefined;
 					isDirectory = false;
 					multiTargets = undefined;
@@ -1021,6 +1056,9 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					Boolean(multiTargets) ||
 					(virtualResources.length > 0 && (virtualResources.length > 1 || searchablePaths.length > 0));
 				const perFileMatchCap = isMultiScope ? MULTI_FILE_PER_FILE_MATCHES : SINGLE_FILE_MATCHES;
+				// Directory peers can still traverse ranged files. Reserve their bounded
+				// per-file allowance so removing those copies never costs other files a slot.
+				const nativeMatchBudget = INTERNAL_TOTAL_CAP + rangedVirtualPaths.size * (perFileMatchCap + 1);
 
 				// Run grep
 				let result: GrepResult = {
@@ -1055,7 +1093,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 										multiline: effectiveMultiline,
 										hidden: true,
 										gitignore: useGitignore,
-										maxCount: INTERNAL_TOTAL_CAP,
+										maxCount: nativeMatchBudget,
 										contextBefore: normalizedContextBefore,
 										contextAfter: normalizedContextAfter,
 										maxColumns: DEFAULT_MAX_COLUMN,
@@ -1102,7 +1140,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 									multiline: effectiveMultiline,
 									hidden: true,
 									gitignore: useGitignore,
-									maxCount: INTERNAL_TOTAL_CAP,
+									maxCount: nativeMatchBudget,
 									contextBefore: normalizedContextBefore,
 									contextAfter: normalizedContextAfter,
 									maxColumns: DEFAULT_MAX_COLUMN,
@@ -1127,6 +1165,20 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					}
 					throw err;
 				}
+				if (rangedVirtualPaths.size > 0) {
+					// A directory peer can include a ranged file already searched above.
+					// Keep its range-aware result once and free the result budget before merging.
+					const matches = result.matches.filter(
+						match => !rangedVirtualPaths.has(matchAbsolutePath(match.path, searchPath)),
+					);
+					result = {
+						...result,
+						matches,
+						totalMatches: matches.length,
+						filesWithMatches: new Set(matches.map(match => match.path)).size,
+						limitReached: matches.length >= INTERNAL_TOTAL_CAP,
+					};
+				}
 				let virtualResult: GrepResult;
 				try {
 					virtualResult = await searchVirtualResources(
@@ -1149,35 +1201,6 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					throw err;
 				}
 				result = mergeGrepResults(result, virtualResult, INTERNAL_TOTAL_CAP);
-				if (rangesByAbsPath.size > 0) {
-					const filteredMatches: GrepMatch[] = [];
-					for (const match of result.matches) {
-						const abs = matchAbsolutePath(match.path, searchPath);
-						const ranges = rangesByAbsPath.get(abs);
-						if (!ranges) {
-							// Path has no line-range constraint (e.g. a peer entry without `:N-M`).
-							filteredMatches.push(match);
-							continue;
-						}
-						if (!isLineInRanges(match.lineNumber, ranges)) continue;
-						// Drop context lines that fall outside the allowed ranges; they would
-						// otherwise leak content the caller explicitly excluded.
-						const trimBefore = match.contextBefore?.filter(c => isLineInRanges(c.lineNumber, ranges));
-						const trimAfter = match.contextAfter?.filter(c => isLineInRanges(c.lineNumber, ranges));
-						filteredMatches.push({
-							...match,
-							contextBefore: trimBefore && trimBefore.length > 0 ? trimBefore : undefined,
-							contextAfter: trimAfter && trimAfter.length > 0 ? trimAfter : undefined,
-						});
-					}
-					result = {
-						matches: filteredMatches,
-						totalMatches: filteredMatches.length,
-						filesWithMatches: new Set(filteredMatches.map(match => match.path)).size,
-						filesSearched: result.filesSearched,
-						limitReached: result.limitReached,
-					};
-				}
 				if (archiveDisplayMap.size > 0) {
 					for (const match of result.matches) {
 						const abs = matchAbsolutePath(match.path, searchPath);

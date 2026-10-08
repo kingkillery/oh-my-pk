@@ -199,7 +199,12 @@ function recordFullHashlineContext(
 
 async function readHashlineHeaderContext(session: ToolSession, absolutePath: string): Promise<HashlineHeaderContext> {
 	const fullText = await Bun.file(absolutePath).text();
-	const context = recordFullHashlineContext(session, absolutePath, path.basename(absolutePath), fullText);
+	const context = recordFullHashlineContext(
+		session,
+		absolutePath,
+		formatPathRelativeToCwd(absolutePath, session.cwd),
+		fullText,
+	);
 	if (!context) throw new ToolError(`Cannot record hashline snapshot for non-absolute path: ${absolutePath}`);
 	return context;
 }
@@ -339,40 +344,6 @@ function formatSummaryElisionFooter(
 	return `[…${elidedLines}ln elided; re-read needed ranges${tail}]`;
 }
 const READ_CHUNK_SIZE = 8 * 1024;
-
-/**
- * Context lines added around an explicit range read. Anchor-stale failures
- * cluster on edits whose anchors land just outside the most recent read
- * window, but the data (`scripts/session-stats/analyze_selector_reads.py`)
- * shows most follow-up reads are disjoint hops, not adjacent extensions —
- * so symmetric padding rarely pays for itself.
- *
- * Leading=1 catches accidental single-line reads where the anchor is the
- * line immediately above the requested start. Trailing=3 buffers the
- * common case where the agent asks for a narrow range and then needs the
- * next few lines to disambiguate an anchor.
- */
-const RANGE_LEADING_CONTEXT_LINES = 1;
-const RANGE_TRAILING_CONTEXT_LINES = 3;
-
-/**
- * Expand a [start, end) range with leading/trailing context lines on the
- * sides where the user actually constrained the range. A start of 0 (no
- * explicit offset) does not get leading context — that's already an
- * open-ended read from the top.
- */
-function expandRangeWithContext(
-	requestedStart: number,
-	requestedEnd: number,
-	totalLines: number,
-	expandStart: boolean,
-	expandEnd: boolean,
-): { startLine: number; endLine: number } {
-	return {
-		startLine: expandStart ? Math.max(0, requestedStart - RANGE_LEADING_CONTEXT_LINES) : requestedStart,
-		endLine: expandEnd ? Math.min(totalLines, requestedEnd + RANGE_TRAILING_CONTEXT_LINES) : requestedEnd,
-	};
-}
 
 async function streamLinesFromFile(
 	filePath: string,
@@ -1221,22 +1192,11 @@ export class ReadTool implements AgentTool<typeof readSchema | typeof lightReadS
 		const details = options.details ?? {};
 		const allLines = text.split("\n");
 		const totalLines = allLines.length;
-		// User-requested 0-indexed range start. Lines BEFORE this are leading
-		// context (added below if offset is explicit).
+		// Explicit selectors return only the requested lines.
 		const requestedStart = offset ? Math.max(0, offset - 1) : 0;
 		const ignoreResultLimits = options.ignoreResultLimits ?? false;
 		const requestedEnd = limit !== undefined ? Math.min(requestedStart + limit, allLines.length) : allLines.length;
-		// Expand only on sides the user actually constrained: leading context
-		// when offset>1, trailing context when a finite limit was set.
-		const expanded = expandRangeWithContext(
-			requestedStart,
-			requestedEnd,
-			allLines.length,
-			offset !== undefined && offset > 1,
-			limit !== undefined,
-		);
-		const startLine = expanded.startLine;
-		const endLineExpanded = expanded.endLine;
+		const startLine = requestedStart;
 		const startLineDisplay = startLine + 1;
 
 		const resultBuilder = toolResult(details);
@@ -1262,7 +1222,7 @@ export class ReadTool implements AgentTool<typeof readSchema | typeof lightReadS
 				.done();
 		}
 
-		const endLine = endLineExpanded;
+		const endLine = requestedEnd;
 		const selectedContent = allLines.slice(startLine, endLine).join("\n");
 		const userLimitedLines = limit !== undefined ? endLine - startLine : undefined;
 		const truncation = ignoreResultLimits ? noTruncResult(selectedContent) : truncateHead(selectedContent);
@@ -1307,9 +1267,12 @@ export class ReadTool implements AgentTool<typeof readSchema | typeof lightReadS
 			return prependHashlineHeader(formatted, hashContext);
 		};
 		const buildLineEntries = (endLineDisplay: number): LineEntry[] =>
-			buildLineEntriesWithBlockContext(allLines, [{ startLine: startLineDisplay, endLine: endLineDisplay }], {
-				path: options.sourcePath,
-			});
+			buildLineEntriesWithBlockContext(
+				allLines,
+				[{ startLine: startLineDisplay, endLine: endLineDisplay }],
+				{ path: options.sourcePath },
+				{ includeContext: offset === undefined && limit === undefined },
+			);
 
 		let outputText: string;
 		let truncationInfo:
@@ -1440,7 +1403,12 @@ export class ReadTool implements AgentTool<typeof readSchema | typeof lightReadS
 		if (options.raw === true) {
 			outputText = rawParts.length > 0 ? rawParts.join("\n\n…\n\n") : "";
 		} else if (visibleSpans.length > 0) {
-			const entries = buildLineEntriesWithBlockContext(allLines, visibleSpans, { path: options.sourcePath });
+			const entries = buildLineEntriesWithBlockContext(
+				allLines,
+				visibleSpans,
+				{ path: options.sourcePath },
+				{ includeContext: false },
+			);
 			if (shouldAddHashLines) seenLines = lineNumbersFromEntries(entries);
 			const firstLine = entries.find(entry => entry.kind === "line");
 			if (firstLine?.kind === "line") {
@@ -1591,6 +1559,7 @@ export class ReadTool implements AgentTool<typeof readSchema | typeof lightReadS
 				visibleSpans,
 				{ path: absolutePath },
 				{
+					includeContext: false,
 					lineText: (lineNumber, sourceText) => {
 						const visibleText = displayLineByNumber.get(lineNumber);
 						if (visibleText !== undefined) return visibleText;
@@ -1615,7 +1584,7 @@ export class ReadTool implements AgentTool<typeof readSchema | typeof lightReadS
 			const tag = await recordFileSnapshot(this.session, absolutePath);
 			if (tag) {
 				recordSeenLinesFromBody(this.session, absolutePath, tag, outputText);
-				outputText = `${formatHashlineHeader(path.basename(absolutePath), tag)}\n${outputText}`;
+				outputText = `${formatHashlineHeader(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag)}\n${outputText}`;
 			}
 		}
 		if (notices.length > 0) {
@@ -2433,20 +2402,15 @@ export class ReadTool implements AgentTool<typeof readSchema | typeof lightReadS
 						}
 					}
 
-					// User-requested 0-indexed range start. Lines BEFORE this become
-					// leading context (added below if offset is explicit).
+					// Explicit selectors return only the requested lines.
 					const requestedStart = offset ? Math.max(0, offset - 1) : 0;
-					const expandStart = offset !== undefined && offset > 1;
-					const expandEnd = limit !== undefined;
-					const leadingContext = expandStart ? Math.min(requestedStart, RANGE_LEADING_CONTEXT_LINES) : 0;
-					const trailingContext = expandEnd ? RANGE_TRAILING_CONTEXT_LINES : 0;
-					const startLine = requestedStart - leadingContext;
+					const startLine = requestedStart;
 					const startLineDisplay = startLine + 1;
 
 					const DEFAULT_LIMIT = this.#defaultLimit;
 					const effectiveLimit = limit ?? DEFAULT_LIMIT;
-					const maxLinesToCollect = Math.min(effectiveLimit + leadingContext + trailingContext, DEFAULT_MAX_LINES);
-					const selectedLineLimit = effectiveLimit + leadingContext + trailingContext;
+					const maxLinesToCollect = Math.min(effectiveLimit, DEFAULT_MAX_LINES);
+					const selectedLineLimit = effectiveLimit;
 					// Scale byte budget with line limit so the configured line count actually fits.
 					// Assume ~512 bytes/line average; never go below the shared default.
 					const maxBytesForRead = Math.max(DEFAULT_MAX_BYTES, maxLinesToCollect * 512);
@@ -2538,9 +2502,10 @@ export class ReadTool implements AgentTool<typeof readSchema | typeof lightReadS
 					for (let i = 0; i < displayLines.length; i++) {
 						displayLineByNumber.set(startLineDisplay + i, displayLines[i] ?? "");
 					}
-					const bracketContextFullLines = rawSelector
-						? undefined
-						: await readBracketContextFullLines(absolutePath, fileSize);
+					const bracketContextFullLines =
+						rawSelector || offset !== undefined || limit !== undefined
+							? undefined
+							: await readBracketContextFullLines(absolutePath, fileSize);
 					const displayedEndLine = startLineDisplay + Math.max(0, displayLines.length - 1);
 
 					const selectedContent = displayLines.join("\n");
@@ -2579,7 +2544,7 @@ export class ReadTool implements AgentTool<typeof readSchema | typeof lightReadS
 								)
 							: await recordFileSnapshot(this.session, absolutePath);
 						if (tag) {
-							hashContext = hashlineHeaderContext(path.basename(absolutePath), tag);
+							hashContext = hashlineHeaderContext(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag);
 						}
 					}
 

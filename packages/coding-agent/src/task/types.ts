@@ -69,6 +69,9 @@ export interface SubagentEventPayload {
 /** Payload emitted on TASK_SUBAGENT_LIFECYCLE_CHANNEL */
 export interface SubagentLifecyclePayload {
 	id: string;
+	/** Fresh output/job identity for an IRC-reactivated turn; the initial output stays immutable. */
+	runId?: string;
+	jobId?: string;
 	agent: string;
 	agentSource: AgentSource;
 	description?: string;

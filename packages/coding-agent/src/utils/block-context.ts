@@ -277,12 +277,15 @@ export function buildLineEntriesWithBlockContext(
 	visibleSpans: readonly LineSpan[],
 	source: BlockContextSource = {},
 	options: {
+		/** Set false for selectors whose explicit bounds must remain exact. */
+		includeContext?: boolean;
 		lineText?: (lineNumber: number, sourceText: string, context: boolean) => string;
 	} = {},
 ): LineEntry[] {
 	const spans = normalizeLineSpans(visibleSpans, fullLines.length);
 	const visible = visibleLineNumbers(spans);
-	const context = findBlockContextLines(fullLines, visible, source);
+	const context =
+		options.includeContext === false ? new Map<number, string>() : findBlockContextLines(fullLines, visible, source);
 	const allLines = new Set<number>(visible);
 	for (const lineNumber of context.keys()) allLines.add(lineNumber);
 

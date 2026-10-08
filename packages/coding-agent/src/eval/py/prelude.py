@@ -111,7 +111,7 @@ if "__omp_prelude_loaded__" not in globals():
         """Write file contents (create parents)."""
         p = _resolve_omp_path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        p.write_text(content, encoding="utf-8", newline="")
         _emit_status("write", path=str(p), chars=len(content))
         return p
 

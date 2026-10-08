@@ -236,23 +236,14 @@ export async function executeHashlineSingle(
 				: new ToolError(noChangeDiagnostic(entry.section.path));
 		}
 	}
-	// Then commit each one, narrowing the LSP batch flush flag to the final
-	// section only. A no-op apply mid-batch is treated as a hard failure —
-	// the model authored anchors that match the current file content.
-	const rendered: RenderedSection[] = [];
-	for (let i = 0; i < prepared.length; i++) {
-		const isLast = i === prepared.length - 1;
-		fs.setBatchRequest(narrowBatchRequest(options.batchRequest, isLast));
-		const sectionResult = await patcher.commit(prepared[i]);
-		if (sectionResult.op === "noop") {
-			const { count, escalate } = recordNoopEdit(options.session, sectionResult.canonicalPath, inputHash);
-			throw escalate
-				? new ToolError(noChangeLoopDiagnostic(sectionResult.path, count))
-				: new ToolError(noChangeDiagnostic(sectionResult.path));
-		}
+	// Reuse the patcher's partial-write receipt while retaining one LSP flush.
+	const sectionResults = await patcher.commitAll(prepared, index => {
+		fs.setBatchRequest(narrowBatchRequest(options.batchRequest, index === prepared.length - 1));
+	});
+	const rendered = sectionResults.map((sectionResult, index) => {
 		resetNoopEdit(options.session, sectionResult.canonicalPath);
-		rendered.push(renderSection(sectionResult, fs.consumeDiagnostics(sectionResult.path), prepared[i].section.path));
-	}
+		return renderSection(sectionResult, fs.consumeDiagnostics(sectionResult.path), prepared[index].section.path);
+	});
 
 	return {
 		content: [

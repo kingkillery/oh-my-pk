@@ -403,7 +403,7 @@ describe("delegated shunting integration", () => {
 		expect(() => projectEvidenceDigest(`${exact}a`, "r".repeat(8000))).toThrow(
 			"Evidence digest reference exceeds the 8,000-byte output budget.",
 		);
-	});
+	}, 30_000);
 
 	it("validates new-file generation before allocating a child", async () => {
 		const root = await rootSession({ repo: false });

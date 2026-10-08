@@ -97,6 +97,7 @@ const nativeAndIntegrationPackages = [
 	"packages/natives",
 	"packages/tui",
 	"packages/collab-web",
+	"packages/ompk-linear-agent",
 	"packages/typescript-edit-benchmark",
 ];
 
