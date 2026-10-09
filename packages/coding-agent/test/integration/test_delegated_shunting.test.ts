@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { create } from "@bufbuild/protobuf";
@@ -53,6 +53,7 @@ describe("delegated shunting integration", () => {
 	let settings: Settings;
 	let workerResponses: MockResponse[];
 	const children: AgentSession[] = [];
+	const childDisposals = new Map<AgentSession, Mock<AgentSession["dispose"]>>();
 	const nativeSessions: AgentSession[] = [];
 	let registry: ModelRegistry;
 	let workerHandler: NonNullable<Parameters<typeof createMockModel>[0]>["handler"];
@@ -131,7 +132,9 @@ describe("delegated shunting integration", () => {
 				promptTemplates: [],
 				slashCommands: [],
 			});
-			vi.spyOn(created.session, "dispose");
+			// The executor composes a cleanup wrapper around this method after creation.
+			// Keep the spy itself so assertions follow disposal through that wrapper.
+			childDisposals.set(created.session, vi.spyOn(created.session, "dispose"));
 			if (options.nativeTaskExecution) {
 				nativeSessions.push(created.session);
 				created.session.agent.streamFn = () => {
@@ -166,6 +169,7 @@ describe("delegated shunting integration", () => {
 		} finally {
 			try {
 				models.splice(0);
+				childDisposals.clear();
 				AgentLifecycleManager.resetGlobalForTests();
 				AgentRegistry.resetGlobalForTests();
 				auth?.close();
@@ -1047,7 +1051,7 @@ describe("delegated shunting integration", () => {
 		expect(lifecycle.has("ShuntingWorker")).toBe(true);
 		const deadline = Date.now() + 5000;
 		while (registry.get("ShuntingWorker")?.status !== "parked" && Date.now() < deadline) await Bun.sleep(10);
-		expect(child.dispose).toHaveBeenCalledTimes(1);
+		expect(childDisposals.get(child)).toHaveBeenCalledTimes(1);
 		expect(child.isStreaming).toBe(false);
 		expect(registry.get("ShuntingWorker")?.status).toBe("parked");
 		expect(registry.get("ShuntingWorker")?.session).toBeNull();
@@ -1062,8 +1066,8 @@ describe("delegated shunting integration", () => {
 		const child = children[0]!;
 		expect(child.isStreaming).toBe(false);
 		expect(AgentRegistry.global().get("ShuntingWorker")?.status).toBe("idle");
-		expect(child.dispose).not.toHaveBeenCalled();
-		const dispose = vi.spyOn(child, "dispose");
+		const dispose = childDisposals.get(child);
+		expect(dispose).not.toHaveBeenCalled();
 		await finalizeSubagentLifecycle({
 			id: "ShuntingWorker",
 			session: child,
