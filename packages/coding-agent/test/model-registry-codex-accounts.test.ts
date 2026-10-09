@@ -16,6 +16,7 @@ describe("Codex account discovery in the registry", () => {
 	let modelsPath: string;
 	let transport: FetchImpl;
 	let server: Bun.Server<undefined>;
+	let includeSol: boolean;
 	const requests: string[] = [];
 
 	beforeEach(async () => {
@@ -34,6 +35,7 @@ describe("Codex account discovery in the registry", () => {
 			})),
 		);
 		requests.length = 0;
+		includeSol = false;
 		server = Bun.serve({
 			port: 0,
 			fetch(request) {
@@ -44,7 +46,10 @@ describe("Codex account discovery in the registry", () => {
 				if (request.headers.get("authorization") !== `Bearer access-${account}`)
 					return new Response(null, { status: 401 });
 				return Response.json({
-					models: (account === "second" ? ["gpt-5.5", "gpt-6-astra"] : ["gpt-5.5"]).map(slug => ({
+					models: (account === "second"
+						? ["gpt-5.5", "gpt-6-astra", ...(includeSol ? ["gpt-6.1-sol"] : [])]
+						: ["gpt-5.5"]
+					).map(slug => ({
 						slug,
 						supported_in_api: true,
 					})),
@@ -58,6 +63,23 @@ describe("Codex account discovery in the registry", () => {
 			return Promise.reject(new Error("Unexpected provider discovery"));
 		};
 	});
+
+	it("adds GPT-6.1 Sol to available choices after account refresh and preserves it on restart", async () => {
+		const registry = new ModelRegistry(auth, modelsPath, { fetch: transport });
+		await registry.refreshProvider("openai-codex");
+		expect(registry.find("openai-codex", "gpt-6.1-sol")).toBeUndefined();
+		includeSol = true;
+		await registry.refreshProvider("openai-codex");
+		const sol = registry
+			.getAvailable()
+			.find(model => model.provider === "openai-codex" && model.id === "gpt-6.1-sol");
+		if (!sol) throw new Error("GPT-6.1 Sol is missing from available models");
+		expect(await registry.resolver(sol, "sol-selection")({ lastChance: false, error: undefined })).toBe(
+			"access-second",
+		);
+		const restarted = new ModelRegistry(auth, modelsPath, { fetch: transport });
+		expect(restarted.find("openai-codex", "gpt-6.1-sol")).toBeDefined();
+	}, 20000);
 
 	afterEach(async () => {
 		auth.close();
