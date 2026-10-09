@@ -738,12 +738,18 @@ describe("legacy HTTP adapter", () => {
 				transport.configureProtocol(legacyProtocol);
 				await transport.connect();
 				await transport.request("initialize", { protocolVersion: "2025-03-26" });
+				transport.configureProtocol({ ...legacyProtocol, version: "2025-06-18" });
 				await transport.startSSEListener();
+				await transport.notify("notifications/initialized");
 				await transport.close();
 			},
 		);
-		expect(calls.map(call => call.init.method)).toEqual(["POST", "GET", "DELETE"]);
-		expect(headersFrom(calls[1]!.init).get("mcp-session-id")).toBe("legacy-session");
-		expect(headersFrom(calls[2]!.init).get("mcp-session-id")).toBe("legacy-session");
+		expect(calls.map(call => call.init.method)).toEqual(["POST", "GET", "POST", "DELETE"]);
+		expect(headersFrom(calls[0]!.init).get("mcp-protocol-version")).toBeNull();
+		for (const call of calls.slice(1)) {
+			expect(headersFrom(call.init).get("mcp-session-id")).toBe("legacy-session");
+			// 2025-06-18 servers reject post-initialize requests without it.
+			expect(headersFrom(call.init).get("mcp-protocol-version")).toBe("2025-06-18");
+		}
 	});
 });

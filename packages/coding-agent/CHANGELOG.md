@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Carry the server-negotiated legacy MCP protocol version on HTTP requests, notifications, SSE listeners, and session deletion while keeping initialization headers separate.
 - Track IRC-reactivated task runs with fresh parent-owned jobs and readable result handles; retain failed and cancelled output and settle active runs during cleanup.
 - Honor explicit read and grep line ranges without adding structural context or applying result caps before range filtering.
 - Include the full target path in read snapshot headers and reject edits that implicitly substitute another file for a missing target. Multi-file edits share the hashline patcher's partial-write receipt.

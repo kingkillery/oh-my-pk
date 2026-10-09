@@ -386,8 +386,8 @@ export class HttpTransport implements MCPTransport {
 		const headers: Record<string, string> = {
 			Accept: "text/event-stream",
 			...this.config.headers,
+			...this.#legacySessionHeaders(),
 		};
-		if (this.#sessionId) headers["Mcp-Session-Id"] = this.#sessionId;
 
 		let response: Response | null;
 		let timedOut = false;
@@ -478,13 +478,23 @@ export class HttpTransport implements MCPTransport {
 		return this.#protocol;
 	}
 
-	#legacyHeaders(): Record<string, string> {
-		const headers: Record<string, string> = {
+	#legacyHeaders(method?: string): Record<string, string> {
+		return {
 			"Content-Type": "application/json",
 			Accept: "application/json, text/event-stream",
 			...this.config.headers,
+			...(method === "initialize" ? {} : this.#legacySessionHeaders()),
 		};
+	}
+
+	/**
+	 * Session id plus the negotiated version. Since 2025-06-18 servers reject
+	 * post-initialize requests that omit `MCP-Protocol-Version`.
+	 */
+	#legacySessionHeaders(): Record<string, string> {
+		const headers: Record<string, string> = {};
 		if (this.#sessionId) headers["Mcp-Session-Id"] = this.#sessionId;
+		if (this.#protocol?.era === "legacy") headers["MCP-Protocol-Version"] = this.#protocol.version;
 		return headers;
 	}
 
@@ -499,7 +509,7 @@ export class HttpTransport implements MCPTransport {
 	} {
 		const protocol = this.#protocolOrThrow();
 		if (protocol.era === "legacy") {
-			return { params: params ?? {}, headers: this.#legacyHeaders(), protocol };
+			return { params: params ?? {}, headers: this.#legacyHeaders(method), protocol };
 		}
 		const requestParams = buildModernRequestParams(
 			params,
@@ -1011,7 +1021,7 @@ export class HttpTransport implements MCPTransport {
 			try {
 				const headers: Record<string, string> = {
 					...this.config.headers,
-					"Mcp-Session-Id": this.#sessionId,
+					...this.#legacySessionHeaders(),
 				};
 				await fetch(this.config.url, {
 					method: "DELETE",

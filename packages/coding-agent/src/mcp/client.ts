@@ -525,6 +525,14 @@ async function initializeConnection(
 		throw options.signal.reason instanceof Error ? options.signal.reason : new Error("Aborted");
 	}
 
+	// Every later request must carry the version the server chose.
+	if (/^\d{4}-\d{2}-\d{2}$/.test(String(result.protocolVersion))) {
+		await configureTransportProtocol(transport, {
+			era: "legacy",
+			phase: "connected",
+			version: result.protocolVersion,
+		});
+	}
 	await options?.onInitialized?.();
 	await transport.notify("notifications/initialized");
 	return result;
