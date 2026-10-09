@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as vm from "node:vm";
-import { collectModuleSourceSpecifiers, stripTypeScriptSyntax } from "./rewrite-imports";
+import { inspectModuleSource, stripTypeScriptSyntax } from "./rewrite-imports";
 
 interface LocalModuleEntry {
 	version: number;
@@ -101,8 +101,9 @@ export class LocalModuleLoader {
 			loader: stripLoaderForPath(modulePath),
 		});
 		const moduleDir = path.dirname(modulePath);
+		const { specifiers, bindings } = await inspectModuleSource(stripped);
 		const localDeps = new Set<string>();
-		for (const specifier of await collectModuleSourceSpecifiers(stripped)) {
+		for (const specifier of specifiers) {
 			const resolved = resolveImportSpecifier(moduleDir, specifier);
 			if (isLocalPathSpecifier(specifier) && isManagedLocalModulePath(resolved)) {
 				localDeps.add(resolved);
@@ -114,7 +115,7 @@ export class LocalModuleLoader {
 		this.#moduleVersions.set(modulePath, version);
 		const fileUrl = pathToFileURL(modulePath).href;
 		const identifier = `${fileUrl}?omp-session=${this.#sessionTag}&v=${version}`;
-		const wrappedSource = buildModuleSource(stripped, modulePath);
+		const wrappedSource = buildModuleSource(stripped, modulePath, bindings);
 		const module = new vm.SourceTextModule(wrappedSource, {
 			context: this.#context,
 			identifier,
@@ -288,14 +289,17 @@ function buildRequire(fromPath: string): NodeJS.Require {
 	return createRequire(pathToFileURL(basePath).href);
 }
 
-function buildModuleSource(source: string, modulePath: string): string {
+function buildModuleSource(source: string, modulePath: string, bindings: ReadonlySet<string>): string {
 	const moduleDir = path.dirname(modulePath);
-	return [
-		`const require = globalThis.__omp_get_require__(${JSON.stringify(pathToFileURL(modulePath).href)});`,
-		`const __filename = ${JSON.stringify(modulePath)};`,
-		`const __dirname = ${JSON.stringify(moduleDir)};`,
-		source,
-	].join("\n");
+	const compatibility = {
+		require: `globalThis.__omp_get_require__(${JSON.stringify(pathToFileURL(modulePath).href)})`,
+		__filename: JSON.stringify(modulePath),
+		__dirname: JSON.stringify(moduleDir),
+	};
+	const declarations = Object.entries(compatibility)
+		.filter(([name]) => !bindings.has(name))
+		.map(([name, value]) => `const ${name} = ${value};`);
+	return [...declarations, source].join("\n");
 }
 
 function resolveImportSpecifier(cwd: string, source: string): string {

@@ -1,9 +1,9 @@
-Send/receive short text messages between agents in this process.
+Send/receive short text messages between agents in this process and discoverable peers in the same working directory.
 
 <instruction>
 - Main agent is `Main`; subagents reuse their task id (`AuthLoader`, `AuthLoader-2` on repeat).
 - Beyond the schema: `send` is fire-and-forget (returns `delivered`/`failed` receipts, NEVER blocks on the recipient). `wait` consumes the returned message; timeout = clean "no message", not an error. `inbox` drains pending. `complete` resets a Fusion sidekick peer's context once both peers complete each other.
-- Messaging an `idle`/`parked` peer wakes it — no separate revive call.
+- Messaging an `idle`/`parked` peer wakes it when both peers' collaboration policies authorize wake — no separate revive call. A report-only peer may refuse wake.
 - Replies arrive only when the recipient sends one. For peer background, `read` `history://<id>`, don't interrogate.
 </instruction>
 
@@ -25,5 +25,5 @@ For both sending and replying:
 - `wait`/`await: true` only when you cannot proceed. A `failed` receipt = peer unreachable — move on; NEVER retry in a loop. NEVER "did you get the message?".
 - One question per send; address peers by exact id from `op: "list"` (e.g. `AuthLoader`, `Main`), NEVER invent friendly names. Answer expected questions via `irc send` to the sender. Share files via `local://`/`memory://`/`artifact://` URLs, never pasted blobs.
 - NEVER IRC what a tool answers. A `read`, grep, or build resolves it? Do that first.
-- `complete` only when the current interaction is fully done and no follow-up is expected; it requires `to` and never broadcasts.
+- `complete` only when the current interaction is fully done and no follow-up is expected; it requires `to`, only supports peers in this process, and never broadcasts.
 </etiquette>

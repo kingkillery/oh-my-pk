@@ -29,7 +29,7 @@ print(value, ...) → None
     Text output.
 read(path, offset?=1, limit?=None) → str
     File as text; offset/limit 1-indexed lines. Accepts `local://…`.
-write(path, content) → str
+write(path, content) → {{#if py}}Path{{else}}str{{/if}}
     Write file (creates parents) → resolved path. `local://…` persists across turns/subagents.
 env(key?=None, value?=None) → str | None | dict
     No args → full env dict; one → value of `key`; two → set `key=value`, return value.

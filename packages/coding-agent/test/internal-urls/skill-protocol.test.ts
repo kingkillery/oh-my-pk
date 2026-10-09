@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import * as path from "node:path";
 import { resetActiveSkillsForTests, setActiveSkills } from "@pk-nerdsaver-ai/pi-coding-agent/extensibility/skills";
 import { InternalUrlRouter } from "@pk-nerdsaver-ai/pi-coding-agent/internal-urls";
+import { TempDir } from "@pk-nerdsaver-ai/pi-utils";
 
 describe("SkillProtocolHandler bare listing", () => {
 	afterEach(() => {
@@ -63,5 +65,31 @@ describe("SkillProtocolHandler bare listing", () => {
 		expect(resource.content).toContain("# Skill Search: compose");
 		expect(resource.content).toContain("- docker-repair: Repair Docker Compose networking failures");
 		expect(resource.content).not.toContain("calendar-audit");
+	});
+
+	it("resolves a discovered namespaced skill and its advertised auxiliary file", async () => {
+		using tmp = TempDir.createSync("@skill-resource-");
+		const filePath = path.join(tmp.path(), "SKILL.md");
+		const relativePath = "reference notes.md";
+		const instructions = `Read [reference notes](${relativePath}) for the fixture contract.`;
+		await Bun.write(filePath, instructions);
+		await Bun.write(path.join(tmp.path(), relativePath), "fixture resource");
+		setActiveSkills([
+			{
+				name: "plugin:resource-fixture",
+				description: "Resolve fixture resources",
+				filePath,
+				baseDir: tmp.path(),
+				source: "test",
+			},
+		]);
+		const router = InternalUrlRouter.instance();
+		expect((await router.resolve("skill://?q=fixture")).content).toContain("plugin:resource-fixture");
+		expect((await router.resolve("skill://plugin:resource-fixture")).content).toBe(instructions);
+		const auxiliary = await router.resolve("skill://plugin:resource-fixture/reference%20notes.md");
+		expect(auxiliary.content).toBe("fixture resource");
+		expect(auxiliary.sourcePath).toBe(path.join(tmp.path(), relativePath));
+		await expect(router.resolve("skill://plugin:resource-fixture/missing.md")).rejects.toThrow("File not found");
+		await expect(router.resolve("skill://plugin:resource-fixture/%2e%2e%2foutside.md")).rejects.toThrow("traversal");
 	});
 });

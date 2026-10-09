@@ -49,7 +49,86 @@ describe("read tool multi-range selector", () => {
 		await removeWithRetries(tmpDir);
 	});
 
-	it("uses only the filename in hashline headers for nested files", async () => {
+	it.each(["csv", "md"])("honors explicit selectors in %s files with summaries enabled", async extension => {
+		const filePath = path.join(tmpDir, `selected.${extension}`);
+		const lines =
+			extension === "csv"
+				? ["label,value", ...Array.from({ length: 12 }, (_, i) => `row-${i + 1},${i + 1}`)]
+				: [
+						"# Heading",
+						"",
+						"Introduction.",
+						"",
+						"```ts",
+						"function outer() {",
+						"  const first = 1;",
+						"  const second = 2;",
+						"  return first + second;",
+						"}",
+						"```",
+						"Afterward.",
+					];
+		await Bun.write(filePath, lines.join("\n"));
+		const session = createSession(tmpDir);
+		session.settings.set("read.summarize.enabled", true);
+		session.settings.set("read.summarize.prose", true);
+		session.settings.set("read.summarize.minTotalLines", 0);
+		const tool = new ReadTool(session);
+		for (const selector of ["7+1", "7-9", "raw:7+1", "7-9:raw"]) {
+			const result = await tool.execute(`${extension}-${selector}`, { path: `${filePath}:${selector}` });
+			expect(result.details?.summary).toBeUndefined();
+			expect(result.details?.displayContent?.startLine).toBe(7);
+			expect(result.details?.displayContent?.text).toBe(lines.slice(6, selector.includes("7-9") ? 9 : 7).join("\n"));
+		}
+		const disjoint = await tool.execute(`${extension}-disjoint`, { path: `${filePath}:3+1,7-9` });
+		expect(disjoint.details?.summary).toBeUndefined();
+		expect(disjoint.details?.displayContent?.lineNumbers).toEqual([3, null, 7, 8, 9]);
+		expect(disjoint.details?.displayContent?.text).toBe(`${lines[2]}\n…\n${lines.slice(6, 9).join("\n")}`);
+		const rawDisjoint = await tool.execute(`${extension}-raw-disjoint`, { path: `${filePath}:raw:3+1,7-9` });
+		expect(textOutput(rawDisjoint)).toBe(`${lines[2]}\n\n…\n\n${lines.slice(6, 9).join("\n")}`);
+	});
+
+	it.each([false, true])("returns exact single-line and inclusive ranges (ACP bridge: %s)", async useBridge => {
+		const filePath = path.join(tmpDir, "numbered.txt");
+		const content = makeNumberedContent(20);
+		await Bun.write(filePath, content);
+		const bridge: ClientBridge | undefined = useBridge
+			? { capabilities: { readTextFile: true }, readTextFile: async () => content }
+			: undefined;
+		const tool = new ReadTool(createSession(tmpDir, bridge));
+		for (const selector of ["5+1", "5-5", "raw:5+1", "5-5:raw", "5-7", "raw:5-7"]) {
+			const result = await tool.execute(`exact-${selector}`, { path: `${filePath}:${selector}` });
+			const count = selector.includes("5-7") ? 3 : 1;
+			expect(result.details?.displayContent?.startLine).toBe(5);
+			expect(result.details?.displayContent?.text).toBe(
+				content
+					.split("\n")
+					.slice(4, 4 + count)
+					.join("\n"),
+			);
+		}
+		const full = await tool.execute("unselected", { path: filePath });
+		expect(full.details?.displayContent?.text).toBe(content);
+	});
+
+	it.each([false, true])("keeps disjoint code selectors within their bounds (ACP bridge: %s)", async useBridge => {
+		const filePath = path.join(tmpDir, "disjoint.ts");
+		const content = "function first() {\n  keepFirst();\n}\nfunction second() {\n  keepSecond();\n}\n";
+		await Bun.write(filePath, content);
+		const bridge: ClientBridge | undefined = useBridge
+			? { capabilities: { readTextFile: true }, readTextFile: async () => content }
+			: undefined;
+		const tool = new ReadTool(createSession(tmpDir, bridge));
+		for (const selector of ["2+1,5-5", "raw:2+1,5-5"]) {
+			const text = textOutput(await tool.execute(`disjoint-${selector}`, { path: `${filePath}:${selector}` }));
+			expect(text).toContain("keepFirst();");
+			expect(text).toContain("keepSecond();");
+			expect(text).not.toContain("function");
+			expect(text).not.toContain("}");
+		}
+	});
+
+	it("preserves the workspace path in hashline headers for nested files", async () => {
 		const filePath = path.join(tmpDir, "src", "nested", "numbered.txt");
 		await fs.mkdir(path.dirname(filePath), { recursive: true });
 		await fs.writeFile(filePath, "alpha\nbeta\n");
@@ -58,8 +137,13 @@ describe("read tool multi-range selector", () => {
 		const text = textOutput(await tool.execute("call-filename-header", { path: filePath }));
 		const firstLine = text.split("\n")[0];
 
-		expect(firstLine).toMatch(/^\[numbered\.txt#[0-9A-F]{4}\]$/);
-		expect(firstLine).not.toContain("src");
+		expect(firstLine).toMatch(/^\[src\/nested\/numbered\.txt#[0-9A-F]{4}\]$/);
+		const peerPath = path.join(tmpDir, "other", "numbered.txt");
+		await fs.mkdir(path.dirname(peerPath), { recursive: true });
+		await Bun.write(peerPath, "alpha\nbeta\n");
+		const peerHeader = textOutput(await tool.execute("call-peer-header", { path: peerPath })).split("\n")[0];
+		expect(peerHeader).toMatch(/^\[other\/numbered\.txt#[0-9A-F]{4}\]$/);
+		expect(peerHeader).not.toBe(firstLine);
 	});
 
 	it("returns both ranges separated by an elision marker", async () => {
@@ -71,7 +155,7 @@ describe("read tool multi-range selector", () => {
 		const result = await tool.execute("call-multi", { path: `${filePath}:3-5,20-22` });
 		const text = textOutput(result);
 		const firstLine = text.split("\n")[0];
-		expect(firstLine).toMatch(/^\[numbered\.txt#[0-9A-F]{4}\]$/);
+		expect(firstLine).toMatch(/^\[src\/numbered\.txt#[0-9A-F]{4}\]$/);
 
 		expect(text).toContain("line 3");
 		expect(text).toContain("line 4");
@@ -86,7 +170,7 @@ describe("read tool multi-range selector", () => {
 		expect(text).toContain("…");
 	});
 
-	it("includes the matching closing bracket line outside a forward range", async () => {
+	it("does not add closing brackets or neighboring lines outside a forward range", async () => {
 		const filePath = path.join(tmpDir, "brackets.ts");
 		await fs.writeFile(
 			filePath,
@@ -106,13 +190,14 @@ describe("read tool multi-range selector", () => {
 		const text = textOutput(await tool.execute("call-bracket-close", { path: `${filePath}:1-1` }));
 
 		expect(text).toContain("function outer() {");
-		expect(text).toContain("…");
-		expect(text).toContain("}");
+		expect(text).not.toContain("…");
+		expect(text).not.toContain("}");
+		expect(text).not.toContain("const one");
 		expect(text).not.toContain("const four");
 		expect(text).not.toContain("return one + two");
 	});
 
-	it("includes the matching opening bracket line outside a reverse range", async () => {
+	it("does not add opening brackets or neighboring lines outside a reverse range", async () => {
 		const filePath = path.join(tmpDir, "brackets.ts");
 		await fs.writeFile(
 			filePath,
@@ -131,13 +216,14 @@ describe("read tool multi-range selector", () => {
 		const tool = new ReadTool(createSession(tmpDir));
 		const text = textOutput(await tool.execute("call-bracket-open", { path: `${filePath}:7-7` }));
 
-		expect(text.indexOf("function outer() {")).toBeLessThan(text.indexOf("}"));
-		expect(text).toContain("…");
+		expect(text).toContain("}");
+		expect(text).not.toContain("function outer() {");
+		expect(text).not.toContain("…");
 		expect(text).not.toContain("const one = 1");
 		expect(text).not.toContain("const four = 4");
 	});
 
-	it("uses tree-sitter syntactic spans for indentation languages (Python)", async () => {
+	it("does not expand explicit selectors to Python syntactic spans", async () => {
 		const filePath = path.join(tmpDir, "module.py");
 		await fs.writeFile(
 			filePath,
@@ -156,15 +242,12 @@ describe("read tool multi-range selector", () => {
 		);
 
 		const tool = new ReadTool(createSession(tmpDir));
-		// Read only the `def` header (expands by a few trailing context lines).
-		// Python has no closing delimiter, so a bracket scan would surface
-		// nothing; tree-sitter surfaces the def's last body line (9) as the
-		// block boundary, behind an ellipsis for the skipped middle.
 		const text = textOutput(await tool.execute("call-py-def", { path: `${filePath}:1-1` }));
 
 		expect(text).toContain("def greet(name):");
-		expect(text).toContain("…");
-		expect(text).toContain("return a + b + c + d + e + f + g + len(name)");
+		expect(text).not.toContain("…");
+		expect(text).not.toContain("return a + b + c + d + e + f + g + len(name)");
+		expect(text).not.toContain("a = 1");
 		expect(text).not.toContain("trailing = 1");
 	});
 
@@ -177,10 +260,7 @@ describe("read tool multi-range selector", () => {
 		const result = await tool.execute("call-merge", { path: `${filePath}:3-7,6-9` });
 		const text = textOutput(result);
 
-		// All lines from the merged range present
-		for (const i of [3, 4, 5, 6, 7, 8, 9]) {
-			expect(text).toContain(`line ${i}\n`);
-		}
+		expect(result.details?.displayContent?.text).toBe(makeNumberedContent(20).split("\n").slice(2, 9).join("\n"));
 		// No separator because ranges merged into one contiguous block
 		expect(text).not.toContain("…");
 	});

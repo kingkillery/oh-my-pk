@@ -198,6 +198,31 @@ describe("GrepTool internal URL resolution", () => {
 		expect(text).toContain("needle");
 	});
 
+	it("honors artifact-scoped ranges after out-of-range hits exhaust ordinary caps", async () => {
+		await Bun.write(
+			path.join(artifactsDir, "6.bash.log"),
+			Array.from({ length: 3000 }, (_, i) => `needle line ${i + 1}`).join("\n"),
+		);
+		const tool = new GrepTool(
+			createSession({ settings: Settings.isolated({ "grep.contextBefore": 2, "grep.contextAfter": 2 }) }),
+		);
+		for (const selector of ["2090-2092", "2090+1,2500-2501"]) {
+			const result = await tool.execute(`artifact-range-${selector}`, {
+				pattern: "needle",
+				paths: [`artifact://6:${selector}`],
+			});
+			const text = getResultText(result);
+			const selected = selector.includes("2500") ? [2090, 2500, 2501] : [2090, 2091, 2092];
+			expect(result.details?.matchCount).toBe(3);
+			expect(result.details?.truncated).toBe(false);
+			for (const line of selected) expect(text).toContain(`needle line ${line}`);
+			for (const line of [1, 2089, 2093, 2499, 2502]) {
+				expect(text).not.toMatch(new RegExp(`needle line ${line}(?:\\n|$)`));
+			}
+			expect(text).not.toMatch(/\[.*#[0-9A-F]{4}\]/);
+		}
+	});
+
 	it("greps artifact:// with regex pattern", async () => {
 		const content = "ERROR: connection refused\nWARN: timeout\nERROR: disk full\nINFO: ok\n";
 		await Bun.write(path.join(artifactsDir, "3.python.log"), content);

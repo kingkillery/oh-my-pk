@@ -10,6 +10,7 @@ import type { AgentEvent, AgentIdentity, AgentTelemetryConfig, ThinkingLevel } f
 import { recordHandoff, resolveTelemetry } from "@pk-nerdsaver-ai/pi-agent-core";
 import type { Api, Model, ServiceTier, Usage } from "@pk-nerdsaver-ai/pi-ai";
 import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@pk-nerdsaver-ai/pi-utils";
+import { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
 import { ModelRegistry } from "../config/model-registry";
 import {
@@ -30,6 +31,7 @@ import type { ExtensionRunner } from "../extensibility/extensions/runner";
 import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
 import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
+import { historyUrl } from "../internal-urls/history-url";
 import { callTool } from "../mcp/client";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
@@ -2078,6 +2080,8 @@ interface FinalizeRunArgs {
 	done: { exitCode: number; error?: string; aborted?: boolean; abortReason?: string; durationMs: number };
 	index: number;
 	id: string;
+	outputId?: string;
+	jobId?: string;
 	agent: AgentDefinition;
 	task: string;
 	assignment?: string;
@@ -2100,6 +2104,119 @@ interface FinalizeRunArgs {
 	assignmentVerifierRunners?: AssignmentVerifierRunners;
 	actualChangedFiles?: readonly string[];
 	recoveryAttempt?: RecoveryAttempt;
+}
+
+interface ResumedRunTrackingArgs extends Omit<FinalizeRunArgs, "monitor" | "done" | "signal" | "startTime"> {
+	parentAgentId?: string;
+	softRequestBudget: number;
+	maxRuntimeMs: number;
+	isInitialRunSettled: () => boolean;
+}
+
+/** Keep later IRC turns on the same result, progress, and job delivery path as the initial spawn. */
+export function trackResumedSubagentRuns(session: AgentSession, args: ResumedRunTrackingArgs): () => Promise<void> {
+	const activeRuns = new Set<() => Promise<void>>();
+	const unsubscribeStart = session.subscribe(event => {
+		if (event.type !== "agent_start" || !args.isInitialRunSettled()) return;
+		const startTime = Date.now();
+		const outputId = `${args.id}-${crypto.randomUUID()}`;
+		const monitor = createSubagentRunMonitor({ ...args, detached: true });
+		monitor.setActiveSession(session);
+		const unsubscribeMonitor = monitor.attach(session);
+		const { promise, resolve, reject } = Promise.withResolvers<string>();
+		const manager =
+			(args.parentAgentId ? AgentRegistry.global().get(args.parentAgentId)?.session?.asyncJobManager : undefined) ??
+			AsyncJobManager.instance();
+		let jobId: string | undefined;
+		if (manager) {
+			try {
+				jobId = manager.register(
+					"task",
+					`${args.id} (resumed)`,
+					async ({ signal }) => {
+						const abort = () => monitor.requestAbort("signal");
+						signal.addEventListener("abort", abort, { once: true });
+						try {
+							return await promise;
+						} finally {
+							signal.removeEventListener("abort", abort);
+						}
+					},
+					{ ownerId: args.parentAgentId },
+				);
+			} catch (error) {
+				logger.warn("Resumed subagent job registration failed", { id: args.id, error: String(error) });
+			}
+		}
+		// A synchronous/SDK parent may have no job manager. Still retain its output and lifecycle events.
+		if (!jobId) void promise.catch(() => undefined);
+		args.eventBus?.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: args.id,
+			runId: outputId,
+			jobId,
+			agent: args.agent.name,
+			agentSource: args.agent.source,
+			description: args.description,
+			parentToolCallId: args.parentToolCallId,
+			detached: true,
+			sessionFile: args.sessionFile,
+			index: args.index,
+			status: "started",
+		});
+		const previousAssistant = session.getLastAssistantMessage();
+		let settled: Promise<void> | undefined;
+		const complete = (cancelled = false): Promise<void> => {
+			if (settled) return settled;
+			if (cancelled) monitor.requestAbort("signal");
+			const lastAssistant = session.getLastAssistantMessage();
+			if (lastAssistant !== previousAssistant) monitor.captureSalvage(session);
+			monitor.finish();
+			queueMicrotask(() => {
+				unsubscribeMonitor();
+				unsubscribeEnd();
+			});
+			const aborted =
+				cancelled ||
+				(monitor.abortSignal.aborted && monitor.isAbortedRun()) ||
+				(lastAssistant?.stopReason === "aborted" && !monitor.yieldCalled());
+			const failed = aborted || lastAssistant?.stopReason === "error";
+			settled = finalizeRunResult({
+				...args,
+				outputId,
+				jobId,
+				detached: true,
+				startTime,
+				monitor,
+				signal: monitor.abortSignal,
+				done: {
+					exitCode: failed ? 1 : 0,
+					error: failed ? lastAssistant?.errorMessage : undefined,
+					aborted,
+					abortReason: aborted ? lastAssistant?.errorMessage : undefined,
+					durationMs: Date.now() - startTime,
+				},
+			})
+				.then(result => {
+					const output = [result.output, result.stderr].filter(Boolean).join("\n");
+					const text = `Resumed task ${args.id}: ${output}\n\nOutput: agent://${outputId}\nTranscript: ${historyUrl(args.id)}`;
+					if (result.exitCode !== 0 || result.aborted || result.isError) reject(new Error(text));
+					else resolve(text);
+				})
+				.catch(reject)
+				.finally(() => activeRuns.delete(stopRun));
+			return settled;
+		};
+		const stopRun = () => complete(true);
+		activeRuns.add(stopRun);
+		// Subscribe after the monitor so it captures agent_end before finalization.
+		const unsubscribeEnd = session.subscribe(end => {
+			if (end.type === "agent_end") void complete();
+		});
+	});
+	return async () => {
+		unsubscribeStart();
+		await Promise.all([...activeRuns].map(stop => stop()));
+	};
 }
 
 /**
@@ -2176,6 +2293,12 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 				.join("\n");
 		}
 	}
+	if (exitCode !== 0 && !rawOutput.trim()) {
+		rawOutput =
+			stderr.trim() ||
+			done.abortReason?.trim() ||
+			(done.aborted ? "Subagent aborted without completed output." : "Subagent failed without completed output.");
+	}
 	if (
 		args.maxOutputBytes !== undefined &&
 		(monitor.outputLimitExceeded() ||
@@ -2198,7 +2321,8 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	let outputMeta: { lineCount: number; charCount: number } | undefined;
 	let outputPath: string | undefined;
 	if (args.artifactsDir) {
-		outputPath = path.join(args.artifactsDir, args.delegatedIo ? `${id}.delegated-raw.txt` : `${id}.md`);
+		const outputId = args.outputId ?? id;
+		outputPath = path.join(args.artifactsDir, args.delegatedIo ? `${outputId}.delegated-raw.txt` : `${outputId}.md`);
 		try {
 			await Bun.write(outputPath, rawOutput);
 			outputMeta = {
@@ -2230,7 +2354,10 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		progress.isError = true;
 	}
 	const wasAborted =
-		runtimeLimitExceeded || abortedViaYield || (!hasYield && (done.aborted || signal?.aborted || false));
+		runtimeLimitExceeded ||
+		abortedViaYield ||
+		(signal?.aborted === true && monitor.isAbortedRun()) ||
+		(!hasYield && (done.aborted || false));
 	const finalAbortReason = wasAborted
 		? runtimeLimitExceeded
 			? monitor.resolveAbortReasonText()
@@ -2254,6 +2381,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 			status: progress.status as "completed" | "failed" | "aborted",
 			sessionFile: args.sessionFile,
 			index,
+			...(args.outputId ? { runId: args.outputId, jobId: args.jobId } : {}),
 		});
 	}
 
@@ -2548,6 +2676,33 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 	progress.recoveryAttempt = options.recoveryAttempts?.at(-1)?.attempt;
 	progress.recoveryTier = options.recoveryAttempts?.at(-1)?.tier;
 	progress.recoveryProvider = options.recoveryAttempts?.at(-1)?.provider;
+	const finalizationArgs: Omit<FinalizeRunArgs, "monitor" | "done" | "signal" | "startTime"> = {
+		maxOutputBytes: options.lifecycleLaunch?.launch.compiled.authority.result.maxOutputBytes,
+		maxHandoffBytes: options.lifecycleLaunch?.launch.compiled.policy.limits.maxHandoffBytes,
+		index,
+		id,
+		agent,
+		task,
+		assignment,
+		description: options.description,
+		modelOverride,
+		modelRouting: options.modelRouting,
+		outputSchema,
+		artifactsDir: options.artifactsDir,
+		delegatedIo: options.delegatedIo,
+		eventBus: options.eventBus,
+		parentToolCallId: options.parentToolCallId,
+		detached: options.detached,
+		sessionFile: subtaskSessionFile,
+		executionProfile,
+		toolProfile,
+		collaborationPolicy,
+		assignmentContract: options.assignmentContract,
+		assignmentVerifierRunners: options.assignmentVerifierRunners,
+		actualChangedFiles: options.actualChangedFiles,
+		recoveryAttempt: options.recoveryAttempts?.at(-1),
+	};
+	let initialRunSettled = false;
 	let unsubscribe: (() => void) | null = null;
 	let reviveSession: (() => Promise<AgentSession>) | null = null;
 	// Adopted (kept-alive) subagents flip registry status from session events on
@@ -2555,13 +2710,26 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 	// intentionally survives this run; a disposed session emits nothing, so it
 	// needs no teardown.
 	const installRegistryStatusSync = (target: AgentSession): void => {
-		target.subscribe(event => {
+		const unsubscribeStatus = target.subscribe(event => {
 			if (event.type === "agent_start") {
 				AgentRegistry.global().setStatus(id, "running");
 			} else if (event.type === "agent_end") {
 				AgentRegistry.global().setStatus(id, "idle");
 			}
 		});
+		const unsubscribeRuns = trackResumedSubagentRuns(target, {
+			...finalizationArgs,
+			parentAgentId: options.parentAgentId,
+			softRequestBudget,
+			maxRuntimeMs,
+			isInitialRunSettled: () => initialRunSettled,
+		});
+		const dispose = target.dispose.bind(target);
+		target.dispose = async () => {
+			unsubscribeStatus();
+			await unsubscribeRuns();
+			await dispose();
+		};
 	};
 
 	const runSubagent = async (): Promise<{
@@ -3157,36 +3325,14 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 
 	const done = await runSubagent();
 	monitor.finish();
+	initialRunSettled = true;
 
 	const settled = await finalizeRunResult({
-		maxOutputBytes: options.lifecycleLaunch?.launch.compiled.authority.result.maxOutputBytes,
-		maxHandoffBytes: options.lifecycleLaunch?.launch.compiled.policy.limits.maxHandoffBytes,
+		...finalizationArgs,
 		monitor,
 		done,
-		index,
-		id,
-		agent,
-		task,
-		assignment,
-		description: options.description,
-		modelOverride,
-		modelRouting: options.modelRouting,
-		outputSchema,
 		signal,
-		artifactsDir: options.artifactsDir,
-		delegatedIo: options.delegatedIo,
-		eventBus: options.eventBus,
-		parentToolCallId: options.parentToolCallId,
-		detached: options.detached,
-		sessionFile: subtaskSessionFile,
 		startTime,
-		executionProfile,
-		toolProfile,
-		collaborationPolicy,
-		assignmentContract: options.assignmentContract,
-		assignmentVerifierRunners: options.assignmentVerifierRunners,
-		actualChangedFiles: options.actualChangedFiles,
-		recoveryAttempt: options.recoveryAttempts?.at(-1),
 	});
 
 	const terminalFailure = settled.exitCode !== 0 || settled.isError === true || settled.aborted === true;

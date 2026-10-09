@@ -186,7 +186,9 @@ export class Patcher {
 	/**
 	 * Apply every section in `patch`. `prepare` runs the full apply for each
 	 * section in memory before any write hits the filesystem, so a
-	 * multi-section batch is naturally all-or-nothing. Returns one
+	 * validation failure leaves every file untouched. Write failures report
+	 * which earlier sections landed; filesystem writes are not transactional.
+	 * Returns one
 	 * {@link PatchSectionResult} per section in the original patch order.
 	 */
 	async apply(patch: Patch): Promise<PatcherApplyResult> {
@@ -207,9 +209,18 @@ export class Patcher {
 			}
 		}
 
+		return { sections: await this.commitAll(prepared) };
+	}
+
+	/** Commit prepared sections in order, reporting partial writes on failure. */
+	async commitAll(
+		prepared: readonly PreparedSection[],
+		beforeCommit?: (index: number) => void,
+	): Promise<PatchSectionResult[]> {
 		const results: PatchSectionResult[] = [];
 		for (let index = 0; index < prepared.length; index++) {
 			try {
+				beforeCommit?.(index);
 				results.push(await this.commit(prepared[index]));
 			} catch (error) {
 				// A mid-batch write failure leaves earlier sections on disk with no
@@ -226,7 +237,7 @@ export class Patcher {
 				);
 			}
 		}
-		return { sections: results };
+		return results;
 	}
 
 	/**

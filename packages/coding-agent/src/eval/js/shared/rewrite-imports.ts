@@ -59,8 +59,9 @@ type BabelExpressionStatement = {
 
 type BabelProgramNode = BabelImportDeclaration | BabelLexicalDecl | BabelExpressionStatement | { type: string };
 type BabelModuleSourceDeclaration = {
-	type: "ImportDeclaration" | "ExportNamedDeclaration" | "ExportAllDeclaration";
+	type: "ImportDeclaration" | "ExportNamedDeclaration" | "ExportDefaultDeclaration" | "ExportAllDeclaration";
 	source?: { value: string; start: number; end: number } | null;
+	declaration?: BabelLexicalDecl | null;
 };
 
 type BabelNode = { type: string; start: number; end: number; [key: string]: unknown };
@@ -112,7 +113,7 @@ function buildOmpImportCall(sourceLiteral: string, optionsLiteral: string | unde
 
 // Walks every node in `root`, depth-first, invoking `visit` on each one. Skips Babel's
 // non-AST bookkeeping fields so we don't recurse into source locations or comment arrays.
-function walkNodes(root: unknown, visit: (node: BabelNode) => void): void {
+function walkNodes(root: unknown, visit: (node: BabelNode) => boolean | undefined): void {
 	const stack: unknown[] = [root];
 	while (stack.length > 0) {
 		const current = stack.pop();
@@ -122,7 +123,7 @@ function walkNodes(root: unknown, visit: (node: BabelNode) => void): void {
 			continue;
 		}
 		const node = current as Record<string, unknown>;
-		if (typeof node.type === "string") visit(node as unknown as BabelNode);
+		if (typeof node.type === "string" && visit(node as unknown as BabelNode) === false) continue;
 		for (const key in node) {
 			if (key === "loc" || key === "extra" || key === "range") continue;
 			if (key === "leadingComments" || key === "trailingComments" || key === "innerComments") continue;
@@ -215,10 +216,13 @@ export async function rewriteImports(code: string): Promise<string> {
 	}
 	return result;
 }
-export async function collectModuleSourceSpecifiers(code: string): Promise<string[]> {
+export async function inspectModuleSource(
+	code: string,
+): Promise<{ specifiers: string[]; bindings: ReadonlySet<string> }> {
 	const ast = await parseProgram(code);
-	if (!ast) return [];
 	const sources: string[] = [];
+	const bindings = new Set<string>();
+	if (!ast) return { specifiers: sources, bindings };
 	for (const node of ast.program.body) {
 		if (
 			(node.type === "ImportDeclaration" ||
@@ -228,8 +232,27 @@ export async function collectModuleSourceSpecifiers(code: string): Promise<strin
 		) {
 			sources.push((node as BabelModuleSourceDeclaration).source!.value);
 		}
+		const declaration = (node as BabelModuleSourceDeclaration).declaration ?? node;
+		if (declaration.type === "ImportDeclaration") {
+			for (const specifier of (declaration as BabelImportDeclaration).specifiers) bindings.add(specifier.local.name);
+		} else if (
+			declaration.type === "VariableDeclaration" ||
+			declaration.type === "FunctionDeclaration" ||
+			declaration.type === "ClassDeclaration"
+		) {
+			for (const name of getLexicalBindingNames(declaration as BabelLexicalDecl)) bindings.add(name);
+		}
 	}
-	return sources;
+	// `var` inside a module's blocks is still module-scoped; function/class bodies are separate scopes.
+	walkNodes(ast, node => {
+		if (isExecutionBoundary(node.type) || node.type === "ClassDeclaration" || node.type === "ClassExpression") {
+			return false;
+		}
+		if (node.type === "VariableDeclaration" && node.kind === "var") {
+			for (const name of getLexicalBindingNames(node as BabelVariableDeclaration)) bindings.add(name);
+		}
+	});
+	return { specifiers: sources, bindings };
 }
 
 export async function rewriteModuleSourceSpecifiers(
