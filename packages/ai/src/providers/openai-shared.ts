@@ -289,7 +289,13 @@ export function applyOpenAIServiceTier(
 ): void {
 	if (!shouldSendServiceTier(serviceTier, provider)) return;
 	const resolved = resolveServiceTier(serviceTier, provider);
-	if (resolved === "flex" || resolved === "scale" || resolved === "priority") {
+	if (
+		resolved === "flex" ||
+		resolved === "scale" ||
+		resolved === "priority" ||
+		resolved === "fast" ||
+		resolved === "ultrafast"
+	) {
 		params.service_tier = resolved;
 	}
 }

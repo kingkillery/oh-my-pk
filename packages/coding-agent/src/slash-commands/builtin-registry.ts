@@ -52,6 +52,7 @@ import { CollabQrCodeComponent } from "./helpers/collab-qrcode";
 import { buildContextReportText } from "./helpers/context-report";
 import { handleDecisionModelSlashCommand } from "./helpers/decision-model";
 import { handleDelegateSlashCommand } from "./helpers/delegate";
+import { formatFastModeStatus, handleFastCommand, handleFastCommandTui } from "./helpers/fast";
 import { formatDuration } from "./helpers/format";
 import { handleFusionCommand, handleFusionPoolArgs } from "./helpers/fusion";
 import { handleFusionCommandTui, showFusionMenu } from "./helpers/fusion-tui";
@@ -197,19 +198,6 @@ function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.statusLine.invalidate();
 	ctx.updateEditorTopBorder();
 	ctx.ui.requestRender();
-}
-
-/** `/fast status` label: "off", "on", or scope-qualified "on (… only)". */
-function formatFastModeStatus(session: AgentSession): string {
-	if (!session.isFastModeEnabled()) return "off";
-	switch (session.serviceTier) {
-		case "openai-only":
-			return "on (OpenAI only)";
-		case "claude-only":
-			return "on (Claude only)";
-		default:
-			return "on";
-	}
 }
 
 /** Scheme-less display form of a browser deep link: accent + underline, OSC-8 linked to the full URL. */
@@ -801,68 +789,18 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		name: "fast",
 		description: "Toggle fast routing (OpenAI priority, Anthropic fast mode, OpenRouter :nitro)",
 		acpDescription: "Toggle fast mode",
-		acpInputHint: "[on|off|status]",
+		acpInputHint: "[fast|ultrafast|on|off|status]",
 		getTuiAutocompleteDescription: runtime => `Fast: ${formatFastModeStatus(runtime.ctx.session)}`,
 		subcommands: [
+			{ name: "fast", description: "Fast speed with ChatGPT sign-in" },
+			{ name: "ultrafast", description: "Ultrafast speed on supported ChatGPT models" },
 			{ name: "on", description: "Enable fast mode" },
 			{ name: "off", description: "Disable fast mode" },
 			{ name: "status", description: "Show fast mode status" },
 		],
 		allowArgs: true,
-		handle: async (command, runtime) => {
-			const arg = command.args.toLowerCase();
-			if (!arg || arg === "toggle") {
-				const enabled = runtime.session.toggleFastMode();
-				await runtime.output(`Fast mode ${enabled ? "enabled" : "disabled"}.`);
-				return commandConsumed();
-			}
-			if (arg === "on") {
-				runtime.session.setFastMode(true);
-				await runtime.output("Fast mode enabled.");
-				return commandConsumed();
-			}
-			if (arg === "off") {
-				runtime.session.setFastMode(false);
-				await runtime.output("Fast mode disabled.");
-				return commandConsumed();
-			}
-			if (arg === "status") {
-				await runtime.output(`Fast mode is ${formatFastModeStatus(runtime.session)}.`);
-				return commandConsumed();
-			}
-			return usage("Usage: /fast [on|off|status]", runtime);
-		},
-		handleTui: (command, runtime) => {
-			const arg = command.args.trim().toLowerCase();
-			if (!arg || arg === "toggle") {
-				const enabled = runtime.ctx.session.toggleFastMode();
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.showStatus(`Fast mode ${enabled ? "enabled" : "disabled"}.`);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (arg === "on") {
-				runtime.ctx.session.setFastMode(true);
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.showStatus("Fast mode enabled.");
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (arg === "off") {
-				runtime.ctx.session.setFastMode(false);
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.showStatus("Fast mode disabled.");
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (arg === "status") {
-				runtime.ctx.showStatus(`Fast mode is ${formatFastModeStatus(runtime.ctx.session)}.`);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			runtime.ctx.showStatus("Usage: /fast [on|off|status]");
-			runtime.ctx.editor.setText("");
-		},
+		handle: handleFastCommand,
+		handleTui: (command, runtime) => handleFastCommandTui(command, runtime.ctx),
 	},
 	{
 		name: "fusion",

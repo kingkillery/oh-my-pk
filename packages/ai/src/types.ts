@@ -130,11 +130,26 @@ export type CacheRetention = "none" | "short" | "long";
  *
  * - `"openai-only"` → `"priority"` on `openai` and `openai-codex`; ignored elsewhere.
  * - `"claude-only"` → `"priority"` on direct `anthropic` (not Bedrock/Vertex Claude).
+ * - `"fast"` and `"ultrafast"` target ChatGPT sign-in (`openai-codex`) only.
  */
-export type ServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | "openai-only" | "claude-only";
+export type ServiceTier =
+	| "auto"
+	| "default"
+	| "flex"
+	| "scale"
+	| "priority"
+	| "fast"
+	| "ultrafast"
+	| "openai-only"
+	| "claude-only";
 
 /** Resolved tier — one of the values that providers actually consume on the wire. */
 export type ResolvedServiceTier = Exclude<ServiceTier, "openai-only" | "claude-only">;
+
+/** ChatGPT models with both explicit Fast and Ultrafast serving modes. */
+export function supportsCodexSpeedModes(model: Pick<Model<Api>, "id" | "provider"> | undefined): boolean {
+	return model?.provider === "openai-codex" && (model.id === "gpt-6.1-sol" || model.id === "gpt-6-astra");
+}
 
 /**
  * Resolves a possibly scoped `ServiceTier` to the effective tier for the
@@ -147,6 +162,9 @@ export function resolveServiceTier(
 ): ResolvedServiceTier | undefined {
 	if (!serviceTier) return undefined;
 	switch (serviceTier) {
+		case "fast":
+		case "ultrafast":
+			return provider === "openai-codex" ? serviceTier : undefined;
 		case "openai-only":
 			return provider === "openai" || provider === "openai-codex" ? "priority" : undefined;
 		case "claude-only":
@@ -171,7 +189,13 @@ export function shouldSendServiceTier(
 	}
 	if (provider !== "openai" && provider !== "openai-codex") return false;
 	const resolved = resolveServiceTier(serviceTier, provider);
-	return resolved === "flex" || resolved === "scale" || resolved === "priority";
+	return (
+		resolved === "flex" ||
+		resolved === "scale" ||
+		resolved === "priority" ||
+		resolved === "fast" ||
+		resolved === "ultrafast"
+	);
 }
 
 /**
