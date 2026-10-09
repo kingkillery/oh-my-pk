@@ -4,6 +4,7 @@
 
 ### Added
 
+- Offer Fast and Ultrafast choices from `/fast` for GPT-6.1 Sol and GPT-6 Astra with ChatGPT sign-in, including explicit `/fast fast`, `/fast ultrafast`, and `/fast off` commands.
 - Add opt-in launch authority for Task workers (`task.lifecycle.enabled`, off by default). Each Task worker is admitted through an immutable launch contract recorded in `lifecycle-authority.db`, next to `operational.db`, which stays at schema v1. Its tool calls are checked against the contract before they run, and its file tools are confined to its working directory. It gets its own eval session and finite request, runtime and output limits, and its binding is revoked when it finishes. While the setting is on, Task runs workers in the foreground; fork, native, code-write and other routes the contract cannot cover are refused. Children left live by a process that exited are released the next time that session spawns.
 
 ### Fixed

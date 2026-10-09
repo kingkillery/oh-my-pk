@@ -56,7 +56,7 @@ export interface RequestBody {
 	client_metadata?: Record<string, string>;
 	max_output_tokens?: number;
 	max_completion_tokens?: number;
-	service_tier?: "auto" | "default" | "flex" | "scale" | "priority" | null;
+	service_tier?: "auto" | "default" | "flex" | "scale" | "priority" | "fast" | "ultrafast" | null;
 	[key: string]: unknown;
 }
 

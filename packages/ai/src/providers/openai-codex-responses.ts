@@ -39,6 +39,7 @@ import type {
 	ToolCall,
 	ToolChoice,
 } from "../types";
+import { supportsCodexSpeedModes } from "../types";
 import {
 	createOpenAIResponsesHistoryPayload,
 	getOpenAIResponsesHistoryItems,
@@ -743,6 +744,10 @@ function getCodexServiceTierCostMultiplier(
 			return 0.5;
 		case "priority":
 			return model.id === "gpt-5.5" ? 2.5 : 2;
+		case "fast":
+			return 2;
+		case "ultrafast":
+			return 6;
 		default:
 			return 1;
 	}
@@ -750,12 +755,18 @@ function getCodexServiceTierCostMultiplier(
 
 function resolveCodexCostServiceTier(res: unknown, req?: unknown): ServiceTier | "default" | undefined {
 	switch (res) {
+		case "default":
+			return "default";
 		case "flex":
 			return "flex";
 		case "priority":
 			return "priority";
+		case "fast":
+			return "fast";
+		case "ultrafast":
+			return "ultrafast";
 		default:
-			if (req === "flex" || req === "priority") {
+			if (req === "flex" || req === "priority" || req === "fast" || req === "ultrafast") {
 				return req;
 			}
 			return "default";
@@ -903,7 +914,14 @@ export async function buildTransformedCodexRequestBody(
 	// `{"detail":"Unsupported parameter: temperature"}` etc., so we drop
 	// everything from `StreamOptions` rather than forwarding any of them.
 	// (#3117 — codex-rs sends none of these either.)
-	applyOpenAIServiceTier(params, options?.serviceTier, model.provider);
+	let serviceTier = options?.serviceTier;
+	if (supportsCodexSpeedModes(model)) {
+		// Preserve the session's provider scope; select the model-specific wire tier here.
+		if (serviceTier === "priority" || serviceTier === "openai-only") serviceTier = "fast";
+	} else if (serviceTier === "ultrafast") {
+		serviceTier = undefined;
+	}
+	applyOpenAIServiceTier(params, serviceTier, model.provider);
 	if (context.tools && context.tools.length > 0) {
 		params.tools = convertOpenAICodexResponsesTools(context.tools, model);
 		if (options?.toolChoice) {

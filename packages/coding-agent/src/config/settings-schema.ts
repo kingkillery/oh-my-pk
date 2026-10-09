@@ -1528,7 +1528,18 @@ export const SETTINGS_SCHEMA = {
 
 	serviceTier: {
 		type: "enum",
-		values: ["none", "auto", "default", "flex", "scale", "priority", "openai-only", "claude-only"] as const,
+		values: [
+			"none",
+			"auto",
+			"default",
+			"flex",
+			"scale",
+			"priority",
+			"fast",
+			"ultrafast",
+			"openai-only",
+			"claude-only",
+		] as const,
 		default: "none",
 		ui: {
 			tab: "model",
@@ -1542,6 +1553,12 @@ export const SETTINGS_SCHEMA = {
 				{ value: "default", label: "Default", description: "Standard priority processing (OpenAI)" },
 				{ value: "flex", label: "Flex", description: "Flexible capacity tier when available (OpenAI)" },
 				{ value: "scale", label: "Scale", description: "Scale Tier credits when available (OpenAI)" },
+				{ value: "fast", label: "Fast", description: "Fast mode with ChatGPT sign-in" },
+				{
+					value: "ultrafast",
+					label: "Ultrafast",
+					description: "Ultrafast mode on supported ChatGPT models and plans",
+				},
 				{
 					value: "priority",
 					label: "Priority",

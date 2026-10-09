@@ -112,6 +112,7 @@ import {
 	parseRateLimitReason,
 	resolveServiceTier,
 	streamSimple,
+	supportsCodexSpeedModes,
 } from "@pk-nerdsaver-ai/pi-ai";
 import * as AIError from "@pk-nerdsaver-ai/pi-ai/error";
 import { isContextOverflow, isUsageLimit as isUsageLimitError } from "@pk-nerdsaver-ai/pi-ai/error";
@@ -8600,18 +8601,23 @@ export class AgentSession {
 	 */
 	isFastModeEnabled(): boolean {
 		return (
-			this.serviceTier === "priority" || this.serviceTier === "claude-only" || this.serviceTier === "openai-only"
+			this.serviceTier === "fast" ||
+			this.serviceTier === "ultrafast" ||
+			this.serviceTier === "priority" ||
+			this.serviceTier === "claude-only" ||
+			this.serviceTier === "openai-only"
 		);
 	}
 
 	/**
-	 * True when the configured `serviceTier` resolves to `"priority"` for the
+	 * True when the configured `serviceTier` enables accelerated serving for the
 	 * *currently selected model's provider*. Returns false for scoped tiers
 	 * that don't match (e.g. `"openai-only"` on an anthropic model) and when
 	 * no model is selected.
 	 */
 	isFastModeActive(): boolean {
-		return resolveServiceTier(this.serviceTier, this.model?.provider) === "priority";
+		const tier = resolveServiceTier(this.serviceTier, this.model?.provider);
+		return tier === "priority" || tier === "fast" || (tier === "ultrafast" && supportsCodexSpeedModes(this.model));
 	}
 
 	setServiceTier(serviceTier: ServiceTier | undefined): void {
