@@ -6,7 +6,7 @@ set -e
 #
 # Options:
 #   --source       Install via bun (installs bun if needed)
-#   --binary       Always install prebuilt binary
+#   --binary       Install prebuilt release binary (default)
 #   --ref <ref>    Install specific tag/commit/branch
 #   -r <ref>       Shorthand for --ref
 
@@ -194,8 +194,72 @@ install_via_bun() {
     echo "Run 'oh-my-pk' (or 'ompk') to get started!"
 }
 
-# Install prebuilt binary from the distribution endpoint (Cloudflare Worker ->
-# private Hugging Face repo); no GitHub Releases dependency.
+# Preserve launchers before replacing them, including package-manager symlinks.
+backup_launcher() {
+    if [ -z "$BACKUP_DIR" ]; then
+        backup_root="${XDG_STATE_HOME:-$HOME/.local/state}/oh-my-pk/command-backups"
+        mkdir -p "$backup_root"
+        BACKUP_DIR=$(mktemp -d "$backup_root/install.XXXXXX")
+    fi
+    BACKUP_INDEX=$((BACKUP_INDEX + 1))
+    cp -pP "$1" "$BACKUP_DIR/$BACKUP_INDEX-${1##*/}"
+    printf '%s\n' "$1" >> "$BACKUP_DIR/paths.txt"
+}
+
+link_launcher() {
+    launcher="$1"
+    if [ -L "$launcher" ] && [ "$(readlink "$launcher")" = "$INSTALL_DIR/oh-my-pk" ]; then
+        return
+    fi
+    if [ -d "$launcher" ]; then
+        echo "Cannot replace launcher directory: $launcher" >&2
+        exit 1
+    fi
+    if [ "$LAUNCHER_CHECK_ONLY" = check ]; then
+        return
+    fi
+    if [ -e "$launcher" ] || [ -L "$launcher" ]; then
+        backup_launcher "$launcher"
+    fi
+    ln -s "$INSTALL_DIR/oh-my-pk" "$launcher.ompk-new.$$"
+    mv -f "$launcher.ompk-new.$$" "$launcher"
+}
+
+align_launchers() {
+    LAUNCHER_CHECK_ONLY=${1:-}
+    link_launcher "$INSTALL_DIR/omp"
+    link_launcher "$INSTALL_DIR/ompk"
+
+    # Repair existing launchers without populating unrelated PATH directories.
+    # Include Bun's bin even when it is not in this shell's PATH.
+    remaining_paths="$PATH:${BUN_INSTALL:-$HOME/.bun}/bin"
+    while [ -n "$remaining_paths" ]; do
+        launcher_dir=${remaining_paths%%:*}
+        case "$remaining_paths" in
+            *:*) remaining_paths=${remaining_paths#*:} ;;
+            *) remaining_paths="" ;;
+        esac
+        launcher_dir=${launcher_dir:-.}
+        [ -d "$launcher_dir" ] || continue
+        launcher_dir=$(cd "$launcher_dir" && pwd -P)
+        [ "$launcher_dir" != "$INSTALL_DIR" ] || continue
+        for name in oh-my-pk ompk omp; do
+            candidate="$launcher_dir/$name"
+            if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+                if [ ! -w "$launcher_dir" ]; then
+                    echo "Cannot update $candidate: directory is not writable. Remove the stale launcher or rerun with a writable PATH." >&2
+                    exit 1
+                fi
+                link_launcher "$candidate"
+            fi
+        done
+    done
+    if [ -n "$BACKUP_DIR" ]; then
+        echo "Previous launchers backed up to $BACKUP_DIR (original paths in paths.txt)"
+    fi
+}
+
+# Install the latest official release, retaining custom distribution support.
 install_binary() {
     # Detect platform
     OS="$(uname -s)"
@@ -214,14 +278,22 @@ install_binary() {
     esac
 
     BINARY="omp-${PLATFORM}-${ARCH}"
-    # Resolve version: an explicit --ref pins the tag; otherwise ask the
-    # distribution endpoint (Cloudflare Worker -> private Hugging Face repo) for
-    # the latest tag. No GitHub dependency.
+    # Explicit binary refs remain pinned. A custom distribution is authoritative;
+    # otherwise resolve GitHub's latest release rather than npm's latest package.
     if [ -n "$REF" ]; then
         LATEST="$REF"
     else
-        echo "Fetching latest version..."
-        LATEST=$(curl -fsSL "${DIST_BASE}/version" | tr -d '[:space:]')
+        echo "Fetching latest release..."
+        if [ -n "$OMP_DIST_BASE" ]; then
+            LATEST=$(curl -fsSL "${DIST_BASE}/version" | tr -d '[:space:]')
+        else
+            RELEASE_URL=$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")
+            LATEST=${RELEASE_URL##*/}
+            case "$LATEST" in
+                v[0-9]*) ;;
+                *) echo "Failed to resolve latest release: $RELEASE_URL" >&2; exit 1 ;;
+            esac
+        fi
     fi
 
     if [ -z "$LATEST" ]; then
@@ -231,34 +303,42 @@ install_binary() {
     echo "Using version: $LATEST"
 
     mkdir -p "$INSTALL_DIR"
-    # Download binary from the distribution endpoint.
+    INSTALL_DIR=$(cd "$INSTALL_DIR" && pwd -P)
+    BACKUP_DIR=""
+    BACKUP_INDEX=0
+    if [ -d "$INSTALL_DIR/oh-my-pk" ]; then
+        echo "Cannot replace launcher directory: $INSTALL_DIR/oh-my-pk" >&2
+        exit 1
+    fi
+    # Fail before changing a working installation if a launcher cannot be repaired.
+    align_launchers check
+    BINARY_TMP=$(mktemp "$INSTALL_DIR/.oh-my-pk.XXXXXX")
+    trap 'rm -f "$BINARY_TMP"' EXIT
     BINARY_URL="${DIST_BASE}/bin/${LATEST}/${BINARY}"
+    GITHUB_URL="https://github.com/${REPO}/releases/download/${LATEST}/${BINARY}"
+    FALLBACK_URL="$GITHUB_URL"
+    if [ -z "$OMP_DIST_BASE" ]; then
+        FALLBACK_URL="$BINARY_URL"
+        BINARY_URL="$GITHUB_URL"
+    fi
     echo "Downloading ${BINARY}..."
-    if ! curl -fsSL "$BINARY_URL" -o "${INSTALL_DIR}/oh-my-pk"; then
-        echo "Distribution endpoint unavailable; trying GitHub Releases..."
-        GITHUB_URL="https://github.com/kingkillery/oh-my-pk/releases/download/${LATEST}/${BINARY}"
-        curl -fsSL "$GITHUB_URL" -o "${INSTALL_DIR}/oh-my-pk" || {
+    if ! curl -fsSL "$BINARY_URL" -o "$BINARY_TMP"; then
+        echo "Primary download unavailable; trying $FALLBACK_URL..."
+        curl -fsSL "$FALLBACK_URL" -o "$BINARY_TMP" || {
             echo "Failed to download ${BINARY} from distribution endpoint and GitHub Releases."
             exit 1
         }
     fi
-    chmod +x "${INSTALL_DIR}/oh-my-pk"
-    # Keep `omp` and `ompk` as launch aliases for the renamed command.
-    cp "${INSTALL_DIR}/oh-my-pk" "${INSTALL_DIR}/omp"
-    chmod +x "${INSTALL_DIR}/omp"
-    cp "${INSTALL_DIR}/oh-my-pk" "${INSTALL_DIR}/ompk"
-    chmod +x "${INSTALL_DIR}/ompk"
+    chmod +x "$BINARY_TMP"
+    # Validate before replacing a working installation or any launchers.
+    "$BINARY_TMP" --version
+    if [ -e "$INSTALL_DIR/oh-my-pk" ] || [ -L "$INSTALL_DIR/oh-my-pk" ]; then
+        backup_launcher "$INSTALL_DIR/oh-my-pk"
+    fi
+    mv -f "$BINARY_TMP" "$INSTALL_DIR/oh-my-pk"
+    align_launchers
     echo ""
     echo "✓ Installed oh-my-pk to ${INSTALL_DIR}/oh-my-pk (aliases: omp, ompk)"
-
-    # If /usr/local/bin is writable, symlink there so it is in PATH immediately
-    # (essential for Colab, Docker, and root environments).
-    if [ -w "/usr/local/bin" ] && [ "$INSTALL_DIR" != "/usr/local/bin" ]; then
-        ln -sf "${INSTALL_DIR}/oh-my-pk" "/usr/local/bin/oh-my-pk" 2>/dev/null || true
-        ln -sf "${INSTALL_DIR}/omp" "/usr/local/bin/omp" 2>/dev/null || true
-        ln -sf "${INSTALL_DIR}/ompk" "/usr/local/bin/ompk" 2>/dev/null || true
-        echo "✓ Created symlinks in /usr/local/bin (oh-my-pk, omp, ompk)"
-    fi
 
     # Optional helper: the tool-issue collector (powers local collector mode).
     # Best-effort — older tags predate it, the collector is off by default, and
@@ -286,14 +366,9 @@ install_binary() {
         fi
     fi
 
-    # Clean up stale/broken npm/bun global wrappers if present so the standalone binary is invoked
-    if [ -d "$HOME/.bun/bin" ]; then
-        rm -f "$HOME/.bun/bin/oh-my-pk" "$HOME/.bun/bin/omp" "$HOME/.bun/bin/ompk" 2>/dev/null || true
-    fi
-
     # Check if in PATH
     case ":$PATH:" in
-        *":$INSTALL_DIR:"*|*":/usr/local/bin:"*) echo "Run 'oh-my-pk' (or 'ompk') to get started!" ;;
+        *":$INSTALL_DIR:"*) echo "Run 'oh-my-pk', 'ompk', or 'omp' to get started!" ;;
         *)
             if [ -f "$HOME/.bashrc" ] && ! grep -q "$INSTALL_DIR" "$HOME/.bashrc" 2>/dev/null; then
                 echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$HOME/.bashrc"
@@ -316,12 +391,7 @@ case "$MODE" in
         install_binary
         ;;
     *)
-        # Default: install/validate bun (if needed) and use the npm package.
-        # Pass --binary explicitly to always fetch the prebuilt binary instead.
-        if ! has_bun; then
-            install_bun
-        fi
-        require_bun_version
-        install_via_bun
+        # Release binaries are authoritative; source installs are opt-in.
+        install_binary
         ;;
 esac

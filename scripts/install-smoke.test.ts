@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,9 +36,29 @@ uname() {
 }
 curl() {
     printf '%s\\n' "$*" >> "$MOCK_CURL_LOG"
+    request="$*"
     case "$*" in
-        *"/version"*) printf '%s\\n' "$MOCK_VERSION" ;;
+        *"/version"*) printf '%s\\n' "$MOCK_VERSION"; return ;;
+        *"/releases/latest"*) printf 'https://github.com/kingkillery/oh-my-pk/releases/tag/%s' "$MOCK_VERSION"; return ;;
     esac
+    output=""
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "-o" ]; then shift; output="$1"; fi
+        shift
+    done
+    [ -n "$output" ] || return 2
+    if [ "$MOCK_DOWNLOAD_FAILURE" = 1 ]; then
+        printf 'partial download' > "$output"
+        return 22
+    fi
+    if [ "$MOCK_DIST_FAILURE" = 1 ]; then
+        case "$request" in *dist.example.test/bin/*) return 22 ;; esac
+    fi
+    if [ "$MOCK_BAD_BINARY" = 1 ]; then
+        printf '#!/bin/sh\\nexit 1\\n' > "$output"
+    else
+        printf '#!/bin/sh\\nprintf "oh-my-pk/%%s\\\\n" "$MOCK_VERSION"\\n' > "$output"
+    fi
 }
 bun() {
     printf '%s\\n' "$*" >> "$MOCK_BUN_LOG"
@@ -34,13 +66,7 @@ bun() {
         printf '%s\\n' "1.3.14"
     fi
 }
-mkdir() { return 0; }
-chmod() { return 0; }
-cp() { return 0; }
-tr() {
-    IFS= read -r line
-    printf '%s' "$line"
-}
+# All external filesystem commands operate only on the fixture's HOME and PATH.
 installer_path="$1"
 shift
 . "$installer_path"
@@ -52,6 +78,9 @@ interface InstallerFixture {
 	args?: string[];
 	version?: string;
 	env?: Record<string, string>;
+	setup?: (fixtureDir: string) => void;
+	inspect?: (fixtureDir: string) => void;
+	runs?: number;
 }
 
 interface InstallerResult {
@@ -68,31 +97,53 @@ function runInstaller({
 	args = ["--binary", "--ref", "fixture-ref"],
 	version = "v16.4.6",
 	env = {},
+	setup,
+	inspect,
+	runs = 1,
 }: InstallerFixture): InstallerResult {
 	const fixtureDir = mkdtempSync(join(tmpdir(), "ompk-install-smoke-"));
 	const curlLog = join(fixtureDir, "curl.log");
 	const bunLog = join(fixtureDir, "bun.log");
+	const home = join(fixtureDir, "home with spaces");
+	const shadowBin = join(home, ".bun", "bin");
+	const tools = join(fixtureDir, "tools");
+	const install = join(fixtureDir, "install");
+	for (const dir of [home, shadowBin, tools, install]) mkdirSync(dir, { recursive: true });
+	for (const command of ["mkdir", "chmod", "cp", "tr", "mktemp", "rm", "mv", "ln", "readlink"]) {
+		const executable = Bun.which(command);
+		if (!executable) throw new Error(`Missing test dependency: ${command}`);
+		symlinkSync(executable, join(tools, command));
+	}
+	setup?.(fixtureDir);
 
 	try {
-		const result = Bun.spawnSync(
-			[SHELL_EXECUTABLE, "-c", INSTALLER_HARNESS, "installer-smoke", INSTALLER_PATH, ...args],
-			{
-				cwd: import.meta.dir,
-				env: {
-					...process.env,
-					...env,
-					MOCK_UNAME_OS: os,
-					MOCK_UNAME_ARCH: arch,
-					MOCK_VERSION: version,
-					MOCK_CURL_LOG: toShellPath(curlLog),
-					MOCK_BUN_LOG: toShellPath(bunLog),
-					OMP_DIST_BASE: DIST_BASE,
-					PI_INSTALL_DIR: toShellPath(join(fixtureDir, "install")),
+		let result!: ReturnType<typeof Bun.spawnSync>;
+		for (let run = 0; run < runs; run++) {
+			result = Bun.spawnSync(
+				[SHELL_EXECUTABLE, "-c", INSTALLER_HARNESS, "installer-smoke", INSTALLER_PATH, ...args],
+				{
+					cwd: import.meta.dir,
+					env: {
+						...process.env,
+						MOCK_UNAME_OS: os,
+						MOCK_UNAME_ARCH: arch,
+						MOCK_VERSION: version,
+						MOCK_CURL_LOG: toShellPath(curlLog),
+						MOCK_BUN_LOG: toShellPath(bunLog),
+						OMP_DIST_BASE: DIST_BASE,
+						HOME: toShellPath(home),
+						XDG_STATE_HOME: toShellPath(join(home, ".local", "state")),
+						BUN_INSTALL: toShellPath(join(home, ".bun")),
+						PATH: [shadowBin, tools].map(toShellPath).join(":"),
+						PI_INSTALL_DIR: toShellPath(install),
+						...env,
+					},
+					stdout: "pipe",
+					stderr: "pipe",
 				},
-				stdout: "pipe",
-				stderr: "pipe",
-			},
-		);
+			);
+		}
+		inspect?.(fixtureDir);
 
 		return {
 			exitCode: result.exitCode,
@@ -259,13 +310,113 @@ powershellTest(
 );
 
 describe("install.sh", () => {
-	test("keeps npm through Bun as the default install mode", () => {
-		const result = runInstaller({ os: "Linux", arch: "x86_64", args: [] });
+	test("defaults to the latest release binary instead of npm", () => {
+		const result = runInstaller({ os: "Darwin", arch: "arm64", args: [], env: { OMP_DIST_BASE: "" } });
 
+		expect(result.exitCode).toBe(0);
+		expect(result.bunCalls).toBe("");
+		expect(result.curlCalls).toContain("https://github.com/kingkillery/oh-my-pk/releases/latest");
+		expect(result.curlCalls).toContain("/releases/download/v16.4.6/omp-darwin-arm64");
+	});
+
+	test("preserves explicit source installation", () => {
+		const result = runInstaller({ os: "Linux", arch: "x86_64", args: ["--source"] });
 		expect(result.exitCode).toBe(0);
 		expect(result.bunCalls).toContain("install -g @pk-nerdsaver-ai/pi-coding-agent");
 		expect(result.curlCalls).toBe("");
 	});
+
+	test("falls back to the matching GitHub release when distribution download fails", () => {
+		const result = runInstaller({ os: "Darwin", arch: "arm64", env: { MOCK_DIST_FAILURE: "1" } });
+		expect(result.exitCode).toBe(0);
+		expect(result.curlCalls).toContain(
+			"https://github.com/kingkillery/oh-my-pk/releases/download/fixture-ref/omp-darwin-arm64",
+		);
+	});
+
+	test("links all commands to one binary, backing up stale PATH launchers", () => {
+		const result = runInstaller({
+			os: "Darwin",
+			arch: "arm64",
+			args: [],
+			runs: 2,
+			setup: fixture => {
+				const bun = join(fixture, "home with spaces", ".bun", "bin");
+				writeFileSync(join(bun, "omp"), "old npm wrapper");
+				symlinkSync("missing-package", join(bun, "ompk"));
+				writeFileSync(join(bun, "oh-my-pk"), "old binary");
+				writeFileSync(join(fixture, "tools", "omp"), "old PATH binary");
+			},
+			inspect: fixture => {
+				const binary = realpathSync(join(fixture, "install", "oh-my-pk"));
+				const bun = join(fixture, "home with spaces", ".bun", "bin");
+				for (const name of ["oh-my-pk", "ompk", "omp"]) {
+					expect(realpathSync(join(fixture, "install", name))).toBe(binary);
+					expect(realpathSync(join(bun, name))).toBe(binary);
+				}
+				expect(realpathSync(join(fixture, "tools", "omp"))).toBe(binary);
+				expect(existsSync(join(fixture, "tools", "ompk"))).toBe(false);
+				const backups = join(fixture, "home with spaces", ".local", "state", "oh-my-pk", "command-backups");
+				const first = join(backups, readdirSync(backups).sort()[0]);
+				const directories = readdirSync(backups).map(dir => join(backups, dir));
+				const saved = directories.flatMap(dir => readdirSync(dir).map(file => join(dir, file)));
+				expect(saved.some(file => file.endsWith("-omp") && readFileSync(file, "utf8") === "old npm wrapper")).toBe(
+					true,
+				);
+				expect(
+					saved.some(
+						file =>
+							file.endsWith("-ompk") &&
+							lstatSync(file).isSymbolicLink() &&
+							readlinkSync(file) === "missing-package",
+					),
+				).toBe(true);
+				expect(existsSync(join(first, "paths.txt"))).toBe(true);
+			},
+		});
+		expect(result.exitCode).toBe(0);
+		expect(result.stderr).toBe("");
+	});
+
+	test("refuses launcher directories before replacing an existing binary", () => {
+		const result = runInstaller({
+			os: "Darwin",
+			arch: "arm64",
+			args: [],
+			setup: fixture => {
+				writeFileSync(join(fixture, "install", "oh-my-pk"), "working binary");
+				mkdirSync(join(fixture, "home with spaces", ".bun", "bin", "omp"));
+			},
+			inspect: fixture => {
+				expect(readFileSync(join(fixture, "install", "oh-my-pk"), "utf8")).toBe("working binary");
+			},
+		});
+		expect(result.exitCode).not.toBe(0);
+		expect(result.stderr).toContain("Cannot replace launcher directory");
+	});
+
+	for (const failure of ["MOCK_DOWNLOAD_FAILURE", "MOCK_BAD_BINARY"]) {
+		test(`${failure} preserves the existing installation`, () => {
+			const result = runInstaller({
+				os: "Darwin",
+				arch: "arm64",
+				args: [],
+				env: { [failure]: "1" },
+				setup: fixture => {
+					writeFileSync(join(fixture, "install", "oh-my-pk"), "working binary");
+					writeFileSync(join(fixture, "home with spaces", ".bun", "bin", "omp"), "working wrapper");
+				},
+				inspect: fixture => {
+					expect(readFileSync(join(fixture, "install", "oh-my-pk"), "utf8")).toBe("working binary");
+					expect(readFileSync(join(fixture, "home with spaces", ".bun", "bin", "omp"), "utf8")).toBe(
+						"working wrapper",
+					);
+					expect(readdirSync(join(fixture, "install"))).toEqual(["oh-my-pk"]);
+				},
+			});
+			expect(result.exitCode).not.toBe(0);
+		});
+	}
 
 	const supportedTargets = [
 		["Darwin", "arm64", "omp-darwin-arm64"],
