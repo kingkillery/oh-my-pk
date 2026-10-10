@@ -12,15 +12,15 @@ import { $which, APP_NAME, isEnoent, VERSION } from "@pk-nerdsaver-ai/pi-utils";
 import { $ } from "bun";
 import chalk from "chalk";
 import { theme } from "../modes/theme/theme";
-import { getDistVersion, getLatestRelease, type ReleaseInfo } from "./update-release-source";
+import { getLatestRelease, type ReleaseInfo } from "./update-release-source";
 
 /**
- * Binary distribution endpoint (Cloudflare Worker → private Hugging Face repo).
- * Mirrors `scripts/install.{sh,ps1}`: compiled binaries live at
- * `${DIST_BASE}/bin/<tag>/<name>` and the current tag at `${DIST_BASE}/version`.
- * Override with `OMP_DIST_BASE`. This fork publishes no GitHub Releases.
+ * Optional custom distribution, with the hosted distribution as a fallback.
+ * Official binary installs follow GitHub releases, matching install.sh.
  */
-const DIST_BASE = Bun.env.OMP_DIST_BASE ?? "https://oh-my-pk.pkking.computer";
+const CUSTOM_DIST_BASE = Bun.env.OMP_DIST_BASE || undefined;
+const DIST_BASE = CUSTOM_DIST_BASE ?? "https://oh-my-pk.pkking.computer";
+const GITHUB_REPO = "kingkillery/oh-my-pk";
 const PACKAGE = "@pk-nerdsaver-ai/pi-coding-agent";
 const HOMEBREW_FORMULA = "kingkillery/tap/omp";
 const MISE_TOOL = "github:kingkillery/oh-my-pk";
@@ -193,6 +193,7 @@ interface UpdateMethodResolutionOptions {
 	homebrewPrefix?: string;
 	miseBinDirs?: readonly string[];
 	miseDataDir?: string;
+	isCompiledBinary?: boolean;
 }
 
 type UpdateTarget = { method: "brew" } | { method: "mise" } | { method: "bun" } | { method: "binary"; path: string };
@@ -206,7 +207,7 @@ function resolveUpdateMethod(
 	if (homebrewPrefix && isPathInDirectory(ompPath, path.join(homebrewPrefix, "bin"))) return "brew";
 	if (miseBinDirs.some(dir => isPathInDirectory(ompPath, dir))) return "mise";
 	if (miseDataDir && isPathInDirectory(ompPath, path.join(miseDataDir, "shims"))) return "mise";
-	if (bunBinDir && isPathInDirectory(ompPath, bunBinDir)) return "bun";
+	if (!options.isCompiledBinary && bunBinDir && isPathInDirectory(ompPath, bunBinDir)) return "bun";
 	return "binary";
 }
 
@@ -233,7 +234,7 @@ function resolveInvokedBinaryPath(
 	const pathApi = platform === "win32" ? path.win32 : path.posix;
 	const basename = pathApi.basename(executablePath).toLowerCase();
 	const commandName = platform === "win32" && basename.endsWith(".exe") ? basename.slice(0, -4) : basename;
-	return CLI_BINARY_NAMES.has(commandName) ? executablePath : undefined;
+	return CLI_BINARY_NAMES.has(commandName) ? (tryRealpath(executablePath) ?? executablePath) : undefined;
 }
 
 export function resolveInvokedBinaryPathForTest(executablePath: string, platform: NodeJS.Platform): string | undefined {
@@ -249,7 +250,12 @@ async function resolveUpdateTarget(): Promise<UpdateTarget> {
 	const ompPath = resolveOmpPath();
 
 	if (ompPath) {
-		const method = resolveUpdateMethod(ompPath, bunBinDir, { homebrewPrefix, miseBinDirs, miseDataDir });
+		const method = resolveUpdateMethod(ompPath, bunBinDir, {
+			homebrewPrefix,
+			miseBinDirs,
+			miseDataDir,
+			isCompiledBinary: resolveInvokedBinaryPath(process.execPath) !== undefined,
+		});
 		if (method === "binary") return { method, path: ompPath };
 		return { method };
 	}
@@ -321,12 +327,17 @@ function getBinaryName(): string {
 }
 
 /**
- * Build the fork's binary download URL. Binaries are served by the Cloudflare
- * Worker at `${DIST_BASE}/bin/<tag>/<name>` (private Hugging Face backing repo),
- * exactly as `scripts/install.{sh,ps1}` resolve them — never GitHub Releases.
+ * Match the installer's official release channel unless a custom distribution
+ * was explicitly configured. The checked version is pinned for the download.
  */
-export function buildBinaryDownloadUrl(expectedVersion: string, binaryName: string = getBinaryName()): string {
-	return `${DIST_BASE}/bin/v${expectedVersion}/${binaryName}`;
+export function buildBinaryDownloadUrl(
+	expectedVersion: string,
+	binaryName: string = getBinaryName(),
+	distBase: string | undefined = CUSTOM_DIST_BASE,
+): string {
+	return distBase
+		? `${distBase}/bin/v${expectedVersion}/${binaryName}`
+		: `https://github.com/${GITHUB_REPO}/releases/download/v${expectedVersion}/${binaryName}`;
 }
 
 /** Resolve the binary this process should update and later verify. */
@@ -590,13 +601,23 @@ async function updateViaMise(expectedVersion: string, force: boolean): Promise<v
 /**
  * Download a release binary to a target path, replacing an existing file.
  */
-async function updateViaBinaryAt(targetPath: string, expectedVersion: string): Promise<void> {
-	// The fork serves binaries off DIST_BASE/version (the canonical pointer for
-	// the binary surface); prefer it over the npm-derived version so a binary
-	// update always matches what the endpoint actually serves.
-	const version = (await getDistVersion(DIST_BASE)) ?? expectedVersion;
+export async function updateViaBinaryAt(
+	targetPath: string,
+	expectedVersion: string,
+	verify: BinaryReplacementOptions["verifyInstalledVersion"] = verifyInstalledVersion,
+): Promise<void> {
+	targetPath = tryRealpath(targetPath) ?? targetPath;
+	// Never re-resolve the version after checking: a lagging distribution must
+	// not silently replace the requested GitHub release with an older build.
+	const version = expectedVersion;
 	const binaryName = getBinaryName();
-	const url = buildBinaryDownloadUrl(version, binaryName);
+	const urls = [
+		...new Set([
+			buildBinaryDownloadUrl(version, binaryName),
+			`${DIST_BASE}/bin/v${version}/${binaryName}`,
+			`https://github.com/${GITHUB_REPO}/releases/download/v${version}/${binaryName}`,
+		]),
+	];
 
 	const tempPath = `${targetPath}.new`;
 	// Unique per attempt: a stale backup from an earlier update may still be
@@ -606,12 +627,27 @@ async function updateViaBinaryAt(targetPath: string, expectedVersion: string): P
 	const backupPath = `${targetPath}.${Date.now()}.${process.pid}.bak`;
 	console.log(chalk.dim(`Downloading ${binaryName}…`));
 
-	const response = await fetch(url, { redirect: "follow" });
-	if (!response.ok || !response.body) {
-		throw new Error(`Download failed: ${response.statusText}`);
+	let response: Response | undefined;
+	for (const url of urls) {
+		try {
+			const candidate = await fetch(url, { redirect: "follow" });
+			if (candidate.ok && candidate.body) {
+				response = candidate;
+				break;
+			}
+			await candidate.body?.cancel();
+		} catch {
+			// Try the alternate host for exactly the same release.
+		}
 	}
-	const fileStream = fs.createWriteStream(tempPath, { mode: 0o755 });
-	await pipeline(response.body, fileStream);
+	if (!response?.body) throw new Error(`Download failed for release ${version} from ${urls.join(", ")}`);
+	try {
+		const fileStream = fs.createWriteStream(tempPath, { mode: 0o755 });
+		await pipeline(response.body, fileStream);
+	} catch (error) {
+		await unlinkIfExists(tempPath);
+		throw error;
+	}
 
 	console.log(chalk.dim("Installing update..."));
 	await replaceBinaryForUpdate({
@@ -619,7 +655,7 @@ async function updateViaBinaryAt(targetPath: string, expectedVersion: string): P
 		tempPath,
 		backupPath,
 		expectedVersion: version,
-		verifyInstalledVersion,
+		verifyInstalledVersion: verify,
 	});
 	// Reclaim backups from earlier updates whose owning process has since exited.
 	await sweepStaleBackups(targetPath);
@@ -635,8 +671,15 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 
 	// Check for updates
 	let release: ReleaseInfo;
+	let target: UpdateTarget;
 	try {
-		release = await getLatestRelease({ distBase: DIST_BASE, packageName: PACKAGE, npmRegistry: NPM_REGISTRY });
+		target = await resolveUpdateTarget();
+		release = await getLatestRelease({
+			distBase: DIST_BASE,
+			packageName: PACKAGE,
+			npmRegistry: NPM_REGISTRY,
+			githubRepo: target.method === "binary" && !CUSTOM_DIST_BASE ? GITHUB_REPO : undefined,
+		});
 	} catch (err) {
 		console.error(chalk.red(`Failed to check for updates: ${err}`));
 		process.exit(1);
@@ -660,9 +703,8 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 		return;
 	}
 
-	// Choose update method based on the prioritized omp binary in PATH
+	// Update the same resolved installation whose release channel was checked.
 	try {
-		const target = await resolveUpdateTarget();
 		if (target.method === "brew") {
 			await updateViaHomebrew(release.version, opts.force);
 		} else if (target.method === "mise") {

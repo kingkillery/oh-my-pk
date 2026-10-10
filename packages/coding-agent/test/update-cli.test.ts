@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -13,10 +13,13 @@ import {
 	resolveInvokedBinaryPathForTest,
 	resolveUpdateMethodForTest,
 	sweepStaleBackups,
+	updateViaBinaryAt,
 } from "@pk-nerdsaver-ai/pi-coding-agent/cli/update-cli";
+import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
 import { removeWithRetries } from "@pk-nerdsaver-ai/pi-utils";
 
 const tempDirs: string[] = [];
+const restoreCallbacks: Array<() => void> = [];
 
 async function makeTempDir(): Promise<string> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-update-test-"));
@@ -24,7 +27,12 @@ async function makeTempDir(): Promise<string> {
 	return dir;
 }
 
+beforeAll(async () => {
+	await initTheme(false);
+});
+
 afterEach(async () => {
+	for (const restore of restoreCallbacks.splice(0)) restore();
 	await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
 });
 
@@ -43,10 +51,31 @@ describe("update-cli install target detection", () => {
 		expect(resolveInvokedBinaryPathForTest("/Users/test/.bun/bin/bun", "linux")).toBeUndefined();
 	});
 
+	it("resolves a Bun-directory alias to the shared binary before choosing an updater", async () => {
+		const dir = await makeTempDir();
+		const bunBin = path.join(dir, ".bun", "bin");
+		const binary = path.join(dir, "oh-my-pk");
+		await fs.mkdir(bunBin, { recursive: true });
+		await Bun.write(binary, "release binary");
+		const alias = path.join(bunBin, "ompk");
+		await fs.symlink(binary, alias);
+		const target = resolveInvokedBinaryPathForTest(alias, process.platform);
+		expect(target).toBe(await fs.realpath(binary));
+		expect(resolveUpdateMethodForTest(target!, bunBin)).toBe("binary");
+	});
+
 	it("uses bun update when prioritized omp is inside bun global bin", () => {
 		const method = resolveUpdateMethodForTest("/Users/test/.bun/bin/omp", "/Users/test/.bun/bin");
 
 		expect(method).toBe("bun");
+	});
+
+	it("keeps standalone binaries installed in Bun's bin directory on the binary channel", () => {
+		expect(
+			resolveUpdateMethodForTest("/Users/test/.bun/bin/oh-my-pk", "/Users/test/.bun/bin", {
+				isCompiledBinary: true,
+			}),
+		).toBe("binary");
 	});
 
 	it("uses binary update when prioritized omp is outside bun global bin", () => {
@@ -113,11 +142,16 @@ describe("update-cli package manager commands", () => {
 		]);
 	});
 
-	it("downloads binaries from the fork distribution endpoint, not GitHub Releases", () => {
-		const url = buildBinaryDownloadUrl("16.1.10", "omp-windows-x64.exe");
-		expect(url).not.toContain("github.com");
-		expect(url).toMatch(/\/bin\/v16\.1\.10\/omp-windows-x64\.exe$/);
-		expect(url.startsWith("https://")).toBe(true);
+	it("downloads the checked version from official GitHub releases by default", () => {
+		expect(buildBinaryDownloadUrl("16.4.28", "omp-darwin-arm64")).toBe(
+			"https://github.com/kingkillery/oh-my-pk/releases/download/v16.4.28/omp-darwin-arm64",
+		);
+	});
+
+	it("preserves an explicitly configured distribution endpoint", () => {
+		expect(buildBinaryDownloadUrl("16.4.28", "omp-windows-x64.exe", "https://custom.example")).toBe(
+			"https://custom.example/bin/v16.4.28/omp-windows-x64.exe",
+		);
 	});
 });
 
@@ -168,6 +202,55 @@ describe("update-cli bun install command", () => {
 });
 
 describe("update-cli binary replacement", () => {
+	it("preserves the shared binary and alias when all download hosts fail", async () => {
+		const dir = await makeTempDir();
+		const binary = path.join(dir, "oh-my-pk");
+		const alias = path.join(dir, "ompk");
+		await Bun.write(binary, "working binary");
+		await fs.symlink(binary, alias);
+		const fetchSpy = spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+		restoreCallbacks.push(() => fetchSpy.mockRestore());
+		await expect(updateViaBinaryAt(alias, "16.4.28")).rejects.toThrow("Download failed for release 16.4.28");
+		expect(await Bun.file(alias).text()).toBe("working binary");
+		expect((await fs.lstat(alias)).isSymbolicLink()).toBe(true);
+		expect(await fs.readdir(dir)).toEqual(["oh-my-pk", "ompk"]);
+	});
+
+	it("updates the shared binary through an alias and pins fallback downloads to the checked version", async () => {
+		const dir = await makeTempDir();
+		const binary = path.join(dir, "oh-my-pk");
+		await Bun.write(binary, "old binary");
+		const aliases = [path.join(dir, "ompk"), path.join(dir, "omp")];
+		for (const alias of aliases) await fs.symlink(binary, alias);
+		const calls: string[] = [];
+		const originalFetch = globalThis.fetch;
+		const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(
+				async (input: string | URL | Request) => {
+					const url = input instanceof Request ? input.url : String(input);
+					calls.push(url);
+					return url.includes("github.com")
+						? new Response("temporarily unavailable", { status: 503 })
+						: new Response("new binary");
+				},
+				{ preconnect: originalFetch.preconnect },
+			),
+		);
+		restoreCallbacks.push(() => fetchSpy.mockRestore());
+		await updateViaBinaryAt(aliases[0], "16.4.28", async expected => {
+			expect(expected).toBe("16.4.28");
+			return { ok: (await Bun.file(binary).text()) === "new binary", actual: expected, path: binary };
+		});
+		expect(calls).toHaveLength(2);
+		expect(calls[0]).toContain("/releases/download/v16.4.28/");
+		expect(calls[1]).toContain("/bin/v16.4.28/");
+		expect(calls.some(url => url.endsWith("/version"))).toBe(false);
+		for (const alias of aliases) {
+			expect((await fs.lstat(alias)).isSymbolicLink()).toBe(true);
+			expect(await Bun.file(alias).text()).toBe("new binary");
+		}
+	});
+
 	it("restores the previous binary when the replacement fails verification", async () => {
 		const dir = await makeTempDir();
 		const targetPath = path.join(dir, "omp");

@@ -30,6 +30,47 @@ function stubFetch(handler: (url: string) => Response): readonly string[] {
 }
 
 describe("update release source", () => {
+	it("uses the official GitHub release before a potentially stale distribution", async () => {
+		const calls = stubFetch(url =>
+			url.includes("api.github.com") ? Response.json({ tag_name: "v16.4.28" }) : new Response("v16.4.25"),
+		);
+		expect(await getLatestRelease({ ...RELEASE_SOURCE, githubRepo: "kingkillery/oh-my-pk" })).toEqual({
+			tag: "v16.4.28",
+			version: "16.4.28",
+		});
+		expect(calls).toEqual(["https://api.github.com/repos/kingkillery/oh-my-pk/releases/latest"]);
+	});
+
+	it("falls back to the binary distribution when GitHub is unavailable", async () => {
+		const calls = stubFetch(url =>
+			url.includes("api.github.com") ? new Response("rate limited", { status: 403 }) : new Response("v16.4.28"),
+		);
+		expect(await getLatestRelease({ ...RELEASE_SOURCE, githubRepo: "kingkillery/oh-my-pk" })).toEqual({
+			tag: "v16.4.28",
+			version: "16.4.28",
+		});
+		expect(calls).toHaveLength(2);
+	});
+
+	it("does not silently switch binary installs to npm if both release hosts fail", async () => {
+		const calls = stubFetch(() => new Response("unavailable", { status: 503 }));
+		await expect(getLatestRelease({ ...RELEASE_SOURCE, githubRepo: "kingkillery/oh-my-pk" })).rejects.toThrow(
+			"GitHub release",
+		);
+		expect(calls.some(url => url.includes("registry.npmjs.org"))).toBe(false);
+	});
+
+	it("rejects malformed GitHub release metadata", async () => {
+		stubFetch(url =>
+			url.includes("api.github.com")
+				? Response.json({ tag_name: "not-a-release" })
+				: new Response("unavailable", { status: 503 }),
+		);
+		await expect(getLatestRelease({ ...RELEASE_SOURCE, githubRepo: "kingkillery/oh-my-pk" })).rejects.toThrow(
+			"Invalid GitHub release tag",
+		);
+	});
+
 	it("checks the fork distribution endpoint before npm so pushed binary updates are visible immediately", async () => {
 		const calls = stubFetch(url => {
 			if (url === "https://oh-my-pk.pkking.computer/version") return new Response("v999.0.0\n");
