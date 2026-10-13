@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Meta Muse Code requests no longer use a saved OAuth access token, or an `api_key` that only copies it, as their API key. A rejected saved credential now falls back to browser sign-in instead of failing, and the Muse CLI `auth.json` mirror is written to the path import reads first, replaced atomically, and made owner-only even when it already existed. Device sign-in now uses the shared device-code poller, so it backs off on `slow_down` and cancels promptly.
 - Meta Muse Code sign-in no longer saves the raw OAuth token as an API key. It exchanges the token for the subscription API key, requires an active subscription, and validates the key against the models endpoint before saving; any failure leaves stored credentials and `~/.config/muse/auth.json` untouched. Imported Muse CLI credentials are validated too, prefer `api_key` over `access_token`, and the mirror now keeps other providers' entries and is written owner-only.
 - Anthropic's rolling message cache breakpoints now land on real turns instead of the synthetic `Continue.` pad added after a trailing assistant, which the next request never contains.
 - Preserve ChatGPT Fast and Ultrafast service tiers through Codex requests and account for their cost multipliers.
