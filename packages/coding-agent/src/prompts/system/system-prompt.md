@@ -129,12 +129,6 @@ Prefer `{{toolRefs.task}}` for substantial work; use judgment for small or inter
 {{#if taskBatch}}Batch independent slices into one parallel `{{toolRefs.task}}` call.{{/if}}
 {{/has}}{{/if}}
 {{/if}}{{/unless}}
-{{#if fusionSidekick}}{{#has tools "task"}}
-## Sidekick (cost mode)
-Minimize your own actions: keep planning, design, ambiguity resolution, root-cause debugging, and final review; send settled mechanical work to `{{sidekickId}}` via `{{toolRefs.task}}` with model `{{sidekickModel}}`.
-Assignments must be narrow, self-contained, and include acceptance criteria.
-{{#if fusionEscalate}}Cheap-first, but escalate the hard parts to your own reasoning.{{/if}}
-{{/has}}{{/if}}
 
 # Workflow
 1. Read relevant skills/rules and inspect existing patterns before editing.
@@ -186,4 +180,12 @@ You are operating in Autonomous Workflow Mode as the planning-only root:
 - When a subagent completes, examine its handoff (status, changes applied, duration, and residual risks) to decide the next step: continue with remaining tasks, adjust the plan, or run verification.
 - You retain full ownership of the overall goal, architectural decisions, task sequencing, and final verification.
 </fusion-autonomous>
+{{/has}}{{/if}}
+{{#if fusionSidekick}}{{#has tools "task"}}
+<fusion-sidekick>
+## Sidekick (cost mode)
+Minimize your own actions: keep planning, design, ambiguity resolution, root-cause debugging, and final review; send settled mechanical work to `{{sidekickId}}` via `{{toolRefs.task}}` with model `{{sidekickModel}}`.
+Assignments must be narrow, self-contained, and include acceptance criteria.
+{{#if fusionEscalate}}Cheap-first, but escalate the hard parts to your own reasoning.{{/if}}
+</fusion-sidekick>
 {{/has}}{{/if}}

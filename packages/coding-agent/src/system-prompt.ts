@@ -806,20 +806,25 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		renderMermaid,
 	};
 	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
-	// Keep mode-dependent policy after project context, including with a custom base.
-	const savingsBlockPattern = /<fusion-token-savings>[\s\S]*?<\/fusion-token-savings>/g;
-	const autonomousBlockPattern = /<fusion-autonomous>[\s\S]*?<\/fusion-autonomous>/g;
-	const ioBlockPattern = /<bulk-work-delegation>[\s\S]*?<\/bulk-work-delegation>/g;
-	const savingsEnabled = fusionTokenSavings && toolNames.includes("task");
-	const autonomousEnabled = fusionAutonomous && toolNames.includes("task");
-	const ioEnabled = fusionIoDelegation && toolNames.includes("task");
-	const savingsSource = savingsEnabled && resolvedCustomPrompt ? prompt.render(systemPromptTemplate, data) : rendered;
-	const autonomousSource =
-		autonomousEnabled && resolvedCustomPrompt ? prompt.render(systemPromptTemplate, data) : rendered;
-	const savingsPolicy = savingsEnabled ? savingsSource.match(savingsBlockPattern)?.at(-1) : undefined;
-	const autonomousPolicy = autonomousEnabled ? autonomousSource.match(autonomousBlockPattern)?.at(-1) : undefined;
-	const ioSource = ioEnabled && resolvedCustomPrompt ? prompt.render(systemPromptTemplate, data) : rendered;
-	const ioPolicy = ioEnabled ? ioSource.match(ioBlockPattern)?.at(-1) : undefined;
+	// Mode-dependent Fusion policy goes after project context, including with a
+	// custom base, so toggling a mode or the sidekick never changes the cached
+	// prompt prefix. Sidekick goes last: its availability changes most often.
+	const hasTaskTool = toolNames.includes("task");
+	const policies = (
+		[
+			["fusion-token-savings", fusionTokenSavings],
+			["fusion-autonomous", fusionAutonomous],
+			["bulk-work-delegation", fusionIoDelegation],
+			["fusion-sidekick", fusionSidekick],
+		] as const
+	).map(([tag, enabled]) => ({
+		pattern: new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`, "g"),
+		enabled: enabled && hasTaskTool,
+	}));
+	const policySource =
+		resolvedCustomPrompt && policies.some(policy => policy.enabled)
+			? prompt.render(systemPromptTemplate, data)
+			: rendered;
 	const systemPrompt = [rendered];
 	// Custom prompt templates already render context files and append text; the
 	// project footer still carries environment, cwd, workspace, and dir-context.
@@ -837,16 +842,14 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	// This also removes stale policy when mode or task capability changes on rebuild.
 	const terminalSystemPrompt = systemPrompt
 		.map(block => {
-			const stripped = block
-				.replace(savingsBlockPattern, "")
-				.replace(autonomousBlockPattern, "")
-				.replace(ioBlockPattern, "");
+			const stripped = policies.reduce((text, { pattern }) => text.replace(pattern, ""), block);
 			return stripped === block ? block : stripped.trim();
 		})
 		.filter(block => block.length > 0);
-	if (savingsPolicy) terminalSystemPrompt.push(savingsPolicy);
-	if (autonomousPolicy) terminalSystemPrompt.push(autonomousPolicy);
-	if (ioPolicy) terminalSystemPrompt.push(ioPolicy);
+	for (const { pattern, enabled } of policies) {
+		const policy = enabled ? policySource.match(pattern)?.at(-1) : undefined;
+		if (policy) terminalSystemPrompt.push(policy);
+	}
 
 	return { systemPrompt: terminalSystemPrompt };
 }

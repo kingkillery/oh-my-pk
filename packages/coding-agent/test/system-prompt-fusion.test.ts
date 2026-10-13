@@ -71,6 +71,23 @@ describe("system prompt fusion sidekick policy", () => {
 		expect(rendered).not.toContain("Sidekick (cost mode)");
 	});
 	it.each([false, true])(
+		"keeps the prompt prefix byte-identical across sidekick changes (custom=%j)",
+		async custom => {
+			const opts = {
+				resolvedCustomPrompt: custom ? "<custom-base />" : undefined,
+				contextFiles: [{ path: "project-rules.txt", content: "<test-project-context />" }],
+			};
+			const off = await renderBlocks(opts);
+			const smol = await renderBlocks({ ...opts, fusionSidekick: true, sidekickModel: "pi/smol" });
+			const cheapo = await renderBlocks({ ...opts, fusionSidekick: true, sidekickModel: "vendor/cheapo-1" });
+			expect(smol.slice(0, -1)).toEqual(off);
+			expect(cheapo.slice(0, -1)).toEqual(off);
+			expect(smol.at(-1)?.trim()).toMatch(/^<fusion-sidekick>[\s\S]*pi\/smol[\s\S]*<\/fusion-sidekick>$/);
+			expect(smol.join("\n").match(/Sidekick \(cost mode\)/g)).toHaveLength(1);
+		},
+	);
+
+	it.each([false, true])(
 		"appends savings and I/O blocks after project and active-repo context (custom=%j)",
 		async custom => {
 			fs.mkdirSync(path.join(tempDir, "active-project", ".git"), { recursive: true });
