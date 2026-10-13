@@ -209,9 +209,14 @@ export class AgentLifecycleManager {
 		}
 	}
 
-	/** Hard removal: dispose if live, unregister from registry, drop timers. */
-	release(id: string): Promise<void> {
+	/**
+	 * Hard removal: dispose if live, unregister from registry, drop timers.
+	 * With `expected`, releases only that ref; a same-id replacement registered
+	 * meanwhile is kept.
+	 */
+	release(id: string, expected?: AgentRef): Promise<void> {
 		return this.#withTransition(id, async () => {
+			if (expected && this.#registry.get(id) !== expected) return;
 			const adopted = this.#adopted.get(id);
 			clearTimeout(adopted?.timer);
 			this.#adopted.delete(id);

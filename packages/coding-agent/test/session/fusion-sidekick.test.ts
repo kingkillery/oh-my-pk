@@ -41,6 +41,7 @@ function makeMockAgentSession(overrides?: Partial<AgentSessionLike>): AgentSessi
 		sessionManager: makeMockSessionManager(),
 		getFusionSidekickId: () => undefined,
 		setFusionSidekickId: () => {},
+		refreshBaseSystemPrompt: async () => {},
 		getPlanModeState: () => ({ enabled: true }),
 		getPlanReferencePath: () => undefined,
 		getAgentId: () => undefined,
@@ -114,6 +115,7 @@ interface AgentSessionLike {
 	sessionManager: SessionManagerLike;
 	getFusionSidekickId(): string | undefined;
 	setFusionSidekickId(id: string | undefined): void;
+	refreshBaseSystemPrompt?(): Promise<void>;
 	getPlanModeState?: () => unknown;
 	getPlanReferencePath?: () => unknown;
 	getAgentId?: () => string | undefined;
@@ -329,6 +331,127 @@ describe("fusion-sidekick", () => {
 	});
 
 	// ---------------------------------------------------------------------------
+	// Concurrency: one ensure in flight per main session
+	// ---------------------------------------------------------------------------
+
+	describe("sidekick lifecycle concurrency", () => {
+		/** Registry + spawn fakes where every spawn registers its allocated id. */
+		function makeWorld(initial: AgentRefLike[] = [], extraSettings: Record<string, unknown> = {}) {
+			const refs = new Map(initial.map(ref => [ref.id, ref]));
+			agentRegistrySpy.mockImplementation(() => ({ get: (id: string) => refs.get(id) }) as unknown as AgentRegistry);
+			discoverAgentsSpy.mockImplementation(async () => ({
+				agents: [{ id: "task", name: "task", kind: "task", path: "/test" }],
+				projectAgentsDir: null,
+			}));
+			runSubprocessSpy.mockImplementation(async (options: { id: string }) => {
+				refs.set(options.id, { id: options.id, session: {}, status: "running" });
+				return undefined as never;
+			});
+			const releases: string[] = [];
+			lifecycleSpy.mockImplementation(
+				() =>
+					({
+						release: async (id: string, expected?: AgentRefLike) => {
+							releases.push(id);
+							if (expected === undefined || refs.get(id) === expected) refs.delete(id);
+						},
+					}) as unknown as AgentLifecycleManager,
+			);
+			let recordedId: string | undefined = initial[0]?.id;
+			const prompts: Array<string | undefined> = [];
+			const host = makeHost({
+				session: makeMockAgentSession({
+					getFusionSidekickId: () => recordedId,
+					setFusionSidekickId: id => {
+						recordedId = id;
+					},
+					refreshBaseSystemPrompt: async () => {
+						prompts.push(recordedId);
+					},
+				}),
+				settings: makeSettings({ "fusion.enabled": true, "fusion.mode": "print", ...extraSettings }),
+			});
+			return { refs, releases, prompts, host, recordedId: () => recordedId };
+		}
+
+		it("joins concurrent ensures into one spawn", async () => {
+			const world = makeWorld();
+
+			await Promise.all([ensureFusionSidekick(world.host), ensureFusionSidekick(world.host)]);
+
+			expect(runSubprocessSpy).toHaveBeenCalledTimes(1);
+			expect(world.refs.has(world.recordedId() ?? "")).toBe(true);
+		});
+
+		it("queues a forced replacement behind an ordinary ensure and joins later forced hooks", async () => {
+			const world = makeWorld();
+
+			await Promise.all([
+				ensureFusionSidekick(world.host),
+				ensureFusionSidekick(world.host, { force: true }),
+				ensureFusionSidekick(world.host, { force: true }),
+			]);
+
+			// The ordinary ensure spawns; the one forced replacement releases that
+			// sidekick and spawns its successor.
+			expect(runSubprocessSpy).toHaveBeenCalledTimes(2);
+			expect(world.releases).toHaveLength(1);
+			expect(world.refs.has(world.recordedId() ?? "")).toBe(true);
+		});
+
+		it("makes model reconciliation wait for an in-flight ensure", async () => {
+			const world = makeWorld([], { "fusion.sidekickModel": "test/sidekick" });
+
+			const ensuring = ensureFusionSidekick(world.host);
+			const result = await reconcileFusionSidekickModel(world.host);
+			await ensuring;
+
+			expect(runSubprocessSpy).toHaveBeenCalledTimes(1);
+			expect(result.sidekickLive).toBe(true);
+		});
+
+		it("keeps a same-id replacement that registers while a forced release runs", async () => {
+			const stale: AgentRefLike = { id: "Sidekick", session: {}, status: "idle" };
+			const world = makeWorld([stale]);
+			lifecycleSpy.mockImplementation(
+				() =>
+					({
+						// A concurrent replacement wins the id; the expected-ref release must skip it.
+						release: async (id: string, expected?: AgentRefLike) => {
+							world.refs.set(id, { id, session: {}, status: "running" });
+							if (world.refs.get(id) === expected) world.refs.delete(id);
+						},
+					}) as unknown as AgentLifecycleManager,
+			);
+
+			await ensureFusionSidekick(world.host, { force: true });
+
+			expect(world.recordedId()).toBe("Sidekick");
+			expect(world.refs.get("Sidekick")).not.toBe(stale);
+			expect(runSubprocessSpy).not.toHaveBeenCalled();
+		});
+
+		it("refreshes the base prompt after the sidekick is created", async () => {
+			const world = makeWorld();
+
+			await ensureFusionSidekick(world.host);
+
+			expect(world.prompts.at(-1)).toBe(world.recordedId());
+			expect(world.recordedId()).toBeTruthy();
+		});
+
+		it("refreshes the base prompt when the sidekick cannot be created", async () => {
+			const world = makeWorld();
+			discoverAgentsSpy.mockImplementation(async () => ({ agents: [], projectAgentsDir: null }));
+
+			await ensureFusionSidekick(world.host);
+
+			expect(world.prompts).toHaveLength(1);
+			expect(world.prompts[0]).toBeUndefined();
+		});
+	});
+
+	// ---------------------------------------------------------------------------
 	// reconcileFusionSidekickModel
 	// ---------------------------------------------------------------------------
 
@@ -482,7 +605,7 @@ describe("fusion-sidekick", () => {
 
 			const result = await reconcileFusionSidekickModel(host);
 
-			expect(releaseSpy).toHaveBeenCalledWith("parked-id");
+			expect(releaseSpy).toHaveBeenCalledWith("parked-id", { id: "parked-id", session: null, status: "parked" });
 			expect(result.note).not.toBe("");
 			expect(result.sidekickLive).toBe(true);
 			expect(recordedId).toBeTruthy();

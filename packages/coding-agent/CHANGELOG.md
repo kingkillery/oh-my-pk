@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Concurrent Fusion sidekick startup, session-switch, and `/fusion` hooks no longer spawn duplicate sidekicks: they share one operation per session, a forced replacement waits for an ordinary start, and model changes wait for a pending start. Releasing a stale sidekick keeps a replacement registered under the same id, and the system prompt is refreshed whenever the sidekick appears or fails to start.
 - Fusion sidekick guidance now goes in the last system block instead of mid-prompt, so turning the sidekick on or off or changing its model no longer invalidates the cached base, project, and repository prompt.
 - Carry the server-negotiated legacy MCP protocol version on HTTP requests, notifications, SSE listeners, and session deletion while keeping initialization headers separate.
 - Track IRC-reactivated task runs with fresh parent-owned jobs and readable result handles; retain failed and cancelled output and settle active runs during cleanup.

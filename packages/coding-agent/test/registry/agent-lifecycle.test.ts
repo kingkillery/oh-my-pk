@@ -334,6 +334,21 @@ describe("AgentLifecycleManager", () => {
 		expect(registry.get("6-Sub")).toBeUndefined();
 	});
 
+	it("release with an expected ref keeps a same-id replacement", async () => {
+		const stale = makeSessionStub();
+		const replacement = makeSessionStub();
+		const staleRef = registerIdleSub("6-Same", stale.session);
+		const replacementRef = registerIdleSub("6-Same", replacement.session);
+
+		await lifecycle.release("6-Same", staleRef);
+		expect(registry.get("6-Same")).toBe(replacementRef);
+		expect(replacement.disposeCalls()).toBe(0);
+
+		await lifecycle.release("6-Same", replacementRef);
+		expect(registry.get("6-Same")).toBeUndefined();
+		expect(replacement.disposeCalls()).toBe(1);
+	});
+
 	it("release waits for an in-flight revival, disposes its session, and remains terminal", async () => {
 		const reviveStarted = deferred();
 		const reviveGate = deferred();
