@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [16.4.30] - 2026-10-13
+
 ### Added
 
 - Expose prepared-section batch commits so host adapters share partial-write reporting while controlling per-section diagnostics.

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [16.4.30] - 2026-10-13
+
 ### Fixed
 
 - Meta Muse Code requests no longer use a saved OAuth access token, or an `api_key` that only copies it, as their API key. A rejected saved credential now falls back to browser sign-in instead of failing, and the Muse CLI `auth.json` mirror is written to the path import reads first, replaced atomically, and made owner-only even when it already existed. Device sign-in now uses the shared device-code poller, so it backs off on `slow_down` and cancels promptly.

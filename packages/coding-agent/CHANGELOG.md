@@ -2,10 +2,18 @@
 
 ## [Unreleased]
 
+## [16.4.30] - 2026-10-13
+
 ### Added
 
 - Offer Fast and Ultrafast choices from `/fast` for GPT-6.1 Sol and GPT-6 Astra with ChatGPT sign-in, including explicit `/fast fast`, `/fast ultrafast`, and `/fast off` commands.
 - Add opt-in launch authority for Task workers (`task.lifecycle.enabled`, off by default). Each Task worker is admitted through an immutable launch contract recorded in `lifecycle-authority.db`, next to `operational.db`, which stays at schema v1. Its tool calls are checked against the contract before they run, and its file tools are confined to its working directory. It gets its own eval session and finite request, runtime and output limits, and its binding is revoked when it finishes. While the setting is on, Task runs workers in the foreground; fork, native, code-write and other routes the contract cannot cover are refused. Children left live by a process that exited are released the next time that session spawns.
+
+### Changed
+
+- Require the installed PK-Herdr skill for interactive terminal creation and control, expose its instructions before invocation, and fail closed when it is missing, unreadable, disabled, or changed. Terminal launches use the caller's Herdr workspace or a unique tool-owned headless session with four-hour idle cleanup; psmux and system-terminal fallbacks are removed, and legacy terminal backend preferences migrate to PK-Herdr. Failed or cancelled launches close only their owned resources.
+- Prefer one eval cell that calls `tool.<name>(args)` over a series of individual tool calls. The system prompt and eval description tell the model to batch independent calls, chain them, and filter large output in the cell, and to use a separate tool call only when the next step needs that result or the user asked for that tool.
+- Ctrl+Enter always inserts a newline and no longer sends a follow-up. Ctrl+Q remains the follow-up chord. Paste inserts text only: it does not add a trailing newline, and an Enter that arrives in the same chunk does not send the chat.
 
 ### Fixed
 
@@ -35,12 +43,6 @@
 - Release the per-file deferred diagnostics handle when an LSP writethrough rejects. `finalize()` now runs in a `finally` around the writethrough call, so a failed write no longer leaks an `AbortController` that was neither aborted nor registered for cleanup, which left an uncancellable background fetch able to inject stale diagnostics for a write that never landed.
 - Stop a malformed agent file from dumping its entire contents into the log. Agent parsing embedded the whole file body in the thrown error, and discovery logs that error on every startup, so one file under `.ompk/agents/` without valid frontmatter produced a ~70 KB log line with the body duplicated across `message`, `stack`, and `cause`. The error now names the file and the reason only.
 
-### Changed
-
-- Require the installed PK-Herdr skill for interactive terminal creation and control, expose its instructions before invocation, and fail closed when it is missing, unreadable, disabled, or changed. Terminal launches use the caller's Herdr workspace or a unique tool-owned headless session with four-hour idle cleanup; psmux and system-terminal fallbacks are removed, and legacy terminal backend preferences migrate to PK-Herdr. Failed or cancelled launches close only their owned resources.
-- Prefer one eval cell that calls `tool.<name>(args)` over a series of individual tool calls. The system prompt and eval description tell the model to batch independent calls, chain them, and filter large output in the cell, and to use a separate tool call only when the next step needs that result or the user asked for that tool.
-- Ctrl+Enter always inserts a newline and no longer sends a follow-up. Ctrl+Q remains the follow-up chord. Paste inserts text only: it does not add a trailing newline, and an Enter that arrives in the same chunk does not send the chat.
-
 ### Documentation
 
 - Correct the `contextPromotion.enabled` default in `docs/settings.md` from `true` to the schema's actual `false`, and describe the real mechanism (promoting to a larger-context model on overflow instead of compacting). Also drop `snapcompact` from the documented `compaction.strategy` values, since it is a legacy value only accepted via the backward-compatibility migration.
@@ -54,12 +56,13 @@
 ### Added
 
 - Opt-in Jev bash gate (`OMP_JEV_BASH_GATE=1` to enforce, `shadow` to only log verdicts; needs `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`; eval kit in `bench/jev-bash-gate/`): each bash command is classified by TypeSafe Jev before execution and blocked only on a confident destructive/out-of-scope verdict. Fails open on timeout, API error, or low confidence.
+- Wired `findCollectorBinary()` to discover the bundled `ompk-collector` sidecar unpacked by `pi-natives` into the per-version native cache, enabling standalone single-binary distributions to run the local collector without PATH or sibling executable dependencies.
+- Added System 1 Watchdog: an out-of-band sentinel supervising System 2 worker subagents via TypeSafe Jev (direct, OpenRouter, or AI Gateway) evaluating compact external execution telemetry (~120-150 tokens) with zero output tokens and deterministic arbitration (silent pass, non-interrupting hint, or tripwire abort), with a fail-silent zero-breakage fallback when unconfigured.
 
 ### Fixed
 
 - Fixed recursive canonical native subpath resolution in the legacy import hook on Linux, restored package type checks, and rebuilt Windows executables with the matching native addon.
 - The persisted Gemma 2 2B profile uses its 8K context window and a 1K generation cap.
-
 - Enabled Activity Memory sessions start the detached singleton ingest daemon when absent; atomic PID locking prevents competing ledger writers, including single-pass runs.
 - Colab bridge chat requests use a bounded FIFO admission queue; probes yield to waiting chats, disconnected waiters never start inference, and busy responses explain that the rejected request was not started.
 - Jev bash judgments honor the command's requested working directory and tool cancellation. TypeSafe deadlines now cover retries, backoff, and response-body parsing, and replay caches separate directories, endpoints, models, and judgment rubrics while deduplicating identical inputs.
@@ -68,13 +71,6 @@
 - Long-lived Colab model bridges refresh expired HTTP proxy credentials for cancellation uploads on the same existing runtime, without replaying generation or replacing its kernel.
 - Hook and reminder selectors now support single-digit quick-select (`1`–`9`), `Ctrl+P`/`Ctrl+N` cursor navigation, raw carriage return (`\r`), and explicit cancel keys (`Esc`/`Ctrl+C`/`Ctrl+G`), preventing degraded or dumb terminals from deadlocking prompt interaction.
 - Shared inference daemons now use renewable client leases, request deadlines, six-hour rotation, a 4 GiB Windows private-commit ceiling, and a single-active-model pipeline cache with explicit disposal so phantom sockets or leaking native inference cannot exhaust machine commit; callers recover on the next request without replaying failed work.
-
-### Added
-
-- Wired `findCollectorBinary()` to discover the bundled `ompk-collector` sidecar unpacked by `pi-natives` into the per-version native cache, enabling standalone single-binary distributions to run the local collector without PATH or sibling executable dependencies.
-- Added System 1 Watchdog: an out-of-band sentinel supervising System 2 worker subagents via TypeSafe Jev (direct, OpenRouter, or AI Gateway) evaluating compact external execution telemetry (~120-150 tokens) with zero output tokens and deterministic arbitration (silent pass, non-interrupting hint, or tripwire abort), with a fail-silent zero-breakage fallback when unconfigured.
-
-## [16.4.27] - 2026-09-21
 
 ## [16.4.26] - 2026-09-20
 
