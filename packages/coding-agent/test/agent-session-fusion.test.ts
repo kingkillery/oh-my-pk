@@ -378,6 +378,19 @@ describeIfKey("Fusion failure-streak escalation", () => {
 		emitToolResult(true);
 		expect(h.session.model?.id).toBe(FRONTIER_ID);
 	});
+
+	it("does not let frontier-model failures pre-load the cheap-route streak", async () => {
+		await primeSession(h.session);
+		expect(h.session.model?.id).toBe(FRONTIER_ID);
+		emitToolResult(true);
+		emitToolResult(true);
+
+		await h.session.compact();
+		expect(h.session.model?.id).toBe(COMPACT_ID);
+
+		emitToolResult(true);
+		expect(h.session.model?.id).toBe(COMPACT_ID);
+	});
 });
 
 // ---------------------------------------------------------------------------

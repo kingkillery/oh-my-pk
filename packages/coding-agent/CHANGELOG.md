@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Fusion failure-streak escalation now counts only tool failures made on the cheaper model Fusion selected itself. Failures on the frontier model or a manually chosen one no longer pre-load the streak, and it restarts at each compaction and new route decision.
 - Concurrent Fusion sidekick startup, session-switch, and `/fusion` hooks no longer spawn duplicate sidekicks: they share one operation per session, a forced replacement waits for an ordinary start, and model changes wait for a pending start. Releasing a stale sidekick keeps a replacement registered under the same id, and the system prompt is refreshed whenever the sidekick appears or fails to start.
 - Fusion sidekick guidance now goes in the last system block instead of mid-prompt, so turning the sidekick on or off or changing its model no longer invalidates the cached base, project, and repository prompt.
 - Carry the server-negotiated legacy MCP protocol version on HTTP requests, notifications, SSE listeners, and session deletion while keeping initialization headers separate.

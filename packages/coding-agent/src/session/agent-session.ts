@@ -368,6 +368,7 @@ import {
 	classifyFusionRoute,
 	type FusionPoolTier,
 	type FusionRoute,
+	isFusionAutoDowngradedRoute,
 	isTokenSavingsFusionMode,
 	parseFusionPoolEntries,
 	resolveEffectiveFusionRoute,
@@ -3102,8 +3103,18 @@ export class AgentSession {
 				this.#completionGateAwaitingProgress = false;
 				// Fusion failure-streak escalation: consecutive failed tool calls on a
 				// downgraded main model force an early tier-up back to the frontier
-				// baseline without waiting for the next compaction boundary.
-				if (isError) {
+				// baseline without waiting for the next compaction boundary. Only
+				// failures on the auto-selected cheaper route count; anything else
+				// ends the streak.
+				if (
+					isError &&
+					isFusionAutoDowngradedRoute({
+						routingDisabled: this.#fusionRoutingDisabled,
+						baseModel: this.#fusionBaseModel,
+						lastAutoModel: this.#fusionLastAutoModel,
+						currentModel: this.model,
+					})
+				) {
 					this.#fusionToolFailureStreak++;
 					await this.#maybeEscalateFusionOnFailureStreak();
 				} else {
@@ -6773,6 +6784,7 @@ export class AgentSession {
 					await this.setModelTemporary(this.#fusionTokenSavingsSavedModel, undefined, { ephemeral: true });
 					// Restoration is another automatic switch, not a manual override.
 					this.#fusionLastAutoModel = this.model ?? this.#fusionTokenSavingsSavedModel;
+					this.#fusionToolFailureStreak = 0;
 				}
 				this.#fusionTokenSavingsSavedModel = undefined;
 			}
@@ -10655,6 +10667,8 @@ export class AgentSession {
 	 * active. Mirrors {@link #promoteContextModel}.
 	 */
 	async #applyFusionCompactionSwitch(summary?: string): Promise<void> {
+		// Compaction starts a fresh routing epoch; earlier failures no longer count.
+		this.#fusionToolFailureStreak = 0;
 		// Whole body guarded: this runs inside the compaction commit path, so an
 		// unexpected throw from model resolution/auth lookup must never mark a
 		// committed compaction as failed or stall auto-continue.
@@ -10932,6 +10946,7 @@ export class AgentSession {
 				this.#fusionBaseModel ??= currentModel;
 				await this.setModelTemporary(taskModel, undefined, { ephemeral: true });
 				this.#fusionLastAutoModel = this.model ?? taskModel;
+				this.#fusionToolFailureStreak = 0;
 				logger.debug("Fusion token savings limit reached; switched to task model", {
 					from: `${currentModel.provider}/${currentModel.id}`,
 					to: `${taskModel.provider}/${taskModel.id}`,

@@ -14,6 +14,7 @@
  *   number from the pool, where tier 1 = most powerful … 5 = least intelligent.
  */
 import { type Api, completeSimple, type Model, type ServiceTier } from "@pk-nerdsaver-ai/pi-ai";
+import { modelsAreEqual } from "@pk-nerdsaver-ai/pi-catalog/models";
 import { logger, prompt } from "@pk-nerdsaver-ai/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { resolveRoleSelection } from "../config/model-resolver";
@@ -34,6 +35,24 @@ export function isTokenSavingsFusionActive(settings: { get(key: string): unknown
 		settings.get("fusion.enabled") === true &&
 		isTokenSavingsFusionMode(settings.get("fusion.mode") as string | undefined)
 	);
+}
+
+export interface FusionAutoRouteState {
+	routingDisabled: boolean;
+	baseModel: Model | undefined;
+	lastAutoModel: Model | undefined;
+	currentModel: Model | undefined;
+}
+
+/**
+ * Whether the main session is on the cheaper route Fusion selected itself.
+ * Only failures in that stretch count toward failure-streak escalation; on the
+ * frontier model or a manual choice they would pre-load a later streak.
+ */
+export function isFusionAutoDowngradedRoute(state: FusionAutoRouteState): boolean {
+	const { routingDisabled, baseModel, lastAutoModel, currentModel } = state;
+	if (routingDisabled || !baseModel || !lastAutoModel || !currentModel) return false;
+	return !modelsAreEqual(baseModel, currentModel) && modelsAreEqual(lastAutoModel, currentModel);
 }
 
 /** One tier of the routing pool. Tier 1 = most powerful … 5 = least intelligent. */

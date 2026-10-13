@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import type { Model } from "@pk-nerdsaver-ai/pi-ai";
 import {
 	formatFusionPoolEntries,
+	isFusionAutoDowngradedRoute,
 	parseFusionPoolEntries,
 	parseFusionRoute,
 	renderPoolClassifierPrompt,
@@ -8,6 +10,24 @@ import {
 	resolveSidekickRoute,
 	shouldRunFusionCompactionSwitch,
 } from "@pk-nerdsaver-ai/pi-coding-agent/session/fusion-router";
+
+describe("isFusionAutoDowngradedRoute", () => {
+	const frontier = { provider: "test", id: "frontier" } as Model;
+	const cheap = { provider: "test", id: "cheap" } as Model;
+	const manual = { provider: "test", id: "manual" } as Model;
+	const active = { routingDisabled: false, baseModel: frontier, lastAutoModel: cheap, currentModel: cheap };
+
+	it("is true only while the current model is the auto-selected cheaper route", () => {
+		expect(isFusionAutoDowngradedRoute(active)).toBe(true);
+		// On the frontier model, failures must not pre-load a later cheap-route streak.
+		expect(isFusionAutoDowngradedRoute({ ...active, currentModel: frontier })).toBe(false);
+		expect(isFusionAutoDowngradedRoute({ ...active, currentModel: manual })).toBe(false);
+		expect(isFusionAutoDowngradedRoute({ ...active, routingDisabled: true })).toBe(false);
+		expect(isFusionAutoDowngradedRoute({ ...active, baseModel: undefined })).toBe(false);
+		expect(isFusionAutoDowngradedRoute({ ...active, lastAutoModel: undefined })).toBe(false);
+		expect(isFusionAutoDowngradedRoute({ ...active, currentModel: undefined })).toBe(false);
+	});
+});
 
 describe("parseFusionRoute", () => {
 	it("parses cheap and frontier route markers", () => {
