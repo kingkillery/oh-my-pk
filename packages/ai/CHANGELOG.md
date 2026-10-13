@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Anthropic's rolling message cache breakpoints now land on real turns instead of the synthetic `Continue.` pad added after a trailing assistant, which the next request never contains.
 - Preserve ChatGPT Fast and Ultrafast service tiers through Codex requests and account for their cost multipliers.
 - Chat Completions and Responses requests now leave 1024 tokens of prompt room when a requested output cap would consume the served context window. llama.cpp and vLLM reject `max_tokens` equal to the window before reading the prompt.
 

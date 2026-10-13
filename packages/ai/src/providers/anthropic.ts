@@ -2656,8 +2656,15 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 
 	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;
 
-	const start = isCCLayout ? Math.max(0, params.messages.length - 1) : Math.max(0, params.messages.length - 2);
-	for (let i = start; i < params.messages.length; i++) {
+	// `convertAnthropicMessages` appends a synthetic `Continue.` pad after a trailing
+	// assistant. The next real turn won't contain it, so a breakpoint there is
+	// never read back; anchor the rolling window on the real turns before it.
+	const last = params.messages.at(-1);
+	const hasContinuePad =
+		last?.role === "user" && last.content === "Continue." && params.messages.at(-2)?.role === "assistant";
+	const end = hasContinuePad ? params.messages.length - 1 : params.messages.length;
+	const start = isCCLayout ? Math.max(0, end - 1) : Math.max(0, end - 2);
+	for (let i = start; i < end; i++) {
 		if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) break;
 		const message = params.messages[i];
 		if (!message) continue;

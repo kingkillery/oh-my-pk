@@ -431,16 +431,54 @@ describe("Anthropic request fingerprint alignment", () => {
 			{ isOAuth: false },
 		)) as { messages?: Array<{ role: string; content: string | Array<{ type: string; cache_control?: unknown }> }> };
 
-		// The thinking-only assistant turn sits inside the trailing two-message
-		// cache window (the Continue. pad is appended after it) but must not get
-		// a breakpoint — Anthropic rejects cache_control on thinking blocks.
+		// The thinking-only assistant cannot take cache_control (Anthropic rejects
+		// it on thinking blocks), so the preceding real user turn gets the
+		// fallback breakpoint. The synthetic Continue. pad must never consume it.
 		const assistant = payload.messages?.find(message => message.role === "assistant");
 		expect(Array.isArray(assistant?.content)).toBe(true);
 		for (const block of assistant!.content as Array<{ type: string; cache_control?: unknown }>) {
 			expect(block.cache_control).toBeUndefined();
 		}
-		const last = payload.messages?.at(-1);
-		expect((last!.content as Array<{ cache_control?: unknown }>)[0]?.cache_control).toBeDefined();
+		const userContent = payload.messages?.[0]?.content;
+		expect(Array.isArray(userContent) ? userContent[0]?.cache_control : undefined).toBeTruthy();
+		expect(payload.messages?.at(-1)?.content).toBe("Continue.");
+	});
+
+	it("caches the real assistant before a synthetic Continue pad when the breakpoint budget is tight", async () => {
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "real assistant answer" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: ANTHROPIC_MODEL.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["stable system", "volatile project footer", "active repo context"],
+				messages: [{ role: "user", content: "question", timestamp: Date.now() }, assistant],
+			},
+			{ isOAuth: false },
+		)) as {
+			system?: Array<{ cache_control?: unknown }>;
+			messages?: Array<{ role: string; content: string | Array<{ cache_control?: unknown }> }>;
+		};
+
+		// The pad is absent from the next real turn, so a breakpoint on it is never
+		// read back. Anchor the rolling window on the real assistant instead.
+		const assistantContent = payload.messages?.find(message => message.role === "assistant")?.content;
+		expect(Array.isArray(assistantContent) ? assistantContent[0]?.cache_control : undefined).toBeTruthy();
+		expect(payload.messages?.at(-1)?.content).toBe("Continue.");
 	});
 
 	it("adds effort and mid-conversation betas to API-key requests that use those features", async () => {
