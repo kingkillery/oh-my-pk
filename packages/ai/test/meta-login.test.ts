@@ -70,6 +70,7 @@ describe("Meta AI login", () => {
 						meta: {
 							mechanism: "oauth",
 							access_token: "MUSE_SUBS_TOKEN_123",
+							api_key: "MUSE_SUBS_KEY_123",
 						},
 					},
 				}),
@@ -78,7 +79,7 @@ describe("Meta AI login", () => {
 			const prev = process.env.XDG_CONFIG_HOME;
 			process.env.XDG_CONFIG_HOME = tempDir;
 			try {
-				expect(resolveMuseCliAuthKey()).toBe("MUSE_SUBS_TOKEN_123");
+				expect(resolveMuseCliAuthKey()).toBe("MUSE_SUBS_KEY_123");
 			} finally {
 				if (prev !== undefined) process.env.XDG_CONFIG_HOME = prev;
 				else delete process.env.XDG_CONFIG_HOME;
@@ -100,6 +101,7 @@ describe("Meta AI login", () => {
 						meta: {
 							mechanism: "oauth",
 							access_token: "MUSE_SUBS_TOKEN_IMPORT",
+							api_key: "MUSE_SUBS_KEY_IMPORT",
 						},
 					},
 				}),
@@ -111,6 +113,10 @@ describe("Meta AI login", () => {
 				let step = 0;
 				const key = await loginMeta({
 					onAuth: () => {},
+					fetch: async (_input, init) => {
+						expect(init?.headers).toMatchObject({ Authorization: "Bearer MUSE_SUBS_KEY_IMPORT" });
+						return Response.json({ data: [] });
+					},
 					onPrompt: async prompt => {
 						step++;
 						if (step === 1) {
@@ -121,7 +127,7 @@ describe("Meta AI login", () => {
 						return "Y";
 					},
 				});
-				expect(key).toBe("MUSE_SUBS_TOKEN_IMPORT");
+				expect(key).toBe("MUSE_SUBS_KEY_IMPORT");
 			} finally {
 				if (prev !== undefined) process.env.XDG_CONFIG_HOME = prev;
 				else delete process.env.XDG_CONFIG_HOME;

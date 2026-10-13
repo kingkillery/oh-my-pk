@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createApiKeyLogin } from "./api-key-login";
+import { validateApiKeyAgainstModelsEndpoint } from "./api-key-validation";
 import type { OAuthLoginCallbacks } from "./oauth/types";
 import type { ProviderDefinition } from "./types";
 
@@ -51,11 +52,11 @@ export function resolveMuseCliAuthKey(): string | undefined {
 			const content = JSON.parse(fs.readFileSync(candidate, "utf8"));
 			const meta = content?.providers?.meta;
 			if (!meta) continue;
-			if (typeof meta.access_token === "string" && meta.access_token) {
-				return meta.access_token;
+			if (typeof meta.api_key === "string" && meta.api_key.trim()) {
+				return meta.api_key.trim();
 			}
-			if (typeof meta.api_key === "string" && meta.api_key) {
-				return meta.api_key;
+			if (typeof meta.access_token === "string" && meta.access_token.trim()) {
+				return meta.access_token.trim();
 			}
 		} catch {
 			// Ignore unreadable or malformed files
@@ -95,9 +96,11 @@ const defaultApiKeyLogin = createApiKeyLogin({
  * and mints the subscription-tied API key via https://api.meta.ai/muse-code/key.
  */
 export async function loginMetaDeviceCode(callbacks: OAuthLoginCallbacks): Promise<string> {
+	const fetchImpl = callbacks.fetch ?? fetch;
 	callbacks.onProgress?.("Requesting device login from Meta…");
-	const initRes = await fetch("https://auth.meta.com/oidc/device/authorization/", {
+	const initRes = await fetchImpl("https://auth.meta.com/oidc/device/authorization/", {
 		method: "POST",
+		signal: callbacks.signal,
 		headers: {
 			"Content-Type": "application/x-www-form-urlencoded",
 			Accept: "application/json",
@@ -135,8 +138,9 @@ export async function loginMetaDeviceCode(callbacks: OAuthLoginCallbacks): Promi
 	while (Date.now() < expiresAt) {
 		await new Promise(resolve => setTimeout(resolve, intervalMs));
 
-		const tokenRes = await fetch("https://auth.meta.com/oidc/device/token/", {
+		const tokenRes = await fetchImpl("https://auth.meta.com/oidc/device/token/", {
 			method: "POST",
+			signal: callbacks.signal,
 			headers: {
 				"Content-Type": "application/x-www-form-urlencoded",
 				Accept: "application/json",
@@ -151,38 +155,66 @@ export async function loginMetaDeviceCode(callbacks: OAuthLoginCallbacks): Promi
 		if (tokenRes.ok) {
 			const tokenData = (await tokenRes.json()) as { access_token: string; expires_in?: number };
 			const accessToken = tokenData.access_token;
+			if (typeof accessToken !== "string" || !accessToken.trim()) {
+				throw new Error("Meta device authorization returned no access token. Sign-in was not saved.");
+			}
 			callbacks.onProgress?.("Sign-in approved. Fetching Muse Code subscription credential…");
 
-			let finalKey = accessToken;
-			try {
-				const keyRes = await fetch("https://api.meta.ai/muse-code/key", {
-					headers: {
-						Authorization: `Bearer ${accessToken}`,
-						Accept: "application/json",
-					},
-				});
-				if (keyRes.ok) {
-					const keyData = (await keyRes.json()) as { api_key?: string };
-					if (keyData.api_key) {
-						finalKey = keyData.api_key;
-					}
-				}
-			} catch {
-				// Fall back to accessToken if key endpoint fails
+			const keyRes = await fetchImpl("https://api.meta.ai/muse-code/key", {
+				method: "POST",
+				signal: callbacks.signal,
+				headers: {
+					Authorization: `Bearer ${accessToken}`,
+					"Content-Type": "application/json",
+					Accept: "application/json",
+				},
+				body: JSON.stringify({}),
+			});
+			if (!keyRes.ok) {
+				throw new Error(`Meta Muse Code credential exchange failed (${keyRes.status}). Sign-in was not saved.`);
 			}
+			const keyData = (await keyRes.json()) as {
+				api_key?: unknown;
+				is_subs_active?: boolean;
+				require_payment?: boolean;
+			};
+			if (keyData.is_subs_active === false || keyData.require_payment === true) {
+				throw new Error("An active Muse Code subscription is required. Sign-in was not saved.");
+			}
+			if (typeof keyData.api_key !== "string" || !keyData.api_key.trim() || keyData.api_key.trim() === accessToken) {
+				throw new Error("Meta Muse Code returned no usable subscription API key. Sign-in was not saved.");
+			}
+			const finalKey = keyData.api_key.trim();
+			await validateApiKeyAgainstModelsEndpoint({
+				provider: "Meta Muse Code",
+				apiKey: finalKey,
+				modelsUrl: "https://api.meta.ai/v1/models",
+				fetch: fetchImpl,
+				signal: callbacks.signal,
+			});
 
 			// Mirror to local .config/muse/auth.json for CLI parity
 			try {
 				const targetDir = process.env.USERPROFILE
 					? path.join(process.env.USERPROFILE, ".config", "muse")
 					: path.join(process.env.HOME ?? "", ".config", "muse");
-				fs.mkdirSync(targetDir, { recursive: true });
-				fs.writeFileSync(
-					path.join(targetDir, "auth.json"),
+				await fs.promises.mkdir(targetDir, { recursive: true });
+				const authPath = path.join(targetDir, "auth.json");
+				const authFile = Bun.file(authPath);
+				const previous: unknown = (await authFile.exists()) ? await authFile.json() : {};
+				const existing = previous && typeof previous === "object" ? (previous as Record<string, unknown>) : {};
+				const providers =
+					existing.providers && typeof existing.providers === "object"
+						? (existing.providers as Record<string, unknown>)
+						: {};
+				await Bun.write(
+					authPath,
 					JSON.stringify(
 						{
+							...existing,
 							schema_version: 1,
 							providers: {
+								...providers,
 								meta: {
 									access_token: accessToken,
 									api_key: finalKey,
@@ -195,6 +227,7 @@ export async function loginMetaDeviceCode(callbacks: OAuthLoginCallbacks): Promi
 						null,
 						2,
 					),
+					{ mode: 0o600 },
 				);
 			} catch {
 				// Ignore filesystem persistence error
@@ -250,6 +283,13 @@ export async function loginMeta(callbacks: OAuthLoginCallbacks): Promise<string>
 			allowEmpty: true,
 		});
 		if (!useExisting || useExisting.trim().toLowerCase().startsWith("y")) {
+			await validateApiKeyAgainstModelsEndpoint({
+				provider: "Meta Muse Code",
+				apiKey: detected,
+				modelsUrl: "https://api.meta.ai/v1/models",
+				fetch: callbacks.fetch,
+				signal: callbacks.signal,
+			});
 			return detected;
 		}
 	}

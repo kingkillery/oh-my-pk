@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Meta Muse Code sign-in no longer saves the raw OAuth token as an API key. It exchanges the token for the subscription API key, requires an active subscription, and validates the key against the models endpoint before saving; any failure leaves stored credentials and `~/.config/muse/auth.json` untouched. Imported Muse CLI credentials are validated too, prefer `api_key` over `access_token`, and the mirror now keeps other providers' entries and is written owner-only.
 - Anthropic's rolling message cache breakpoints now land on real turns instead of the synthetic `Continue.` pad added after a trailing assistant, which the next request never contains.
 - Preserve ChatGPT Fast and Ultrafast service tiers through Codex requests and account for their cost multipliers.
 - Chat Completions and Responses requests now leave 1024 tokens of prompt room when a requested output cap would consume the served context window. llama.cpp and vLLM reject `max_tokens` equal to the window before reading the prompt.
