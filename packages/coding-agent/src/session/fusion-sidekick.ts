@@ -119,15 +119,19 @@ async function releaseSidekick(id: string, ref: AgentRef): Promise<boolean> {
 
 async function ensureFusionSidekickOnce(host: FusionSidekickHost, options: { force?: boolean }): Promise<void> {
 	const { session, settings } = host;
-	const fusionEnabled =
-		!settings.get("task.simpleMode") &&
-		settings.get("fusion.enabled") === true &&
-		settings.get("fusion.mode") !== "off";
-	if (!fusionEnabled) {
-		if (options.force) session.setFusionSidekickId(undefined);
-		return;
-	}
+	// Best-effort: nothing here may throw into the caller, including a host
+	// without settings (print mode under test).
+	let attempted = false;
 	try {
+		const fusionEnabled =
+			!settings.get("task.simpleMode") &&
+			settings.get("fusion.enabled") === true &&
+			settings.get("fusion.mode") !== "off";
+		if (!fusionEnabled) {
+			if (options.force) session.setFusionSidekickId(undefined);
+			return;
+		}
+		attempted = true;
 		if (!options.force) {
 			// Idempotent only while the recorded id still resolves in the registry.
 			// A stale id (spawn failed after allocate, or the sidekick aborted) must
@@ -159,7 +163,7 @@ async function ensureFusionSidekickOnce(host: FusionSidekickHost, options: { for
 	} catch (err) {
 		logger.warn("Fusion sidekick spawn failed", { error: String(err) });
 	} finally {
-		await refreshSidekickPrompt(session);
+		if (attempted) await refreshSidekickPrompt(session);
 	}
 }
 
