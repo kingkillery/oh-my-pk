@@ -416,6 +416,29 @@ describe("StdinBuffer", () => {
 			});
 		});
 
+		it("treats a multi-line read without paste markers as one paste, never as Enter per line", () => {
+			// Terminals without bracketed paste (some Windows hosts, multiplexers) deliver a
+			// pasted block in one read. Split per character, each \r would submit a line.
+			processInput("first line\r\nsecond line\rthird line\r");
+
+			expect(emittedPaste).toEqual(["first line\r\nsecond line\rthird line\r"]);
+			expect(emittedSequences).toEqual([]);
+		});
+
+		it("keeps a typed line followed by Enter as keystrokes so Enter still submits", () => {
+			processInput("ls -la\r");
+
+			expect(emittedPaste).toEqual([]);
+			expect(emittedSequences).toEqual(["l", "s", " ", "-", "l", "a", "\r"]);
+		});
+
+		it("does not treat input containing escape sequences as an unbracketed paste", () => {
+			processInput("a\x1b[Ab\rc");
+
+			expect(emittedPaste).toEqual([]);
+			expect(emittedSequences).toEqual(["a", "\x1b[A", "b", "\r", "c"]);
+		});
+
 		it("should emit paste event for complete bracketed paste", () => {
 			const pasteStart = "\x1b[200~";
 			const pasteEnd = "\x1b[201~";

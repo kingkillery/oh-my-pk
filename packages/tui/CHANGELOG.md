@@ -6,6 +6,10 @@
 
 - Ctrl+Enter inserts a newline. Paste no longer adds a trailing newline, and an Enter that arrives in the same chunk as a paste does not submit.
 
+### Fixed
+
+- Pasting a multi-line block in a terminal without bracketed paste no longer submits (or steers a running agent with) every line separately. A read containing text, a line break, and more text is treated as one paste, so it collapses to a `[Paste #N]` marker or opens the large-paste menu like any other paste.
+
 ## [16.2.0] - 2026-06-27
 
 ### Added

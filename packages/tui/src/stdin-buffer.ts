@@ -211,6 +211,15 @@ function isCompleteApcSequence(data: string): "complete" | "incomplete" {
 }
 
 /**
+ * A single read with no escape sequences where text, a line break, and more text
+ * appear together: only a paste produces that. A typed line plus Enter ("ls\r")
+ * does not match, so Enter still submits.
+ */
+function isUnbracketedPasteChunk(data: string): boolean {
+	return !data.includes(ESC) && /[^\x00-\x1f\x7f][\r\n]+[^\r\n]/.test(data);
+}
+
+/**
  * Split accumulated buffer into complete sequences
  */
 function parseUnmodifiedKittyPrintableCodepoint(sequence: string): number | undefined {
@@ -407,6 +416,18 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			this.#pasteOverlap = "";
 			this.#pasteBytes = 0;
 			this.#consumePasteChunk(firstChunk);
+			return;
+		}
+
+		// Terminals without bracketed paste deliver a pasted block in one read. Split
+		// per character, every line break in it would arrive as its own Enter and
+		// submit (or steer) each line separately.
+		if (isUnbracketedPasteChunk(this.#buffer)) {
+			const pastedContent = this.#buffer;
+			this.#buffer = "";
+			this.#partialHoldStartMs = 0;
+			this.#pendingKittyPrintableCodepoint = undefined;
+			this.emit("paste", pastedContent);
 			return;
 		}
 
