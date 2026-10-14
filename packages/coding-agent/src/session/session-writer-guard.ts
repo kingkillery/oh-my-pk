@@ -236,6 +236,9 @@ export namespace SessionWriterGuard {
 				if (cause.message.includes("locked") || cause.message.includes("busy")) {
 					throw new SessionAlreadyOwnedError(options.sessionId, transcriptPath, cause);
 				}
+				// A releaser deleted the file we had just opened (POSIX reports it as
+				// e.g. SQLITE_NOTADB); open whatever is at the path now.
+				if (attempt < MAX_RETIRED_RETRIES) continue;
 				throw cause;
 			}
 		}

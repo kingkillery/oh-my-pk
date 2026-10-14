@@ -88,27 +88,52 @@ describe("SessionWriterGuard", () => {
 		expect(await fs.readdir(lockRoot)).toEqual([]);
 	});
 
-	test("marks a released lock retired for a waiter that already opened it, and stays exclusive", async () => {
+	test("reuses a lock file left marked retired when its deletion failed", async () => {
 		using temp = TempDir.createSync("@omp-writer-guard-retired-");
 		const lockRoot = temp.join("locks");
 		const options = { sessionId: "session-retired", transcriptPath: temp.join("session.jsonl"), lockRoot };
-		const first = SessionWriterGuard.acquire(options);
-		const [lockFile] = await fs.readdir(lockRoot);
-		// A process that opened the lock file and is waiting on it while the holder releases.
-		const waiter = new Database(path.join(lockRoot, lockFile!));
-		try {
-			await first.release();
-			// POSIX unlinks the file under the waiter; Windows refuses while it is open.
-			// Either way the waiter's file is marked, so it must not trust a lock taken on it.
-			expect(waiter.query("SELECT COUNT(*) AS n FROM retired").get()).toEqual({ n: 1 });
+		await SessionWriterGuard.acquire(options).release();
+		// Windows refuses to delete a lock file another process still has open, leaving it
+		// marked retired at its path. Recreate that state.
+		const lockFile = path.join(
+			lockRoot,
+			`${new Bun.CryptoHasher("sha256").update("session-retired").digest("hex")}.db`,
+		);
+		const stale = new Database(lockFile, { create: true });
+		stale.exec(
+			"CREATE TABLE writer_guard (singleton INTEGER PRIMARY KEY, session_id TEXT NOT NULL, transcript_path TEXT NOT NULL, guard_id TEXT NOT NULL, acquired_at INTEGER NOT NULL); CREATE TABLE retired (singleton INTEGER PRIMARY KEY, nonce TEXT NOT NULL); INSERT INTO retired VALUES (1, 'left-behind');",
+		);
+		stale.close();
 
-			const next = SessionWriterGuard.acquire(options);
-			guards.add(next);
-			expect(() => SessionWriterGuard.acquire(options)).toThrow(SessionAlreadyOwnedError);
-		} finally {
-			waiter.close();
-		}
+		const guard = SessionWriterGuard.acquire(options);
+		guards.add(guard);
+		expect(() => SessionWriterGuard.acquire(options)).toThrow(SessionAlreadyOwnedError);
+		await guard.release();
+		guards.delete(guard);
+		expect(await fs.readdir(lockRoot)).toEqual([]);
 	});
+
+	test("hands the lock to a waiting process when the holder releases and deletes the file", async () => {
+		using temp = TempDir.createSync("@omp-writer-guard-waiter-");
+		const lockRoot = temp.join("locks");
+		const transcriptPath = temp.join("session.jsonl");
+		const options = { sessionId: "session-waited", transcriptPath, lockRoot };
+		const holder = SessionWriterGuard.acquire(options);
+		const moduleUrl = new URL("../../src/session/session-writer-guard.ts", import.meta.url).href;
+		const childFile = temp.join("waiter.ts");
+		await fs.writeFile(
+			childFile,
+			`import { SessionWriterGuard } from ${JSON.stringify(moduleUrl)};\nprocess.stdout.write("waiting\\n");\nconst guard = SessionWriterGuard.acquire({ sessionId: "session-waited", transcriptPath: ${JSON.stringify(transcriptPath)}, lockRoot: ${JSON.stringify(lockRoot)}, busyTimeoutMs: 20_000 });\nprocess.stdout.write("acquired\\n");\nawait Promise.withResolvers<void>().promise;\nawait guard.release();\n`,
+		);
+		const child = Bun.spawn([process.execPath, childFile], { stdout: "pipe", stderr: "pipe" });
+		children.add(child);
+		expect(await waitForLine(child.stdout)).toBe("waiting");
+
+		await holder.release();
+		expect(await waitForLine(child.stdout)).toBe("acquired");
+		// The waiter now owns the live lock, wherever it ended up.
+		expect(() => SessionWriterGuard.acquire(options)).toThrow(SessionAlreadyOwnedError);
+	}, 30_000);
 
 	test("requires lease expiry and OS lock release before crashed-owner recovery", async () => {
 		using temp = TempDir.createSync("@omp-writer-owner-death-");
