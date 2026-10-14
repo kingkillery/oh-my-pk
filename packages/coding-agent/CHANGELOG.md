@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Add `x` to cancel or dismiss `/btw`, alongside `c` to copy and `b` to branch. Preserve modified Enter for newlines when older settings assign it to follow-up submission.
+
 ## [16.4.30] - 2026-10-13
 
 ### Added

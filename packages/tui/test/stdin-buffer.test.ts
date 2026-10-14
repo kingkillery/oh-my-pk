@@ -334,14 +334,56 @@ describe("StdinBuffer", () => {
 	});
 
 	describe("Large Plain-Text Bursts", () => {
-		it("splits a large non-bracketed burst into per-character events quickly", () => {
-			// Pins the O(n) scan: the prior per-iteration slice/Array.from made
-			// this O(n²) — a 64KB burst would blow the test timeout.
+		it("delivers a large non-bracketed burst as one paste without replaying keys", async () => {
+			// Keep the large-input path linear while preserving its paste boundary.
 			const content = "0123456789abcdef".repeat(4096); // 64 KB
+			const pastes: string[] = [];
+			buffer.on("paste", text => pastes.push(text));
 			processInput(content);
-			expect(emittedSequences.length).toBe(content.length);
-			expect(emittedSequences[0]).toBe("0");
-			expect(emittedSequences[emittedSequences.length - 1]).toBe("f");
+			await waitUntil(() => pastes.length > 0);
+			expect(pastes).toEqual([content]);
+			expect(emittedSequences).toEqual([]);
+		});
+
+		it("flushes an unbracketed block before the next escape key", () => {
+			const events: string[] = [];
+			buffer.on("paste", text => events.push(`paste:${text}`));
+			buffer.on("data", text => events.push(`key:${text}`));
+			processInput("first\nsecond");
+			processInput("\x1b[A");
+			expect(events).toEqual(["paste:first\nsecond", "key:\x1b[A"]);
+		});
+
+		it("explicitly flushes all neighboring unbracketed reads as one paste", () => {
+			const pastes: string[] = [];
+			buffer.on("paste", text => pastes.push(text));
+			processInput("first\nsecond");
+			processInput(" line");
+			processInput("\r\nthird");
+			expect(buffer.flush()).toEqual([]);
+			expect(pastes).toEqual(["first\nsecond line\r\nthird"]);
+			expect(emittedSequences).toEqual([]);
+		});
+
+		it("clears an unbracketed paste and its pending delivery timer", async () => {
+			const pastes: string[] = [];
+			buffer.on("paste", text => pastes.push(text));
+			processInput("first\nsecond");
+			buffer.clear();
+			await Bun.sleep(30);
+			expect(pastes).toEqual([]);
+			processInput("x");
+			expect(emittedSequences).toEqual(["x"]);
+		});
+
+		it("bounds unbracketed paste accumulation with the existing byte cap", () => {
+			buffer.destroy();
+			buffer = new StdinBuffer({ timeout: 10, pasteByteLimit: 8 });
+			const pastes: string[] = [];
+			buffer.on("paste", text => pastes.push(text));
+			processInput("first\nsecond");
+			expect(pastes).toEqual(["first\nsecond"]);
+			expect(buffer.getBuffer()).toBe("");
 		});
 
 		it("keeps escape parsing and surrogate pairs intact inside a burst", () => {
@@ -416,10 +458,11 @@ describe("StdinBuffer", () => {
 			});
 		});
 
-		it("treats a multi-line read without paste markers as one paste, never as Enter per line", () => {
+		it("treats a multi-line read without paste markers as one paste, never as Enter per line", async () => {
 			// Terminals without bracketed paste (some Windows hosts, multiplexers) deliver a
 			// pasted block in one read. Split per character, each \r would submit a line.
 			processInput("first line\r\nsecond line\rthird line\r");
+			await waitUntil(() => emittedPaste.length > 0);
 
 			expect(emittedPaste).toEqual(["first line\r\nsecond line\rthird line\r"]);
 			expect(emittedSequences).toEqual([]);

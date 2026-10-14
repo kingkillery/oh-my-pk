@@ -44,12 +44,18 @@ describe("KeybindingsManager", () => {
 		expect(keybindings.getKeys("tui.editor.cursorLeft")).toEqual(["left", "ctrl+b"]);
 	});
 
-	it("ships ctrl+j alongside shift+enter as default newline keys", () => {
+	it("ships Ctrl, Alt, and Shift Enter plus Ctrl+J as default newline options", () => {
 		const keybindings = new KeybindingsManager(TUI_KEYBINDINGS);
 
 		const newLineKeys = keybindings.getKeys("tui.input.newLine");
 		expect(newLineKeys).toContain("ctrl+j");
 		expect(newLineKeys).toContain("shift+enter");
+		expect(newLineKeys).toContain("ctrl+enter");
+		expect(newLineKeys).toContain("alt+enter");
+		for (const sequence of ["\x1b[13;2u", "\x1b[13;3u", "\x1b[13;5u"]) {
+			expect(keybindings.matches(sequence, "tui.input.newLine")).toBe(true);
+			expect(keybindings.matches(sequence, "tui.input.submit")).toBe(false);
+		}
 	});
 
 	it("exports the canonical alias helpers used by matching", () => {

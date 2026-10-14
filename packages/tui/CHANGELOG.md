@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Offer Ctrl+Enter and Alt+Enter alongside Shift+Enter and Ctrl+J as default newline bindings.
+
+### Fixed
+
+- Collect unbracketed multiline and large pastes across nearby terminal reads, preserving one collapsed block and one large-paste menu instead of submitting each line.
+
 ## [16.4.30] - 2026-10-13
 
 ### Changed

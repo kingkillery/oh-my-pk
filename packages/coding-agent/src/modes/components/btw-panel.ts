@@ -99,13 +99,16 @@ export class BtwPanelComponent extends Container {
 	#footerLine(): string {
 		switch (this.#state) {
 			case "running":
-				return theme.fg("muted", "Esc cancel /btw");
+				return theme.fg("muted", "x / Esc cancel /btw");
 			case "complete":
-				return theme.fg("muted", this.isCopyable() ? "c copy · b branch to chat · Esc dismiss" : "Esc dismiss");
+				return theme.fg(
+					"muted",
+					this.isCopyable() ? "c copy · b branch to chat · x exit · Esc dismiss" : "x / Esc dismiss",
+				);
 			case "aborted":
-				return theme.fg("warning", `${theme.status.warning} Cancelled · Esc dismiss`);
+				return theme.fg("warning", `${theme.status.warning} Cancelled · x / Esc dismiss`);
 			case "error":
-				return theme.fg("error", `${theme.status.error} Error · Esc dismiss`);
+				return theme.fg("error", `${theme.status.error} Error · x / Esc dismiss`);
 		}
 	}
 
