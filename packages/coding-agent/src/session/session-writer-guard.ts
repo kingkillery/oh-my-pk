@@ -13,7 +13,14 @@ CREATE TABLE IF NOT EXISTS writer_guard (
   guard_id TEXT NOT NULL,
   acquired_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS retired (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  nonce TEXT NOT NULL
+);
 `;
+
+/** Acquire attempts when every lock file found was retired underneath us. */
+const MAX_RETIRED_RETRIES = 5;
 
 export interface SessionWriterGuardHandle {
 	readonly sessionId: string;
@@ -105,11 +112,53 @@ class SqliteSessionWriterGuard implements SessionWriterGuardHandle {
 		record.holders -= 1;
 		if (record.holders > 0) return;
 		liveLockRecords.delete(record.dbPath);
+		retireLockFile(record);
+	}
+}
+
+/**
+ * Release the lock and delete its file so lock files don't pile up, one per
+ * session ever opened. A process may already have this file open and be waiting
+ * on it, so the file is first marked retired inside the held transaction: a
+ * waiter that then wins the lock on the unlinked file (POSIX) sees the marker
+ * and retries on a fresh file. Windows refuses to delete a file that is still
+ * open; the marked file then stays and the next acquirer reuses it.
+ */
+function retireLockFile(record: GuardLockRecord): void {
+	let retired = false;
+	try {
+		record.db.run("DELETE FROM writer_guard");
+		record.db.query("INSERT OR REPLACE INTO retired(singleton, nonce) VALUES (1, ?)").run(Bun.randomUUIDv7());
+		record.db.run("COMMIT");
+		retired = true;
+	} catch {
 		try {
 			record.db.run("ROLLBACK");
-		} finally {
-			record.db.close();
+		} catch {
+			// The transaction is already gone; closing releases the lock.
 		}
+	} finally {
+		record.db.close();
+	}
+	if (!retired) return;
+	try {
+		fs.rmSync(record.dbPath, { force: true });
+	} catch {
+		// Still open elsewhere (Windows); the retired marker lets it be reused.
+	}
+}
+
+/** The retired nonce in the lock file currently at `dbPath`, if any. */
+function retiredNonceAtPath(dbPath: string): string | undefined {
+	if (!fs.existsSync(dbPath)) return undefined;
+	let db: Database | undefined;
+	try {
+		db = new Database(dbPath, { readonly: true });
+		return db.query<{ nonce: string }, []>("SELECT nonce FROM retired WHERE singleton = 1").get()?.nonce;
+	} catch {
+		return undefined;
+	} finally {
+		db?.close();
 	}
 }
 
@@ -147,29 +196,48 @@ export namespace SessionWriterGuard {
 		}
 
 		fs.mkdirSync(lockRoot, { recursive: true, mode: 0o700 });
-		const db = new Database(dbPath, { create: true, strict: true });
-		try {
-			db.run(`PRAGMA busy_timeout = ${Math.max(0, Math.min(options.busyTimeoutMs ?? 0, 60_000))}`);
-			db.exec(LOCK_SCHEMA);
-			db.run("BEGIN IMMEDIATE");
-			db.run("DELETE FROM writer_guard");
-			db.query(
-				"INSERT INTO writer_guard(singleton, session_id, transcript_path, guard_id, acquired_at) VALUES (1, ?, ?, ?, ?)",
-			).run(options.sessionId, transcriptPath, guardId, Date.now());
-			const record: GuardLockRecord = { dbPath, db, holders: 1 };
-			liveLockRecords.set(dbPath, record);
-			return new SqliteSessionWriterGuard(record, options.sessionId, transcriptPath, guardId);
-		} catch (error) {
+		for (let attempt = 1; ; attempt++) {
+			const db = new Database(dbPath, { create: true, strict: true });
 			try {
-				db.close();
-			} catch {
-				// Preserve the lock acquisition error.
+				db.run(`PRAGMA busy_timeout = ${Math.max(0, Math.min(options.busyTimeoutMs ?? 0, 60_000))}`);
+				db.exec(LOCK_SCHEMA);
+				db.run("BEGIN IMMEDIATE");
+				const retiredNonce = db
+					.query<{ nonce: string }, []>("SELECT nonce FROM retired WHERE singleton = 1")
+					.get()?.nonce;
+				if (retiredNonce !== undefined) {
+					if (retiredNonceAtPath(dbPath) !== retiredNonce) {
+						// We won the lock on a file its releaser already deleted; the live
+						// lock file is whatever is at the path now. Try again there.
+						db.run("ROLLBACK");
+						db.close();
+						if (attempt >= MAX_RETIRED_RETRIES)
+							throw new SessionAlreadyOwnedError(options.sessionId, transcriptPath);
+						continue;
+					}
+					// Deleting it failed (still open elsewhere on Windows): it is still the live lock file.
+					db.run("DELETE FROM retired");
+				}
+				db.run("DELETE FROM writer_guard");
+				db.query(
+					"INSERT INTO writer_guard(singleton, session_id, transcript_path, guard_id, acquired_at) VALUES (1, ?, ?, ?, ?)",
+				).run(options.sessionId, transcriptPath, guardId, Date.now());
+				const record: GuardLockRecord = { dbPath, db, holders: 1 };
+				liveLockRecords.set(dbPath, record);
+				return new SqliteSessionWriterGuard(record, options.sessionId, transcriptPath, guardId);
+			} catch (error) {
+				if (error instanceof SessionAlreadyOwnedError) throw error;
+				try {
+					db.close();
+				} catch {
+					// Preserve the lock acquisition error.
+				}
+				const cause = toError(error);
+				if (cause.message.includes("locked") || cause.message.includes("busy")) {
+					throw new SessionAlreadyOwnedError(options.sessionId, transcriptPath, cause);
+				}
+				throw cause;
 			}
-			const cause = toError(error);
-			if (cause.message.includes("locked") || cause.message.includes("busy")) {
-				throw new SessionAlreadyOwnedError(options.sessionId, transcriptPath, cause);
-			}
-			throw cause;
 		}
 	}
 }

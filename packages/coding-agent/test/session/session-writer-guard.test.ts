@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -75,6 +76,38 @@ describe("SessionWriterGuard", () => {
 		const next = SessionWriterGuard.acquire(options);
 		guards.add(next);
 		expect(next.guardId).not.toBe(first.guardId);
+	});
+
+	test("removes its lock file when the last holder releases", async () => {
+		using temp = TempDir.createSync("@omp-writer-guard-cleanup-");
+		const lockRoot = temp.join("locks");
+		const options = { sessionId: "session-cleanup", transcriptPath: temp.join("session.jsonl"), lockRoot };
+		const guard = SessionWriterGuard.acquire(options);
+		expect((await fs.readdir(lockRoot)).filter(name => name.endsWith(".db"))).toHaveLength(1);
+		await guard.release();
+		expect(await fs.readdir(lockRoot)).toEqual([]);
+	});
+
+	test("marks a released lock retired for a waiter that already opened it, and stays exclusive", async () => {
+		using temp = TempDir.createSync("@omp-writer-guard-retired-");
+		const lockRoot = temp.join("locks");
+		const options = { sessionId: "session-retired", transcriptPath: temp.join("session.jsonl"), lockRoot };
+		const first = SessionWriterGuard.acquire(options);
+		const [lockFile] = await fs.readdir(lockRoot);
+		// A process that opened the lock file and is waiting on it while the holder releases.
+		const waiter = new Database(path.join(lockRoot, lockFile!));
+		try {
+			await first.release();
+			// POSIX unlinks the file under the waiter; Windows refuses while it is open.
+			// Either way the waiter's file is marked, so it must not trust a lock taken on it.
+			expect(waiter.query("SELECT COUNT(*) AS n FROM retired").get()).toEqual({ n: 1 });
+
+			const next = SessionWriterGuard.acquire(options);
+			guards.add(next);
+			expect(() => SessionWriterGuard.acquire(options)).toThrow(SessionAlreadyOwnedError);
+		} finally {
+			waiter.close();
+		}
 	});
 
 	test("requires lease expiry and OS lock release before crashed-owner recovery", async () => {
