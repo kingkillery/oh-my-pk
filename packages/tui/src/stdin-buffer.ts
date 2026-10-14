@@ -342,7 +342,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	readonly #partialHoldMaxMs: number;
 	readonly #pasteTimeoutMs: number;
 	readonly #pasteByteLimit: number;
-	#pasteMode: boolean = false;
+	#pasteMode: false | "bracketed" | "unbracketed" = false;
 	#pasteChunks: string[] = [];
 	#pasteOverlap: string = "";
 	#pasteBytes = 0;
@@ -371,6 +371,29 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			}
 		} else {
 			str = data;
+		}
+
+		// Some terminals omit bracketed-paste markers. Detect a plain-text burst
+		// before splitting it into keys: its CRs would otherwise submit/steer each
+		// line. Collect neighboring reads until idle so the editor sees one block.
+		const plainText = str.length > 0 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(str);
+		if (this.#pasteMode === "unbracketed") {
+			if (plainText) {
+				this.#consumeUnbracketedPasteChunk(str);
+				return;
+			}
+			this.#abortPaste();
+		}
+		if (
+			!this.#pasteMode &&
+			this.#buffer.length === 0 &&
+			plainText &&
+			(str.length > 1000 || isUnbracketedPasteChunk(str))
+		) {
+			this.#pendingKittyPrintableCodepoint = undefined;
+			this.#pasteMode = "unbracketed";
+			this.#consumeUnbracketedPasteChunk(str);
+			return;
 		}
 
 		if (this.#flushDeferral && this.#isFreshEscapeAfterDeferredFlush(str)) {
@@ -411,23 +434,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			this.#buffer = this.#buffer.slice(startIndex + BRACKETED_PASTE_START.length);
 			const firstChunk = this.#buffer;
 			this.#buffer = "";
-			this.#pasteMode = true;
+			this.#pasteMode = "bracketed";
 			this.#pasteChunks = [];
 			this.#pasteOverlap = "";
 			this.#pasteBytes = 0;
 			this.#consumePasteChunk(firstChunk);
-			return;
-		}
-
-		// Terminals without bracketed paste deliver a pasted block in one read. Split
-		// per character, every line break in it would arrive as its own Enter and
-		// submit (or steer) each line separately.
-		if (isUnbracketedPasteChunk(this.#buffer)) {
-			const pastedContent = this.#buffer;
-			this.#buffer = "";
-			this.#partialHoldStartMs = 0;
-			this.#pendingKittyPrintableCodepoint = undefined;
-			this.emit("paste", pastedContent);
 			return;
 		}
 
@@ -489,13 +500,23 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 	}
 
+	#consumeUnbracketedPasteChunk(chunk: string): void {
+		this.#pasteChunks.push(chunk);
+		this.#pasteBytes += chunk.length;
+		if (this.#pasteBytes > this.#pasteByteLimit) {
+			this.#abortPaste();
+			return;
+		}
+		this.#armPasteWatchdog(this.#timeoutMs);
+	}
+
 	/** Re-arm the paste-mode inactivity watchdog after each chunk. */
-	#armPasteWatchdog(): void {
+	#armPasteWatchdog(timeoutMs = this.#pasteTimeoutMs): void {
 		if (this.#pasteWatchdog) clearTimeout(this.#pasteWatchdog);
 		this.#pasteWatchdog = setTimeout(() => {
 			this.#pasteWatchdog = undefined;
 			this.#abortPaste();
-		}, this.#pasteTimeoutMs);
+		}, timeoutMs);
 	}
 
 	#clearPasteWatchdog(): void {
@@ -621,6 +642,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
 	flush(): string[] {
 		this.#clearFlushTimer();
+		if (this.#pasteMode === "unbracketed") this.#abortPaste();
 
 		if (this.#buffer.length === 0) {
 			return [];

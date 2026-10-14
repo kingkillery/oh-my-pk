@@ -1,6 +1,8 @@
 import { describe, expect, it, type Mock, vi } from "bun:test";
 import type { ImageContent } from "@pk-nerdsaver-ai/pi-ai";
+import { CustomEditor } from "@pk-nerdsaver-ai/pi-coding-agent/modes/components/custom-editor";
 import { InputController } from "@pk-nerdsaver-ai/pi-coding-agent/modes/controllers/input-controller";
+import { getEditorTheme, initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
 import manualContinuePrompt from "../src/prompts/system/manual-continue.md" with { type: "text" };
 
@@ -104,6 +106,7 @@ async function createContext() {
 	const handleBtwCopyKey = vi.fn(async () => true);
 	const canBranchBtw = vi.fn(() => false);
 	const canCopyBtw = vi.fn(() => false);
+	const handleBtwEscape = vi.fn(() => true);
 	const editor: FakeEditor = {
 		setText(text: string) {
 			editorText = text;
@@ -195,6 +198,7 @@ async function createContext() {
 		statusLine: { invalidate: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
 		hasActiveBtw: vi.fn(() => false),
+		handleBtwEscape,
 		handleBtwBranchKey,
 		canBranchBtw,
 		canCopyBtw,
@@ -228,6 +232,7 @@ async function createContext() {
 			toggleTodoVisibility,
 			handleBtwCopyKey,
 			canCopyBtw,
+			handleBtwEscape,
 			showError,
 		},
 	};
@@ -469,6 +474,69 @@ describe("InputController keybinding setup", () => {
 
 		expect(result).toBeUndefined();
 		expect(spies.handleBtwCopyKey).not.toHaveBeenCalled();
+	});
+
+	it("routes x to dismiss an active /btw panel", async () => {
+		const { InputController, ctx, spies } = await createContext();
+		(ctx.hasActiveBtw as unknown as { mockReturnValue(value: boolean): void }).mockReturnValue(true);
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		const result = dispatchInput(registeredInputListeners(spies.addInputListener), "x");
+		expect(result).toEqual({ consume: true });
+		expect(spies.handleBtwEscape).toHaveBeenCalledTimes(1);
+	});
+
+	it("lets x remain text without an active /btw panel, with a draft, or in another input", async () => {
+		const { InputController, ctx, editor, setFocused, spies } = await createContext();
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		const listeners = registeredInputListeners(spies.addInputListener);
+		expect(dispatchInput(listeners, "x")).toBeUndefined();
+		(ctx.hasActiveBtw as unknown as { mockReturnValue(value: boolean): void }).mockReturnValue(true);
+		editor.setText("existing draft");
+		expect(dispatchInput(listeners, "x")).toBeUndefined();
+		editor.setText("");
+		setFocused({ pasteText: vi.fn() });
+		expect(dispatchInput(listeners, "x")).toBeUndefined();
+		expect(spies.handleBtwEscape).not.toHaveBeenCalled();
+	});
+
+	it("routes encoded c and b keys to the ready /btw actions", async () => {
+		const { InputController, ctx, spies } = await createContext();
+		(ctx.canBranchBtw as unknown as { mockReturnValue(value: boolean): void }).mockReturnValue(true);
+		(ctx.canCopyBtw as unknown as { mockReturnValue(value: boolean): void }).mockReturnValue(true);
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		const listeners = registeredInputListeners(spies.addInputListener);
+		for (const sequence of ["\x1b[99u", "\x1b[99;129u", "\x1b[98u", "\x1b[98;129u"]) {
+			expect(dispatchInput(listeners, sequence)).toEqual({ consume: true });
+		}
+		expect(spies.handleBtwCopyKey).toHaveBeenCalledTimes(2);
+		expect(spies.handleBtwBranchKey).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps modified Enter as newline with legacy follow-up bindings on the real editor", async () => {
+		await initTheme();
+		const { InputController, ctx, setFocused, spies } = await createContext();
+		const editor = new CustomEditor(getEditorTheme());
+		(ctx.session as unknown as { isStreaming: boolean }).isStreaming = true;
+		ctx.editor = editor;
+		setFocused(editor);
+		ctx.keybindings.getKeys = action =>
+			action === "app.message.followUp" ? ["ctrl+enter", "alt+enter", "shift+enter", "ctrl+q"] : [];
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		for (const sequence of ["\x1b[13;5u", "\x1b[13;3u", "\x1b[13;2u"]) {
+			editor.setText("first line");
+			editor.handleInput(sequence);
+			expect(editor.getText()).toBe("first line\n");
+		}
+		await Promise.resolve();
+		expect(spies.prompt).not.toHaveBeenCalled();
+		editor.setText("follow up");
+		editor.handleInput("\x11"); // Ctrl+Q still sends a follow-up.
+		await Bun.sleep(0); // Drain the async slash/skill checks before the follow-up dispatch.
+		expect(spies.prompt).toHaveBeenCalledWith("follow up", { streamingBehavior: "followUp", images: undefined });
 	});
 
 	it("empty Enter aborts the active stream when queued messages are pending", async () => {

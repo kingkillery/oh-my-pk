@@ -159,6 +159,7 @@ export class InputController {
 	#focusedLeftTapListenerInstalled = false;
 	#btwBranchListenerInstalled = false;
 	#btwCopyListenerInstalled = false;
+	#btwDismissListenerInstalled = false;
 	// Tap counter for the double-← gesture; reset whenever a quiet gap
 	// (>= LEFT_DOUBLE_TAP_MAX_GAP_MS) starts a fresh sequence. See
 	// #detectLeftDoubleTap.
@@ -258,6 +259,15 @@ export class InputController {
 				if (this.ctx.ui.getFocused() !== this.ctx.editor) return undefined;
 				void this.ctx.handleBtwCopyKey();
 				return { consume: true };
+			});
+		}
+		if (!this.#btwDismissListenerInstalled) {
+			this.#btwDismissListenerInstalled = true;
+			this.ctx.ui.addInputListener(data => {
+				if (!matchesKey(data, "x") || !this.ctx.hasActiveBtw()) return undefined;
+				if (this.ctx.editor.getText().trim()) return undefined;
+				if (this.ctx.ui.getFocused() !== this.ctx.editor) return undefined;
+				return this.ctx.handleBtwEscape() ? { consume: true } : undefined;
 			});
 		}
 		this.ctx.editor.onClearDraft = () => {
@@ -494,8 +504,10 @@ export class InputController {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showSessionSelector());
 		}
 		for (const key of this.ctx.keybindings.getKeys("app.message.followUp")) {
-			// Ctrl+Enter always inserts a newline, even if an older settings file lists it here.
-			if (key === "ctrl+enter" || key === "ctrl+return") continue;
+			// Modified Enter inserts a newline even if an older settings file lists it here.
+			if (["ctrl+enter", "ctrl+return", "alt+enter", "alt+return", "shift+enter", "shift+return"].includes(key)) {
+				continue;
+			}
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.handleFollowUp());
 		}
 		for (const key of this.ctx.keybindings.getKeys("app.stt.toggle")) {
@@ -1267,12 +1279,12 @@ export class InputController {
 
 		// Skill commands invoke through the custom-message path regardless of
 		// which keybinding submitted them. Enter routes them as `steer`;
-		// Ctrl+Enter (this handler) routes them as `followUp`.
+		// Ctrl+Q (this handler) routes them as `followUp`.
 		if (await this.#invokeSkillCommand(text, "followUp")) {
 			return;
 		}
 
-		// Codex-style `$<skill-name> [args]` explicit skill invocation (Ctrl+Enter ⇒ followUp).
+		// Codex-style `$<skill-name> [args]` explicit skill invocation (Ctrl+Q ⇒ followUp).
 		if (await this.#invokeDollarSkillCommand(text, "followUp")) {
 			return;
 		}

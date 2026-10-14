@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { Editor } from "@pk-nerdsaver-ai/pi-tui/components/editor";
 import { extractPrintableText } from "@pk-nerdsaver-ai/pi-tui/keys";
 import { ProcessTerminal } from "@pk-nerdsaver-ai/pi-tui/terminal";
 import {
@@ -8,6 +9,7 @@ import {
 	setCellDimensions,
 } from "@pk-nerdsaver-ai/pi-tui/terminal-capabilities";
 import { setTerminalHeadless } from "@pk-nerdsaver-ai/pi-utils";
+import { defaultEditorTheme } from "./test-themes";
 
 const stdinIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
@@ -58,7 +60,7 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		restoreEnv("WSL_DISTRO_NAME", originalWslDistroName);
 	});
 
-	function setupTerminal() {
+	function setupTerminal(onInput?: (data: string) => void) {
 		const writes: string[] = [];
 		const received: string[] = [];
 		vi.spyOn(process, "kill").mockReturnValue(true);
@@ -72,7 +74,10 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 
 		const terminal = new ProcessTerminal();
 		terminal.start(
-			data => received.push(data),
+			data => {
+				received.push(data);
+				onInput?.(data);
+			},
 			() => {},
 		);
 
@@ -81,6 +86,60 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 
 		return { terminal, writes, received, queryCount, sentinelCount };
 	}
+
+	it("keeps an unbracketed multiline paste collapsed until an explicit submit", () => {
+		vi.useFakeTimers();
+		const editor = new Editor(defaultEditorTheme);
+		const submitted: string[] = [];
+		editor.onSubmit = text => {
+			submitted.push(text);
+		};
+		const { terminal } = setupTerminal(data => editor.handleInput(data));
+		const text = Array.from({ length: 12 }, (_, i) => `pasted line ${i + 1}`).join("\r\n");
+		try {
+			process.stdin.emit("data", `${text}\r\n`);
+			vi.advanceTimersByTime(100);
+			expect(submitted).toEqual([]);
+			expect(editor.getText()).toMatch(/^\[Paste #1, \+12 lines\]$/);
+			expect(editor.getExpandedText()).toBe(text.replace(/\r\n/g, "\n"));
+			process.stdin.emit("data", "\r");
+			expect(submitted).toEqual([text.replace(/\r\n/g, "\n")]);
+		} finally {
+			terminal.stop();
+		}
+	});
+
+	it("offers the large-paste hook once for an unbracketed block split across reads", () => {
+		vi.useFakeTimers();
+		const editor = new Editor(defaultEditorTheme);
+		const submitted: string[] = [];
+		const pastes: string[] = [];
+		editor.onSubmit = text => {
+			submitted.push(text);
+		};
+		editor.onLargePaste = text => {
+			pastes.push(text);
+			return false;
+		};
+		const { terminal } = setupTerminal(data => editor.handleInput(data));
+		const chunks = [
+			"x".repeat(1100),
+			`\r\n${Array.from({ length: 60 }, (_, i) => `pasted line ${i + 1}`).join("\r\n")}`,
+			`\r\n${Array.from({ length: 60 }, (_, i) => `pasted line ${i + 61}`).join("\r\n")}\r\n`,
+		];
+		try {
+			for (const chunk of chunks) {
+				process.stdin.emit("data", chunk);
+				vi.advanceTimersByTime(5);
+			}
+			vi.advanceTimersByTime(100);
+			expect(submitted).toEqual([]);
+			expect(pastes).toEqual([chunks.join("").replace(/\r\n/g, "\n").trimEnd()]);
+			expect(editor.getText()).toBe("[Paste #1, +121 lines]");
+		} finally {
+			terminal.stop();
+		}
+	});
 
 	it("swallows the DA1 sentinel even when the OSC 11 reply arrives first", () => {
 		const { terminal, writes, received } = setupTerminal();

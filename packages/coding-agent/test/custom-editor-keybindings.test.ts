@@ -7,6 +7,30 @@ describe("CustomEditor keybindings", () => {
 		await initTheme();
 	});
 
+	it("inserts a newline for Ctrl, Alt, and Shift Enter and submits only with plain Enter", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const submitted: string[] = [];
+		editor.onSubmit = text => {
+			submitted.push(text);
+		};
+		for (const sequence of [
+			"\x1b[13;5u", // Ctrl+Enter
+			"\x1b[13;3u", // Alt+Enter
+			"\x1b[13;2u", // Shift+Enter
+			"\x1b[27;5;13~", // xterm modifyOtherKeys Ctrl+Enter
+			"\x1b[27;3;13~", // xterm modifyOtherKeys Alt+Enter
+			"\x1b[27;2;13~", // xterm modifyOtherKeys Shift+Enter
+			"\x1b\r", // Legacy Alt+Enter
+		]) {
+			editor.setText("first line");
+			editor.handleInput(sequence);
+			expect(editor.getText()).toBe("first line\n");
+		}
+		expect(submitted).toEqual([]);
+		editor.handleInput("\r");
+		expect(submitted).toEqual(["first line"]);
+	});
+
 	it("routes the configured retry chord through handleInput", () => {
 		const editor = new CustomEditor(getEditorTheme());
 		const onRetry = vi.fn();
