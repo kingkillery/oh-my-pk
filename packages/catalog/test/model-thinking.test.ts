@@ -303,6 +303,27 @@ describe("model thinking derivation", () => {
 		expect(() => requireSupportedEffort(model, Effort.Medium)).toThrow(/not supported/);
 	});
 
+	it("starts tiered Gemini 3 Flash SKUs at LOW because they reject thinkingLevel MINIMAL", () => {
+		// Live Cloud Code Assist answers MINIMAL on `*-flash-tiered` with 400
+		// INVALID_ARGUMENT ("Thinking level MINIMAL is not supported"); LOW/MEDIUM/HIGH work.
+		const tiered = createModel({
+			id: "gemini-3.8-flash-tiered",
+			api: "google-gemini-cli",
+			provider: "google-antigravity",
+		});
+		expect(getSupportedEfforts(tiered)).toEqual([Effort.Low, Effort.Medium, Effort.High]);
+		const clamped = clampThinkingLevelForModel(tiered, Effort.Minimal);
+		expect(clamped).toBe(Effort.Low);
+		expect(mapEffortToGoogleThinkingLevel(clamped!)).toBe("LOW");
+
+		const untiered = createModel({
+			id: "gemini-3.8-flash",
+			api: "google-gemini-cli",
+			provider: "google-antigravity",
+		});
+		expect(getSupportedEfforts(untiered)).toContain(Effort.Minimal);
+	});
+
 	it("bakes requiresEffort for Gemini 3.x on any provider and backfills explicit metadata", () => {
 		// Derivation: aggregator-hosted Gemini 3.5 gets the flag, 2.5 does not.
 		const openRouterFlash = createModel({

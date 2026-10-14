@@ -139,6 +139,29 @@ describe("google-gemini-cli effort-tier variant routing", () => {
 		expect(low.body.request?.generationConfig?.thinkingConfig?.thinkingBudget).toBe(1000);
 	});
 
+	it("suppresses level-mode thinking at the model's lowest accepted level, not MINIMAL", async () => {
+		// `*-flash-tiered` answers thinkingLevel MINIMAL with 400 INVALID_ARGUMENT.
+		const tiered = buildModel({
+			id: "gemini-3.8-flash-tiered",
+			name: "Gemini 3.8 Flash (tiered)",
+			api: "google-gemini-cli",
+			provider: "google-antigravity",
+			baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+			reasoning: true,
+			thinking: { mode: "google-level", efforts: [Effort.Low, Effort.Medium, Effort.High], suppressWhenOff: true },
+			input: ["text", "image"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1_048_576,
+			maxTokens: 65_536,
+		} satisfies ModelSpec<"google-gemini-cli">);
+
+		const off = await captureRequest(tiered, undefined);
+		expect(off.body.request?.generationConfig?.thinkingConfig).toEqual({
+			includeThoughts: false,
+			thinkingLevel: "LOW",
+		});
+	});
+
 	it("suppresses thinking with a zero budget on the wire when off and suppressWhenOff is set", async () => {
 		const off = await captureRequest(collapsedFlashModel(), undefined);
 		expect(off.body.model).toBe("gemini-3.5-flash-extra-low");

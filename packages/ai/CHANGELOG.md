@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Turning thinking off on a Gemini 3 level-mode model now sends the lowest level that model accepts instead of always `MINIMAL`, which `*-flash-tiered` models reject with HTTP 400.
+
 ## [16.4.30] - 2026-10-13
 
 ### Fixed

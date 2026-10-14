@@ -1,5 +1,5 @@
 import { scheduler } from "node:timers/promises";
-import type { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
+import { Effort } from "@pk-nerdsaver-ai/pi-catalog/effort";
 import { isVertexExpressOpenAIUrl, isVertexRawPredictUrl } from "@pk-nerdsaver-ai/pi-catalog/hosts";
 import {
 	mapEffortToAnthropicAdaptiveEffort,
@@ -1111,7 +1111,11 @@ function mapOptionsForApi<TApi extends Api>(
 			if (model.reasoning && model.thinking?.suppressWhenOff) {
 				// CCA re-applies the per-id baked server default when the config
 				// is omitted; suppression must be explicit on the wire.
-				thinking.suppress = model.thinking.mode === "google-level" ? { level: "MINIMAL" } : { budget: 0 };
+				// The lowest level the model accepts: `*-flash-tiered` rejects MINIMAL.
+				thinking.suppress =
+					model.thinking.mode === "google-level"
+						? { level: mapEffortToGoogleThinkingLevel(minimumSupportedEffort(model) ?? Effort.Minimal) }
+						: { budget: 0 };
 			}
 			return castApi<"google-gemini-cli">({
 				...base,

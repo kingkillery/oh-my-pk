@@ -57,6 +57,8 @@ const DEFAULT_REASONING_EFFORTS_WITH_XHIGH: readonly Effort[] = [
 ];
 const GEMINI_3_PRO_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High];
 const GEMINI_3_FLASH_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
+// `*-flash-tiered` SKUs reject `thinkingLevel: MINIMAL` with 400 INVALID_ARGUMENT.
+const GEMINI_3_TIERED_FLASH_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High];
 const GPT_5_2_PLUS_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
 const GPT_5_1_CODEX_MINI_EFFORTS: readonly Effort[] = [Effort.Medium, Effort.High];
 const LOW_MEDIUM_HIGH_REASONING_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High];
@@ -475,7 +477,7 @@ function inferSupportedEfforts<TApi extends Api>(
 		case "openai":
 			return inferOpenAISupportedEfforts(parsedModel);
 		case "gemini":
-			return inferGeminiSupportedEfforts(parsedModel);
+			return inferGeminiSupportedEfforts(parsedModel, spec.id);
 		case "anthropic":
 			return inferAnthropicSupportedEfforts(parsedModel, spec, compat);
 		case "unknown":
@@ -493,11 +495,12 @@ function inferOpenAISupportedEfforts(model: OpenAIModel): readonly Effort[] {
 	return DEFAULT_REASONING_EFFORTS;
 }
 
-function inferGeminiSupportedEfforts(model: GeminiModel): readonly Effort[] {
+function inferGeminiSupportedEfforts(model: GeminiModel, modelId: string): readonly Effort[] {
 	if (!semverGte(model.version, "3.0")) {
 		return DEFAULT_REASONING_EFFORTS;
 	}
-	return model.kind === "pro" ? GEMINI_3_PRO_EFFORTS : GEMINI_3_FLASH_EFFORTS;
+	if (model.kind === "pro") return GEMINI_3_PRO_EFFORTS;
+	return bareModelId(modelId).endsWith("-tiered") ? GEMINI_3_TIERED_FLASH_EFFORTS : GEMINI_3_FLASH_EFFORTS;
 }
 
 const OPENAI_O_SERIES_RE = /^o[134](?:$|[-:.])/i;
