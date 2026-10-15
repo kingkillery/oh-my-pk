@@ -507,7 +507,7 @@ describe("llama.cpp runtime selection", () => {
 		).toThrow(/Q2_0/);
 	});
 
-	test("uses the verified CUDA release only on its validated accelerator", () => {
+	test("uses pinned CUDA releases on their configured accelerators", () => {
 		const profile = selectColabRuntimeProfile(bonsai, {
 			quantization: "PQ2_0",
 			primaryFile: "Ternary-Bonsai-2-27B-PQ2_0.gguf",
@@ -516,7 +516,11 @@ describe("llama.cpp runtime selection", () => {
 			cuda: "12.4",
 			sha256: "f542fdcc818562359e947db65e0b11c4658dd5ca3bd240490448252e817d8e7a",
 		});
-		expect(selectColabPrebuiltRuntime(profile, "A100")).toBeUndefined();
+		expect(selectColabPrebuiltRuntime(profile, "A100")).toEqual(selectColabPrebuiltRuntime(profile, "T4"));
+		expect(selectColabPrebuiltRuntime(profile, "G4")).toMatchObject({
+			cuda: "12.8",
+			sha256: "8aec67eb023b251712c7e6490f367b5671bf587eced1436a9b85f4a90c3b7d3d",
+		});
 		const upstream = selectColabRuntimeProfile(qwen, { quantization: "Q4_K_M", primaryFile: "model-Q4_K_M.gguf" });
 		expect(selectColabPrebuiltRuntime(upstream, "T4")).toMatchObject({
 			archive: "llama-b11064-bin-ubuntu-cuda-12.8-x64.tar.gz",

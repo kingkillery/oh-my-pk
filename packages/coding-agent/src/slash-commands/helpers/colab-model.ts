@@ -377,6 +377,8 @@ const PRISM_RUNTIME: ColabRuntimeProfile = {
 	prebuilt: {
 		T4: prismReleaseArchive("12.4", "f542fdcc818562359e947db65e0b11c4658dd5ca3bd240490448252e817d8e7a"),
 		L4: prismReleaseArchive("12.4", "f542fdcc818562359e947db65e0b11c4658dd5ca3bd240490448252e817d8e7a"),
+		A100: prismReleaseArchive("12.4", "f542fdcc818562359e947db65e0b11c4658dd5ca3bd240490448252e817d8e7a"),
+		G4: prismReleaseArchive("12.8", "8aec67eb023b251712c7e6490f367b5671bf587eced1436a9b85f4a90c3b7d3d"),
 	},
 	requiredQuantizations: ["PQ2_0", "PTQ1_0"],
 	reasoning: true,
@@ -487,6 +489,7 @@ interface HttpMetadata {
 export type ColabReadinessMode = "tools" | "chat";
 
 interface ColabModelLaunchOptions {
+	serving?: ColabServingOptions;
 	accelerator?: ColabAccelerator;
 	fetch?: typeof globalThis.fetch;
 	sessionName?: string;
@@ -1431,7 +1434,37 @@ if __name__ == "__main__":
     main()
 `;
 
+export interface ColabServingOptions {
+	/** Slots share the server, while contextWindow remains the per-request limit. */
+	parallelSlots?: 1 | 8 | 16 | 32;
+	kvCacheType?: "f16" | "q8_0";
+	physicalMicrobatch?: 512 | 1024 | 2048;
+	batchSize?: 512 | 1024 | 2048;
+	disableHostPromptCache?: boolean;
+}
+
+export function resolveColabServingOptions(input: ColabServingOptions = {}): ColabServingOptions {
+	if (
+		Object.keys(input).some(
+			key =>
+				!["parallelSlots", "kvCacheType", "physicalMicrobatch", "batchSize", "disableHostPromptCache"].includes(
+					key,
+				),
+		) ||
+		(input.parallelSlots !== undefined && ![1, 8, 16, 32].includes(input.parallelSlots)) ||
+		(input.kvCacheType !== undefined && !["f16", "q8_0"].includes(input.kvCacheType)) ||
+		(input.physicalMicrobatch !== undefined && ![512, 1024, 2048].includes(input.physicalMicrobatch)) ||
+		(input.batchSize !== undefined && ![512, 1024, 2048].includes(input.batchSize)) ||
+		(input.disableHostPromptCache !== undefined && typeof input.disableHostPromptCache !== "boolean") ||
+		(input.physicalMicrobatch ?? 512) > (input.batchSize ?? 2048)
+	) {
+		throw new Error("Invalid Colab serving settings.");
+	}
+	return { ...input, parallelSlots: input.parallelSlots ?? 1 };
+}
+
 export function buildRemoteSetupScript(config: {
+	serving?: ColabServingOptions;
 	accelerator: ColabAccelerator;
 	artifact: GgufArtifact;
 	contextWindow: number;
@@ -1446,6 +1479,15 @@ export function buildRemoteSetupScript(config: {
 	/** Served model alias; defaults to the GGUF file stem. */
 	alias?: string;
 }): string {
+	const serving = resolveColabServingOptions(config.serving);
+	if (config.accelerator === "CPU" && serving.parallelSlots !== 1)
+		throw new Error("Parallel GPU serving requires a GPU.");
+	if (
+		!Number.isSafeInteger(config.contextWindow) ||
+		config.contextWindow <= 0 ||
+		!Number.isSafeInteger(config.contextWindow * (serving.parallelSlots ?? 1))
+	)
+		throw new Error("Invalid per-request context window.");
 	const readinessMode = resolveColabReadinessMode(config.readinessMode);
 	const alias = resolveColabAlias(config.alias);
 	const runtime = config.runtime ?? selectColabRuntimeProfile(config.reference, config.artifact);
@@ -1459,6 +1501,7 @@ export function buildRemoteSetupScript(config: {
 	const modelProfile = config.modelProfile ?? getColabModelProfile(config.reference, config.artifact);
 	const persistentCacheBucket = Bun.env.OMPK_GCS_MODEL_BUCKET?.trim() || Bun.env.GCS_BUCKET?.trim();
 	const payload = {
+		serving,
 		readinessMode,
 		modelCacheDirectory: config.modelCacheDirectory ?? null,
 		adapters,
@@ -2430,13 +2473,22 @@ def start_server(target, model_path, primary_name, base_url):
         server_args = [
             str(target.server), "--model", str(model_path), "--alias", alias,
             "--host", "127.0.0.1", "--port", str(CONFIG["remotePort"]),
-            "--ctx-size", str(CONFIG["contextWindow"]), "--n-gpu-layers", GPU_LAYERS,
-            "--flash-attn", "on", "--jinja", "--parallel", "1", "--metrics",
+            "--ctx-size", str(CONFIG["contextWindow"] * CONFIG["serving"]["parallelSlots"]), "--n-gpu-layers", GPU_LAYERS,
+            "--flash-attn", "on", "--jinja", "--parallel", str(CONFIG["serving"]["parallelSlots"]), "--metrics",
         ]
-        if MODEL_PROFILE.get("kvCacheType"):
-            server_args.extend(["--cache-type-k", MODEL_PROFILE["kvCacheType"], "--cache-type-v", MODEL_PROFILE["kvCacheType"]])
-        if MODEL_PROFILE.get("physicalMicrobatch"):
-            server_args.extend(["--ubatch-size", str(MODEL_PROFILE["physicalMicrobatch"])])
+        serving = CONFIG["serving"]
+        if serving["parallelSlots"] > 1:
+            server_args.append("--cont-batching")
+        if serving.get("disableHostPromptCache"):
+            server_args.extend(["--cache-ram", "0"])
+        kv_type = serving.get("kvCacheType") or MODEL_PROFILE.get("kvCacheType")
+        if kv_type:
+            server_args.extend(["--cache-type-k", kv_type, "--cache-type-v", kv_type])
+        microbatch = serving.get("physicalMicrobatch") or MODEL_PROFILE.get("physicalMicrobatch")
+        if microbatch:
+            server_args.extend(["--ubatch-size", str(microbatch)])
+        if serving.get("batchSize"):
+            server_args.extend(["--batch-size", str(serving["batchSize"])])
         if MODEL_PROFILE.get("cachePrompt"):
             server_args.append("--cache-prompt")
         server_args.extend(lora_args)
@@ -2468,7 +2520,10 @@ def record_runtime_manifest(target, primary_name):
     if begin in previous and end in previous:
         previous = previous.split(begin, 1)[0] + previous.split(end, 1)[1]
     archive = str(prebuilt_paths()[1]) if PREBUILT and target.source == "prebuilt" else "source build"
-    flags = f"--ctx-size {CONFIG['contextWindow']} --n-gpu-layers {GPU_LAYERS} --flash-attn on --jinja --parallel 1 --metrics"
+    import shlex
+    pid = int(PID_FILE.read_text())
+    argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode().split(chr(0))
+    flags = " ".join(shlex.quote(arg) for arg in argv[1:] if arg)
     lines = [begin,
         f"runtime: {RUNTIME['id']}",
         f"pinned_commit: {RUNTIME.get('pinnedCommit') or target.commit or 'unknown'}",
@@ -2887,6 +2942,7 @@ export async function launchColabModel(
 	const setup = await runCommand(["exec", "--session", sessionName, "--timeout", "3600"], {
 		cliCommand: options.cliCommand,
 		input: buildRemoteSetupScript({
+			serving: options.serving,
 			readinessMode,
 			modelCacheDirectory,
 			adapters,
