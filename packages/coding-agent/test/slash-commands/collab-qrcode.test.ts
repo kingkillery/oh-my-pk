@@ -1,4 +1,7 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CollabHost } from "@pk-nerdsaver-ai/pi-coding-agent/collab/host";
 import * as collabLinkFile from "@pk-nerdsaver-ai/pi-coding-agent/collab/link-file";
 import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
@@ -17,8 +20,21 @@ beforeAll(async () => {
 	await initTheme(false);
 });
 
+let configDir = "";
+let previousConfigDir: string | undefined;
+
+beforeEach(() => {
+	// `/collab` writes the Pi Speak collab link file; keep it out of the checkout and the real config dir.
+	configDir = mkdtempSync(join(tmpdir(), "collab-qrcode-"));
+	previousConfigDir = process.env.PI_SPEAK_CONFIG_DIR;
+	process.env.PI_SPEAK_CONFIG_DIR = configDir;
+});
+
 afterEach(() => {
 	vi.restoreAllMocks();
+	if (previousConfigDir === undefined) delete process.env.PI_SPEAK_CONFIG_DIR;
+	else process.env.PI_SPEAK_CONFIG_DIR = previousConfigDir;
+	rmSync(configDir, { recursive: true, force: true });
 });
 
 afterAll(() => {
