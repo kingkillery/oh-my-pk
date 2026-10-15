@@ -5,6 +5,7 @@
 ### Fixed
 
 - Session writer lock files in `session-locks/` are deleted when their session releases, instead of accumulating one file per session ever opened. A waiter that already opened a deleted lock file sees it marked retired and retries on the live file, so cross-process exclusion is unchanged.
+- Mnemopi no longer loses working memory left by sessions that were killed instead of closed. Stale working memory is consolidated into episodic summaries when a bank opens and before each write; previously the next write trimmed anything past its TTL without consolidating it.
 - Add `x` to cancel or dismiss `/btw`, alongside `c` to copy and `b` to branch. Preserve modified Enter for newlines when older settings assign it to follow-up submission.
 
 ## [16.4.30] - 2026-10-13

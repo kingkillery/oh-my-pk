@@ -289,6 +289,7 @@ export class MnemopiSessionState {
 	}
 
 	rememberInScope(memory: MnemopiRememberInput, options: MnemopiRememberOptions = {}): string | undefined {
+		sleepStaleWorkingMemory(this.scoped.retain);
 		try {
 			return this.scoped.retain.memory.remember(memory, options);
 		} catch (error) {
@@ -466,6 +467,7 @@ function createScopedResources(config: MnemopiBackendConfig): MnemopiScopedResou
 		if (existing) return existing;
 		const scoped = { bank, memory: createMemory(config, bank) };
 		memories.set(bank, scoped);
+		sleepStaleWorkingMemory(scoped);
 		return scoped;
 	};
 	const retain = open(banks.retainBank);
@@ -477,6 +479,22 @@ function createScopedResources(config: MnemopiBackendConfig): MnemopiScopedResou
 		global,
 		owned: [...memories.values()].map(entry => entry.memory),
 	};
+}
+
+/**
+ * Promote working memory older than half its TTL into episodic summaries.
+ * Called when a bank opens and before every write: killed sessions never run
+ * their dispose-time consolidation, and each write trims unconsolidated working
+ * memory past its TTL, so without this their memories are deleted rather than
+ * summarised. Deterministic (no LLM); results go to the log, not the prompt.
+ */
+function sleepStaleWorkingMemory({ bank, memory }: MnemopiScopedMemory): void {
+	try {
+		const { items_consolidated: items } = memory.sleepAllSessions(false);
+		if (items) logger.debug("Mnemopi: consolidated stale working memory", { bank, items });
+	} catch (error) {
+		logger.warn("Mnemopi: stale working memory consolidation failed", { bank, error: String(error) });
+	}
 }
 
 function resolveScopedBanks(config: MnemopiBackendConfig): {
