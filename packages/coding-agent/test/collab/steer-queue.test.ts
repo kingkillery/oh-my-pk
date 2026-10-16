@@ -16,6 +16,7 @@ import {
 } from "@pk-nerdsaver-ai/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@pk-nerdsaver-ai/pi-coding-agent/collab/relay-client";
 import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
+import { isolatePiSpeakConfigDir } from "../helpers/pi-speak-config-dir";
 
 interface RelayData {
 	role: "host" | "guest";
@@ -181,6 +182,8 @@ describe("collab mid-turn guest prompts", () => {
 	it("registers the steer as a queued message and reports it to guests via state", async () => {
 		const relay = startTestRelay();
 		cleanups.push(relay.stop);
+		// Pushed before host.stop so it restores after the host clears its link file.
+		cleanups.push(isolatePiSpeakConfigDir().restore);
 		const harness = makeStreamingHostContext();
 		const host = new CollabHost(harness.ctx);
 		await host.start(relay.url);

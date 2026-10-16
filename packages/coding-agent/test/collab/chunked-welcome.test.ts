@@ -24,6 +24,7 @@ import {
 import { CollabSocket } from "@pk-nerdsaver-ai/pi-coding-agent/collab/relay-client";
 import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
 import type { SessionEntry } from "@pk-nerdsaver-ai/pi-coding-agent/session/session-entries";
+import { isolatePiSpeakConfigDir, type PiSpeakConfigDir } from "../helpers/pi-speak-config-dir";
 
 // ── In-memory transport (verbatim copy of the relay used in read-only.test.ts) ──
 
@@ -228,8 +229,10 @@ function makeFailingGuestContext(failure: Error): InteractiveModeContext {
 const RealWebSocket = globalThis.WebSocket;
 const snapshot = makeLargeSnapshot();
 let host: CollabHost;
+let piSpeak: PiSpeakConfigDir;
 
 beforeAll(async () => {
+	piSpeak = isolatePiSpeakConfigDir();
 	globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
 	activeRelay = new InMemoryRelay();
 	host = new CollabHost(makeHostContext(snapshot));
@@ -240,6 +243,7 @@ afterAll(async () => {
 	globalThis.WebSocket = RealWebSocket;
 	activeRelay = null;
 	await host.stop("test done");
+	piSpeak.restore();
 });
 
 const guestCleanups: (() => void)[] = [];

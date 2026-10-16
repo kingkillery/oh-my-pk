@@ -1,9 +1,5 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { CollabHost } from "@pk-nerdsaver-ai/pi-coding-agent/collab/host";
-import * as collabLinkFile from "@pk-nerdsaver-ai/pi-coding-agent/collab/link-file";
 import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import { initTheme } from "@pk-nerdsaver-ai/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
@@ -13,32 +9,24 @@ import {
 } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/builtin-registry";
 import { CollabQrCodeComponent } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/helpers/collab-qrcode";
 import { Spacer } from "@pk-nerdsaver-ai/pi-tui";
+import { isolatePiSpeakConfigDir, type PiSpeakConfigDir } from "../helpers/pi-speak-config-dir";
+
+let piSpeak: PiSpeakConfigDir;
 
 beforeAll(async () => {
+	piSpeak = isolatePiSpeakConfigDir();
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	await initTheme(false);
 });
 
-let configDir = "";
-let previousConfigDir: string | undefined;
-
-beforeEach(() => {
-	// `/collab` writes the Pi Speak collab link file; keep it out of the checkout and the real config dir.
-	configDir = mkdtempSync(join(tmpdir(), "collab-qrcode-"));
-	previousConfigDir = process.env.PI_SPEAK_CONFIG_DIR;
-	process.env.PI_SPEAK_CONFIG_DIR = configDir;
-});
-
 afterEach(() => {
 	vi.restoreAllMocks();
-	if (previousConfigDir === undefined) delete process.env.PI_SPEAK_CONFIG_DIR;
-	else process.env.PI_SPEAK_CONFIG_DIR = previousConfigDir;
-	rmSync(configDir, { recursive: true, force: true });
 });
 
 afterAll(() => {
 	resetSettingsForTest();
+	piSpeak.restore();
 });
 
 function fakeHost(options?: {
@@ -98,7 +86,6 @@ function mockStartedHostLinks() {
 describe("/collab slash command QR code rendering", () => {
 	it("starts hosting and prints a one-shot full-control QR", async () => {
 		const startSpy = mockStartedHostLinks();
-		const linkFileSpy = vi.spyOn(collabLinkFile, "writeCollabLinkFile").mockImplementation(() => {});
 		const harness = createRuntimeHarness();
 
 		const handled = await executeBuiltinSlashCommand("/collab", harness.runtime);
@@ -108,7 +95,8 @@ describe("/collab slash command QR code rendering", () => {
 		expect(startSpy).toHaveBeenCalledWith("wss://relay.example.com", "");
 		expect(harness.ctx.collabHost).toBeInstanceOf(CollabHost);
 		// Pi Speak and other local bridge consumers read the published links.
-		expect(linkFileSpy).toHaveBeenCalledWith({
+		expect(await Bun.file(piSpeak.dir.join("collab.json")).json()).toMatchObject({
+			active: true,
 			webLink: "https://oh-my-pk.pkking.computer/collab/#started-full",
 			webViewLink: "https://oh-my-pk.pkking.computer/collab/#started-view",
 			link: "relay.example.com/r/full-control",

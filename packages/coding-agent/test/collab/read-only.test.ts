@@ -20,6 +20,7 @@ import {
 } from "@pk-nerdsaver-ai/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@pk-nerdsaver-ai/pi-coding-agent/collab/relay-client";
 import type { InteractiveModeContext } from "@pk-nerdsaver-ai/pi-coding-agent/modes/types";
+import { isolatePiSpeakConfigDir, type PiSpeakConfigDir } from "../helpers/pi-speak-config-dir";
 
 // ── In-memory transport ────────────────────────────────────────────────────
 // FakeWebSocket + InMemoryRelay replace the real Bun.serve relay and loopback
@@ -254,8 +255,10 @@ const RealWebSocket = globalThis.WebSocket;
 const guestCleanups: (() => void)[] = [];
 let harness: HostHarness;
 let host: CollabHost;
+let piSpeak: PiSpeakConfigDir;
 
 beforeAll(async () => {
+	piSpeak = isolatePiSpeakConfigDir();
 	globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
 	activeRelay = new InMemoryRelay();
 	harness = makeHostContext();
@@ -276,6 +279,7 @@ afterAll(async () => {
 	globalThis.WebSocket = RealWebSocket;
 	activeRelay = null;
 	await host.stop("test done");
+	piSpeak.restore();
 });
 
 describe("collab read-only links", () => {
