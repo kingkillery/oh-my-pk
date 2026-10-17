@@ -1,0 +1,18 @@
+{
+  "name": "@pk-nerdsaver-ai/ompk-delegations",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Completion-aware Pi delegation, central broker, durable work ledger and OMPK worker",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "bun test index.test.ts ledger.test.ts worker.test.ts",
+    "broker": "bun broker.ts",
+    "worker": "bun worker.ts once",
+    "worker:watch": "bun worker.ts watch"
+  }
+}
