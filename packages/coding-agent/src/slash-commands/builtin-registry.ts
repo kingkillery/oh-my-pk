@@ -45,6 +45,7 @@ import { vocalizer } from "../tts/vocalizer";
 import { urlHyperlinkAlways } from "../tui";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
 import { handleGraphtreeCommand, handleGraphtreeCommandTui } from "./builtin/graphtree";
+import { handleSessionMemoryCommand, handleSessionMemoryCommandTui } from "./builtin/session-memory";
 import { handleWikigraphCommand, handleWikigraphCommandTui } from "./builtin/wikigraph";
 import { handleColabModelSlashCommand } from "./helpers/colab-model";
 import { handleColabModelCacheSlashCommand } from "./helpers/colab-model-cache";
@@ -627,6 +628,21 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		],
 		handle: (command, runtime) => handleWikigraphCommand(command.args, runtime),
 		handleTui: (command, runtime) => handleWikigraphCommandTui(command.args, runtime),
+	},
+	{
+		name: "session-memory",
+		description: "Search session history and expand summaries to exact evidence",
+		allowArgs: true,
+		subcommands: [
+			{ name: "build", description: "Refresh this repository's lossless archive and search index" },
+			{ name: "status", description: "Show archive coverage" },
+			{ name: "wake", description: "List recent extractive summaries" },
+			{ name: "search", description: "Search saved evidence by words" },
+			{ name: "expand", description: "Expand a session, segment or record ID" },
+			{ name: "source", description: "Read hash-verified exact record bytes" },
+		],
+		handle: (command, runtime) => handleSessionMemoryCommand(command.args, runtime),
+		handleTui: (command, runtime) => handleSessionMemoryCommandTui(command.args, runtime),
 	},
 	{
 		name: "setup",
