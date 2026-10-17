@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add repository-scoped session memory with lossless record and image-blob snapshots, indexed lexical search, extractive summaries that expand to exact evidence, a read-only agent tool, and /session-memory commands. Originals remain in place; changed sessions retain earlier archived revisions.
+
 ### Fixed
 
 - Session writer lock files in `session-locks/` are deleted when their session releases, instead of accumulating one file per session ever opened. A waiter that already opened a deleted lock file sees it marked retired and retries on the live file, so cross-process exclusion is unchanged.

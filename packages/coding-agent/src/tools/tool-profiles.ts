@@ -80,6 +80,7 @@ export const CONTROL_BUILTIN_NAMES: ReadonlySet<string> = new Set(["yield", "res
 
 export const LIGHT_BUILTIN_NAMES: ReadonlySet<string> = new Set([
 	"read",
+	"session_memory",
 	"find",
 	"search",
 	"web_search",

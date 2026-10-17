@@ -72,6 +72,7 @@ import { ResolveTool } from "./resolve";
 import { reportFindingTool } from "./review";
 import { SearchTool } from "./search";
 import { SearchToolBm25Tool } from "./search-tool-bm25";
+import { SessionMemoryTool } from "./session-memory";
 import { loadSshTool } from "./ssh";
 import { createTerminalLaunchTool } from "./terminal-launch";
 import { type TodoPhase, TodoTool } from "./todo";
@@ -589,6 +590,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	memory_edit: MemoryEditTool.createIf,
 	retain: MemoryRetainTool.createIf,
 	recall: MemoryRecallTool.createIf,
+	session_memory: session => new SessionMemoryTool(session),
 	reflect: MemoryReflectTool.createIf,
 	learn: LearnTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
