@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ompk-harness2-bridge"
+version = "0.1.0"
+description = "Opt-in Harness2 BenchmarkAdapter for no-tools OMPK probes"
+requires-python = ">=3.12,<3.14"
+dependencies = []
+
+[project.optional-dependencies]
+upstream = ["harness2 @ git+https://github.com/google-research/harness2.git@1cfe254e8d25b15f37048c3730134686abe60335"]
+
+[project.scripts]
+ompk-harness2 = "ompk_harness2.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ompk_harness2*"]
