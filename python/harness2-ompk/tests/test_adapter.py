@@ -85,5 +85,68 @@ class AdapterTests(unittest.TestCase):
                 self.adapter.execute("existing-proof", source, "attempt")
 
 
+@unittest.skipIf(os.name == "nt", "Upstream Harness2 requires POSIX path semantics")
+class RecursiveSmokeTests(unittest.TestCase):
+    """Exercise Google's actual Propose–Probe–Compose scheduler without any LLM."""
+
+    def test_one_task_full_scheduler(self):
+        from harness2.core.proposer import Proposer, Reply
+        from harness2.core.schedule import run_domain
+
+        class ScriptedProposer(Proposer):
+            def call(self, mission, context_dir, label, **kwargs):
+                ctx = Path(context_dir)
+                workspace = None
+                if label.startswith("select."):
+                    candidates = sorted((ctx / "candidates").glob("*.md"))
+                    if not candidates:
+                        raise RuntimeError("selector has no candidate evidence")
+                    choice = candidates[0].stem
+                    answer = "<why>Prefer a complete artifact.</why>\n" + (
+                        "~~~choice\n" + choice + "\n~~~"
+                    )
+                    # Google's parser expects a fenced choice block, not a free-form name.
+                    answer = answer.replace("~~~", chr(96) * 3)
+                elif label.startswith("experience."):
+                    answer = "NO_ENTRY"
+                else:
+                    workspace = ctx / "harness"
+                    prompt = workspace / "systemprompt.md"
+                    prompt.write_text(
+                        prompt.read_text() + "\nFavor fresh health evidence.\n",
+                        encoding="utf-8",
+                    )
+                    answer = "<notes>Current evidence is authoritative.</notes>"
+                reply = Reply(label=label, text=answer, ok=True, attempts=1, workspace=workspace)
+                self._calls.append(reply)
+                return reply
+
+        with tempfile.TemporaryDirectory() as scratch:
+            adapter = OmpkBenchmarkAdapter(
+                Path(scratch), binary="omp", solver_model="offline/mock",
+                allow_execution=True,
+            )
+            prop = ScriptedProposer(adapter.spec.channels["proposer"])
+
+            def fake_omp(argv, **kwargs):
+                self.assertIn("--no-tools", argv)
+                self.assertIn("--no-extensions", argv)
+                self.assertIn("--no-irc", argv)
+                return CompletedProcess(argv, 0, "REUSE\n", "")
+
+            with patch.dict(os.environ, {"OMPK_HARNESS2_ENABLED": "1"}), patch(
+                "ompk_harness2.adapter.shutil.which", return_value="/usr/bin/omp"
+            ), patch("ompk_harness2.adapter.subprocess.run", side_effect=fake_omp):
+                result = run_domain(
+                    "agent-operations", adapter.tasks("train")[:1], 1,
+                    adapter=adapter, prop=prop, runs_root=adapter.spec.runs_root,
+                    library_root=adapter.root / "library", modes=("agg",),
+                )
+            self.assertEqual(result["failed"], 0, result)
+            self.assertEqual(result["done"], 1, result)
+            self.assertGreater(len(prop._calls), 0)
+            self.assertTrue(list((adapter.root / "executions").glob("*/receipt.json")))
+
+
 if __name__ == "__main__":
     unittest.main()
