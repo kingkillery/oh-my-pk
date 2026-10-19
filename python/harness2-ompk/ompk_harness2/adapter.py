@@ -145,12 +145,20 @@ class OmpkBenchmarkAdapter:
         if not source.is_dir():
             raise ValueError("harness is not a directory")
         allowed = set(EDITABLE | FIXED)
-        # Reject hidden extras instead of relying on read_tree's silent filtering.
+        stubs = dict(self.substrate.surface().stubs)
+        # Upstream materialises documented README stubs by default. Accept
+        # only their untouched canonical contents; never execute or load them.
         for entry in source.rglob("*"):
             if entry.is_symlink():
                 raise ValueError("symlinks are forbidden in probe harnesses")
-            if entry.is_file() and entry.relative_to(source).as_posix() not in allowed:
-                raise ValueError(f"unrecognized harness file: {entry.name}")
+            if not entry.is_file():
+                continue
+            rel = entry.relative_to(source).as_posix()
+            if rel in stubs:
+                if entry.read_text(encoding="utf-8") != stubs[rel]:
+                    raise ValueError(f"modified harness stub: {rel}")
+            elif rel not in allowed:
+                raise ValueError(f"unrecognized harness file: {rel}")
         tree = read_tree(self.substrate.surface(), source)
         self.validate_tree(tree)
         return tree
