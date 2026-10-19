@@ -97,7 +97,15 @@ class OmpkBenchmarkAdapter:
         base = self.base_harness()
         if not base.exists():
             write_tree(self.substrate.surface(), dict(BASE), base, stubs=False)
-        self.validate_tree(read_tree(self.substrate.surface(), base))
+        self.validate_tree(self._load_tree(base))
+
+    def _load_tree(self, source: Path) -> dict[str, str]:
+        # Upstream read_tree returns Windows backslashes on Windows; SurfaceSpec
+        # paths are POSIX-style, so normalize once at the adapter boundary.
+        return {
+            name.replace("\\", "/"): body
+            for name, body in read_tree(self.substrate.surface(), source).items()
+        }
 
     def tasks(self, split: str = "all") -> list[str]:
         if split == "all":
@@ -159,7 +167,7 @@ class OmpkBenchmarkAdapter:
                     raise ValueError(f"modified harness stub: {rel}")
             elif rel not in allowed:
                 raise ValueError(f"unrecognized harness file: {rel}")
-        tree = read_tree(self.substrate.surface(), source)
+        tree = self._load_tree(source)
         self.validate_tree(tree)
         return tree
 
