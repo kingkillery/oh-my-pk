@@ -1,93 +1,93 @@
-# Hosted Model Router — Task Reference & Checkpoints
+# Hosted Model Router Adoption — Task Reference
 
-**Run:** October 18, 2026 (America/Denver; verification continued into October 19 UTC)  
-**Canonical working copy:** `C:\dev\Infra\oh-my-pk\docs\plans\2026-10-18-hosted-model-router-adoption.md` on PK Windows  
-**Hosted endpoint:** `https://api.gopk.xyz` · Cloudflare Worker `free-tier-router` (production)  
-**Objective:** Reuse one existing hosted model router across agents without duplicating infrastructure.
+**Created:** 2026-10-18 (America/Denver). **Execution mode:** verify → compact → continue.
+**Source of truth:** Existing Cloudflare Worker `free-tier-router` attached to `https://api.gopk.xyz`.
+**Goal:** One reusable hosted, authenticated model-routing endpoint for OMPK and other agents; no duplicate routers or tunnels.
+**Baseline:** Cloudflare Worker production, `/health` HTTP 200, `/v1/routes` and `/v1/models` unauthenticated HTTP 401; successful authenticated inference unproven.
+**Cloudflare provenance:** Worker deployment 2026-10-18T05:42:42Z; provider secret bindings NVIDIA_API_KEY, OPENROUTER_API_KEY, ROUTER_API_KEY; KV binding ROUTER_STATE; routing and breaker settings present.
+**Safety:** No secret values in documentation, logs, CLI arguments, or chat. Never replace existing router. Do not remove other endpoints until consumers are identified.
+**Local checkout:** `C:\dev\Infra\oh-my-pk` on `fix/clef-bootstrap-jev-gate-criteria`, HEAD `05f5e9491c` at start, contains substantial unrelated modifications; preserve them without edits or reset.
 
-## Starting constraints
-- The OMPK working tree was already dirty, on branch `fix/clef-bootstrap-jev-gate-criteria`, HEAD `05f5e9491c`; preserve unrelated changes.
-- No secrets in logs, documents, or CLI arguments. No token rotation, unauthenticated workaround, or speculative deployment.
-- Existing Cloudflare tunnels and DNS remain unless consumers are verified and retirement is explicitly scoped.
-- Checkpoints are appended after each workstream; an earlier completed step is not rerun without new evidence.
+## Workstream and acceptance gates
 
-## Step 1 — Authentication and inference
-**Status: Blocked at authenticated inference; public API checks verified.**
+1. **Real inference:** Safely obtain credential from an already-authorized runtime/store without revealing it; test authenticated `GET /v1/models` and one minimal `POST /v1/chat/completions`; record status, model, provider, request ID, latency and response validation (never content/secrets). No claim of success from 200 health alone.
+2. **Routing behavior:** Inspect existing router source/config and verify model choices, fallback, limits, breaker, and routing telemetry with safe non-destructive probes. Do not fabricate outage or spend significant quota.
+3. **OMPK integration:** Inspect OMPK existing provider/client config first; reuse/point to `api.gopk.xyz` only where absent; keep secrets in approved provider. Verify an actual invocation and preserve dirty work in existing checkout.
+4. **Monitoring:** Reuse an existing check if possible; otherwise create narrowly scoped health + authenticated model probe with alert-on-failure and bounded frequency. Avoid checking unrelated chat tunnel.
+5. **Legacy review:** Inventory domains/tunnels, source ownership and consumers; report retire candidates, don't delete without direct evidence and explicit scope.
 
-- `GET /health` returns HTTP 200.
-- `GET /v1/models` and `GET /v1/routes` return HTTP 401 without a router key, as designed.
-- The deployed Worker has a `ROUTER_API_KEY` secret binding, but this does not grant access to its plaintext.
-- Checked environment-variable names on PK and MSI: no router credential found. A separate provider credential cannot be substituted.
-- No billable model completion was run or claimed successful.
+## Evidence and progress journal
+### Step 0 — Baseline / starting checkpoint
+- Hosted route confirmed on Cloudflare `api.gopk.xyz` → Worker `free-tier-router`, production.
+- The **old** `muse-subscription-chat` down-tunnel starter task/config created in prior troubleshooting were removed; hourly watch disabled. Existing Cloudflare routes retained.
+- `api.pkking.computer` responds at `/` but `/v1/models` HTTP 404; `models.pkking.computer/v1/models` HTTP 530; `api.gopk.xyz/v1/models` HTTP 401 unauthenticated. These are not proof of router malfunction.
+- `free-tier-router` source defines `/health`, `/v1/models`, `/v1/routes`, `/v1/chat/completions`.
+- Execution rule: record a compact checkpoint at the end of EACH step before starting the next.
 
-**Checkpoint #1:** Authentication gate verified. No production changes. Remaining dependency: authorized router credential and a bounded successful chat completion.
+## Compact checkpoint (overwrite/supersede at each completed step)
 
-## Step 2 — Existing routing behavior
-**Status: Implementation/configuration verified; failure-path runtime test pending.**
+**Step:** 0/5 — baseline established.
+**Verified:** Hosted Worker exists and responds; auth gate active.
+**Changed:** This task-reference document only.
+**Blocked:** Authenticated inference unverified; credential location unknown.
+**Next:** Step 1 — inspect approved existing credential mechanisms and exercise a minimal inference request if authorized.
+**Do not repeat:** Create Worker, proxy, tunnel, startup task, or anonymous 401 health tests as proof.
 
-Observed production configuration:
+### Step 1 — Authentication and inference verification (2026-10-18 MDT)
+- **Status:** BLOCKED for authenticated request; safe, unauthenticated surface verified.
+- Cloudflare production source: `GET /v1/models`, `GET /v1/routes`, and `POST /v1/chat/completions` require `ROUTER_API_KEY` authorization. `/health` is public and HTTP 200.
+- Cloudflare lists `ROUTER_API_KEY` as `secret_text` binding, which does **not** make its plaintext available to readers.
+- On PK the environment has no `ROUTER_API_KEY`, `GOPK_API_KEY`, or `MODEL_ROUTER_API_KEY`. On MSI the matching environment vars are absent too. A separate provider key on PK is not a router credential.
+- No credential read, printed, invented, rotated, or transplanted. No billed inference performed. **Do not claim inferencing operational until authenticated model response and completion are validated.**
+- Follow-up: test with existing approved router credential via runtime secret management. Keep credentials out of shell history and published documents; if unavailable, request authorized binding instead of bypassing auth.
 
-| Control | Value |
-|---|---|
-| Default model chain | `secure` |
-| Maximum attempts | 4 |
-| Circuit-breaker threshold | 3 failures |
-| Circuit-breaker cooldown | 60 seconds |
-| Canary fraction | 5% |
-| Latency escalation threshold | 10,000 ms |
-| Non-stream timeout | 60,000 ms |
-| Time to first byte | 8,000 ms |
-| Strict zero-data-retention flag | `false` |
-| Workers AI enabled | `false` |
+**Compact #1:** Completed evidence: auth gates confirmed, secret binding present. Change: no production changes. Blocker: authorized router key missing from checked runtimes. Next: inspect routing implementation and safe operational behavior (step 2). Do not redo health-only requests or build a new router.
 
-Source contains provider adapters, fallback selection, circuit breakers, latency EWMA, and KV-backed state. Their presence is not proof of successful failover. **Security review finding:** internal diagnostic POST handlers capable of contacting providers appear before the API-key gate. Protect/remove those handlers through the Worker's source and release process; paths are intentionally excluded.
+### Step 2 — Routing controls audit (2026-10-18 MDT)
+- **Status:** Source/config verification COMPLETE; authenticated runtime failover NOT YET VALIDATED (dependent on step 1 key).
+- Cloudflare production settings: `DEFAULT_CHAIN=secure`, `MAX_ATTEMPTS=4`, breaker threshold `3`, cooldown `60000ms`, canary `0.05`, latency escalation `10000ms`, non-stream timeout `60000ms`, TTFB timeout `8000ms`.
+- Production source contains candidate planning, provider adapters, fallback, EWMA tracking, breaker state, KV registry, and separate routes/model listing.
+- Noted policy: `SECURE_REQUIRE_ZDR=false` and `WORKERS_AI_ENABLED=false`. Do not assume strict ZDR enforcement or Workers AI availability.
+- **Security finding to fix in the owning router source:** two hard-to-guess, non-public-looking internal test POST endpoints are processed **before** the API-key gate and can trigger upstream inference. Obscure paths are not authentication. Avoid calling or disclosing their exact paths; add auth/disable and regression coverage via normal Worker repo release procedure. No production change made without that source/release ownership identified.
+- Do not test fallback by forcing provider failures or consuming unbounded tokens; use a bounded authenticated synthetic request after credentials available.
 
-**Checkpoint #2:** Existing router is sufficiently developed; don't build another. Live failover remains unverified. Diagnostic authentication needs hardening.
+**Compact #2:** Verified: source/config support existing routing and resilience. Change: evidence only. Blockers: live failover needs valid key; internal pre-auth inference test paths need security remediation. Next: inspect OMPK wiring and reuse it without touching collaborators' uncommitted work (step 3).
 
-## Step 3 — Register OMPK's existing provider interface
-**Status: Configured, schema-validated, awaiting credentials for live usage.**
+### Step 3 — OMPK integration (2026-10-18 MDT)
+- **Status:** Provider registration COMPLETE (optional/staged), live requests BLOCKED on credential.
+- Existing OMPK custom-provider loader already supports OpenAI Chat Completions. No second router implementation, library, or proxy created.
+- On PK existing config `C:\Users\prest\.ompk\agent\models.yml` initially contained 6 providers and no reference to `api.gopk.xyz`. Existing per-machine auth stores did not contain the router provider.
+- Added optional `gopk-router` provider pointing to `https://api.gopk.xyz/v1` using `apiKey: ROUTER_API_KEY` (name of future environment variable, NOT a token), plus `chain/secure` and `chain/assume-read` model selectors.
+- Marked model tool support conservatively as `supportsTools: false` until actual tool-wire contracts are verified; did NOT make this the default model.
+- Ran the repository's `ModelsConfigSchema` validation against the proposed provider and verified the full config parses, preserves all 6 existing providers, and yields 7 total providers. No tracked implementation files modified.
+- Activation remaining: provision an authorized `ROUTER_API_KEY` reference for the OMPK runtime and verify a real model turn, tokens, and eventually tool capability. If absent, selecting the hosted model should be expected to fail authentication; no hidden fallback is assumed.
 
-- Existing `models.yml`: `C:\Users\prest\.ompk\agent\models.yml`.
-- Added optional `gopk-router` pointing to `https://api.gopk.xyz/v1`.
-- Model selectors: `chain/secure` and `chain/assume-read`.
-- Authentication references environment-variable **name** `ROUTER_API_KEY`, not a literal secret.
-- Both selectors conservatively mark `supportsTools: false` until tool-call compatibility is verified.
-- All six existing providers preserved; seven providers now defined.
-- Repository `ModelsConfigSchema` validation passed. Default model unchanged. No tracked implementation files changed.
+**Compact #3:** Verified: existing custom-provider path; optional `gopk-router` now installed/config-valid on PK. Change: appended only to local OMPK models.yml. Blocker: missing router key; no production inference. Next: replace obsolete chat-tunnel watch with a router-specific monitoring signal (step 4).
 
-**Checkpoint #3:** Optional OMPK provider is registered, but live inference and tool use are not proven. Provision the approved key to activate.
+### Step 4 — Monitoring (2026-10-18 MDT)
+- **Status:** COMPLETE for public endpoint and domain reachability; inference-level health awaits key.
+- Confirmed `GET https://api.gopk.xyz/health` returns JSON `ok: true` from PK Windows; previous HTTP status 200.
+- Created condition watch `Hosted Model Router Watch`, recurring hourly, failure notifications ONLY. It checks `/health` JSON and the existing Cloudflare Worker domain mapping, and explicitly treats unauthenticated `/v1/models` 401 as expected.
+- Prior `PK Chat Tunnel Watch` remains disabled; it is not a dependency of this hosted Worker.
+- Monitoring has NOT yet observed the first scheduled execution. Credential-gated completion is not monitored until authorized credentials exist; health-only monitoring must not be mistaken for verified inference availability.
 
-## Step 4 — Monitoring
-**Status: Enabled for public health; authenticated inference monitor pending.**
+**Compact #4:** Verified: HTTP+JSON public health. Change: new dedicated hourly condition watch enabled; old chat-tunnel watch remains disabled. Blocker: inference-level probe needs auth. Next: inventory legacy endpoint consumers, mark candidates, do not delete (step 5).
 
-- `https://api.gopk.xyz/health` returned HTTP 200 with JSON `ok: true`.
-- Created **Hosted Model Router Watch** as an hourly condition watch: report only health failures, stay quiet when healthy, and don't confuse unauthenticated HTTP 401 with an outage.
-- Old **PK Chat Tunnel Watch** remains disabled.
-- First future scheduled execution had not yet been observed at documentation time.
+### Step 5 — Legacy endpoint consumer review (2026-10-18 MDT)
+- **Status:** Scoped inventory COMPLETE. No endpoint deletion authorized by evidence.
+- Canonical model router `api.gopk.xyz` → existing Cloudflare Worker `free-tier-router` production; health JSON `ok:true`.
+- `models.pkking.computer` DNS CNAME → `models-api` tunnel; tunnel DOWN with 0 connections, prior HTTP 530. **Retirement candidate only**, usage/consumers not exhaustively known.
+- `api.pkking.computer` DNS CNAME → `ix-dash` tunnel; tunnel HEALTHY with 8 connections, root HTTP 200; `/v1/models` HTTP 404. Likely separate dashboard service; explicitly **KEEP**.
+- `chat.gopk.xyz` DNS CNAME → `muse-subscription-chat` tunnel DOWN; Worker route `html-basic-chat` exists on hostname. Chat UI is separate from model router; **KEEP** until its independent purpose and consumers are confirmed.
+- `mesh-bonsai-inference` tunnel HEALTHY with 4 connections; inference infrastructure distinct from router; **KEEP**.
+- Git-tracked content searches across local `oh-my-pk`, `mesh-inference`, and `9router` did not find references to the four hostnames at inspection time. That does not rule out runtime env vars, external apps, DNS clients, or untracked files.
+- **No DNS record, tunnel, Worker, or prior infrastructure was deleted, and no permanent redirect made.**
 
-**Checkpoint #4:** Correct endpoint monitored. No duplicate tunnel monitoring. Model-level health must be added when safe router credentials become available.
+**Compact #5:** Canonical endpoint confirmed: `api.gopk.xyz`. Optional OMPK provider installed and schema-valid; monitoring enabled and public health verified. Remaining work: authorized router credential, live model/tool verification, router test-endpoint auth hardening, and full legacy consumer audit before retirement. No duplicate service built or destructive changes applied.
 
-## Step 5 — Inventory legacy endpoints
-**Status: Scoped review complete; no destructive retirement.**
-
-| Endpoint / tunnel | Evidence | Decision |
-|---|---|---|
-| `api.gopk.xyz` | Existing production Worker; healthy public endpoint | **Canonical router — keep** |
-| `api.pkking.computer` | Routes to healthy `ix-dash` tunnel; `/v1/models` was 404 | Keep: different service |
-| `models.pkking.computer` | `models-api` tunnel DOWN, zero connectors; previous HTTP 530 | Retirement candidate; consumer audit required |
-| `chat.gopk.xyz` | `muse-subscription-chat` tunnel DOWN; separate chat Worker route | Keep separate pending ownership review |
-| `mesh-bonsai-inference` | Healthy Cloudflare tunnel with four connections | Keep |
-
-Git-tracked searches of local OMPK, Mesh Inference, and 9Router checkouts found no references to those hostnames. This cannot rule out external clients, runtime environment variables, or other repositories.
-
-**Checkpoint #5:** No DNS records, services, Worker deployments, or tunnels deleted. One canonical router identified; old endpoints remain until real consumers are ruled out.
-
-## Handoff — what remains
-
-1. **Auth:** Supply an approved `ROUTER_API_KEY` to OMPK's runtime via its supported secret mechanism. Never print or commit it.
-2. **Inference:** Run one minimal `chain/secure` completion; verify HTTP response, content, tokens, timing, and selected model. Then verify tool-call support before enabling agent tooling.
-3. **Reliability:** Exercise bounded failover and circuit-breaker acceptance in a safe testing context; preserve production traffic.
-4. **Security:** Patch the pre-auth diagnostic routes in the Worker-owned codebase, with regression tests and controlled deployment.
-5. **Cleanup:** Audit actual consumers before retiring the `models-api` and chat-related legacy routes.
-
-**Completion boundary:** Public health and optional provider registration are complete. Successful authorized inference, failover, and full legacy retirement are **not** complete.
+## Final handoff summary
+- **Completed:** Baseline verification; routing controls source/config audit; OMPK optional provider registration; health monitoring automation; scoped legacy inventory. Progress checkpoints #0–#5 recorded above.
+- **Unverified:** Authenticated models list, successful inference output/tokens, failover under provider errors, tool streaming compatibility, inference-level monitor, complete legacy usage inventory.
+- **Exact dependency:** Bind approved `ROUTER_API_KEY` to OMPK runtime and safe test harness without exposing secret contents, then run one bounded `chain/secure` text prompt and inspect outcome. Do not reuse provider API keys as router keys.
+- **Security backlog:** Remove or protect internal upstream-calling diagnostic routes occurring before authentication; validate in router's owning source/release lane.
+- **Workspace preservation:** Pre-existing branch `fix/clef-bootstrap-jev-gate-criteria` and unrelated dirty changes untouched; this new doc is uncommitted unless explicitly staged later.
