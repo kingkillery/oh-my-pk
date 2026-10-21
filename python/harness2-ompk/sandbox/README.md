@@ -78,8 +78,11 @@ named unit it created and removes its model socket, retaining evidence.
 
 Read `runs/<run-id>/output/result.json`, `gateway.json`, `runtime-manifest.json`
 and `cleanup.json`. A submitted command or completed installer is not a live
-pass. A pass requires the worker's zero exit, three non-fallback stages, valid
-reflection, all six strict selected checks and confirmed cleanup. `NO_ENTRY`
+pass. A quality-gate pass requires the worker's zero exit, three non-fallback stages,
+valid reflection, all six strict selected checks and confirmed cleanup. A fully
+completed comparison can exit 2 because the candidate regressed; keep and report
+that result, rather than retrying until a winner appears. `experiment_completed`
+and `pass` deliberately distinguish completion from acceptance. `NO_ENTRY`
 is valid reflection completion but does not mean a library entry was created.
 
 The adapter's default CLI mode remains `append`; classification is explicit:

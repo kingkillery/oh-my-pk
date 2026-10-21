@@ -116,10 +116,14 @@ def main():
               'selected_tree_is_base': selection.get('chosen_tree_is_base'),
               'baseline': baseline, 'selected': candidate, 'paired_comparisons': comparisons,
               'improved_pairs': improved, 'regressed_pairs': regressed,
-              'performance_conclusion': 'no demonstrated accuracy improvement' if improved <= regressed else 'improvement on this small pilot only',
+              'performance_conclusion': ('regression on this small pilot' if regressed > improved else
+                  'no demonstrated accuracy improvement' if improved == regressed else
+                  'improvement on this small pilot only'),
               'all_selected_checks_pass': len(candidate) == 6 and all(r['score']['all_pass'] for r in candidate),
               'limits': 'Three fixed tasks, two draws each, one training task, k=1; not a general quality benchmark.'}
     report['pass'] = core and reflection_ok and report['all_selected_checks_pass']
+    report['experiment_completed'] = (core and reflection_ok and len(candidate) == 6
+        and all(adapter.delivered(Path(row['run_dir'])) for row in baseline + candidate))
     (ROOT / 'result.json').write_text(json.dumps(report, indent=2))
     print('CLEAN_SMOKE_RESULT', json.dumps({k: report[k] for k in ('pass', 'core_recursion_pass', 'reflection_completed', 'improved_pairs', 'regressed_pairs', 'performance_conclusion')}), flush=True)
     return 0 if report['pass'] else 2
