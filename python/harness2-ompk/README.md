@@ -53,6 +53,13 @@ one training task and k=1 parallel recursion. It does not auto-promote a
 harness, modify existing OMPK settings, or run on normal agent sessions.
 Use the saved result to decide whether broader integration is warranted.
 
+## Repeatable contained validation
+
+For the opt-in classification compatibility mode, pinned runtime setup, offline
+checks and a bounded **externally contained** live comparison, see
+[sandbox/README.md](sandbox/README.md). The original CLI/default activation
+boundaries remain unchanged; the sandbox runner does not promote its result.
+
 ## Known limits
 
 - Prompt-only comparison: no OMPK tool executions, LSPs, agents, or sessions.

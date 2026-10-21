@@ -71,12 +71,16 @@ class OmpkBenchmarkAdapter:
         solver_model: str = "",
         improver_model: str = "local/deterministic",
         allow_execution: bool = False,
+        solver_prompt_mode: str = "append",
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.binary = binary
         self.solver_model = solver_model
         self.allow_execution = allow_execution
+        if solver_prompt_mode not in ("append", "classification"):
+            raise ValueError("solver_prompt_mode must be append or classification")
+        self.solver_prompt_mode = solver_prompt_mode
         self.substrate = OpencodeSubstrate()  # Reuse Google's canonical tree validator.
         channel = ChannelSpec("opencode", improver_model)
         self.spec = BenchSpec(
@@ -187,6 +191,7 @@ class OmpkBenchmarkAdapter:
         identity = {
             "run_id": run_id, "task_id": task_id, "model": self.solver_model,
             "harness_sha256": _digest(tree),
+            "solver_prompt_mode": self.solver_prompt_mode,
         }
         token = _digest({"run_id": run_id})[:24]
         run_dir = self.root / "executions" / token
@@ -200,14 +205,28 @@ class OmpkBenchmarkAdapter:
         workspace.mkdir()
         prompt_file = workspace / "pilot-harness.md"
         prompt_file.write_text("\n\n".join(tree[key] for key in self.substrate.surface().always_on), encoding="utf-8")
+        prompt_arg = f"--append-system-prompt={prompt_file}"
+        task = self.task_prompt(task_id)
+        if self.solver_prompt_mode == "classification":
+            # Keep the complete scenario and fixed authority text. A neutral
+            # carrier avoids the normal root-work classifier interpreting the
+            # answer vocabulary as an instruction to implement/investigate.
+            classification = workspace / "classification-input.md"
+            classification.write_text(
+                prompt_file.read_text(encoding="utf-8")
+                + "\n\n# Classification scenario\n\n" + task + "\n",
+                encoding="utf-8",
+            )
+            prompt_arg = f"--system-prompt={classification}"
+            task = "Return the requested one-word decision for the scenario."
         wall = max(1, min(int(timeout or 90), 120))
         argv = [
             self.binary, "--print", "--mode=text", "--no-session", "--no-tools",
             "--no-lsp", "--no-pty", "--no-extensions", "--no-irc",
             "--no-skills", "--no-rules", "--agentmd-off", "--no-title",
             f"--profile=harness2-{token}", f"--cwd={workspace}",
-            f"--append-system-prompt={prompt_file}", f"--model={self.solver_model}",
-            f"--max-time={wall}", self.task_prompt(task_id),
+            prompt_arg, f"--model={self.solver_model}",
+            f"--max-time={wall}", task,
         ]
         result_text = ""
         error = ""

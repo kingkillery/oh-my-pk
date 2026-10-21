@@ -16,6 +16,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--binary", default="omp")
     p.add_argument("--solver-model", default="")
     p.add_argument("--improver-model", default="")
+    p.add_argument("--solver-prompt-mode", choices=("append", "classification"), default="append")
     p.add_argument("--execute", action="store_true")
     p.add_argument("--unsafe-upstream-proposer-ack", action="store_true")
     args = p.parse_args(argv)
@@ -30,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
         args.output, binary=args.binary, solver_model=args.solver_model,
         improver_model=args.improver_model or "local/deterministic",
         allow_execution=args.action == "run" and args.execute,
+        solver_prompt_mode=args.solver_prompt_mode,
     )
     if args.action == "check":
         print(json.dumps({
