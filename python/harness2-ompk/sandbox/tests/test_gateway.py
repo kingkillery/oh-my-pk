@@ -1,10 +1,10 @@
 """Offline contract checks; these never contact a model provider."""
-import io
 import json
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
-from unittest.mock import patch
 
 from gateway import Gateway, MAX_CALLS
 
@@ -15,10 +15,14 @@ class GatewayTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         directory = Path(self.temp.name) / 'route'
         directory.mkdir()
-        catalog = {'data': [{'id': 'example/free:free', 'pricing': {'prompt': '0', 'completion': '0'}, 'supported_parameters': ['tools']}]}
-        with patch('gateway.urllib.request.build_opener') as build:
-            build.return_value.open.return_value.__enter__.return_value = io.BytesIO(json.dumps(catalog).encode())
-            self.gateway = Gateway(directory, 'example/free:free', 'never-written-secret', 120)
+        # Exercise the real request policy/file writer without model discovery.
+        self.gateway = object.__new__(Gateway)
+        self.gateway.directory = directory
+        self.gateway.model = 'example/free:free'
+        self.gateway._key = 'never-written-secret'
+        self.gateway.deadline = time.monotonic() + 120
+        self.gateway.lock = threading.Lock()
+        self.gateway.state = {'calls': 0, 'input_bytes': 0, 'requests': []}
 
     def payload(self, **updates):
         body = {'model': 'smoke', 'messages': [{'role': 'user', 'content': 'synthetic'}]}
@@ -39,7 +43,8 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(self.gateway.state['calls'], 0)
 
     def test_exhausted_budget_refuses_and_does_not_reset(self):
-        self.gateway.state['calls'] = MAX_CALLS
+        for _ in range(MAX_CALLS):
+            self.gateway.reserve(self.payload())
         with self.assertRaises(TimeoutError):
             self.gateway.reserve(self.payload())
         self.assertEqual(self.gateway.state['calls'], MAX_CALLS)
