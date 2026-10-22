@@ -112,17 +112,8 @@ function makeToolCallContext(name: string, args: Record<string, unknown>): Befor
 
 describe("Autonomous Fusion Workflow", () => {
 	it("sets autonomous mode via /fusion mode autonomous and reflects it in status", async () => {
-		const store = new Map<string, unknown>([
-			["fusion.enabled", true],
-			["fusion.mode", "escalate"],
-		]);
+		const settings = Settings.isolated({ "fusion.enabled": true, "fusion.mode": "escalate" });
 		const outputs: string[] = [];
-		const settings = {
-			get: (key: string) => store.get(key),
-			set: (key: string, value: unknown) => {
-				store.set(key, value);
-			},
-		} as unknown as Settings;
 		const runtime = {
 			settings,
 			session: {
@@ -150,17 +141,8 @@ describe("Autonomous Fusion Workflow", () => {
 	});
 
 	it("automatically enables fusion when setting a mode from disabled state", async () => {
-		const store = new Map<string, unknown>([
-			["fusion.enabled", false],
-			["fusion.mode", "off"],
-		]);
+		const settings = Settings.isolated({ "fusion.enabled": false, "fusion.mode": "off" });
 		const outputs: string[] = [];
-		const settings = {
-			get: (key: string) => store.get(key),
-			set: (key: string, value: unknown) => {
-				store.set(key, value);
-			},
-		} as unknown as Settings;
 		const runtime = {
 			settings,
 			session: {

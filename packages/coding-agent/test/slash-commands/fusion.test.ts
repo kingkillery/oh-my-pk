@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Settings } from "../../src/config/settings";
+import { type SettingPath, Settings } from "../../src/config/settings";
 import type { InteractiveModeContext } from "../../src/modes/types";
 import type { AgentSession } from "../../src/session/agent-session";
 import { emptyFusionUsage } from "../../src/session/fusion-usage";
@@ -9,18 +9,17 @@ import type { SlashCommandRuntime } from "../../src/slash-commands/types";
 
 /**
  * Minimal in-memory runtime following the okf.test.ts convention: the handler
- * is called directly with a cast runtime; settings are a Map; the model
+ * is called directly with a cast runtime; settings are isolated; the model
  * registry advertises no models (so selector resolution warns, never throws).
  */
 function makeRuntime(initial: Record<string, unknown> = {}) {
-	const store = new Map<string, unknown>(Object.entries(initial));
+	const store = Settings.isolated(initial);
+	for (const key of Object.keys(initial) as SettingPath[]) {
+		store.set(key, store.get(key));
+		store.clearOverride(key);
+	}
 	const outputs: string[] = [];
-	const settings = {
-		get: (key: string) => store.get(key),
-		set: (key: string, value: unknown) => {
-			store.set(key, value);
-		},
-	} as unknown as Settings;
+	const settings = store;
 	const session = {
 		settings,
 		modelRegistry: { getAvailable: () => [] },
