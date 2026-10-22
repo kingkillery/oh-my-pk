@@ -84,6 +84,38 @@ class AdapterTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.adapter.execute("existing-proof", source, "attempt")
 
+    @unittest.skipIf(os.name == "nt", "Uses the real POSIX echo executable")
+    def test_classification_preserves_scenario_authority_and_raw_output(self):
+        self.adapter.allow_execution = True
+        self.adapter.solver_prompt_mode = "classification"
+        self.adapter.binary = "/usr/bin/echo"
+        previous = os.environ.get("OMPK_HARNESS2_ENABLED")
+        os.environ["OMPK_HARNESS2_ENABLED"] = "1"
+        try:
+            path = self.adapter.execute("existing-proof", None, "classification")
+            output = self.adapter.deliverable_text(path).strip()
+            carrier = path / "workspace/classification-input.md"
+            text = carrier.read_text()
+            self.assertIn(self.adapter.task_prompt("existing-proof"), text)
+            self.assertIn(BASE["guardrails.md"], text)
+            self.assertTrue(output.endswith("Return the requested one-word decision for the scenario."))
+            for flag in ("--no-tools", "--no-extensions", "--no-skills", "--agentmd-off", "--no-rules"):
+                self.assertIn(flag, output)
+            self.assertIn("--system-prompt=" + str(carrier), output)
+            self.assertFalse(self.adapter.score(path, "existing-proof")["all_pass"])
+            self.adapter.solver_prompt_mode = "append"
+            with self.assertRaises(FileExistsError):
+                self.adapter.execute("existing-proof", None, "classification")
+        finally:
+            if previous is None:
+                os.environ.pop("OMPK_HARNESS2_ENABLED", None)
+            else:
+                os.environ["OMPK_HARNESS2_ENABLED"] = previous
+
+    def test_unknown_prompt_mode_rejected(self):
+        with self.assertRaises(ValueError):
+            OmpkBenchmarkAdapter(Path(self.tmp.name) / "bad", solver_prompt_mode="other")
+
 
 @unittest.skipIf(os.name == "nt", "Upstream Harness2 requires POSIX path semantics")
 class RecursiveSmokeTests(unittest.TestCase):
