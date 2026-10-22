@@ -13,6 +13,7 @@ import sys
 import time
 
 from gateway import Gateway
+from lifecycle import WorkerUnit
 
 
 def main(argv=None):
@@ -60,8 +61,9 @@ def main(argv=None):
     key = os.environ.get(args.credential_env, '')
     gateway = Gateway(route, args.model, key, args.seconds)
     key = ''
-    unit = 'h2-' + args.run_id
-    command = ['systemd-run', '--user', '--wait', '--pipe', '--collect', '--unit=' + unit,
+    owned = WorkerUnit(args.run_id)
+    unit = owned.name
+    command = ['systemd-run', '--user', '--wait', '--pipe', '--collect', *owned.launch_options(),
         '-p', 'MemoryMax=2147483648', '-p', 'MemorySwapMax=0', '-p', 'CPUQuota=200%',
         '-p', 'TasksMax=128', '-p', f'RuntimeMaxSec={args.seconds}', '-p', 'TimeoutStopSec=5',
         '/bin/bash', str(source / 'sandbox/contained.sh'), str(source), str(upstream),
@@ -81,13 +83,16 @@ def main(argv=None):
             except subprocess.TimeoutExpired:
                 code = 124
     finally:
-        subprocess.run(['systemctl', '--user', 'stop', unit], env=clean_env, capture_output=True, timeout=15)
-        if process and process.poll() is None:
-            process.wait(timeout=15)
-        gateway.close()
+        try:
+            stopped_owned_unit = owned.stop(clean_env)
+            if process and process.poll() is None:
+                process.wait(timeout=15)
+        finally:
+            gateway.close()
         active = subprocess.run(['systemctl', '--user', 'is-active', unit], env=clean_env,
                                 capture_output=True, text=True, timeout=10).stdout.strip()
         cleanup = {'unit': unit, 'worker_exit': code, 'worker_active': active,
+                   'stopped_owned_unit': stopped_owned_unit,
                    'gateway_stopped': True, 'socket_removed': not (route / 'model.sock').exists(),
                    'elapsed_seconds': round(time.monotonic() - started, 2), 'resumed': False}
         (run / 'cleanup.json').write_text(json.dumps(cleanup, indent=2))

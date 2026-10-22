@@ -14,6 +14,10 @@ case "$root" in /tmp/h2-*) ;; *) echo 'Use a new /tmp/h2-* directory on Linux st
 test ! -e "$root"
 test -x "$python/bin/python3.12"
 test -f "$binary"
+# The networked installer receives only these two staged, regular source files.
+bundle=$(mktemp -d /tmp/h2-installer.XXXXXXXX)
+trap 'rm -f -- "$bundle/build.sh" "$bundle/configure_runtime.py"; rmdir -- "$bundle"' EXIT
+"$python/bin/python3.12" -B "$package/sandbox/stage_prepare.py" "$package" "$bundle"
 echo '2337f91b71a130e055d8dfb99ead2667a46087c29df939d4d4f0a3c357b5748f  '"$archive" | sha256sum -c -
 mkdir -m 700 "$root"
 mkdir -p "$root/runtime/bin" "$root/runtime/dependencies" "$root/upstream" "$root/build-home"
@@ -28,8 +32,8 @@ timeout --signal=TERM --kill-after=10s 900s bwrap \
   --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
   --proc /proc --dev /dev --tmpfs /tmp --dir /home --dir /etc \
   --ro-bind /etc/ssl/certs /etc/ssl/certs --ro-bind /etc/resolv.conf /etc/resolv.conf \
-  --ro-bind "$python" /python --ro-bind "$package" /package --bind "$root" /job \
+  --ro-bind "$python" /python --ro-bind "$bundle" /package --bind "$root" /job \
   --setenv HOME /job/build-home --setenv PATH /python/bin:/usr/bin:/bin \
   --setenv PYTHONDONTWRITEBYTECODE 1 --setenv RAYON_NUM_THREADS 2 --chdir /job \
-  /bin/bash --noprofile --norc /package/sandbox/build.sh 2>&1 | tee "$root/build.log"
+  /bin/bash --noprofile --norc /package/build.sh 2>&1 | tee "$root/build.log"
 echo PREPARE_EXIT=0

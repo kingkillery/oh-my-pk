@@ -4,10 +4,21 @@ The upstream parser/library owns acceptance. No solver scores or answer keys
 are added, and no files are edited. Proposals still use upstream OpenCode.
 """
 import json
+import re
 from pathlib import Path
 import urllib.request
 
 from harness2.core.proposer import Proposer
+
+
+def valid_reflection(reply, accepted_experience):
+    if not reply.ok:
+        return False
+    if accepted_experience:
+        return True
+    # Upstream allows an optional edits block before the no-entry sentinel.
+    return re.fullmatch(r'\s*(?:<edits>[^<]*</edits>\s*)?NO_ENTRY\s*',
+                        reply.text) is not None
 
 
 class TextReflection(Proposer):

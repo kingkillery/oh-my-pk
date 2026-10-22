@@ -21,12 +21,17 @@ curl --fail --location --proto '=https' --tlsv1.2 \
 bash sandbox/prepare.sh /tmp/h2-example /absolute/python-root \
   /absolute/reviewed/omp /tmp/harness2-upstream.tar.gz
 bash sandbox/offline.sh /absolute/python-root /tmp/h2-example/upstream
+PYTHONPATH=sandbox /absolute/python-root/bin/python3.12 -B \
+  -m unittest discover -s sandbox/host_tests -v
 ```
 
 The installer verifies the archive digest, then builds upstream's pinned
 OpenCode revision with its compatibility patch and Bun 1.3.11. The 15-minute
 installer has network access but sees only system tools, public dependencies,
-the explicit executable and its own empty home. Dependency install scripts are
+the explicit executable, two allowlisted installer files and its own empty home.
+The original package directory is never mounted into the networked installer;
+package-local environment files, credentials and diagnostics are not staged.
+Dependency install scripts are
 disabled except Bun's explicit platform-binary installer. Failed directories
 are retained; fix the cause and use a fresh path.
 
@@ -57,7 +62,10 @@ home/tmp are writable. Kernel limits are mandatory: 2 GiB RAM, zero swap, two
 CPU cores and 128 tasks. The 20-minute wall limit covers offline tests, baseline,
 recursion, reflection and comparison. It cannot be extended or resumed by this
 runner. A fresh `--run-id` is required for each attempt. Cleanup stops only the
-named unit it created and removes its model socket, retaining evidence.
+unit with its instance-unique identity and verified ownership token, and removes
+its model socket, retaining evidence. Reusing a run name in another job directory
+cannot target the first job's service. The host tests above exercise actual
+temporary systemd services; they are separate from the namespace's offline suite.
 
 ## What is tested
 
@@ -79,11 +87,16 @@ named unit it created and removes its model socket, retaining evidence.
 Read `runs/<run-id>/output/result.json`, `gateway.json`, `runtime-manifest.json`
 and `cleanup.json`. A submitted command or completed installer is not a live
 pass. A quality-gate pass requires the worker's zero exit, three non-fallback stages,
-valid reflection, all six strict selected checks and confirmed cleanup. A fully
+valid reflection, six delivered baseline checks, all six delivered strict selected
+checks and confirmed cleanup. Missing/failed executions are unavailable evidence,
+not wrong answers; an incomplete comparison cannot claim an accuracy improvement
+or return a passing exit. Pairs are matched by task and trial, not row order. A fully
 completed comparison can exit 2 because the candidate regressed; keep and report
 that result, rather than retrying until a winner appears. `experiment_completed`
 and `pass` deliberately distinguish completion from acceptance. `NO_ENTRY`
-is valid reflection completion but does not mean a library entry was created.
+is valid reflection completion only as an exact sentinel (optionally following a
+complete edits block), and does not mean a library entry was created. An incidental
+mention of that word in an error or explanation is rejected.
 
 The adapter's default CLI mode remains `append`; classification is explicit:
 `ompk-harness2 run ... --solver-prompt-mode=classification`. The CLI itself does

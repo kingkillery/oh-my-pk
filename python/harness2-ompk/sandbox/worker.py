@@ -12,7 +12,8 @@ import urllib.request
 
 from ompk_harness2.adapter import OmpkBenchmarkAdapter
 from harness2.core.schedule import run_domain
-from reflection import PilotProposer
+from reflection import PilotProposer, valid_reflection
+from results import comparison_result
 
 ROOT = Path('/work')
 
@@ -72,7 +73,8 @@ def evaluate(adapter, tree, prefix):
         for task in adapter.tasks():
             run = adapter.execute(task, tree, f'{prefix}-{trial}-{task}')
             rows.append({'task': task, 'trial': trial, 'answer': adapter.deliverable_text(run).strip(),
-                         'score': adapter.score(run, task), 'run_dir': str(run)})
+                         'score': adapter.score(run, task), 'delivered': adapter.delivered(run),
+                         'run_dir': str(run)})
     return rows
 
 
@@ -104,26 +106,16 @@ def main():
     adapter._read_candidate(selected)
     candidate = evaluate(adapter, selected, 'selected') if core else []
     reflections = [r for r in proposer._calls if r.label.startswith('experience.')]
-    reflection_ok = len(reflections) == 1 and reflections[0].ok and (
-        bool(selection.get('experience')) or 'NO_ENTRY' in reflections[0].text)
-    comparisons = [{'task': a['task'], 'trial': a['trial'], 'baseline': a['score']['all_pass'],
-                    'selected': b['score']['all_pass']} for a, b in zip(baseline, candidate)]
-    improved = sum(not r['baseline'] and r['selected'] for r in comparisons)
-    regressed = sum(r['baseline'] and not r['selected'] for r in comparisons)
+    reflection_ok = len(reflections) == 1 and valid_reflection(
+        reflections[0], selection.get('experience'))
     report = {'fresh_worker': True, 'resumed': False, 'scheduler': result, 'core_recursion_pass': core,
               'stages': stages, 'reflection_completed': reflection_ok,
               'experience_entry_recorded': bool(selection.get('experience')),
               'selected_tree_is_base': selection.get('chosen_tree_is_base'),
-              'baseline': baseline, 'selected': candidate, 'paired_comparisons': comparisons,
-              'improved_pairs': improved, 'regressed_pairs': regressed,
-              'performance_conclusion': ('regression on this small pilot' if regressed > improved else
-                  'no demonstrated accuracy improvement' if improved == regressed else
-                  'improvement on this small pilot only'),
-              'all_selected_checks_pass': len(candidate) == 6 and all(r['score']['all_pass'] for r in candidate),
+              'baseline': baseline, 'selected': candidate,
               'limits': 'Three fixed tasks, two draws each, one training task, k=1; not a general quality benchmark.'}
-    report['pass'] = core and reflection_ok and report['all_selected_checks_pass']
-    report['experiment_completed'] = (core and reflection_ok and len(candidate) == 6
-        and all(adapter.delivered(Path(row['run_dir'])) for row in baseline + candidate))
+    report.update(comparison_result(baseline, candidate, adapter.tasks(),
+                                    core=core, reflection_ok=reflection_ok))
     (ROOT / 'result.json').write_text(json.dumps(report, indent=2))
     print('CLEAN_SMOKE_RESULT', json.dumps({k: report[k] for k in ('pass', 'core_recursion_pass', 'reflection_completed', 'improved_pairs', 'regressed_pairs', 'performance_conclusion')}), flush=True)
     return 0 if report['pass'] else 2

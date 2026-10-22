@@ -7,7 +7,26 @@ import threading
 import unittest
 
 from harness2.core.spec import ChannelSpec
-from reflection import TextReflection
+from harness2.core.proposer import Reply
+from reflection import TextReflection, valid_reflection
+
+
+class ReflectionAcceptanceTests(unittest.TestCase):
+    def test_exact_no_entry_with_optional_edits_is_valid(self):
+        for text in ('NO_ENTRY', ' \nNO_ENTRY\n', '<edits>Prompt shortened.</edits>\nNO_ENTRY'):
+            self.assertTrue(valid_reflection(Reply(label='experience.agg1', text=text, ok=True), {}))
+
+    def test_malformed_no_entry_mentions_are_rejected(self):
+        for text in ('Cannot finish; the template says NO_ENTRY', 'NO_ENTRY because I failed',
+                     '<edits>NO_ENTRY</edits>', '<edits>unfinished NO_ENTRY',
+                     '```\nNO_ENTRY\n```', 'NO_ENTRY\n<experience>invalid</experience>'):
+            self.assertFalse(valid_reflection(Reply(label='experience.agg1', text=text, ok=True), {}))
+
+    def test_only_successful_upstream_accepted_experience_is_valid(self):
+        accepted = {'cue': 'x', 'lesson': 'y', 'evidence': 'z'}
+        self.assertTrue(valid_reflection(Reply(label='experience.agg1', text='experience XML', ok=True), accepted))
+        self.assertFalse(valid_reflection(Reply(label='experience.agg1', text='NO_ENTRY', ok=False), {}))
+        self.assertFalse(valid_reflection(Reply(label='experience.agg1', text='experience XML', ok=False), accepted))
 
 
 class ReflectionTests(unittest.TestCase):

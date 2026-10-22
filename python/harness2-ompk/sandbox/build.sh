@@ -6,4 +6,4 @@ npm install --prefix /job/upstream/dependencies/tools --ignore-scripts bun@1.3.1
 node /job/upstream/dependencies/tools/node_modules/bun/install.js
 /job/upstream/dependencies/tools/node_modules/.bin/bun install --frozen-lockfile --ignore-scripts --cwd /job/upstream/dependencies/opencode
 mv /job/upstream/dependencies/opencode /job/upstream/dependencies/tools /job/runtime/dependencies/
-python3.12 -B /package/sandbox/configure_runtime.py
+python3.12 -B /package/configure_runtime.py
