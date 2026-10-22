@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [16.4.31] - 2026-10-22
+
 ### Fixed
 
 - Gemini 3 `*-flash-tiered` models (Antigravity) no longer advertise the `minimal` thinking effort, which they reject with HTTP 400 "Thinking level MINIMAL is not supported". A `minimal` selection now clamps to `low`. The bundled catalog entry is corrected and the model cache schema moves to v8, so cached metadata from older builds is refreshed.

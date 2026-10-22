@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [16.4.31] - 2026-10-22
+
 ### Changed
 
 - Offer Ctrl+Enter and Alt+Enter alongside Shift+Enter and Ctrl+J as default newline bindings.
