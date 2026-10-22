@@ -120,6 +120,7 @@ const sessionEventTypes = new Set<AgentSessionEvent["type"]>([
 	"irc_message",
 	"notice",
 	"thinking_level_changed",
+	"model_changed",
 	"goal_updated",
 ]);
 

@@ -450,6 +450,7 @@ export type AgentSessionEvent =
 			/** The level `auto` resolved to this turn, once classified. */
 			resolved?: Effort;
 	  }
+	| { type: "model_changed"; model: Model | undefined }
 	| { type: "goal_updated"; goal: Goal | null; state?: GoalModeState };
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -10986,6 +10987,7 @@ export class AgentSession {
 
 	#setModelWithProviderSessionReset(model: Model): void {
 		const currentModel = this.model;
+		const isChanging = !modelsAreEqual(currentModel, model);
 		if (currentModel) {
 			this.#closeProviderSessionsForModelSwitch(currentModel, model);
 		}
@@ -10993,6 +10995,9 @@ export class AgentSession {
 
 		// Re-evaluate append-only context mode — provider or setting may have changed
 		this.#syncAppendOnlyContext(model);
+		if (isChanging) {
+			this.#emit({ type: "model_changed", model });
+		}
 	}
 
 	#closeCodexProviderSessionsForHistoryRewrite(): void {

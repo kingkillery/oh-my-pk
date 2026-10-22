@@ -104,6 +104,17 @@ const MODE_CONFIG_ID = "mode";
 const MODEL_CONFIG_ID = "model";
 const THINKING_CONFIG_ID = "thinking";
 const THINKING_OFF = "off";
+const FUSION_CONFIG_ID = "fusion";
+const ROUTING_CONFIG_ID = "routing";
+const FUSION_OFF = "off";
+const ROUTING_STATIC = "static";
+const ROUTING_DYNAMIC = "dynamic";
+const ACP_FUSION_MODES = ["off", "delegate", "escalate", "token-savings", "autonomous"] as const;
+type AcpFusionMode = (typeof ACP_FUSION_MODES)[number];
+
+function isAcpFusionMode(value: string): value is AcpFusionMode {
+	return (ACP_FUSION_MODES as readonly string[]).includes(value);
+}
 const SESSION_PAGE_SIZE = 50;
 const SPEECH_MODELS_LIST_METHOD = "speech.models.list";
 /**
@@ -764,6 +775,12 @@ export class AcpAgent implements Agent {
 			case THINKING_CONFIG_ID:
 				this.#setThinkingLevelById(record.session, params.value);
 				break;
+			case FUSION_CONFIG_ID:
+				await this.#setFusionById(record, params.value);
+				break;
+			case ROUTING_CONFIG_ID:
+				await this.#setRoutingById(record, params.value);
+				break;
 			default:
 				throw new Error(`Unknown ACP config option: ${params.configId}`);
 		}
@@ -778,12 +795,13 @@ export class AcpAgent implements Agent {
 			});
 		}
 
-		// For `thinking` the lifetime subscription pushes post-bootstrap; only
-		// push here when it's not yet installed so pre-bootstrap callers still
+		// For `thinking` and `model` the lifetime subscription pushes post-bootstrap;
+		// only push here when it's not yet installed so pre-bootstrap callers still
 		// see the change without a post-bootstrap duplicate.
-		const thinkingHandledBySubscription =
-			params.configId === THINKING_CONFIG_ID && record.lifetimeUnsubscribe !== undefined;
-		if (!thinkingHandledBySubscription) {
+		const handledBySubscription =
+			(params.configId === THINKING_CONFIG_ID || params.configId === MODEL_CONFIG_ID) &&
+			record.lifetimeUnsubscribe !== undefined;
+		if (!handledBySubscription) {
 			await this.#pushConfigOptionUpdate(record);
 		}
 		return { configOptions: this.#buildConfigOptions(record.session) };
@@ -978,16 +996,24 @@ export class AcpAgent implements Agent {
 	}
 
 	async #tryRunSkillCommand(record: ManagedSessionRecord, text: string): Promise<boolean> {
-		if (!text.startsWith("/skill:")) {
+		const command = text.trimStart();
+		// `$name` is the skill form ACP clients learn from
+		// `available_commands_update`; `/skill:name` stays for clients and
+		// scripts that predate it.
+		const isDollarCommand = command.startsWith("$");
+		if (!isDollarCommand && !command.startsWith("/skill:")) {
 			return false;
 		}
 		if (!record.session.skillsSettings?.enableSkillCommands) {
 			return false;
 		}
-		const spaceIndex = text.indexOf(" ");
-		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
-		const skillName = commandName.slice("skill:".length);
+		const spaceIndex = command.indexOf(" ");
+		const token = spaceIndex === -1 ? command : command.slice(0, spaceIndex);
+		const args = spaceIndex === -1 ? "" : command.slice(spaceIndex + 1).trim();
+		const skillName = isDollarCommand ? token.slice("$".length) : token.slice("/skill:".length);
+		if (!skillName) {
+			return false;
+		}
 		const skill = record.session.skills.find(candidate => candidate.name === skillName);
 		if (!skill) {
 			return false;
@@ -1318,14 +1344,15 @@ export class AcpAgent implements Agent {
 	}
 
 	async #handleLifetimeEvent(record: ManagedSessionRecord, event: AgentSessionEvent): Promise<void> {
-		if (event.type !== "thinking_level_changed") {
+		if (event.type !== "thinking_level_changed" && event.type !== "model_changed") {
 			return;
 		}
 		try {
 			await this.#pushConfigOptionUpdate(record);
 		} catch (error) {
-			logger.warn("Failed to push thinking-level config_option_update", {
+			logger.warn("Failed to push session config_option_update", {
 				sessionId: record.session.sessionId,
+				eventType: event.type,
 				error,
 			});
 		}
@@ -1676,6 +1703,55 @@ export class AcpAgent implements Agent {
 			),
 			options: this.#buildThinkingOptions(session),
 		});
+		configOptions.push({
+			id: FUSION_CONFIG_ID,
+			name: "Fusion",
+			category: "_fusion",
+			type: "select",
+			currentValue: this.#getCurrentFusionConfigValue(session),
+			options: [
+				{ value: FUSION_OFF, name: "Off", description: "Disable Fusion sidekick delegation and routing" },
+				{
+					value: "delegate",
+					name: "Delegate",
+					description: "Offload settled mechanical work to the cheap sidekick model",
+				},
+				{
+					value: "escalate",
+					name: "Escalate",
+					description: "Delegate + difficulty-gated routing: cheap-first, escalate hard work to frontier",
+				},
+				{
+					value: "token-savings",
+					name: "Token Savings",
+					description: "Cap default model calls and steer remaining execution to task/smol models",
+				},
+				{
+					value: "autonomous",
+					name: "Autonomous",
+					description: "Planning-only root with durable delegated workers",
+				},
+			],
+		});
+		configOptions.push({
+			id: ROUTING_CONFIG_ID,
+			name: "Routing",
+			category: "_routing",
+			type: "select",
+			currentValue: this.#getCurrentRoutingConfigValue(session),
+			options: [
+				{
+					value: ROUTING_STATIC,
+					name: "Static",
+					description: "One-shot compaction downgrade without per-stretch classifier routing",
+				},
+				{
+					value: ROUTING_DYNAMIC,
+					name: "Dynamic",
+					description: "Classify each compaction boundary across the configured model pool or compact tier",
+				},
+			],
+		});
 		return configOptions;
 	}
 
@@ -1715,6 +1791,56 @@ export class AcpAgent implements Agent {
 			throw new Error(`Unknown ACP thinking level: ${value}`);
 		}
 		session.setThinkingLevel(thinkingLevel);
+	}
+
+	#getCurrentFusionConfigValue(session: AgentSession): AcpFusionMode {
+		if (session.settings.get("fusion.enabled") !== true) {
+			return FUSION_OFF;
+		}
+		const mode = session.settings.get("fusion.mode");
+		if (mode === "savings") {
+			return "token-savings";
+		}
+		return isAcpFusionMode(mode) ? mode : "escalate";
+	}
+
+	#getCurrentRoutingConfigValue(session: AgentSession): typeof ROUTING_STATIC | typeof ROUTING_DYNAMIC {
+		return session.settings.get("fusion.dynamicRouting") === true ? ROUTING_DYNAMIC : ROUTING_STATIC;
+	}
+
+	async #setFusionById(record: ManagedSessionRecord, value: string): Promise<void> {
+		const normalized = value === "savings" ? "token-savings" : value;
+		if (!isAcpFusionMode(normalized)) {
+			throw new Error(`Unknown ACP fusion mode: ${value}`);
+		}
+		const { session } = record;
+		if (normalized === FUSION_OFF) {
+			session.settings.override("fusion.enabled", false);
+			session.settings.override("fusion.mode", FUSION_OFF);
+		} else {
+			session.settings.override("fusion.enabled", true);
+			session.settings.override("fusion.mode", normalized);
+		}
+		await session.refreshBaseSystemPrompt?.();
+		await fusionSidekick.ensureFusionSidekick(
+			{
+				session,
+				settings: session.settings,
+				sessionManager: session.sessionManager,
+				mcpManager: record.mcpManager,
+				eventBus: undefined,
+			},
+			{},
+		);
+	}
+
+	async #setRoutingById(record: ManagedSessionRecord, value: string): Promise<void> {
+		if (value !== ROUTING_STATIC && value !== ROUTING_DYNAMIC) {
+			throw new Error(`Unknown ACP routing mode: ${value}`);
+		}
+		const { session } = record;
+		session.settings.override("fusion.dynamicRouting", value === ROUTING_DYNAMIC);
+		await session.refreshBaseSystemPrompt?.();
 	}
 
 	#toModelId(model: Model): string {
@@ -2572,6 +2698,9 @@ export class AcpAgent implements Agent {
 			}
 			record.mcpManager = undefined;
 		}
+		record.session.settings.clearOverride("fusion.enabled");
+		record.session.settings.clearOverride("fusion.mode");
+		record.session.settings.clearOverride("fusion.dynamicRouting");
 		try {
 			await record.session.dispose();
 		} catch (error) {

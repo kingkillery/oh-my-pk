@@ -286,4 +286,31 @@ describe("AgentSession — Fusion Token Savings Mode call limit", () => {
 
 		expect(harness.session.model?.id).toBe(defaultModel.id);
 	});
+
+	it("emits model_changed when Fusion Token Savings switches to the task model and restores default", async () => {
+		const harness = await createSavingsHarness();
+		cleanups.push(harness.cleanup);
+
+		const changedModelIds: Array<string | undefined> = [];
+		const unsubscribe = harness.session.subscribe(event => {
+			if (event.type === "model_changed") {
+				changedModelIds.push(event.model?.id);
+			}
+		});
+
+		const context = makeContinuingContext();
+		await harness.onTurnEndFn([context.message], undefined, context);
+		await harness.onTurnEndFn([context.message], undefined, context);
+		expect(changedModelIds).toEqual([taskModel.id]);
+
+		harness.agent.clearAllQueues();
+		await harness.session.prompt("Next question", { userInitiated: true });
+		expect(changedModelIds).toEqual([taskModel.id, defaultModel.id]);
+
+		// Re-setting the already-active model must not emit a redundant event.
+		await harness.session.setModelTemporary(defaultModel);
+		expect(changedModelIds).toEqual([taskModel.id, defaultModel.id]);
+
+		unsubscribe();
+	});
 });

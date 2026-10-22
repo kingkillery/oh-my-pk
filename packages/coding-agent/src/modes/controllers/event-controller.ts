@@ -154,6 +154,10 @@ export class EventController {
 				}
 				this.ctx.ui.resetDisplay();
 			},
+			model_changed: async () => {
+				this.ctx.statusLine.invalidate();
+				this.ctx.ui.requestRender();
+			},
 			goal_updated: async () => {},
 		} satisfies AgentSessionEventHandlers;
 	}
