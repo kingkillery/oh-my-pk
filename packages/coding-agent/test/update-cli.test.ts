@@ -213,7 +213,7 @@ describe("update-cli binary replacement", () => {
 		await expect(updateViaBinaryAt(alias, "16.4.28")).rejects.toThrow("Download failed for release 16.4.28");
 		expect(await Bun.file(alias).text()).toBe("working binary");
 		expect((await fs.lstat(alias)).isSymbolicLink()).toBe(true);
-		expect(await fs.readdir(dir)).toEqual(["oh-my-pk", "ompk"]);
+		expect((await fs.readdir(dir)).sort()).toEqual(["oh-my-pk", "ompk"]);
 	});
 
 	it("updates the shared binary through an alias and pins fallback downloads to the checked version", async () => {
