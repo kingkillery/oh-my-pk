@@ -49,8 +49,16 @@ No API purchase or paid fallback is permitted.
 ```sh
 OMPK_HARNESS2_ENABLED=1 python3.12 sandbox/run.py --execute \
   --job /tmp/h2-example --python /absolute/python-root \
-  --run-id clean-001 --model minimax/minimax-m3.1-flash:free
+  --run-id clean-001 --model nvidia/nemotron-3-ultra-550b-a55b:free
 ```
+
+This example route had zero catalog prices and tool support on October 22, 2026.
+Free routes can expire: MiniMax M3.1 Flash's free launch ended on that date.
+Select an explicit currently available zero-price route with tool support; never
+remove the `:free` suffix or relax the price checks to recover an expired route.
+Record the actual model and catalog pricing with the run. Compare baseline and
+selected prompts within the same model's run; a model change prevents attributing
+differences from historical runs solely to a prompt or adapter fix.
 
 The host gateway verifies the current model catalog's zero-price entry, rejects
 other model names and admin routes, forces zero maximum token prices and
