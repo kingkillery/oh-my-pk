@@ -9,6 +9,9 @@ with `--session-auto-close-after 4h` and close that session after cleanup.
 
 Use Linux storage, not `/mnt/c`, for the worker. Install Python 3.12, Bubblewrap,
 Git, npm, coreutils and a working systemd **user** manager with cgroup v2.
+Allow at least 4 GiB of free Linux storage during preparation. Successful builds
+discard their credential-free Bun/npm download caches; installed runtime files
+and all execution evidence are retained.
 Supply a reviewed native Linux OMPK executable. The manifest records its SHA-256;
 this does not imply it was built from the adapter's commit.
 
