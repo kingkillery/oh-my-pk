@@ -75,6 +75,12 @@ temporary systemd services; they are separate from the namespace's offline suite
   a neutral user carrier avoids ordinary root-work classification.
 - Actual upstream INV/DOM/AGG orchestration on one training task and k=1.
   Proposals still use OpenCode and the original tree validation rules.
+- The proposer is explicitly the harness editor. The target solver's one-word
+  instructions are evidence, not its response contract. Editing replies must be
+  one substantive `<notes>` block; scalar solver answers and malformed or empty
+  notes are rejected before proposal acceptance, including upstream cache reads.
+  Invalid live replies use only upstream's existing bounded attempt policy;
+  notes are never synthesized, padded or rewritten to manufacture acceptance.
 - Reflection receives the complete upstream evidence packet in one bounded
   text-only model request. It has no file-editing tools, and upstream still
   parses and accepts the experience/NO_ENTRY response. Oversized evidence is

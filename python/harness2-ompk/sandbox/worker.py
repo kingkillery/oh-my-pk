@@ -88,8 +88,10 @@ def main():
     channel = dataclasses.replace(adapter.spec.channels['proposer'], steps=20, timeout=180, effort='')
     guidance = ('Edit only systemprompt.md and tool_descriptions/tool_guidance.md under context/harness/. '
                 'Keep guardrails.md and LongTermMEMORY.md unchanged. No added files, scripts, skills or subagents. '
-                'This is a text-only classifier with no solver tools. Make a concise evidence-based edit, '
-                'save the requested notes to output/answer.md and stop.')
+                'The TARGET SOLVER is a text-only classifier with no tools. You are its harness editor; '
+                'do not answer the classification task. Make a concise evidence-based edit, '
+                'then return one substantive <notes> block and save that same block to output/answer.md. '
+                'Explain the actual changes and their trajectory evidence, or justify KEEP_BASE, then stop.')
     adapter.spec = dataclasses.replace(adapter.spec, channels={'proposer': channel, 'selector': channel},
         prompts=dataclasses.replace(adapter.spec.prompts, domain_guidance=guidance))
     baseline = evaluate(adapter, adapter.base_harness(), 'baseline')

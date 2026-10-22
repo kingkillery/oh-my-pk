@@ -9,6 +9,7 @@ from pathlib import Path
 import urllib.request
 
 from harness2.core.proposer import Proposer
+from proposals import NotesProposer
 
 
 def valid_reflection(reply, accepted_experience):
@@ -48,7 +49,7 @@ class TextReflection(Proposer):
         return text, float(data.get('usage', {}).get('cost') or 0), ''
 
 
-class PilotProposer(Proposer):
+class PilotProposer(NotesProposer):
     def call(self, mission, context_dir, label, **kwargs):
         if not label.startswith('experience.'):
             return super().call(mission, context_dir, label, **kwargs)
