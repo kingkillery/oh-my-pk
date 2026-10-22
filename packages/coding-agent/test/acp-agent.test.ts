@@ -125,8 +125,15 @@ class FakeAgentSession {
 	disposed = false;
 	fastMode = false;
 	forcedToolChoice: string | undefined;
+	#settings: Settings | undefined;
 	get settings(): Settings {
-		return Settings.instance;
+		if (!this.#settings) {
+			this.#settings = Settings.instance;
+		}
+		return this.#settings;
+	}
+	set settings(value: Settings) {
+		this.#settings = value;
 	}
 	promptCalls: string[] = [];
 	customMessages: Array<{ customType: string; content: string; details?: unknown }> = [];
@@ -203,7 +210,21 @@ class FakeAgentSession {
 	async refreshSshTool(_options?: { activateIfAvailable?: boolean }): Promise<void> {}
 
 	async setModel(model: Model): Promise<void> {
+		const isChanging =
+			this.model?.provider !== model.provider || this.model?.id !== model.id || this.model?.api !== model.api;
 		this.model = model;
+		if (isChanging) {
+			for (const listener of this.#listeners) {
+				listener({
+					type: "model_changed",
+					model,
+				} as AgentSessionEvent);
+			}
+		}
+	}
+
+	async setModelTemporary(model: Model): Promise<void> {
+		await this.setModel(model);
 	}
 
 	subscribe(listener: (event: AgentSessionEvent) => void): () => void {
@@ -955,6 +976,97 @@ describe("ACP agent", () => {
 		await Bun.sleep(0);
 	});
 
+	it("pushes config_option_update when the session model changes internally (e.g. Fusion routing)", async () => {
+		const harness = await createHarness();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		await waitForBootstrapGuard();
+
+		const updatesBefore = harness.updates.length;
+		await session.setModelTemporary(TEST_MODELS[1]!);
+
+		const configUpdates = harness.updates
+			.slice(updatesBefore)
+			.filter(
+				notification =>
+					notification.sessionId === created.sessionId &&
+					notification.update.sessionUpdate === "config_option_update",
+			);
+		expect(configUpdates.length).toBe(1);
+		expectAcpNotifications(configUpdates);
+		const firstUpdate = configUpdates[0]!.update;
+		if (firstUpdate.sessionUpdate !== "config_option_update") {
+			throw new Error("expected config_option_update");
+		}
+		const modelConfig = firstUpdate.configOptions.find(option => option.id === "model") as
+			| { currentValue?: unknown }
+			| undefined;
+		expect(modelConfig?.currentValue).toBe(`${TEST_MODELS[1]!.provider}/${TEST_MODELS[1]!.id}`);
+
+		// Re-applying the same model must not emit a redundant notification.
+		const updatesBeforeRedundant = harness.updates.length;
+		await session.setModelTemporary(TEST_MODELS[1]!);
+		expect(harness.updates.length).toBe(updatesBeforeRedundant);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("exposes session-scoped fusion and routing config options without leaking across sessions", async () => {
+		const harness = await createHarness();
+		const first = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const second = await harness.agent.newSession({ cwd: harness.cwdB, mcpServers: [] });
+		const firstSession = harness.findSession(first.sessionId)!;
+		const secondSession = harness.findSession(second.sessionId)!;
+		firstSession.settings = await Settings.instance.cloneForCwd(harness.cwdA);
+		secondSession.settings = await Settings.instance.cloneForCwd(harness.cwdB);
+		await waitForBootstrapGuard();
+
+		const initialFusion = first.configOptions?.find(option => option.id === "fusion") as
+			| { currentValue?: unknown }
+			| undefined;
+		const initialRouting = first.configOptions?.find(option => option.id === "routing") as
+			| { currentValue?: unknown }
+			| undefined;
+		expect(initialFusion?.currentValue).toBe("off");
+		expect(initialRouting?.currentValue).toBe("static");
+
+		const fusionResp = await harness.agent.setSessionConfigOption({
+			sessionId: first.sessionId,
+			configId: "fusion",
+			value: "token-savings",
+		});
+		const routingResp = await harness.agent.setSessionConfigOption({
+			sessionId: first.sessionId,
+			configId: "routing",
+			value: "dynamic",
+		});
+
+		const updatedFusion = fusionResp.configOptions.find(option => option.id === "fusion") as
+			| { currentValue?: unknown }
+			| undefined;
+		const updatedRouting = routingResp.configOptions.find(option => option.id === "routing") as
+			| { currentValue?: unknown }
+			| undefined;
+		expect(updatedFusion?.currentValue).toBe("token-savings");
+		expect(updatedRouting?.currentValue).toBe("dynamic");
+		expect(firstSession.settings.get("fusion.enabled")).toBe(true);
+		expect(firstSession.settings.get("fusion.mode")).toBe("token-savings");
+		expect(firstSession.settings.get("fusion.dynamicRouting")).toBe(true);
+		// Second session and global defaults remain untouched.
+		expect(secondSession.settings.get("fusion.enabled")).toBe(false);
+		expect(secondSession.settings.get("fusion.dynamicRouting")).toBe(false);
+		expect(Settings.instance.get("fusion.enabled")).toBe(false);
+
+		// Closing the session clears its runtime overrides.
+		await harness.agent.closeSession({ sessionId: first.sessionId });
+		expect(firstSession.settings.get("fusion.enabled")).toBe(false);
+		expect(firstSession.settings.get("fusion.dynamicRouting")).toBe(false);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
 	it("lists static speech models for ACP mobile voice settings", async () => {
 		const harness = await createHarness();
 		const voices = TTS_LOCAL_VOICE_OPTIONS.map(({ value, label }) => ({ value, label }));
@@ -1594,7 +1706,8 @@ describe("ACP agent", () => {
 		);
 		expect(names).toContain("fast");
 		expect(names).toContain("force");
-		expect(names).toContain("skill:sample");
+		expect(names).toContain("$sample");
+		expect(names).not.toContain("skill:sample");
 		expect(names).not.toContain("settings");
 		expect(names).not.toContain("copy");
 		expect(names).not.toContain("plan");
@@ -1703,6 +1816,59 @@ describe("ACP agent", () => {
 		expect(session.customMessages[0]!.content).toContain("# Sample\nDo work.");
 		expect(session.customMessages[0]!.content).toContain(`Skill: ${skillPath}`);
 		expect(session.customMessages[0]!.content).toContain("User: extra context");
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("runs a skill from the $name form advertised to ACP clients", async () => {
+		const harness = await createHarness();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		const skillDir = path.join(harness.cwdA, ".skills", "sample");
+		const skillPath = path.join(skillDir, "SKILL.md");
+		await fs.promises.mkdir(skillDir, { recursive: true });
+		await fs.promises.writeFile(skillPath, "---\ndescription: Sample skill\n---\n# Sample\nDo work.\n");
+		session.skills = [
+			{
+				name: "sample",
+				description: "Sample skill",
+				filePath: skillPath,
+				baseDir: skillDir,
+				source: "test",
+			},
+		];
+
+		await harness.agent.prompt({
+			sessionId: created.sessionId,
+			messageId: "00000000-0000-4000-8000-000000000002",
+			prompt: [{ type: "text", text: "$sample extra context" }],
+		} as PromptRequest);
+
+		expect(session.promptCalls).toEqual([]);
+		expect(session.customMessages).toHaveLength(1);
+		expect(session.customMessages[0]!.customType).toBe("skill-prompt");
+		expect(session.customMessages[0]!.content).toContain("# Sample\nDo work.");
+		expect(session.customMessages[0]!.content).toContain("User: extra context");
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("sends the $name form to the model when no such skill is loaded", async () => {
+		const harness = await createHarness();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		session.skills = [];
+
+		await harness.agent.prompt({
+			sessionId: created.sessionId,
+			messageId: "00000000-0000-4000-8000-000000000003",
+			prompt: [{ type: "text", text: "$missing" }],
+		} as PromptRequest);
+
+		expect(session.customMessages).toEqual([]);
+		expect(session.promptCalls).toEqual(["$missing"]);
 
 		harness.abortController.abort();
 		await Bun.sleep(0);

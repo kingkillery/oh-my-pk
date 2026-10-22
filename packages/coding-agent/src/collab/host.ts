@@ -54,6 +54,7 @@ const STATE_TRIGGER_EVENTS: Record<string, true> = {
 	message_end: true,
 	tool_execution_end: true,
 	thinking_level_changed: true,
+	model_changed: true,
 	auto_compaction_end: true,
 };
 

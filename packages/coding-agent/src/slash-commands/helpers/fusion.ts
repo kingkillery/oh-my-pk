@@ -201,9 +201,11 @@ export async function handleFusionPoolArgs(
  * Returns the message to show; the TUI wrapper additionally spawns the sidekick.
  */
 export function enableFusion(runtime: SlashCommandRuntime): string {
+	runtime.settings.clearOverride("fusion.enabled");
 	runtime.settings.set("fusion.enabled", true);
 	const parts = ["Fusion enabled."];
 	if (runtime.settings.get("fusion.mode") === "off") {
+		runtime.settings.clearOverride("fusion.mode");
 		runtime.settings.set("fusion.mode", "escalate");
 		parts.push('fusion.mode was "off" — set to "escalate".');
 	}
@@ -214,6 +216,7 @@ export function enableFusion(runtime: SlashCommandRuntime): string {
 
 /** Disable fusion. A live sidekick is left running; it stops being advertised next turn. */
 export function disableFusion(runtime: SlashCommandRuntime): string {
+	runtime.settings.clearOverride("fusion.enabled");
 	runtime.settings.set("fusion.enabled", false);
 	return "Fusion disabled. A running sidekick stays alive but is no longer advertised to the main model.";
 }
@@ -287,13 +290,16 @@ export async function handleFusionCommand(
 			return commandConsumed();
 		case "on":
 			await runtime.output(enableFusion(runtime));
+			await runtime.notifyConfigChanged?.();
 			return commandConsumed();
 		case "off":
 			await runtime.output(disableFusion(runtime));
+			await runtime.notifyConfigChanged?.();
 			return commandConsumed();
 		case "toggle": {
 			const enabled = runtime.settings.get("fusion.enabled") === true;
 			await runtime.output(enabled ? disableFusion(runtime) : enableFusion(runtime));
+			await runtime.notifyConfigChanged?.();
 			return commandConsumed();
 		}
 		case "mode": {
@@ -308,14 +314,17 @@ export async function handleFusionCommand(
 				return usage("Usage: /fusion mode <off|delegate|escalate|token-savings|autonomous>", runtime);
 			}
 			const canonicalValue = value === "savings" ? "token-savings" : value;
+			runtime.settings.clearOverride("fusion.mode");
 			runtime.settings.set("fusion.mode", canonicalValue);
 			const wasEnabled = runtime.settings.get("fusion.enabled") === true;
 			if (!wasEnabled && canonicalValue !== "off") {
+				runtime.settings.clearOverride("fusion.enabled");
 				runtime.settings.set("fusion.enabled", true);
 				await runtime.output(`fusion.mode set to "${canonicalValue}" and Fusion enabled.`);
 			} else {
 				await runtime.output(`fusion.mode set to "${canonicalValue}".`);
 			}
+			await runtime.notifyConfigChanged?.();
 			return commandConsumed();
 		}
 		case "routing": {
@@ -323,8 +332,10 @@ export async function handleFusionCommand(
 			if (value !== "on" && value !== "off") {
 				return usage("Usage: /fusion routing <on|off>  (fusion.dynamicRouting)", runtime);
 			}
+			runtime.settings.clearOverride("fusion.dynamicRouting");
 			runtime.settings.set("fusion.dynamicRouting", value === "on");
 			await runtime.output(`Dynamic routing ${value}.`);
+			await runtime.notifyConfigChanged?.();
 			return commandConsumed();
 		}
 		case "sidekick":

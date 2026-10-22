@@ -166,6 +166,8 @@ If `skills.enableSkillCommands` is true, interactive mode registers one slash co
 
 There is no flag, mode-selector, or frontmatter knob to override this — the keybinding _is_ the choice, identical to how free text is routed during streaming (`input-controller.ts:562-568` for Enter, `input-controller.ts:961-966` for Ctrl+Enter; both dispatch through `#invokeSkillCommand`).
 
+ACP sessions advertise the same skills as `$<name>` entries in `available_commands_update`, because clients such as T3 Code model skills separately from slash commands, and they accept `$<name> [args]` as the prompt form. Internal `skill:<name>` names are unchanged for RPC, extensions, and interactive mode. Skills are advertised after builtin, extension, custom, and project commands so a client with a bounded command budget truncates skills rather than project commands.
+
 ## `skill://` URL behavior
 
 `src/internal-urls/skill-protocol.ts` supports:

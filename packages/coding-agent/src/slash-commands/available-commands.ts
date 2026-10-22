@@ -53,17 +53,6 @@ export async function buildAvailableSlashCommands(
 		});
 	}
 
-	if (session.skillsSettings?.enableSkillCommands) {
-		for (const skill of session.skills) {
-			appendCommand({
-				name: getSkillSlashCommandName(skill),
-				description: skill.description || `Run ${skill.name} skill`,
-				input: { hint: "arguments" },
-				source: "skill",
-			});
-		}
-	}
-
 	const runner = session.extensionRunner;
 	if (runner) {
 		for (const command of runner.getRegisteredCommands(ACP_BUILTIN_RESERVED_NAMES)) {
@@ -93,13 +82,44 @@ export async function buildAvailableSlashCommands(
 		appendCommand({ name: command.name, description: command.description, source: "file" });
 	}
 
+	// Skills are advertised last: ACP clients with a bounded command budget
+	// (T3 Code accepts 128 entries across slash commands and skills) otherwise
+	// truncate project, extension, and custom commands, which are far scarcer
+	// and more specific than the skill catalog.
+	if (session.skillsSettings?.enableSkillCommands) {
+		for (const skill of session.skills) {
+			appendCommand({
+				name: getSkillSlashCommandName(skill),
+				description: skill.description || `Run ${skill.name} skill`,
+				input: { hint: "arguments" },
+				source: "skill",
+			});
+		}
+	}
+
 	return commands;
 }
 
+const ACP_SKILL_PREFIX = "$";
+
 export function toAcpAvailableCommands(commands: readonly InternalAvailableSlashCommand[]): AvailableCommand[] {
 	return commands.map(command => ({
-		name: command.name,
+		name: toAcpCommandName(command),
 		description: command.description ?? "",
 		input: command.input,
 	}));
+}
+
+/**
+ * ACP clients that model skills separately (T3 Code) only recognise the
+ * `$skill` form: a `skill:name` entry is treated as an ordinary slash command
+ * and never reaches the skill menu. Internal `skill:` names stay intact for
+ * RPC and extension consumers, so the translation lives at the ACP boundary.
+ */
+function toAcpCommandName(command: InternalAvailableSlashCommand): string {
+	if (command.source !== "skill") {
+		return command.name;
+	}
+	const skillName = command.name.startsWith("skill:") ? command.name.slice("skill:".length) : command.name;
+	return `${ACP_SKILL_PREFIX}${skillName}`;
 }

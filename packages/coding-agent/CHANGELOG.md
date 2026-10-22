@@ -11,6 +11,8 @@
 - Session writer lock files in `session-locks/` are deleted when their session releases, instead of accumulating one file per session ever opened. A waiter that already opened a deleted lock file sees it marked retired and retries on the live file, so cross-process exclusion is unchanged.
 - Mnemopi no longer loses working memory left by sessions that were killed instead of closed. Stale working memory is consolidated into episodic summaries when a bank opens and before each write; previously the next write trimmed anything past its TTL without consolidating it.
 - Add `x` to cancel or dismiss `/btw`, alongside `c` to copy and `b` to branch. Preserve modified Enter for newlines when older settings assign it to follow-up submission.
+- ACP sessions now advertise skills with the `$name` form clients model skills separately (T3 Code), and accept `$name` prompts alongside `/skill:name`. Skills are advertised after builtin, extension, custom, and project commands, so a client with a bounded command budget no longer truncates project slash commands.
+- ACP sessions now expose session-scoped `fusion` (`off`, `delegate`, `escalate`, `token-savings`, `autonomous`) and `routing` (`static`, `dynamic`) config options, and emit `model_changed` session events so mid-session Fusion model switches push `config_option_update` notifications to ACP clients such as T3 Code.
 
 ## [16.4.30] - 2026-10-13
 

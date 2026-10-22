@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { buildAvailableSlashCommands } from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/available-commands";
+import {
+	buildAvailableSlashCommands,
+	toAcpAvailableCommands,
+} from "@pk-nerdsaver-ai/pi-coding-agent/slash-commands/available-commands";
 
 describe("buildAvailableSlashCommands", () => {
 	test("returns RPC-safe command metadata with stable sources", async () => {
@@ -122,5 +125,43 @@ describe("buildAvailableSlashCommands", () => {
 		);
 
 		expect(commands.find(command => command.name === "legacy")?.source).toBe("custom");
+	});
+
+	test("advertises project commands before skills so a capped client keeps them", async () => {
+		const commands = await buildAvailableSlashCommands(
+			{
+				customCommands: [{ command: { name: "custom:hello", description: "Custom hello" } }],
+				skills: [{ name: "reviewer", description: "Review code" }],
+				skillsSettings: { enableSkillCommands: true },
+				sessionManager: { getCwd: () => process.cwd() },
+				setSlashCommands() {},
+			} as never,
+			async () => [{ name: "notes", description: "Open notes", content: "body", source: "test" }],
+		);
+
+		const skillIndex = commands.findIndex(command => command.source === "skill");
+		expect(skillIndex).toBeGreaterThan(-1);
+		for (const predecessor of ["notes", "custom:hello"]) {
+			expect(commands.findIndex(command => command.name === predecessor)).toBeLessThan(skillIndex);
+		}
+	});
+
+	test("names ACP skills with the $ form while keeping internal names intact", async () => {
+		const commands = await buildAvailableSlashCommands(
+			{
+				skills: [{ name: "reviewer", description: "Review code" }],
+				customCommands: [],
+				skillsSettings: { enableSkillCommands: true },
+				sessionManager: { getCwd: () => process.cwd() },
+				setSlashCommands() {},
+			} as never,
+			async () => [],
+		);
+		const skill = commands.find(command => command.source === "skill");
+		expect(skill?.name).toBe("skill:reviewer");
+
+		const advertised = toAcpAvailableCommands(commands);
+		expect(advertised.some(command => command.name === "$reviewer")).toBe(true);
+		expect(advertised.some(command => command.name === "skill:reviewer")).toBe(false);
 	});
 });
