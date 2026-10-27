@@ -295,7 +295,10 @@ class FakeAgentSession {
 		this.isStreaming = false;
 	}
 
-	async refreshMCPTools(_tools: unknown[]): Promise<void> {}
+	mcpTools: Array<{ name: string }> = [];
+	async refreshMCPTools(tools: Array<{ name: string }>): Promise<void> {
+		this.mcpTools = tools;
+	}
 
 	getContextUsage(): undefined {
 		return undefined;
@@ -645,6 +648,124 @@ describe("ACP agent", () => {
 			"Unsupported ACP session",
 		);
 
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("creates the session even when a client-supplied MCP server fails to connect", async () => {
+		const harness = await createHarness();
+		// A server that cannot possibly connect: the command does not exist. This is the
+		// shape of a slow/unauthenticated server in T3 — `session/new` must still succeed,
+		// otherwise the whole session aborts and T3 reports "failed to initialize".
+		const created = await harness.agent.newSession({
+			cwd: harness.cwdA,
+			mcpServers: [
+				{
+					name: "broken-server",
+					command: "/nonexistent/omp-acp-probe-binary",
+					args: [],
+					env: [],
+				},
+			],
+		});
+		expectAcpStructure(zNewSessionResponse, created);
+		expect(created.sessionId).toBeTruthy();
+		expect(created.configOptions?.length).toBeGreaterThan(0);
+
+		await harness.agent.closeSession({ sessionId: created.sessionId });
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("keeps working MCP tools when another client-supplied server fails", async () => {
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			async fetch(request) {
+				if (request.method !== "POST") return new Response(null, { status: 405 });
+				const message = (await request.json()) as { id?: number; method: string };
+				if (message.id === undefined) return new Response(null, { status: 202 });
+				if (message.method === "server/discover") {
+					return Response.json({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: {
+							resultType: "complete",
+							supportedVersions: ["2026-07-28"],
+							capabilities: { tools: {} },
+							ttlMs: 0,
+							cacheScope: "public",
+						},
+					});
+				}
+				if (message.method !== "initialize" && message.method !== "tools/list") {
+					return Response.json({
+						jsonrpc: "2.0",
+						id: message.id,
+						error: { code: -32601, message: "Method not found" },
+					});
+				}
+				if (message.method === "tools/list") await Bun.sleep(150);
+				const result =
+					message.method === "initialize"
+						? {
+								protocolVersion: "2025-03-26",
+								capabilities: { tools: {} },
+								serverInfo: { name: "healthy", version: "1" },
+							}
+						: message.method === "tools/list"
+							? {
+									tools: [
+										{
+											name: "probe",
+											description: "Local probe",
+											inputSchema: { type: "object", properties: {} },
+										},
+									],
+								}
+							: {};
+				return Response.json({
+					jsonrpc: "2.0",
+					id: message.id,
+					result: { ...result, resultType: "complete", ttlMs: 0, cacheScope: "public" },
+				});
+			},
+		});
+		const harness = await createHarness();
+		try {
+			const created = await harness.agent.newSession({
+				cwd: harness.cwdA,
+				mcpServers: [
+					{ name: "broken", command: "/nonexistent/omp-acp-probe-binary", args: [], env: [] },
+					{ name: "healthy", type: "http", url: `http://127.0.0.1:${server.port}/mcp`, headers: [] },
+				],
+			});
+			const session = harness.findSession(created.sessionId);
+			const deadline = Date.now() + 3000;
+			while (session?.mcpTools.length === 0 && Date.now() < deadline) await Bun.sleep(10);
+			expect(session?.mcpTools.map(tool => tool.name)).toContain("mcp__healthy_probe");
+			await harness.agent.closeSession({ sessionId: created.sessionId });
+		} finally {
+			harness.abortController.abort();
+			await server.stop(true);
+		}
+	});
+
+	it("creates the session even when a client-supplied MCP server uses an unsupported transport", async () => {
+		const harness = await createHarness();
+		// T3 advertises its own tools over an experimental ACP-channel transport
+		// (`type: "acp"`). omp advertises only http/sse in `mcpCapabilities`, so a
+		// spec-compliant client falls back to the stdio bridge — but a client that
+		// sends an `acp` server anyway must not abort `session/new`.
+		const created = await harness.agent.newSession({
+			cwd: harness.cwdA,
+			mcpServers: [{ type: "acp", name: "t3-code", id: "t3-code" }],
+		});
+		expectAcpStructure(zNewSessionResponse, created);
+		expect(created.sessionId).toBeTruthy();
+		expect(created.configOptions?.length).toBeGreaterThan(0);
+
+		await harness.agent.closeSession({ sessionId: created.sessionId });
 		harness.abortController.abort();
 		await Bun.sleep(0);
 	});

@@ -2610,7 +2610,11 @@ export class AcpAgent implements Agent {
 		const configs: MCPConfigMap = {};
 		const sources: MCPSourceMap = {};
 		for (const server of servers) {
-			configs[server.name] = this.#toMcpConfig(server);
+			const config = this.#toMcpConfig(server);
+			if (config === undefined) {
+				continue;
+			}
+			configs[server.name] = config;
 			sources[server.name] = {
 				provider: "acp",
 				providerName: "ACP Client",
@@ -2619,20 +2623,38 @@ export class AcpAgent implements Agent {
 			};
 		}
 
-		const result = await manager.connectServers(configs, sources);
-		if (result.errors.size > 0) {
-			throw new Error(
-				Array.from(result.errors.entries())
-					.map(([name, message]) => `${name}: ${message}`)
-					.join("; "),
-			);
+		// Every server was an unsupported transport: nothing to connect.
+		if (Object.keys(configs).length === 0) {
+			record.mcpManager = undefined;
+			await record.session.refreshMCPTools([], { activateAll: true });
+			return;
 		}
 
 		record.mcpManager = manager;
-		await record.session.refreshMCPTools(result.tools, { activateAll: true });
+		manager.setOnToolsChanged(tools => {
+			if (record.mcpManager !== manager || record.closedError) return;
+			void record.session.refreshMCPTools(tools, { activateAll: true }).catch(error => {
+				logger.warn("Failed to refresh ACP MCP tools", { error });
+			});
+		});
+		const result = await manager.connectServers(configs, sources);
+		// ACP clients (notably T3) send every server they know about, and one slow or
+		// unauthenticated server must not fail the whole `session/new` — that aborts
+		// session creation and surfaces as "failed to initialize" with no working session.
+		// Degrade instead: keep the servers that connected, log the rest. Note that
+		// `connectServers` only reports servers that failed *fast*; servers still
+		// pending past its internal startup race stay in flight and register later.
+		if (result.errors.size > 0) {
+			logger.warn("ACP MCP server(s) failed to connect; continuing without them", {
+				errors: Array.from(result.errors.entries()).map(([name, message]) => `${name}: ${message}`),
+				connected: result.connectedServers,
+			});
+		}
+
+		await record.session.refreshMCPTools(manager.getTools(), { activateAll: true });
 	}
 
-	#toMcpConfig(server: McpServer): MCPServerConfig {
+	#toMcpConfig(server: McpServer): MCPServerConfig | undefined {
 		if ("command" in server) {
 			return {
 				type: "stdio",
@@ -2656,8 +2678,13 @@ export class AcpAgent implements Agent {
 			};
 		}
 		// The experimental ACP-channel transport (`type: "acp"`) is not advertised in
-		// `mcpCapabilities`, so a spec-compliant client never sends it; reject defensively.
-		throw new Error(`Unsupported MCP server transport: ${server.type}`);
+		// `mcpCapabilities`, so a spec-compliant client never sends it. Degrade instead of
+		// throwing: an unknown transport must not abort `session/new` for the whole session.
+		logger.warn("Unsupported ACP MCP server transport; skipping server", {
+			server: server.name,
+			transport: server.type,
+		});
+		return undefined;
 	}
 
 	#toNameValueMap(values: Array<{ name: string; value: string }>): { [name: string]: string } {

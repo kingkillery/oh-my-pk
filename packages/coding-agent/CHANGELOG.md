@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep ACP sessions usable when a client-supplied MCP server fails to connect or uses an unsupported transport.
+
 ## [16.4.31] - 2026-10-22
 
 ### Added
