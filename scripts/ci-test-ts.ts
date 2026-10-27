@@ -319,6 +319,7 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 						"scripts/ci-concurrency.test.ts",
 						"scripts/install-smoke.test.ts",
 						"scripts/release-age-policy.test.ts",
+						"scripts/release-lockfile.test.ts",
 						"scripts/release-query.test.ts",
 					],
 				},

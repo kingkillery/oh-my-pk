@@ -11,6 +11,7 @@
 
 import { $, Glob } from "bun";
 import { runChangelogFixer } from "./fix-changelogs";
+import { type ReleaseWorkspaceVersion, updateReleaseLockfile } from "./release-lockfile";
 import { queryReleaseRuns } from "./release-query";
 
 const changelogGlob = new Glob("packages/*/CHANGELOG.md");
@@ -230,6 +231,9 @@ async function cmdRelease(version: string): Promise<void> {
 	// Filter out private packages
 	const publicPkgPaths: string[] = [];
 	const publicPkgNames: string[] = [];
+	const releaseWorkspaces: ReleaseWorkspaceVersion[] = [];
+	const rootPkgRaw = await Bun.file("package.json").text();
+	const rootPkg = JSON.parse(rootPkgRaw) as { workspaces: { catalog: Record<string, string> } };
 	for (const pkgPath of pkgJsonPaths) {
 		const pkgJson = await Bun.file(pkgPath).json();
 		if (pkgJson.private) {
@@ -238,7 +242,19 @@ async function cmdRelease(version: string): Promise<void> {
 		}
 		publicPkgPaths.push(pkgPath);
 		if (pkgJson.name) publicPkgNames.push(pkgJson.name);
+		if (typeof pkgJson.name !== "string" || typeof pkgJson.version !== "string") {
+			throw new Error(`Public workspace has no name or version: ${pkgPath}`);
+		}
+		releaseWorkspaces.push({
+			path: pkgPath.replaceAll("\\", "/").replace(/\/package\.json$/, ""),
+			name: pkgJson.name,
+			version: pkgJson.version,
+			catalogVersion: rootPkg.workspaces.catalog[pkgJson.name],
+		});
 	}
+
+	const lockfile = Bun.file("bun.lock");
+	const updatedLockfile = updateReleaseLockfile(await lockfile.text(), releaseWorkspaces, version);
 
 	for (const pkgPath of publicPkgPaths) {
 		const text = await Bun.file(pkgPath).text();
@@ -256,13 +272,13 @@ async function cmdRelease(version: string): Promise<void> {
 
 	// Update catalog entries in root package.json for public workspace packages
 	console.log("Updating root catalog versions...");
-	let rootPkgRaw = await Bun.file("package.json").text();
+	let updatedRootPkgRaw = rootPkgRaw;
 	for (const name of publicPkgNames) {
 		const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 		const regex = new RegExp(`("${escapedName}":\\s*)"[^"]+"`, "g");
-		rootPkgRaw = rootPkgRaw.replace(regex, `$1"${version}"`);
+		updatedRootPkgRaw = updatedRootPkgRaw.replace(regex, `$1"${version}"`);
 	}
-	await Bun.write("package.json", rootPkgRaw);
+	await Bun.write("package.json", updatedRootPkgRaw);
 	console.log("  Updated root catalog entries for public packages");
 
 	// 3. Update Rust workspace version
@@ -323,7 +339,7 @@ async function cmdRelease(version: string): Promise<void> {
 
 	// 4. Refresh workspace versions without upgrading the tested dependency graph.
 	console.log("Refreshing lockfile workspace versions...");
-	await $`bun install --lockfile-only --ignore-scripts`;
+	await Bun.write(lockfile, updatedLockfile);
 	await $`bun install --frozen-lockfile`;
 	await $`cargo check --offline`;
 	console.log();
