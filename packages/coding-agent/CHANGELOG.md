@@ -2,10 +2,11 @@
 
 ## [Unreleased]
 
+## [16.4.32] - 2026-10-27
+
 ### Fixed
 
 - Run Clef bootstrap in a Colab shell cell and collect redacted failure diagnostics before releasing the runtime.
-
 - Keep ACP sessions usable when a client-supplied MCP server fails to connect or uses an unsupported transport.
 
 ## [16.4.31] - 2026-10-22
