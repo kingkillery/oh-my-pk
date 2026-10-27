@@ -91,3 +91,23 @@
 - **Exact dependency:** Bind approved `ROUTER_API_KEY` to OMPK runtime and safe test harness without exposing secret contents, then run one bounded `chain/secure` text prompt and inspect outcome. Do not reuse provider API keys as router keys.
 - **Security backlog:** Remove or protect internal upstream-calling diagnostic routes occurring before authentication; validate in router's owning source/release lane.
 - **Workspace preservation:** Pre-existing branch `fix/clef-bootstrap-jev-gate-criteria` and unrelated dirty changes untouched; this new doc is uncommitted unless explicitly staged later.
+
+### Post-merge verification — 2026-10-19 20:49 MDT (2026-10-20 02:49 UTC)
+- **Status:** Public endpoint and OMPK configuration PASS. Authenticated model inference BLOCKED for lack of approved router credential in checked PK/MSI process environments.
+- Cloudflare production Worker domain `api.gopk.xyz` remains attached to `free-tier-router` and its three relevant secret bindings are present (presence only; values not disclosed).
+- Live PK HTTP: `GET /health` = 200, JSON `ok: true`; unauthenticated `GET /v1/models` = 401; `GET /v1/routes` = 401; `POST /v1/chat/completions` = 401.
+- Live MSI HTTP: `GET /health` = 200, valid JSON `ok: true`.
+- Local OMPK `models.yml` passed `ModelsConfigSchema`. Existing `gopk-router` points to `https://api.gopk.xyz/v1`, uses symbolic `ROUTER_API_KEY`, exposes both `chain/secure` and `chain/assume-read`, and preserves six other providers.
+- No keys, source files, Cloudflare resources, or router configuration were changed; no paid completion was attempted.
+- **Compact checkpoint:** Router reachable and access control on published endpoints behaves as expected. Integration config validated. Not production-inference verified until an authorized key is bound and an actual completion succeeds. Separately remediate earlier pre-auth internal diagnostic route exposure in the Worker's owned source.
+
+### DeepSeek V4.1 Flash inference acceptance attempt — 2026-10-19 MDT
+- **Requested model:** `deepseek/deepseek-v4.1-flash` (OpenRouter model identifier); the deployed `free-tier-router` contains this model in its paid-backup route definitions for secure and assume-read chains.
+- **Catalog verification:** `pi --list-models deepseek-v4.1-flash` lists the OpenRouter model as well as a Hugging Face variant. This is catalog evidence only, not live availability.
+- **Authentication environment:** The local Pi auth checker reports `{status:ready, provider:openrouter, authType:api_key}`. That checks local credential resolution, not OpenRouter's acceptance of the key. A separate `ROUTER_API_KEY` is still absent in checked PK/MSI process environments.
+- **Inference attempt #1:** Pi CLI, ephemeral session, no tools/extensions, OpenRouter model, synthetic `FLASH_OK` prompt: exited 1 with `401 User not found` after 811ms; no model output.
+- **Inference attempt #2:** OMPK CLI, ephemeral session, no tools/extensions/IRC, same OpenRouter model and synthetic prompt: exited 1 with `401 User not found` after 8,771ms; no model output.
+- **Limits:** Attempts used the local model client/its existing authentication handling, not an authorized request through `api.gopk.xyz`; direct manual credential handling was blocked before any request was sent. No unprotected internal Worker diagnostic routes were invoked, and no changes to production resources or stored credentials were made.
+- **Next acceptance gate:** Verify the OpenRouter key is accepted by the provider through a supported secure credential test; restore/re-authorize it if rejected. Provision the distinct router API credential through authorized secret management and run a bounded `/v1/chat/completions` request targeting an explicitly chosen DeepSeek route/chain. Capture HTTP, response text, model, duration, and token usage without recording credentials.
+
+**Compact inference checkpoint:** Route and catalog EXIST; local credential presence only; both real client inference attempts FAILED 401; hosted-router authenticated inference still BLOCKED. Don't claim success or deploy duplicate infrastructure.

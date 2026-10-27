@@ -109,6 +109,13 @@ export function initBeam(db: Database): void {
 	addColumnIfMissing(db, "episodic_memory", "veracity", "TEXT DEFAULT 'unknown'");
 	addColumnIfMissing(db, "working_memory", "memory_type", "TEXT DEFAULT 'unknown'");
 	addColumnIfMissing(db, "episodic_memory", "memory_type", "TEXT DEFAULT 'unknown'");
+	addColumnIfMissing(db, "working_memory", "dup_superseded_by", "TEXT");
+	addColumnIfMissing(db, "episodic_memory", "dup_superseded_by", "TEXT");
+	addColumnIfMissing(db, "working_memory", "prefix_hash", "TEXT");
+	addColumnIfMissing(db, "working_memory", "char_length", "INTEGER");
+	addColumnIfMissing(db, "episodic_memory", "prefix_hash", "TEXT");
+	addColumnIfMissing(db, "episodic_memory", "char_length", "INTEGER");
+	db.run("CREATE INDEX IF NOT EXISTS idx_wm_prefix_hash ON working_memory(prefix_hash)");
 	addColumnIfMissing(db, "episodic_memory", "binary_vector", "BLOB");
 	const consolidatedAtAdded = addColumnIfMissing(db, "working_memory", "consolidated_at", "TEXT");
 	if (consolidatedAtAdded) {
@@ -164,6 +171,37 @@ export function initBeam(db: Database): void {
 			DELETE FROM fts_working WHERE id = old.id;
 			INSERT INTO fts_working(id, content) VALUES (new.id, new.content);
 		END`,
+	]);
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS session_footprints (
+			session_id TEXT NOT NULL,
+			pane_id TEXT,
+			pid INTEGER,
+			git_branch TEXT,
+			artifact_type TEXT NOT NULL,
+			artifact_key TEXT NOT NULL,
+			touch_mode TEXT NOT NULL,
+			touch_count INTEGER NOT NULL DEFAULT 1,
+			first_touched_at INTEGER NOT NULL,
+			last_touched_at INTEGER NOT NULL,
+			consolidated_at INTEGER,
+			PRIMARY KEY (session_id, artifact_type, artifact_key)
+		) WITHOUT ROWID
+	`);
+	db.run(`
+		CREATE TABLE IF NOT EXISTS active_sessions (
+			session_id TEXT PRIMARY KEY,
+			pane_id TEXT,
+			pid INTEGER,
+			initial_prompt TEXT,
+			started_at INTEGER NOT NULL,
+			last_active_at INTEGER NOT NULL
+		)
+	`);
+	runAll(db, [
+		"CREATE INDEX IF NOT EXISTS idx_footprints_lookup ON session_footprints (artifact_type, artifact_key, last_touched_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_footprints_unconsolidated ON session_footprints (last_touched_at DESC) WHERE consolidated_at IS NULL",
 	]);
 
 	db.run(`

@@ -19,6 +19,7 @@ import {
 	sleep,
 	sleepAllSessions,
 } from "./consolidate";
+import { type DedupeOptions, type DedupeResult, dedupeBank } from "./dedupe";
 import { factRecall, formatContext, recall, recallEnhanced } from "./recall";
 import { initBeam } from "./schema";
 import {
@@ -56,6 +57,17 @@ import type {
 	SleepResult,
 } from "./types";
 
+export type { DedupeFamilyReport, DedupeOptions, DedupeResult } from "./dedupe";
+export { dedupeBank } from "./dedupe";
+export {
+	type FootprintArtifact,
+	type FootprintCollision,
+	type FootprintContext,
+	FootprintTracker,
+	type LiveSessionFootprint,
+	liveFootprintSessions,
+	markFootprintsConsolidated,
+} from "./footprints";
 export { initBeam } from "./schema";
 export type * from "./types";
 export { effectiveRecallScore } from "./types";
@@ -325,6 +337,10 @@ export class BeamMemory implements BeamMemoryState {
 
 	sleep(dryRun = false): SleepResult {
 		return sleep(this, dryRun);
+	}
+
+	dedupe(options: DedupeOptions = {}): DedupeResult {
+		return dedupeBank(this, options);
 	}
 
 	sleepAllSessions(dryRun = false): SleepResult {

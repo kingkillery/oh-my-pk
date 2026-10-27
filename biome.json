@@ -65,7 +65,8 @@
 			"!**/agent_pb.ts",
 			"!**/devin-gen/**/*",
 			"!.worktrees/**/*",
-			"!.wt/**/*"
+			"!.wt/**/*",
+			"!.local/**/*"
 		]
 	},
 	"assist": { "actions": { "source": { "organizeImports": "on" } } }

@@ -1,7 +1,7 @@
 import { normalizedRecallWeights, temporalHalflifeHours } from "../../config";
 import { quoteSqlIdentifier, quoteSqlQualifiedIdentifier } from "../../util/sql";
 import { embedQuery } from "../embeddings";
-import { mmrRerank } from "../mmr";
+import { attachCandidateEmbeddings, mmrDiversify } from "../mmr";
 import { adjustWeights, classifyIntent } from "../query-intent";
 import { rerank } from "../reranker";
 import { getMnemopiRuntimeOptions } from "../runtime-options";
@@ -30,6 +30,8 @@ type RecallOptionsInternal = RecallOptions & {
 	useIntent?: boolean;
 	useMmr?: boolean;
 	mmrLambda?: number;
+	/** Retroactive interference weight for post-rerank MMR (0 disables). */
+	wRetro?: number;
 	ignoreSessionScope?: boolean;
 	currentSensitive?: boolean;
 	updateRecallCounts?: boolean;
@@ -53,13 +55,6 @@ type FactRecallResult = RecallResult & {
 	fact_id?: string;
 	subject?: string;
 	predicate?: string;
-};
-
-type RecallMmrItem = {
-	readonly content?: string;
-	readonly score?: number;
-	readonly result: RecallResult;
-	readonly [key: string]: unknown;
 };
 
 const VERACITY_WEIGHTS: Record<string, number> = {
@@ -454,7 +449,11 @@ function buildWhere(
 	options: RecallOptionsInternal,
 ): { where: string; params: DbValue[] } {
 	const prefix = tableAlias.length === 0 ? "" : `${quoteSqlIdentifier(tableAlias)}.`;
-	const clauses = [`(${prefix}valid_until IS NULL OR ${prefix}valid_until > ?)`, `${prefix}superseded_by IS NULL`];
+	const clauses = [
+		`(${prefix}valid_until IS NULL OR ${prefix}valid_until > ?)`,
+		`${prefix}superseded_by IS NULL`,
+		`${prefix}dup_superseded_by IS NULL`,
+	];
 	const params: DbValue[] = [nowIso()];
 	const channelId = options.channelId ?? null;
 	const authorId = options.authorId ?? null;
@@ -843,15 +842,6 @@ function dedupCrossTierSummaryLinks(beam: BeamMemoryState, results: readonly Rec
 	});
 }
 
-function rerankRecallResults(results: readonly RecallResult[], lambdaParam: number, topK: number): RecallResult[] {
-	const items: RecallMmrItem[] = results.map(result => ({
-		content: result.content,
-		score: typeof result.rerank_score === "number" ? result.rerank_score : result.score,
-		result,
-	}));
-	return mmrRerank(items, lambdaParam, topK).map(item => item.result);
-}
-
 async function rerankWithConfiguredModel(query: string, results: readonly RecallResult[]): Promise<RecallResult[]> {
 	const runtime = getMnemopiRuntimeOptions()?.reranker;
 	if (runtime === undefined || runtime.disabled === true || results.length < 2) return [...results];
@@ -992,53 +982,21 @@ export async function recall(
 	scored.sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
 	let finalResults = dedupCrossTierSummaryLinks(beam, dedupeResults(scored));
 	finalResults = await rerankWithConfiguredModel(query, finalResults);
-	if (
-		query.length > 0 &&
-		tokens.length >= 4 &&
-		finalResults.length > topK &&
-		!finalResults.some(result => typeof result.rerank_score === "number")
-	)
-		finalResults = diversifyByCoverage(finalResults, tokens, topK);
-	if (options.useMmr === true && finalResults.length > 1) {
-		finalResults = rerankRecallResults(finalResults, options.mmrLambda ?? 0.7, topK);
+	// Post-rerank cosine-MMR runs by default: reranker/base scores are
+	// min-max normalized onto the cosine scale and retroactive interference
+	// decay suppresses older near-duplicates of newer candidates. useMmr:
+	// false opts out.
+	if (options.useMmr !== false && finalResults.length > 1) {
+		attachCandidateEmbeddings(beam, finalResults);
+		finalResults = mmrDiversify(finalResults, topK, {
+			lambda: options.mmrLambda ?? 0.65,
+			wRetro: options.wRetro ?? 0.6,
+		});
 	} else {
 		finalResults = finalResults.slice(0, topK);
 	}
 	if (temporalOptions.updateRecallCounts !== false) updateRecallCounts(beam, finalResults, temporalOptions);
 	return finalResults;
-}
-
-function diversifyByCoverage(
-	results: readonly RecallResult[],
-	tokens: readonly string[],
-	topK: number,
-): RecallResult[] {
-	const selected: RecallResult[] = [];
-	const covered = new Set<string>();
-	const pool = [...results];
-	const querySet = new Set(tokens);
-	while (pool.length > 0 && selected.length < topK) {
-		let bestIdx = 0;
-		let bestScore = Number.NEGATIVE_INFINITY;
-		for (let i = 0; i < pool.length; i += 1) {
-			const row = pool[i];
-			if (row === undefined) continue;
-			let additions = 0;
-			for (const token of tokenize(row.content)) {
-				if (querySet.has(token) && !covered.has(token)) additions += 1;
-			}
-			const score = (row.score ?? 0) + 0.06 * additions;
-			if (score > bestScore) {
-				bestScore = score;
-				bestIdx = i;
-			}
-		}
-		const picked = pool.splice(bestIdx, 1)[0];
-		if (picked === undefined) break;
-		selected.push(picked);
-		for (const token of tokenize(picked.content)) if (querySet.has(token)) covered.add(token);
-	}
-	return selected;
 }
 
 export async function recallEnhanced(
@@ -1067,7 +1025,11 @@ export async function recallEnhanced(
 		const rightScore = typeof right.rerank_score === "number" ? right.rerank_score : (right.score ?? 0);
 		return rightScore - leftScore;
 	});
-	const finalResults = rerankRecallResults(results, options.mmrLambda ?? 0.7, topK);
+	attachCandidateEmbeddings(beam, results);
+	const finalResults = mmrDiversify(results, topK, {
+		lambda: options.mmrLambda ?? 0.65,
+		wRetro: options.wRetro ?? 0.6,
+	});
 	if (enhancedOptions.updateRecallCounts !== false) updateRecallCounts(beam, finalResults, enhancedOptions);
 	return finalResults;
 }

@@ -6,6 +6,7 @@ import { REGEX_EXTRACTION_MAX_INPUT_CHARS } from "../entities";
 import { EpisodicGraph } from "../episodic-graph";
 import { heuristicExtractFacts } from "../extraction";
 import { clampVeracity } from "../veracity-consolidation";
+import { dedupeBank } from "./dedupe";
 import { scheduleEmbedding } from "./helpers";
 import type { BeamMemoryState, BeamStats, JsonValue, MemoriaRetrieveResult, Metadata, SleepResult } from "./types";
 
@@ -907,10 +908,16 @@ function eligibleWorkingRows(beam: BeamMemoryState, sessionId: string): Row[] {
 	);
 }
 
-export function sleep(beam: BeamMemoryState, dryRun = false): SleepResult {
+export function sleep(beam: BeamMemoryState, dryRun = false, options: { dedupe?: boolean } = {}): SleepResult {
+	const dedupe = options.dedupe === false ? undefined : dedupeBank(beam, { dryRun });
 	let rows = eligibleWorkingRows(beam, sourceSession(beam));
 	if (rows.length === 0)
-		return { dry_run: dryRun, status: "no_op", message: "No old working memories to consolidate" };
+		return {
+			dry_run: dryRun,
+			status: "no_op",
+			message: "No old working memories to consolidate",
+			dedupe,
+		};
 	if (!dryRun) {
 		const claimTs = isoNow();
 		const ids = rows.map(row => rowValue(row, "id")).filter((id): id is string => id !== null);
@@ -931,6 +938,7 @@ export function sleep(beam: BeamMemoryState, dryRun = false): SleepResult {
 				dry_run: false,
 				status: "no_op",
 				message: "All eligible rows claimed by concurrent sleep",
+				dedupe,
 			};
 		rows = rows.filter(row => claimed.has(rowValue(row, "id")));
 	}
@@ -997,10 +1005,12 @@ export function sleep(beam: BeamMemoryState, dryRun = false): SleepResult {
 		method: "aaak",
 		consolidated_ids: consolidatedIds,
 		degradation,
+		dedupe,
 	};
 }
 
 export function sleepAllSessions(beam: BeamMemoryState, dryRun = false): SleepResult {
+	const dedupe = dedupeBank(beam, { dryRun });
 	const ttl = beam.config?.workingMemoryTtlHours ?? 24;
 	const cutoff = cutoffIso(Math.floor(ttl / 2), 60 * 60 * 1000);
 	const sessions = asRows(
@@ -1023,6 +1033,7 @@ export function sleepAllSessions(beam: BeamMemoryState, dryRun = false): SleepRe
 			llm_used: 0,
 			errors: 0,
 			session_results: [],
+			dedupe,
 		};
 	}
 	const originalSession = beam.sessionId;
@@ -1034,7 +1045,7 @@ export function sleepAllSessions(beam: BeamMemoryState, dryRun = false): SleepRe
 		const sessionId = rowValue(row, "session_id") ?? "default";
 		const scoped = Object.create(Object.getPrototypeOf(beam)) as BeamMemoryState;
 		Object.assign(scoped, beam, { sessionId, channelId: sessionId });
-		const result = sleep(scoped, dryRun) as Row;
+		const result = sleep(scoped, dryRun, { dedupe: false }) as Row;
 		result.session_id = sessionId;
 		result.eligible = row.eligible;
 		results.push(result);
@@ -1055,6 +1066,7 @@ export function sleepAllSessions(beam: BeamMemoryState, dryRun = false): SleepRe
 		error_details: [],
 		session_results: results,
 		degradation,
+		dedupe,
 		original_session: originalSession,
 	};
 }
