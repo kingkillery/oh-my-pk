@@ -126,14 +126,18 @@ describe("write-path prefix subsumption", () => {
 describe("dedupe sweep", () => {
 	it("backfills prefix_hash and char_length on legacy rows", async () => {
 		const state = makeState("session-1");
-		state.db.run(
-			"INSERT INTO working_memory (id, content, source, timestamp, session_id) VALUES (?, ?, ?, ?, ?)",
-			["legacy-1", TRANSCRIPT_PREFIX, "transcript", new Date().toISOString(), "session-1"],
-		);
+		state.db.run("INSERT INTO working_memory (id, content, source, timestamp, session_id) VALUES (?, ?, ?, ?, ?)", [
+			"legacy-1",
+			TRANSCRIPT_PREFIX,
+			"transcript",
+			new Date().toISOString(),
+			"session-1",
+		]);
 		dedupeBank(state);
-		const row = state.db
-			.query("SELECT prefix_hash, char_length FROM working_memory WHERE id = 'legacy-1'")
-			.get() as { prefix_hash: string | null; char_length: number | null };
+		const row = state.db.query("SELECT prefix_hash, char_length FROM working_memory WHERE id = 'legacy-1'").get() as {
+			prefix_hash: string | null;
+			char_length: number | null;
+		};
 		expect(row.prefix_hash).not.toBeNull();
 		expect(row.char_length).toBe(TRANSCRIPT_PREFIX.length);
 	});
@@ -148,9 +152,27 @@ describe("post-rerank MMR with interference decay", () => {
 
 	it("keeps distinct documents over near-duplicate high scorers", () => {
 		const candidates = [
-			{ id: "dup-a", content: "resource lock mutex alpha", score: 0.95, timestamp: "2026-01-01T00:00:00Z", embedding: vec({ 0: 1 }) },
-			{ id: "dup-b", content: "resource lock mutex alpha beta", score: 0.94, timestamp: "2026-01-01T00:01:00Z", embedding: vec({ 0: 0.999, 1: 0.045 }) },
-			{ id: "distinct", content: "embedding pipeline batch sizing", score: 0.80, timestamp: "2026-01-01T00:00:30Z", embedding: vec({ 2: 1 }) },
+			{
+				id: "dup-a",
+				content: "resource lock mutex alpha",
+				score: 0.95,
+				timestamp: "2026-01-01T00:00:00Z",
+				embedding: vec({ 0: 1 }),
+			},
+			{
+				id: "dup-b",
+				content: "resource lock mutex alpha beta",
+				score: 0.94,
+				timestamp: "2026-01-01T00:01:00Z",
+				embedding: vec({ 0: 0.999, 1: 0.045 }),
+			},
+			{
+				id: "distinct",
+				content: "embedding pipeline batch sizing",
+				score: 0.8,
+				timestamp: "2026-01-01T00:00:30Z",
+				embedding: vec({ 2: 1 }),
+			},
 		];
 		const out = mmrDiversify(candidates, 2, { lambda: 0.65 });
 		const ids = out.map(c => c.id);
@@ -160,8 +182,20 @@ describe("post-rerank MMR with interference decay", () => {
 
 	it("retroactive decay lets the newer rolling snapshot outrank the older one", () => {
 		const candidates = [
-			{ id: "old", content: "snapshot prefix", score: 0.90, timestamp: "2026-01-01T00:00:00Z", embedding: vec({ 0: 1 }) },
-			{ id: "new", content: "snapshot prefix extended", score: 0.89, timestamp: "2026-01-01T00:05:00Z", embedding: vec({ 0: 0.999, 1: 0.045 }) },
+			{
+				id: "old",
+				content: "snapshot prefix",
+				score: 0.9,
+				timestamp: "2026-01-01T00:00:00Z",
+				embedding: vec({ 0: 1 }),
+			},
+			{
+				id: "new",
+				content: "snapshot prefix extended",
+				score: 0.89,
+				timestamp: "2026-01-01T00:05:00Z",
+				embedding: vec({ 0: 0.999, 1: 0.045 }),
+			},
 		];
 		const withDecay = mmrDiversify(candidates, 1, { lambda: 0.65, wRetro: 0.6, interferenceThreshold: 0.82 });
 		expect(withDecay[0]?.id).toBe("new");

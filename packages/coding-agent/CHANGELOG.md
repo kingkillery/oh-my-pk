@@ -5,6 +5,8 @@
 ### Added
 
 - Add repository-scoped session memory with lossless record and image-blob snapshots, indexed lexical search, extractive summaries that expand to exact evidence, a read-only agent tool, and /session-memory commands. Originals remain in place; changed sessions retain earlier archived revisions.
+- ACP sessions now advertise and implement `session/delete`, so clients such as T3 Code can delete stored sessions from their own UI. Unknown ids are treated as already deleted.
+- ACP sessions now advertise `agentCapabilities.providers` and implement `providers/list`, `providers/set`, and `providers/disable`. Model providers can be listed, configured (base URL, protocol type, headers), and disabled from an ACP client without dropping into the terminal UI. Writes land in `models.yml`.
 
 ### Fixed
 
@@ -13,6 +15,7 @@
 - Add `x` to cancel or dismiss `/btw`, alongside `c` to copy and `b` to branch. Preserve modified Enter for newlines when older settings assign it to follow-up submission.
 - ACP sessions now advertise skills with the `$name` form clients model skills separately (T3 Code), and accept `$name` prompts alongside `/skill:name`. Skills are advertised after builtin, extension, custom, and project commands, so a client with a bounded command budget no longer truncates project slash commands.
 - ACP sessions now expose session-scoped `fusion` (`off`, `delegate`, `escalate`, `token-savings`, `autonomous`) and `routing` (`static`, `dynamic`) config options, and emit `model_changed` session events so mid-session Fusion model switches push `config_option_update` notifications to ACP clients such as T3 Code.
+- ACP `providers/set` maps the generic protocol names clients send (`openai`, `anthropic`, `google`) onto omp's concrete `api` variants and preserves an existing variant when the protocol family is unchanged, so saving a provider never silently downgrades its transport.
 
 ## [16.4.30] - 2026-10-13
 

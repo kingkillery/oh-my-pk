@@ -693,6 +693,80 @@ describe("ACP agent", () => {
 		await Bun.sleep(0);
 	});
 
+	it("deletes a session from disk and treats unknown ids as already deleted", async () => {
+		const harness = await createHarness();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		expectAcpStructure(zNewSessionResponse, created);
+
+		// The session must exist on disk before deletion is meaningful.
+		const before = await SessionManager.listAll();
+		expect(before.some(session => session.id === created.sessionId)).toBe(true);
+
+		await harness.agent.deleteSession({ sessionId: created.sessionId });
+
+		const after = await SessionManager.listAll();
+		expect(after.some(session => session.id === created.sessionId)).toBe(false);
+
+		// Idempotent: deleting again must not throw.
+		await expect(harness.agent.deleteSession({ sessionId: created.sessionId })).resolves.toEqual({});
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("lists, configures, and disables providers through ACP", async () => {
+		const harness = await createHarness();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		expectAcpStructure(zNewSessionResponse, created);
+
+		// A provider configured via ACP must be written to models.yml and come back
+		// through providers/list with its base URL and protocol type.
+		await harness.agent.setProvider({
+			id: "acme-router",
+			apiType: "openai",
+			baseUrl: "https://router.acme.test/v1",
+			headers: { "x-tenant": "acme" },
+		});
+		const listed = await harness.agent.listProviders({});
+		const acme = listed.providers.find(provider => provider.id === "acme-router");
+		expect(acme).toBeDefined();
+		expect(acme?.current?.baseUrl).toBe("https://router.acme.test/v1");
+		expect(acme?.current?.apiType).toBe("openai");
+		expect(acme?.supported).toContain("openai");
+
+		// Disabling must clear the effective config without deleting the provider.
+		await harness.agent.disableProvider({ id: "acme-router" });
+		const afterDisable = await harness.agent.listProviders({});
+		const disabled = afterDisable.providers.find(provider => provider.id === "acme-router");
+		expect(disabled?.current ?? null).toBeNull();
+		expect(Settings.instance.get("disabledProviders")).toContain("acme-router");
+
+		// Re-configuring re-enables the provider.
+		await harness.agent.setProvider({
+			id: "acme-router",
+			apiType: "openai",
+			baseUrl: "https://router.acme.test/v2",
+		});
+		expect(Settings.instance.get("disabledProviders")).not.toContain("acme-router");
+		const reEnabled = await harness.agent.listProviders({});
+		expect(reEnabled.providers.find(provider => provider.id === "acme-router")?.current?.baseUrl).toBe(
+			"https://router.acme.test/v2",
+		);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("rejects provider writes without an id", async () => {
+		const harness = await createHarness();
+		await expect(
+			harness.agent.setProvider({ id: "  ", apiType: "openai", baseUrl: "https://x.test" }),
+		).rejects.toThrow(/non-empty id/);
+		await expect(harness.agent.disableProvider({ id: "" })).rejects.toThrow(/non-empty id/);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
 	it("advertises plan mode and emits schema-valid mode updates", async () => {
 		const harness = await createHarness();
 		Settings.instance.set("plan.enabled", true);
