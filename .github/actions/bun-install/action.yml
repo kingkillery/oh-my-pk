@@ -68,12 +68,9 @@ runs:
            # mutating the shared store other concurrent jobs rely on. The warm
            # shared cache stays the fast path; the cold retry only runs on the
            # rare corruption (also covers a transient network blip on attempt 1).
-           # The lockfile pins the dependency graph and integrity hashes. Bun's
-           # release-age resolver can spin on newly bumped workspace versions;
-           # do not re-resolve age for this already-locked install.
-           if bun install --frozen-lockfile --minimum-release-age=0; then
+           if bun install --frozen-lockfile; then
              exit 0
            fi
            echo "::warning title=bun install retry::shared bun store install failed; retrying with a clean job-local cache"
            retry_cache="$(mktemp -d "${RUNNER_TEMP:-/tmp}/bun-cache-retry.XXXXXX")"
-           bun install --frozen-lockfile --minimum-release-age=0 --cache-dir="$retry_cache"
+           bun install --frozen-lockfile --cache-dir="$retry_cache"
