@@ -153,4 +153,56 @@ describe("Clef launch lifecycle", () => {
 		expect(cancelled).toBeFalse();
 		expect(events).toContain("stop");
 	});
+
+	it("reads the remote logs before releasing a VM whose bootstrap failed, without leaking keys", async () => {
+		const events: string[] = [];
+		let execCalls = 0;
+		let statusCalls = 0;
+		const failure = launchClefDecisionModel(request(), {
+			readState: async () => undefined,
+			writeState: async () => {},
+			removeState: async () => {},
+			discover: async () => undefined,
+			armCutoff: async () => ({
+				cutoffAt: "2026-10-02T22:00:00.000Z",
+				scriptPath: "stop.ps1",
+				taskName: "OMPK-Clef-test",
+			}),
+			runColab: async args => {
+				const action = args[0] ?? "";
+				if (action === "status") {
+					statusCalls++;
+					return statusCalls === 1
+						? { exitCode: 0, stdout: "[colab] Session 'ompk-clef-decision' not found.", stderr: "" }
+						: { exitCode: 1, stdout: "", stderr: "[colab] Session 'ompk-clef-decision' not found." };
+				}
+				if (action === "new") return { exitCode: 0, stdout: "Hardware: T4", stderr: "" };
+				if (action === "exec") {
+					execCalls++;
+					events.push(execCalls === 1 ? "bootstrap" : "diagnostics");
+					return execCalls === 1
+						? { exitCode: 1, stdout: "", stderr: "export TS_AUTHKEY='tskey-auth-kABC123-secretpart'" }
+						: {
+								exitCode: 0,
+								stdout: "== tail /tmp/ompk-clef-server.log\ntorch.OutOfMemoryError: CUDA out of memory",
+								stderr: "",
+							};
+				}
+				if (action === "stop") {
+					events.push("stop");
+					return { exitCode: 0, stdout: "", stderr: "" };
+				}
+				return { exitCode: 0, stdout: "", stderr: "" };
+			},
+			cancelCutoff: async () => {},
+		});
+
+		const error = await failure.then(
+			() => undefined,
+			(e: unknown) => e as Error,
+		);
+		expect(error?.message).toContain("CUDA out of memory");
+		expect(error?.message).not.toContain("secretpart");
+		expect(events).toEqual(["bootstrap", "diagnostics", "stop"]);
+	});
 });

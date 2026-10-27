@@ -9,6 +9,7 @@ import { extractFactsSafe } from "../extraction";
 import { getMnemopiRuntimeOptions, withMnemopiRuntimeOptions } from "../runtime-options";
 import { storeFactStrings } from "./consolidate";
 import { type EmbedItem, scheduleEmbedding, vecAvailable, vecInsert } from "./helpers";
+import { containmentRatio, prefixHash, toNearDupMember } from "./near-dup";
 import type {
 	BeamEvent,
 	BeamMemoryState,
@@ -152,6 +153,48 @@ function findDuplicate(beam: BeamMemoryState, content: string): string | null {
 		.prepare("SELECT id FROM working_memory WHERE content = ? AND session_id = ? LIMIT 1")
 		.get(content, beam.sessionId) as { id: string } | null;
 	return row?.id ?? null;
+}
+
+/**
+ * Write-path near-duplicate subsumption. Rows sharing a normalized 24-token
+ * prefix hash are rolling snapshots of the same content (the same session
+ * re-logged across sessions). If the fresh row contains an older row, the older
+ * row is tombstoned to the new canonical; if an existing row already contains
+ * the fresh content, the fresh row is inserted but immediately tombstoned so it
+ * never reaches recall. Bank-wide, not session-scoped — the duplicate generator
+ * is cross-session. Returns true when the fresh row self-tombstoned (caller
+ * should skip embedding it).
+ */
+function applyPrefixSubsumption(beam: BeamMemoryState, newId: string, content: string): boolean {
+	const hash = prefixHash(content);
+	if (hash === "") return false;
+	const rows = beam.db
+		.query(
+			`SELECT id, content FROM working_memory
+			 WHERE prefix_hash = ? AND id != ? AND dup_superseded_by IS NULL AND superseded_by IS NULL`,
+		)
+		.all(hash, newId) as Row[];
+	if (rows.length === 0) return false;
+
+	const fresh = toNearDupMember(newId, content);
+	let selfTombstone: string | null = null;
+	for (const row of rows) {
+		const oldId = typeof row.id === "string" ? row.id : null;
+		const oldContent = typeof row.content === "string" ? row.content : null;
+		if (oldId === null || oldContent === null) continue;
+		const older = toNearDupMember(oldId, oldContent);
+		if (fresh.normalized.length >= older.normalized.length && containmentRatio(older, fresh) >= 0.85) {
+			beam.db.run("UPDATE working_memory SET dup_superseded_by = ? WHERE id = ?", [newId, oldId]);
+			beam.db.run("DELETE FROM memory_embeddings WHERE memory_id = ?", [oldId]);
+		} else if (containmentRatio(fresh, older) >= 0.85) {
+			selfTombstone = oldId;
+		}
+	}
+	if (selfTombstone !== null) {
+		beam.db.run("UPDATE working_memory SET dup_superseded_by = ? WHERE id = ?", [selfTombstone, newId]);
+		return true;
+	}
+	return false;
 }
 
 function trimWorkingMemory(beam: BeamMemoryState): void {
@@ -409,8 +452,8 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 		.prepare(`
 			INSERT INTO working_memory
 			(id, content, source, timestamp, session_id, importance, metadata_json, valid_until, scope,
-			 author_id, author_type, channel_id, veracity, memory_type, trust_tier)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 author_id, author_type, channel_id, veracity, memory_type, trust_tier, prefix_hash, char_length)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`)
 		.run(
 			memoryId,
@@ -428,7 +471,10 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 			veracity,
 			memoryType,
 			trustTier,
+			prefixHash(content),
+			content.length,
 		);
+	const selfTombstoned = applyPrefixSubsumption(beam, memoryId, content);
 	addTemporalAnnotations(beam, memoryId, timestamp, source);
 	// `extractText` lets a caller decouple "what gets stored" from "what facts are
 	// mined". coding-agent retains full multi-author transcripts but wants
@@ -448,7 +494,7 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 		importance,
 		metadata: metadata ?? undefined,
 	});
-	scheduleEmbedding(beam, [{ memoryId, content }]);
+	if (!selfTombstoned) scheduleEmbedding(beam, [{ memoryId, content }]);
 	if (options.extract === true) scheduleFactExtraction(beam, memoryId, extractionSource);
 	invalidateCaches(beam);
 	return memoryId;
@@ -470,8 +516,8 @@ export function rememberBatch(
 		const statement = beam.db.prepare(`
 			INSERT INTO working_memory
 			(id, content, source, timestamp, session_id, importance, metadata_json,
-			 author_id, author_type, channel_id, memory_type, veracity, trust_tier, scope)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 author_id, author_type, channel_id, memory_type, veracity, trust_tier, scope, prefix_hash, char_length)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`);
 		for (const item of items) {
 			const itemTimestamp = item.timestamp ?? timestamp;
@@ -499,7 +545,10 @@ export function rememberBatch(
 				itemVeracity,
 				trustTier,
 				item.scope ?? defaultScope,
+				prefixHash(item.content),
+				item.content.length,
 			);
+			applyPrefixSubsumption(beam, memoryId, item.content);
 			addTemporalAnnotations(beam, memoryId, itemTimestamp, source);
 			emitEvent(beam, "MEMORY_ADDED", {
 				memoryId,

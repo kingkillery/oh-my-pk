@@ -363,6 +363,39 @@ async function stopSession(
 	if (stopped.exitCode === 0) return true;
 	return !(await sessionIsActive(sessionName, run)).active;
 }
+/** Tailscale keys must never reach error text, logs, or the transcript. */
+function redactSecrets(text: string): string {
+	return text.replace(/tskey-[A-Za-z0-9-]+/g, "tskey-<redacted>");
+}
+
+const REMOTE_DIAGNOSTICS_SCRIPT = [
+	"%%bash",
+	"set +e",
+	'for f in /tmp/ompk-clef-server.log /tmp/ompk-clef-serve.log /tmp/ompk-tailscaled.log; do echo "== tail $f"; tail -n 40 "$f" 2>&1; done',
+	'echo "== health"; cat /tmp/ompk-clef-health.json 2>&1',
+	'echo "== server process"; ps -p "$(cat /tmp/ompk-clef-server.pid 2>/dev/null)" -o pid,etime,cmd 2>&1',
+	'echo "== gpu"; nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>&1',
+	'echo "== disk"; df -h /tmp 2>&1 | tail -2',
+	'echo "== tailscale"; tailscale status 2>&1 | head -5',
+].join("\n");
+
+/** Best-effort: read the remote logs of a failed bootstrap. Never throws, never leaks a key. */
+async function collectRemoteDiagnostics(
+	sessionName: string,
+	run: NonNullable<DecisionModelLifecycleDeps["runColab"]>,
+): Promise<string | undefined> {
+	try {
+		const result = await run(["exec", "--session", sessionName, "--timeout", "60"], {
+			input: REMOTE_DIAGNOSTICS_SCRIPT,
+			timeoutMs: 90_000,
+		});
+		const text = redactSecrets(`${result.stdout}\n${result.stderr}`.trim());
+		return text ? text.slice(-3000) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export interface DecisionModelLaunchResult {
 	cutoffAt: string;
 	endpoint: DecisionEndpoint;
@@ -435,6 +468,7 @@ export async function launchClefDecisionModel(
 	await saveState(state);
 
 	let allocated = false;
+	let bootstrapStarted = false;
 	try {
 		if (!before.active) {
 			const created = await run(["new", "--session", request.sessionName, "--gpu", request.accelerator], {
@@ -445,13 +479,14 @@ export async function launchClefDecisionModel(
 			}
 			allocated = true;
 		}
+		bootstrapStarted = true;
 		const bootstrap = await run(["exec", "--session", request.sessionName, "--timeout", "3600"], {
 			input: buildClefRemoteBootstrap(request, credential),
 			timeoutMs: STARTUP_TIMEOUT_MS,
 		});
 		if (bootstrap.exitCode !== 0 || !bootstrap.stdout.includes("__OMPK_CLEF_READY__")) {
 			throw new Error(
-				`Clef bootstrap failed: ${(bootstrap.stderr || bootstrap.stdout).trim().slice(-4000) || `exit ${bootstrap.exitCode}`}`,
+				`Clef bootstrap failed: ${redactSecrets((bootstrap.stderr || bootstrap.stdout).trim().slice(-1200)) || `exit ${bootstrap.exitCode}`}`,
 			);
 		}
 		if (request.hostname !== DEFAULT_HOSTNAME) $env.OMP_DECISION_HOSTNAME = request.hostname;
@@ -466,6 +501,8 @@ export async function launchClefDecisionModel(
 			sessionName: request.sessionName,
 		};
 	} catch (error) {
+		// The VM is about to be released, so this is the only chance to read why the bootstrap died.
+		const diagnostics = bootstrapStarted ? await collectRemoteDiagnostics(request.sessionName, run) : undefined;
 		let released = false;
 		try {
 			released = await stopSession(request.sessionName, run);
@@ -484,6 +521,11 @@ export async function launchClefDecisionModel(
 					sessionName: request.sessionName,
 				},
 			);
+		}
+		if (diagnostics && error instanceof Error) {
+			throw new Error(`${redactSecrets(error.message)}\n--- remote diagnostics ---\n${diagnostics}`, {
+				cause: error,
+			});
 		}
 		throw error;
 	}
