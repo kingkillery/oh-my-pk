@@ -15,6 +15,24 @@ test("serving options reject unsupported slots, cache types, and microbatches", 
 	}
 });
 
+test("setup rejects parallel CPU serving and invalid per-request context before launch", () => {
+	const config = {
+		accelerator: "A100" as const,
+		reference: { repoId: "example/model", revision: "main" },
+		artifact: { primaryFile: "model.gguf", files: ["model.gguf"], quantization: "Q4_K_M", totalSize: 1024 },
+		contextWindow: 8192,
+		remotePort: 8081,
+	};
+	expect(() => buildRemoteSetupScript({ ...config, accelerator: "CPU", serving: { parallelSlots: 8 } })).toThrow(
+		"Parallel GPU serving requires a GPU",
+	);
+	for (const contextWindow of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER]) {
+		expect(() => buildRemoteSetupScript({ ...config, contextWindow, serving: { parallelSlots: 8 } })).toThrow(
+			"Invalid per-request context window",
+		);
+	}
+});
+
 test("parallel launch preserves per-request context and emits the selected GPU settings", async () => {
 	const setup = buildRemoteSetupScript({
 		accelerator: "A100",
