@@ -256,8 +256,10 @@ describe("ACP initialize conformance", () => {
 					fork: expect.any(Object),
 					resume: expect.any(Object),
 					close: expect.any(Object),
+					delete: expect.any(Object),
 				}),
 				auth: expect.objectContaining({ logout: expect.any(Object) }),
+				providers: expect.any(Object),
 			}),
 		);
 	});

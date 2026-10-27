@@ -11,12 +11,18 @@ import {
 	type CloseSessionRequest,
 	type CloseSessionResponse,
 	type CreateElicitationResponse,
+	type DeleteSessionRequest,
+	type DeleteSessionResponse,
+	type DisableProviderRequest,
+	type DisableProviderResponse,
 	type ElicitationContentValue,
 	type ElicitationPropertySchema,
 	type ForkSessionRequest,
 	type ForkSessionResponse,
 	type InitializeRequest,
 	type InitializeResponse,
+	type ListProvidersRequest,
+	type ListProvidersResponse,
 	type ListSessionsRequest,
 	type ListSessionsResponse,
 	type LoadSessionRequest,
@@ -29,6 +35,7 @@ import {
 	PROTOCOL_VERSION,
 	type PromptRequest,
 	type PromptResponse,
+	type ProviderInfo,
 	type ResumeSessionRequest,
 	type ResumeSessionResponse,
 	type SessionConfigOption,
@@ -36,6 +43,8 @@ import {
 	type SessionModeState,
 	type SessionNotification,
 	type SessionUpdate,
+	type SetProviderRequest,
+	type SetProviderResponse,
 	type SetSessionConfigOptionRequest,
 	type SetSessionConfigOptionResponse,
 	type SetSessionModeRequest,
@@ -46,7 +55,9 @@ import type { AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
 import { type AssistantMessage, type Model, SqliteAuthCredentialStore } from "@pk-nerdsaver-ai/pi-ai";
 import { getAgentDbPath, getBlobsDir, isEnoent, logger, VERSION } from "@pk-nerdsaver-ai/pi-utils";
 import { disableProvider, enableProvider, reset as resetCapabilities } from "../../capability";
-import { Settings } from "../../config/settings";
+import { ModelsConfigFile } from "../../config/models-config";
+import type { ModelsConfig } from "../../config/models-config-schema";
+import { Settings, settings } from "../../config/settings";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
 	type ExtensionUIContext,
@@ -75,6 +86,7 @@ import { isSilentAbort, SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "
 import type { UsageStatistics } from "../../session/session-entries";
 import type { SessionInfo as StoredSessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
+import { FileSessionStorage } from "../../session/session-storage";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands, toAcpAvailableCommands } from "../../slash-commands/available-commands";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS } from "../../stt/models";
@@ -586,6 +598,48 @@ export function createAcpMcpHostInteraction(
 	};
 }
 
+/** omp models.yml `api` variants, in the order models-config-schema accepts them. */
+const OMP_API_VARIANTS = [
+	"openai-completions",
+	"openai-responses",
+	"openai-codex-responses",
+	"azure-openai-responses",
+	"anthropic-messages",
+	"google-generative-ai",
+	"google-gemini-cli",
+	"google-vertex",
+] as const;
+type OmpApi = (typeof OMP_API_VARIANTS)[number];
+
+/**
+ * Translate omp's concrete `api` variant into the generic protocol name ACP
+ * exposes (`openai`, `anthropic`, `google`, ...). Unknown variants pass through.
+ */
+function toAcpProtocol(api: string | undefined): string {
+	if (!api) return "openai";
+	if (api.startsWith("openai") || api.startsWith("azure")) return "openai";
+	if (api.startsWith("anthropic")) return "anthropic";
+	if (api.startsWith("google")) return "google";
+	return api;
+}
+
+/**
+ * Translate an ACP protocol name back into an omp `api` variant. An existing
+ * variant under the same protocol family is preserved so re-saving a provider
+ * never silently downgrades its transport.
+ */
+function toOmpApi(protocol: string, existing: string | undefined): OmpApi {
+	if (existing && (OMP_API_VARIANTS as readonly string[]).includes(existing)) {
+		if (toAcpProtocol(existing) === toAcpProtocol(protocol)) return existing as OmpApi;
+	}
+	if (protocol === "anthropic") return "anthropic-messages";
+	if (protocol === "google" || protocol === "google-vertex") return "google-generative-ai";
+	if (protocol === "azure") return "azure-openai-responses";
+	if (protocol === "openai") return "openai-completions";
+	if ((OMP_API_VARIANTS as readonly string[]).includes(protocol)) return protocol as OmpApi;
+	throw new Error(`Unsupported provider apiType: ${protocol}`);
+}
+
 export class AcpAgent implements Agent {
 	#connection: AgentSideConnection;
 	#initialSession: AgentSession | undefined;
@@ -671,10 +725,14 @@ export class AcpAgent implements Agent {
 					fork: {},
 					resume: {},
 					close: {},
+					delete: {},
 				},
 				auth: {
 					logout: {},
 				},
+				// ACP `providers/*`: lets a client list, configure, and disable model
+				// providers without dropping into omp's TUI. Backed by models.yml.
+				providers: {},
 			},
 		};
 	}
@@ -782,6 +840,143 @@ export class AcpAgent implements Agent {
 		}
 		await this.#closeManagedSession(params.sessionId, record);
 		return {};
+	}
+
+	/**
+	 * ACP `session/delete`: remove a session from disk, closing it first when it is live
+	 * so its writer is drained before the file disappears. Unknown ids are treated as
+	 * already-deleted (idempotent), matching `closeSession` and the `dropSession` contract
+	 * that treats ENOENT as success.
+	 */
+	async deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
+		const record = this.#sessions.get(params.sessionId);
+		if (record) {
+			await this.#closeManagedSession(params.sessionId, record);
+		}
+		const stored = await this.#findStoredSessionById(params.sessionId);
+		if (!stored) {
+			return {};
+		}
+		await new FileSessionStorage().deleteSessionWithArtifacts(stored.path);
+		return {};
+	}
+
+	/**
+	 * ACP `providers/list`: expose every configurable model provider plus its
+	 * current non-secret routing config. `required` marks providers omp ships
+	 * pre-configured so a client never disables them out from under the user.
+	 */
+	async listProviders(_params: ListProvidersRequest): Promise<ListProvidersResponse> {
+		const config = await this.#loadModelsConfig();
+		const configured = config.providers ?? {};
+		const registry = this.#anyModelRegistry();
+		const disabled = new Set(this.#disabledProviderIds());
+		const ids = new Set<string>([...Object.keys(configured), ...(registry?.getDiscoverableProviders?.() ?? [])]);
+		const providers: ProviderInfo[] = [];
+		for (const id of ids) {
+			const entry = configured[id];
+			const baseUrl = entry?.baseUrl ?? registry?.getProviderBaseUrl?.(id);
+			const apiType = toAcpProtocol(entry?.api);
+			providers.push({
+				id,
+				required: false,
+				supported: [apiType],
+				current: disabled.has(id) ? null : { apiType, baseUrl: baseUrl ?? "" },
+			});
+		}
+		return { providers };
+	}
+
+	/**
+	 * ACP `providers/set`: persist a provider's base URL/headers into models.yml
+	 * and refresh the registry so subsequent sessions resolve through it. The
+	 * apiType maps onto omp's provider `api` field; unknown values are rejected.
+	 */
+	async setProvider(params: SetProviderRequest): Promise<SetProviderResponse> {
+		if (!params.id.trim()) {
+			throw new Error("providers/set requires a non-empty id");
+		}
+		const config = await this.#loadModelsConfig();
+		const providers = { ...(config.providers ?? {}) };
+		const existing = providers[params.id] ?? {};
+		// ACP speaks generic protocol names ("openai"); omp's models.yml needs a
+		// concrete API variant. Map in both directions so round-trips are stable.
+		providers[params.id] = {
+			...existing,
+			baseUrl: params.baseUrl,
+			api: toOmpApi(params.apiType, existing.api),
+			...(params.headers ? { headers: params.headers } : {}),
+		};
+		await this.#saveModelsConfig({ ...config, providers });
+		await this.#anyModelRegistry()?.refresh?.("offline");
+		this.#setProviderDisabled(params.id, false);
+		return {};
+	}
+
+	/**
+	 * ACP `providers/disable`: mark a provider disabled. This only hides it from
+	 * model selection; stored credentials are untouched so re-enabling is instant.
+	 */
+	async disableProvider(params: DisableProviderRequest): Promise<DisableProviderResponse> {
+		if (!params.id.trim()) {
+			throw new Error("providers/disable requires a non-empty id");
+		}
+		this.#setProviderDisabled(params.id, true);
+		return {};
+	}
+
+	/** Load models.yml, tolerating a missing or unreadable file. */
+	async #loadModelsConfig(): Promise<ModelsConfig> {
+		const file = ModelsConfigFile.relocate(this.#anyModelRegistry()?.modelsConfigPath);
+		file.invalidate();
+		const result = await file.tryLoadAsync();
+		return result.status === "ok" ? (result.value ?? {}) : {};
+	}
+
+	/** Persist models.yml and invalidate caches so the next read sees the edit. */
+	async #saveModelsConfig(config: ModelsConfig): Promise<void> {
+		const file = ModelsConfigFile.relocate(this.#anyModelRegistry()?.modelsConfigPath);
+		await Bun.write(file.path(), JSON.stringify(config, null, 2));
+		file.invalidate();
+	}
+
+	/**
+	 * First live session's registry. ACP tests and some embedders stub the registry
+	 * with only the members the agent needs, so every optional accessor is guarded.
+	 */
+	#anyModelRegistry():
+		| {
+				modelsConfigPath?: string;
+				getDiscoverableProviders?: () => string[];
+				getProviderBaseUrl?: (provider: string) => string | undefined;
+				refresh?: (mode: "offline") => Promise<unknown>;
+		  }
+		| undefined {
+		for (const record of this.#sessions.values()) {
+			return record.session.modelRegistry as unknown as {
+				modelsConfigPath?: string;
+				getDiscoverableProviders?: () => string[];
+				getProviderBaseUrl?: (provider: string) => string | undefined;
+				refresh?: (mode: "offline") => Promise<unknown>;
+			};
+		}
+		return undefined;
+	}
+
+	/** Provider ids the user has disabled in settings. */
+	#disabledProviderIds(): string[] {
+		return settings.get("disabledProviders");
+	}
+
+	/** Toggle a provider in settings, preserving the rest of the disabled set. */
+	#setProviderDisabled(id: string, disabled: boolean): void {
+		const current = new Set(this.#disabledProviderIds());
+		if (disabled) {
+			current.add(id);
+		} else {
+			current.delete(id);
+		}
+		settings.set("disabledProviders", [...current]);
 	}
 
 	async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
