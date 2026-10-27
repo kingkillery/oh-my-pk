@@ -7,7 +7,7 @@ import type { MemoryInput, Metadata } from "../types";
 import { AnnotationStore } from "./annotations";
 import { type MemoryAuditOp, recordMemoryAudit } from "./audit-log";
 import { BankManager } from "./banks";
-import { BeamMemory, initBeam } from "./beam/index";
+import { BeamMemory, type DedupeOptions, type DedupeResult, initBeam } from "./beam/index";
 import { reconcileEmbeddingModel } from "./beam/store";
 import type { RecallEnhancedOptions, RecallOptions, RecallResult, SleepResult } from "./beam/types";
 import { EpisodicGraph } from "./episodic-graph";
@@ -605,6 +605,10 @@ export class Mnemopi {
 
 	consolidate(dryRun = false): SleepResult {
 		return this.sleep(dryRun);
+	}
+
+	dedupe(options: DedupeOptions = {}): DedupeResult {
+		return this.#withRuntimeOptions(() => this.beam.dedupe(options));
 	}
 	#withRuntimeOptions<T>(fn: () => T): T {
 		return withMnemopiRuntimeOptions(this.runtimeOptions, fn);
