@@ -323,7 +323,8 @@ async function cmdRelease(version: string): Promise<void> {
 
 	// 4. Refresh workspace versions without upgrading the tested dependency graph.
 	console.log("Refreshing lockfile workspace versions...");
-	await $`bun install`;
+	await $`bun install --lockfile-only --ignore-scripts`;
+	await $`bun install --frozen-lockfile`;
 	await $`cargo check --offline`;
 	console.log();
 
