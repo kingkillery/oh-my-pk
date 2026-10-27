@@ -65,6 +65,60 @@ describe("Clef bootstrap", () => {
 });
 
 describe("Clef launch lifecycle", () => {
+	it.each(["exit", "throw", "string", "diagnostics-error"] as const)(
+		"redacts %s failures and still releases the runtime",
+		async mode => {
+			const secret = `tskey-auth-${"s".repeat(1600)}-private-tail`;
+			process.env.TS_AUTHKEY = secret;
+			const events: string[] = [];
+			let execCalls = 0;
+			const failure = launchClefDecisionModel(request(), {
+				readState: async () => undefined,
+				writeState: async () => {},
+				removeState: async () => {
+					events.push("remove-state");
+				},
+				discover: async () => undefined,
+				armCutoff: async () => ({
+					cutoffAt: "2026-10-27T22:00:00Z",
+					scriptPath: "stop.ps1",
+					taskName: "test-cutoff",
+				}),
+				cancelCutoff: async () => {
+					events.push("cancel-cutoff");
+				},
+				runColab: async args => {
+					if (args[0] === "status") return { exitCode: 0, stdout: `Session '${SESSION}' not found.`, stderr: "" };
+					if (args[0] === "new") return { exitCode: 0, stdout: "Hardware: T4", stderr: "" };
+					if (args[0] === "stop") {
+						events.push("stop");
+						return { exitCode: 0, stdout: "", stderr: "" };
+					}
+					if (args[0] === "exec") {
+						execCalls++;
+						events.push(execCalls === 1 ? "bootstrap" : "diagnostics");
+						if (execCalls > 1) {
+							if (mode === "diagnostics-error") throw new Error(`diagnostics ${secret}`);
+							return { exitCode: 0, stdout: `CUDA out of memory ${secret}`, stderr: "tskey-api-other-private" };
+						}
+						if (mode === "throw") throw new Error(`bootstrap ${secret}`, { cause: new Error(secret) });
+						if (mode === "string") throw `bootstrap ${secret}`;
+						return { exitCode: 1, stdout: "", stderr: `bootstrap ${secret}` };
+					}
+					throw new Error(`Unexpected command ${args[0]}`);
+				},
+			});
+			const error: unknown = await failure.catch((reason: unknown) => reason);
+			expect(error).toBeInstanceOf(Error);
+			if (!(error instanceof Error)) throw new Error("Expected launch failure");
+			expect(error.message).toContain("bootstrap");
+			expect(Bun.inspect(error)).not.toContain("private-tail");
+			expect(Bun.inspect(error)).not.toContain("other-private");
+			expect(error.cause).toBeUndefined();
+			expect(events).toEqual(["bootstrap", "diagnostics", "stop", "cancel-cutoff", "remove-state"]);
+		},
+	);
+
 	it("verifies the cutoff before allocating Colab compute", async () => {
 		const events: string[] = [];
 		let discoveryCalls = 0;
@@ -152,5 +206,57 @@ describe("Clef launch lifecycle", () => {
 
 		expect(cancelled).toBeFalse();
 		expect(events).toContain("stop");
+	});
+
+	it("reads the remote logs before releasing a VM whose bootstrap failed, without leaking keys", async () => {
+		const events: string[] = [];
+		let execCalls = 0;
+		let statusCalls = 0;
+		const failure = launchClefDecisionModel(request(), {
+			readState: async () => undefined,
+			writeState: async () => {},
+			removeState: async () => {},
+			discover: async () => undefined,
+			armCutoff: async () => ({
+				cutoffAt: "2026-10-02T22:00:00.000Z",
+				scriptPath: "stop.ps1",
+				taskName: "OMPK-Clef-test",
+			}),
+			runColab: async args => {
+				const action = args[0] ?? "";
+				if (action === "status") {
+					statusCalls++;
+					return statusCalls === 1
+						? { exitCode: 0, stdout: "[colab] Session 'ompk-clef-decision' not found.", stderr: "" }
+						: { exitCode: 1, stdout: "", stderr: "[colab] Session 'ompk-clef-decision' not found." };
+				}
+				if (action === "new") return { exitCode: 0, stdout: "Hardware: T4", stderr: "" };
+				if (action === "exec") {
+					execCalls++;
+					events.push(execCalls === 1 ? "bootstrap" : "diagnostics");
+					return execCalls === 1
+						? { exitCode: 1, stdout: "", stderr: "export TS_AUTHKEY='tskey-auth-kABC123-secretpart'" }
+						: {
+								exitCode: 0,
+								stdout: "== tail /tmp/ompk-clef-server.log\ntorch.OutOfMemoryError: CUDA out of memory",
+								stderr: "",
+							};
+				}
+				if (action === "stop") {
+					events.push("stop");
+					return { exitCode: 0, stdout: "", stderr: "" };
+				}
+				return { exitCode: 0, stdout: "", stderr: "" };
+			},
+			cancelCutoff: async () => {},
+		});
+
+		const error = await failure.then(
+			() => undefined,
+			(e: unknown) => e as Error,
+		);
+		expect(error?.message).toContain("CUDA out of memory");
+		expect(error?.message).not.toContain("secretpart");
+		expect(events).toEqual(["bootstrap", "diagnostics", "stop"]);
 	});
 });
