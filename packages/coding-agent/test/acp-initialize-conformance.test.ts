@@ -257,8 +257,37 @@ describe("ACP initialize conformance", () => {
 					resume: expect.any(Object),
 					close: expect.any(Object),
 				}),
+				auth: expect.objectContaining({ logout: expect.any(Object) }),
 			}),
 		);
+	});
+
+	it("echoes a v2 offer so clients can enable their orchestration-v2 path", async () => {
+		const agent = await createAgent();
+		const response = await agent.initialize(buildInitializeRequest({ protocolVersion: 2 }));
+		expectAcpStructure(arkInitializeResponse, response);
+		expect(response.protocolVersion).toBe(2);
+	});
+
+	it("stays on v1 for a v1-only client", async () => {
+		const agent = await createAgent();
+		const response = await agent.initialize(buildInitializeRequest({ protocolVersion: 1 }));
+		expect(response.protocolVersion).toBe(1);
+	});
+
+	it("clamps an unsupported future protocol version to the highest supported", async () => {
+		const agent = await createAgent();
+		const response = await agent.initialize(buildInitializeRequest({ protocolVersion: 99 }));
+		expect(response.protocolVersion).toBe(2);
+	});
+
+	it("performs ACP logout so clients can offer a sign-out action", async () => {
+		const agent = await createAgent();
+		await agent.initialize(buildInitializeRequest());
+
+		// The handler opens the (temp) credential store; an empty store must still resolve
+		// cleanly rather than erroring, so the client's Sign out control works on a fresh install.
+		await expect(agent.logout({})).resolves.toEqual({});
 	});
 
 	it("acknowledges the exact Pkzz owner-permission bridge v1 marker with the strict policy", async () => {

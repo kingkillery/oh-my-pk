@@ -21,6 +21,8 @@ import {
 	type ListSessionsResponse,
 	type LoadSessionRequest,
 	type LoadSessionResponse,
+	type LogoutRequest,
+	type LogoutResponse,
 	type McpServer,
 	type NewSessionRequest,
 	type NewSessionResponse,
@@ -41,8 +43,8 @@ import {
 	type Usage,
 } from "@agentclientprotocol/sdk";
 import type { AgentToolResult } from "@pk-nerdsaver-ai/pi-agent-core";
-import type { AssistantMessage, Model } from "@pk-nerdsaver-ai/pi-ai";
-import { getBlobsDir, isEnoent, logger, VERSION } from "@pk-nerdsaver-ai/pi-utils";
+import { type AssistantMessage, type Model, SqliteAuthCredentialStore } from "@pk-nerdsaver-ai/pi-ai";
+import { getAgentDbPath, getBlobsDir, isEnoent, logger, VERSION } from "@pk-nerdsaver-ai/pi-utils";
 import { disableProvider, enableProvider, reset as resetCapabilities } from "../../capability";
 import { Settings } from "../../config/settings";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
@@ -94,6 +96,14 @@ import {
 	normalizeReplayToolArguments,
 } from "./acp-event-mapper";
 import { ACP_TERMINAL_AUTH_FLAG } from "./terminal-auth";
+
+/**
+ * Highest ACP protocol version this agent speaks. The SDK ships v1; v2 is an additive
+ * draft (optional `state_update`/`user_message` updates and provider config). T3 Code
+ * offers `protocolVersion: 2` and only enables its orchestration-v2 path (follow agent
+ * work state, continuation) when the agent echoes 2 back, so negotiate up to this ceiling.
+ */
+const ACP_MAX_PROTOCOL_VERSION = Math.max(PROTOCOL_VERSION, 2);
 
 const ACP_DEFAULT_MODE_ID = "default";
 const ACP_PLAN_MODE_ID = "plan";
@@ -619,7 +629,10 @@ export class AcpAgent implements Agent {
 		const ownerPermissionBridgeEnabled = hasPkzzOwnerPermissionBridge(params.clientCapabilities);
 		const hostFinalReplyEnabled = hasPkzzHostFinalReply(params.clientCapabilities);
 		return {
-			protocolVersion: PROTOCOL_VERSION,
+			// Echo the client's offered version, clamped to what this agent supports. Claiming v2
+			// only to a client that already asked for it avoids over-stating support to v1-only
+			// clients while unlocking T3 Code's v2 orchestration.
+			protocolVersion: Math.max(PROTOCOL_VERSION, Math.min(params.protocolVersion, ACP_MAX_PROTOCOL_VERSION)),
 			...(ownerPermissionBridgeEnabled || hostFinalReplyEnabled
 				? {
 						_meta: {
@@ -659,6 +672,9 @@ export class AcpAgent implements Agent {
 					resume: {},
 					close: {},
 				},
+				auth: {
+					logout: {},
+				},
 			},
 		};
 	}
@@ -671,6 +687,26 @@ export class AcpAgent implements Agent {
 		const validMethods = supportsTerminalAuth ? ["agent", "terminal"] : ["agent"];
 		if (!validMethods.includes(params.methodId)) {
 			throw new Error(`Unknown ACP auth method: ${params.methodId}`);
+		}
+		return {};
+	}
+
+	/**
+	 * ACP `logout`: terminate the authenticated session by deleting every stored
+	 * provider credential. The protocol request carries no provider selector, so this
+	 * is intentionally all-or-nothing — matching the single "Sign out" action a client
+	 * renders from `agentCapabilities.auth.logout`.
+	 */
+	async logout(_params: LogoutRequest): Promise<LogoutResponse> {
+		const store = await SqliteAuthCredentialStore.open(getAgentDbPath());
+		try {
+			const providers = store.listProviders();
+			for (const provider of providers) {
+				store.deleteAuthCredentialsForProvider(provider, "logged out via ACP");
+			}
+			logger.info("ACP logout cleared stored credentials", { providers: providers.length });
+		} finally {
+			store.close();
 		}
 		return {};
 	}
@@ -2610,7 +2646,11 @@ export class AcpAgent implements Agent {
 		const configs: MCPConfigMap = {};
 		const sources: MCPSourceMap = {};
 		for (const server of servers) {
-			configs[server.name] = this.#toMcpConfig(server);
+			const config = this.#toMcpConfig(server);
+			if (config === undefined) {
+				continue;
+			}
+			configs[server.name] = config;
 			sources[server.name] = {
 				provider: "acp",
 				providerName: "ACP Client",
@@ -2619,20 +2659,30 @@ export class AcpAgent implements Agent {
 			};
 		}
 
+		// Every server was an unsupported transport: nothing to connect.
+		if (Object.keys(configs).length === 0) {
+			record.mcpManager = undefined;
+			await record.session.refreshMCPTools([], { activateAll: true });
+			return;
+		}
+
 		const result = await manager.connectServers(configs, sources);
+		// ACP clients send every server they know about, and one slow or unauthenticated
+		// server must not fail the whole `session/new` — that aborts session creation and
+		// surfaces as "failed to initialize" with no working session. Degrade instead: keep
+		// the servers that connected and log the rest.
 		if (result.errors.size > 0) {
-			throw new Error(
-				Array.from(result.errors.entries())
-					.map(([name, message]) => `${name}: ${message}`)
-					.join("; "),
-			);
+			logger.warn("ACP MCP server(s) failed to connect; continuing without them", {
+				errors: Array.from(result.errors.entries()).map(([name, message]) => `${name}: ${message}`),
+				connected: result.connectedServers,
+			});
 		}
 
 		record.mcpManager = manager;
 		await record.session.refreshMCPTools(result.tools, { activateAll: true });
 	}
 
-	#toMcpConfig(server: McpServer): MCPServerConfig {
+	#toMcpConfig(server: McpServer): MCPServerConfig | undefined {
 		if ("command" in server) {
 			return {
 				type: "stdio",
@@ -2656,8 +2706,13 @@ export class AcpAgent implements Agent {
 			};
 		}
 		// The experimental ACP-channel transport (`type: "acp"`) is not advertised in
-		// `mcpCapabilities`, so a spec-compliant client never sends it; reject defensively.
-		throw new Error(`Unsupported MCP server transport: ${server.type}`);
+		// `mcpCapabilities`, so a spec-compliant client never sends it. Degrade instead of
+		// throwing: an unknown transport must not abort `session/new` for the whole session.
+		logger.warn("Unsupported ACP MCP server transport; skipping server", {
+			server: server.name,
+			transport: server.type,
+		});
+		return undefined;
 	}
 
 	#toNameValueMap(values: Array<{ name: string; value: string }>): { [name: string]: string } {

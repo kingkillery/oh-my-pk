@@ -649,6 +649,50 @@ describe("ACP agent", () => {
 		await Bun.sleep(0);
 	});
 
+	it("creates the session even when a client-supplied MCP server fails to connect", async () => {
+		const harness = await createHarness();
+		// A server that cannot possibly connect: the command does not exist. T3 Code sends every
+		// server it knows about, so one broken entry must not abort `session/new` for the whole
+		// session — that surfaces to the user as "failed to initialize" with no working session.
+		const created = await harness.agent.newSession({
+			cwd: harness.cwdA,
+			mcpServers: [
+				{
+					name: "broken-server",
+					command: "/nonexistent/omp-acp-probe-binary",
+					args: [],
+					env: [],
+				},
+			],
+		});
+		expectAcpStructure(zNewSessionResponse, created);
+		expect(created.sessionId).toBeTruthy();
+		expect(created.configOptions?.length).toBeGreaterThan(0);
+
+		await harness.agent.closeSession({ sessionId: created.sessionId });
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("creates the session even when a client-supplied MCP server uses an unsupported transport", async () => {
+		const harness = await createHarness();
+		// T3 advertises its own tools over an experimental ACP-channel transport (`type: "acp"`).
+		// omp advertises only http/sse in `mcpCapabilities`, so a spec-compliant client falls back
+		// to the stdio bridge — but a client that sends an `acp` server anyway must not abort
+		// `session/new`.
+		const created = await harness.agent.newSession({
+			cwd: harness.cwdA,
+			mcpServers: [{ type: "acp", name: "t3-code", id: "t3-code" }],
+		});
+		expectAcpStructure(zNewSessionResponse, created);
+		expect(created.sessionId).toBeTruthy();
+		expect(created.configOptions?.length).toBeGreaterThan(0);
+
+		await harness.agent.closeSession({ sessionId: created.sessionId });
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
 	it("advertises plan mode and emits schema-valid mode updates", async () => {
 		const harness = await createHarness();
 		Settings.instance.set("plan.enabled", true);
