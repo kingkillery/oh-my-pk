@@ -113,9 +113,15 @@ describe("release dependency age policy", () => {
 		}
 		await Bun.write(
 			join(root, "package.json"),
-			JSON.stringify({ name: "workspace-test", dependencies: { other: "1.0.0" } }),
+			JSON.stringify({
+				name: "workspace-test",
+				workspaces: { packages: ["packages/*"], catalog },
+				dependencies: { ...dependencies, [fixtureName]: "1.0.0" },
+			}),
 		);
-		const mismatch = await install(root, ["--frozen-lockfile", "--lockfile-only"]);
+		requests.length = 0;
+		const mismatch = await install(root, ["--frozen-lockfile"]);
 		expect(mismatch.exit).not.toBe(0);
+		expect(mismatch.stderr).toMatch(/lockfile|frozen/i);
 	});
 });
