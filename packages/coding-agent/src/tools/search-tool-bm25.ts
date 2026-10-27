@@ -58,6 +58,7 @@ export interface SearchToolBm25Details {
 	total_tools: number;
 	activated_tools: string[];
 	active_selected_tools: string[];
+	already_active_tools?: string[];
 	tools: SearchToolBm25Match[];
 }
 
@@ -80,6 +81,7 @@ function buildSearchToolBm25Content(details: SearchToolBm25Details): string {
 	return JSON.stringify({
 		query: details.query,
 		activated_tools: details.activated_tools,
+		...(details.already_active_tools?.length ? { already_active_tools: details.already_active_tools } : {}),
 		match_count: details.tools.length,
 		total_tools: details.total_tools,
 		tools: details.tools.map(tool => ({
@@ -301,6 +303,19 @@ export class SearchToolBm25Tool implements AgentTool<typeof searchToolBm25Schema
 		}
 
 		const searchIndex = getDiscoverableToolSearchIndexForExecution(this.session);
+		const queryWords = query
+			.toLowerCase()
+			.split(/[^a-z0-9]+/)
+			.filter(Boolean);
+		const alreadyActiveTools = (this.session.getActiveToolNames?.() ?? [])
+			.filter(name => {
+				const nameWords = name
+					.toLowerCase()
+					.split(/[^a-z0-9]+/)
+					.filter(Boolean);
+				return queryWords.length > 0 && queryWords.every(word => nameWords.some(part => part.includes(word)));
+			})
+			.slice(0, limit);
 		const selectedToolNames = new Set(getSelectedToolNames(this.session));
 		let ranked: Array<{ tool: DiscoverableTool; score: number }> = [];
 		try {
@@ -338,6 +353,7 @@ export class SearchToolBm25Tool implements AgentTool<typeof searchToolBm25Schema
 			total_tools: searchIndex.documents.length,
 			activated_tools: activated,
 			active_selected_tools: getSelectedToolNames(this.session),
+			already_active_tools: alreadyActiveTools,
 			tools: eligibleForActivation.map(result => formatMatch(result.tool, result.score)),
 		};
 

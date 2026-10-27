@@ -1854,6 +1854,7 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 			// Generic tool discovery (unified — covers built-in + MCP + extension)
 			isToolDiscoveryEnabled: () => session.isToolDiscoveryEnabled(),
 			getDiscoverableTools: filter => session.getDiscoverableTools(filter),
+			getActiveToolNames: () => session.getActiveToolNames(),
 			getDiscoverableToolSearchIndex: () => session.getDiscoverableToolSearchIndex(),
 			getSelectedDiscoveredToolNames: () => session.getSelectedDiscoveredToolNames(),
 			activateDiscoveredTools: toolNames => session.activateDiscoveredTools(toolNames),

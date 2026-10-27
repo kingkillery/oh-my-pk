@@ -271,6 +271,7 @@ export interface ToolSession {
 	getForkContext?: () => ForkContextSnapshot | undefined;
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
 	getToolByName?: (name: string) => AgentTool | undefined;
+	getActiveToolNames?: () => string[];
 	/** Agent registry for IRC routing across live sessions. */
 	agentRegistry?: AgentRegistry;
 	/** Cross-process IRC transport for this process. */
