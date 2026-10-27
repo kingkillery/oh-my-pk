@@ -44,6 +44,14 @@
 - In async flows avoid sync I/O, unnecessary copies, and repeated `Bun.file()` calls.
 - Never run `tsc` or `npx tsc`; use `bun check`.
 
+## Bend
+
+When using Bend:
+- Run `bend guide` to learn it.
+- Use `LAWS.bend` to keep important rules.
+- Run `bend PROOF.bend` before committing.
+- Parallelize the code whenever possible.
+
 ## Testing
 
 - Test externally observable behavior: output, transitions, errors, and regression-prone boundaries.
