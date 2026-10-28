@@ -149,6 +149,7 @@ const SPEECH_MODELS_LIST_METHOD = "speech.models.list";
  */
 export const ACP_BOOTSTRAP_RACE_GUARD_MS = 50;
 const ACP_CANCEL_CLEANUP_TIMEOUT_MS = 5_000;
+const ACP_MCP_STARTUP_TIMEOUT_MS = 5_000;
 const ACP_ASYNC_DELIVERY_DRAIN_TIMEOUT_MS = 250;
 const ACP_ASYNC_DELIVERY_DRAIN_MAX_PASSES = 3;
 const HOST_FINAL_REPLY_MAX_UTF8_BYTES = 64 * 1024;
@@ -2336,7 +2337,13 @@ export class AcpAgent implements Agent {
 					void this.#handleLifetimeEvent(record, event);
 				});
 			}
-			void this.#emitBootstrapUpdates(sessionId, record);
+			void this.#emitBootstrapUpdates(sessionId, record).catch((error: unknown) => {
+				// A client can switch providers or close the transport while a
+				// deferred notification is being written. Never let that rejection
+				// escape the session lifecycle as an unhandled promise.
+				if (this.#connection.signal.aborted || record.closedError) return;
+				logger.warn("Failed to send ACP bootstrap updates", { sessionId, error });
+			});
 		}, ACP_BOOTSTRAP_RACE_GUARD_MS);
 	}
 
@@ -2835,9 +2842,13 @@ export class AcpAgent implements Agent {
 			() => record.session.sessionId,
 			this.#clientCapabilities,
 		);
-		const manager = hostInteraction
-			? new MCPManager(record.session.sessionManager.getCwd(), null, { hostInteraction })
-			: new MCPManager(record.session.sessionManager.getCwd());
+		// A client's first prompt may depend on these tools to recover omitted
+		// handoff history. Give ACP a bounded discovery window before session/new
+		// returns, rather than the interactive first-paint window of 250 ms.
+		const manager = new MCPManager(record.session.sessionManager.getCwd(), null, {
+			hostInteraction,
+			startupTimeoutMs: ACP_MCP_STARTUP_TIMEOUT_MS,
+		});
 		const configs: MCPConfigMap = {};
 		const sources: MCPSourceMap = {};
 		for (const server of servers) {
@@ -2868,7 +2879,14 @@ export class AcpAgent implements Agent {
 				logger.warn("Failed to refresh ACP MCP tools", { error });
 			});
 		});
-		const result = await manager.connectServers(configs, sources);
+		const pendingServers = new Set<string>();
+		const result = await manager.connectServers(configs, sources, event => {
+			if (event.type === "connecting") {
+				for (const name of event.serverNames) pendingServers.add(name);
+			} else {
+				pendingServers.delete(event.serverName);
+			}
+		});
 		// ACP clients (notably T3) send every server they know about, and one slow or
 		// unauthenticated server must not fail the whole `session/new` — that aborts
 		// session creation and surfaces as "failed to initialize" with no working session.
@@ -2879,6 +2897,12 @@ export class AcpAgent implements Agent {
 			logger.warn("ACP MCP server(s) failed to connect; continuing without them", {
 				errors: Array.from(result.errors.entries()).map(([name, message]) => `${name}: ${message}`),
 				connected: result.connectedServers,
+			});
+		}
+		if (pendingServers.size > 0) {
+			logger.warn("ACP MCP startup window elapsed; initial prompt tools may be incomplete", {
+				servers: Array.from(pendingServers),
+				timeoutMs: ACP_MCP_STARTUP_TIMEOUT_MS,
 			});
 		}
 
