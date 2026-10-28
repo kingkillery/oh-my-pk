@@ -78,6 +78,7 @@ import {
 	TelemetryTap,
 	type WatchdogConfig,
 } from "../watchdog";
+import { createWatchdogCaseCollector } from "../watchdog/case-collector";
 import type { WorkspaceTree } from "../workspace-tree";
 import { type AssignmentContract, type AssignmentResult, parseAssignmentResult } from "./assignment-contract";
 import {
@@ -1110,6 +1111,7 @@ export interface SubagentRunMonitor {
 	scheduleProgress(flush?: boolean): void;
 	/** Stop processing events and clear listeners/timers. Call once the run settled. */
 	finish(): void;
+	recordWatchdogOutcome(outcome: { exitCode: number; aborted: boolean | null; isError: boolean | null }): void;
 }
 
 export function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
@@ -1155,6 +1157,10 @@ export function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonit
 	let watchdogAborted = false;
 	let watchdogAbortReason: string | undefined;
 	let watchdogEvaluating = false;
+	const watchdogCases = createWatchdogCaseCollector(process.env.OMP_WATCHDOG_CASE_DIR, {
+		subagentId: id,
+		sessionFile: args.sessionFile,
+	});
 
 	// Accumulate usage incrementally from message_end events (no memory for streaming events)
 	const accumulatedUsage: Usage = {
@@ -1520,9 +1526,24 @@ export function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonit
 					void (async () => {
 						try {
 							const compactState = telemetryTap.toCompactState(agent.name, assignment ?? task);
+							const startedAt = watchdogCases ? new Date().toISOString() : "";
 							const evalResult = await evaluateAgentTelemetry(compactState, watchdogCfg);
 							if (evalResult && !resolved && !abortSent) {
 								const decision = arbitrateHealth(evalResult, watchdogCfg, { tool: completedTool, target });
+								const actionStatus =
+									decision.action === "inject_hint" && !activeSession
+										? "not_applied"
+										: decision.action === "pass"
+											? "applied"
+											: "requested";
+								watchdogCases?.decision(
+									compactState,
+									startedAt,
+									evalResult,
+									decision,
+									watchdogCfg,
+									actionStatus,
+								);
 								if (decision.action === "tripwire_abort") {
 									logger.warn(`[Watchdog] Subagent tripwire tripped: ${decision.reason}`, {
 										id,
@@ -1543,6 +1564,15 @@ export function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonit
 										});
 									}
 								}
+							} else {
+								watchdogCases?.decision(
+									compactState,
+									startedAt,
+									evalResult,
+									undefined,
+									watchdogCfg,
+									evalResult ? "late_or_cancelled" : "evaluation_unavailable",
+								);
 							}
 						} catch (err) {
 							logger.debug(
@@ -1796,6 +1826,7 @@ export function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonit
 		rawOutput: () => (finalOutputChunks.length > 0 ? finalOutputChunks.join("") : outputChunks.join("")),
 		outputLimitExceeded: () => outputLimitExceeded,
 		scheduleProgress,
+		recordWatchdogOutcome: outcome => watchdogCases?.outcome(outcome),
 		finish: () => {
 			resolved = true;
 			listenerController.abort();
@@ -2197,6 +2228,11 @@ export function trackResumedSubagentRuns(session: AgentSession, args: ResumedRun
 				},
 			})
 				.then(result => {
+					monitor.recordWatchdogOutcome({
+						exitCode: result.exitCode,
+						aborted: result.aborted ?? null,
+						isError: result.isError ?? null,
+					});
 					const output = [result.output, result.stderr].filter(Boolean).join("\n");
 					const text = `Resumed task ${args.id}: ${output}\n\nOutput: agent://${outputId}\nTranscript: ${historyUrl(args.id)}`;
 					if (result.exitCode !== 0 || result.aborted || result.isError) reject(new Error(text));
@@ -3335,6 +3371,11 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 		startTime,
 	});
 
+	monitor.recordWatchdogOutcome({
+		exitCode: settled.exitCode,
+		aborted: settled.aborted ?? null,
+		isError: settled.isError ?? null,
+	});
 	const terminalFailure = settled.exitCode !== 0 || settled.isError === true || settled.aborted === true;
 	if (!terminalFailure || !options.assignmentContract || !options.spawnPlan || signal?.aborted) {
 		return settled;
