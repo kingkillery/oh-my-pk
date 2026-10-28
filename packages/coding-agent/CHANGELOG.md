@@ -6,6 +6,11 @@
 
 - SearchTools reports already-active host tools that match a query in `already_active_tools`, so the agent can call them without re-activating them.
 
+### Fixed
+
+- Give ACP client-supplied MCP tools up to five seconds to become available before session creation, load, or resume returns, reducing missing history-recovery tools on initial handoff prompts. Log servers still connecting after the bounded window and retain background registration.
+- Contain deferred ACP bootstrap notification failures when the client disconnects or closes the session, preventing unhandled promise rejections during provider transitions.
+
 ## [16.4.32] - 2026-10-27
 
 ### Fixed

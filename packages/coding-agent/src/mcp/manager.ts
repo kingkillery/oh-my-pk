@@ -191,11 +191,13 @@ export interface MCPDiscoverOptions {
 	onStatus?: (event: McpConnectionStatusEvent) => void;
 }
 
-/** Optional host-owned MRTR interaction policy and trusted extension registry. */
+/** Optional host-owned interaction, extension, and startup policy. */
 export interface MCPManagerOptions {
 	hostInteraction?: MCPHostInteraction;
 	/** Compiled-in trusted extension definitions. No registry means an empty allowlist. */
 	extensionRegistry?: MCPExtensionRegistry;
+	/** Bounded initial tool-discovery window. Interactive startup defaults to 250 ms. */
+	startupTimeoutMs?: number;
 }
 
 /**
@@ -808,7 +810,7 @@ export class MCPManager {
 		if (connectionTasks.length > 0) {
 			await Promise.race([
 				Promise.allSettled(connectionTasks.map(task => task.tracked.promise)),
-				delay(STARTUP_TIMEOUT_MS),
+				delay(this.options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS),
 			]);
 
 			const cachedTools = new Map<string, MCPToolDefinition[]>();
