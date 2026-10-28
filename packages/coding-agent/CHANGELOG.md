@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- SearchTools reports already-active host tools that match a query in `already_active_tools`, so the agent can call them without re-activating them.
+
 ## [16.4.32] - 2026-10-27
 
 ### Fixed

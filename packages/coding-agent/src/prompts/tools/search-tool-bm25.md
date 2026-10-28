@@ -19,6 +19,7 @@ Behavior:
 - Activates top matches for the current user turn
 - Repeated same-turn searches add without removing earlier matches
 - Activated tools are available before the next model call
+- Matching tools in `already_active_tools` are already available and can be called immediately.
 
 Notes:
 - Start with `limit` 5–10 if unsure.

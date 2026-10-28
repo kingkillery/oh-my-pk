@@ -75,6 +75,18 @@ function builtinTool(name: string, summary: string, schemaKeys: string[] = []): 
 }
 
 describe("SearchToolBm25Tool", () => {
+	it("reports matching active host tools without activating them", async () => {
+		const session = createSession([], { getActiveToolNames: () => ["page_agent_execute", "ix_browser"] });
+		const tool = new SearchToolBm25Tool(session);
+		for (const query of ["page_agent_execute", "page agent"]) {
+			const result = await tool.execute("active", { query });
+			const first = result.content[0];
+			const body = JSON.parse(first?.type === "text" ? (first.text ?? "{}") : "{}");
+			expect(body.already_active_tools).toEqual(["page_agent_execute"]);
+			expect(body.activated_tools).toEqual([]);
+			expect(session.getSelected()).toEqual([]);
+		}
+	});
 	const discoverableTools: DiscoverableTool[] = [
 		mcpTool(
 			"mcp__github_create_issue",
