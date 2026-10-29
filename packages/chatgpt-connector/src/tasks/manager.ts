@@ -315,7 +315,7 @@ export class TaskManager implements TaskService {
 			const id = this.#queue.shift();
 			if (!id) break;
 			const task = this.#tasks.get(id);
-			if (!task || task.record.state !== "queued") continue;
+			if (task?.record.state !== "queued") continue;
 			void this.#runTurn(task, task.queuedPrompt);
 		}
 	}
