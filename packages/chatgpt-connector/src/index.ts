@@ -82,9 +82,9 @@ export { VERSION } from "./version";
 import { type ConnectorConfig, type LoadConfigOptions, loadConfig, type WorkspaceConfig } from "./config";
 import { McpServer } from "./mcp/server";
 import { type ConnectorServer, startConnectorServer } from "./server/http";
-import { createOmpkSessionRunner } from "./session/runner";
 import { TaskManager, type TaskManagerOptions } from "./tasks/manager";
 import type { SessionRunner, TaskService } from "./types";
+import { requireSandboxedRunner } from "./workspace-boundary";
 
 /** Factory for the runner bound to one workspace; injectable for tests/custom sessions. */
 export type ConnectorRunnerFactory = (input: {
@@ -115,24 +115,16 @@ export interface Connector {
 
 /**
  * Load config, build the task manager and MCP core, and bind the HTTP listener.
- * The default runner factory maps each workspace to an in-process
- * `OmpkSessionRunner` (auto-approve, read-only tool profile when
- * `workspace.allowWrite === false`).
+ * The host must supply a runner backed by an enforced workspace sandbox.
  */
 export function createConnector(options: CreateConnectorOptions = {}): Connector {
 	const { version, createRunner, log, onSettled, ...loadOptions } = options;
+	const sandboxedRunner = requireSandboxedRunner(createRunner);
 	const config = loadConfig(loadOptions);
 	const service = new TaskManager({
 		config,
 		onSettled,
-		createRunner:
-			createRunner ??
-			(({ workspace, model }) =>
-				createOmpkSessionRunner({
-					cwd: workspace.path,
-					model,
-					allowWrite: workspace.allowWrite !== false,
-				})),
+		createRunner: sandboxedRunner,
 	});
 	const mcp = new McpServer({ service, config, version });
 	const server = startConnectorServer({ config, service, mcp, version, log });

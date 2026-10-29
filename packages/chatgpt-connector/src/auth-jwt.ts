@@ -4,9 +4,8 @@
  * The connector acts as an MCP protected resource server: ChatGPT completes the
  * authorization-code + PKCE flow with an external identity provider and presents
  * the issued JWT here. This module verifies RS256/ES256 signatures against the
- * authorization server's JWKS and enforces `exp`/`nbf`/`iss`/`aud`. Scope-based
- * authorization is intentionally not layered on top yet; the token either
- * proves the user or it does not.
+ * authorization server's JWKS and enforces `exp`/`nbf`/`iss`/`aud` and all
+ * configured scopes.
  */
 import { constants, createPublicKey, verify as cryptoVerify, type KeyObject } from "node:crypto";
 import type { OAuthConfig } from "./config";
@@ -123,11 +122,17 @@ function matchesKey(jwk: Jwk, alg: string, kid: string | undefined): boolean {
 
 function checkClaims(claims: Record<string, unknown>, oauth: OAuthConfig, nowSeconds: number): void {
 	const skew = oauth.clockSkewSeconds ?? 60;
-	if (typeof claims.exp === "number" && nowSeconds > claims.exp + skew) {
+	if (typeof claims.exp !== "number" || !Number.isFinite(claims.exp)) {
+		throw new InvalidTokenError("access token expiry is required");
+	}
+	if (nowSeconds >= claims.exp + skew) {
 		throw new InvalidTokenError("access token is expired");
 	}
 	if (typeof claims.nbf === "number" && nowSeconds + skew < claims.nbf) {
 		throw new InvalidTokenError("access token is not yet valid");
+	}
+	if (claims.nbf !== undefined && (typeof claims.nbf !== "number" || !Number.isFinite(claims.nbf))) {
+		throw new InvalidTokenError("access token not-before claim is invalid");
 	}
 	const issuers = oauth.issuer ?? [];
 	if (issuers.length > 0 && (typeof claims.iss !== "string" || !issuers.includes(claims.iss))) {
@@ -209,7 +214,10 @@ export function createJwtVerifier(oauth: OAuthConfig, options: JwtVerifierOption
 			if (!matched) throw new InvalidTokenError("access token signature is invalid");
 
 			checkClaims(claims, oauth, now() / 1000);
-			return { sub: typeof claims.sub === "string" ? claims.sub : undefined, scopes: readScopes(claims) };
+			const scopes = readScopes(claims);
+			if (oauth.scopes?.some(scope => !scopes.includes(scope)))
+				throw new InvalidTokenError("access token lacks required scope");
+			return { sub: typeof claims.sub === "string" ? claims.sub : undefined, scopes };
 		},
 	};
 }

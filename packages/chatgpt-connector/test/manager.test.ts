@@ -94,15 +94,24 @@ describe("timeout and cancel", () => {
 		await waitUntil(() => manager.status(task.id)?.state === "timed_out", 3000);
 	});
 
-	test("a runner that ignores abort is force-finalized by the grace timer", async () => {
+	test("a runner that ignores abort retains its slot until it actually settles", async () => {
 		const runner = new FakeRunner();
-		runner.steps = [{ ignoreAbort: true }];
-		const { manager } = makeManager(runner, { limits: { taskTimeoutMs: 80, abortGraceMs: 150 } });
+		runner.steps = [{ ignoreAbort: true }, {}];
+		const { manager } = makeManager(runner, {
+			limits: { maxConcurrentTasks: 1, taskTimeoutMs: 80, abortGraceMs: 150 },
+		});
 		const { task } = await manager.launch({ prompt: "stuck", waitSeconds: 0 });
-		// timeout (80ms) + grace (150ms) → forced settle ≈ 250ms
+		const next = await manager.launch({ prompt: "queued", waitSeconds: 0 });
+		await waitUntil(
+			() => manager.record(task.id)?.events.some(event => event.type === "abort_unconfirmed") === true,
+			4000,
+		);
+		expect(manager.status(task.id)?.state).toBe("running");
+		expect(manager.status(next.task.id)?.state).toBe("queued");
+		await expect(manager.followup(task.id, "overlap")).rejects.toThrow("still running");
+		runner.pending[0]!.resolve({ text: "", aborted: true });
 		await waitUntil(() => manager.status(task.id)?.state === "timed_out", 4000);
-		const record = manager.record(task.id);
-		expect(record?.events.some(event => event.type === "finalize_forced")).toBe(true);
+		await waitUntil(() => manager.status(next.task.id)?.state === "completed", 4000);
 	});
 
 	test("cancel on a running task aborts the runner", async () => {
@@ -139,6 +148,20 @@ describe("timeout and cancel", () => {
 });
 
 describe("follow-up and lifecycle", () => {
+	test("queues follow-ups behind the concurrency limit", async () => {
+		const runner = new FakeRunner();
+		runner.steps = [{}, { hang: true }, {}];
+		const { manager } = makeManager(runner, { limits: { maxConcurrentTasks: 1 } });
+		const first = await manager.launch({ prompt: "first" });
+		await waitUntil(() => manager.status(first.task.id)?.state === "completed");
+		const busy = await manager.launch({ prompt: "busy" });
+		const follow = await manager.followup(first.task.id, "follow-up");
+		expect(follow?.task.state).toBe("queued");
+		expect(runner.runs).toHaveLength(2);
+		await manager.cancel(busy.task.id);
+		await waitUntil(() => manager.status(first.task.id)?.state === "completed");
+		expect(runner.runs[2]?.prompt).toBe("follow-up");
+	});
 	test("follow_up continues the settled task on the same runner", async () => {
 		const runner = new FakeRunner();
 		runner.steps = [{ outcome: { text: "first answer" } }, { outcome: { text: "second answer" } }];

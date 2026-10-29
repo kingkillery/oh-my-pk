@@ -167,6 +167,7 @@ describe("oauth resource-server surface", () => {
 				iss: "https://idp.example.com",
 				aud: "https://conn.example.com/mcp",
 				exp: Math.floor(Date.now() / 1000) + 600,
+				scope: "mcp",
 			}),
 		).toString("base64url");
 		const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString("base64url");
