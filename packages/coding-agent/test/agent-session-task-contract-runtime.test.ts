@@ -248,7 +248,11 @@ describe("AgentSession task-contract runtime", () => {
 			if (!file) throw new Error("Expected persistent session");
 			const journal = await Bun.file(file).text();
 			expect(journal).toContain("completion-pilot-receipt/v2");
-			expect(journal).toContain('"outcome":"pass"');
+			// v2 blocks any contract that lists non-solutions: the pilot cannot
+			// independently verify their absence (COMPLETION-GATE-V2.md).
+			expect(journal).toContain('"outcome":"blocked"');
+			expect(journal).not.toContain('"reason":"Pilot verification or receipt persistence failed"');
+			expect(journal).toContain(`"revision":"${revision}"`);
 		} finally {
 			release.resolve();
 			await running.catch(() => {});
