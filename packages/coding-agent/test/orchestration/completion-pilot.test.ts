@@ -97,6 +97,15 @@ describe("opt-in completion pilot", () => {
 			"blocked",
 		);
 	}, 30_000);
+	it("does not claim a pass when non-solutions have no independent verification", async () => {
+		const input = await fixture();
+		const result = await runCompletionPilot({
+			...input,
+			contract: { ...input.contract, nonSolutions: ["claim success without a real result"] },
+		});
+		expect(result.checks.every(check => check.status === "pass")).toBe(true);
+		expect(result.evaluation.outcome).toBe("blocked");
+	}, 30_000);
 	it("rejects mismatched artifact evidence and failing tests", async () => {
 		const input = await fixture();
 		const checks: CompletionPilotInput["checks"] = [

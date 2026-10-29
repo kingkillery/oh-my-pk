@@ -19,6 +19,8 @@ V2 does not infer verification or named deliverables from successful tool
 results. Partial ledger records do not establish satisfaction; a separate
 complete supporting record is required. Every unresolved required blocker
 prevents a pass. Callers must exclude nonblocking follow-ups from that list.
+Contracts listing non-solutions are blocked because this pilot cannot independently
+verify them; criterion checks do not establish their absence.
 
 The pilot runs each specified test command directly and checks tracked artifact
 content against its supplied SHA-256. It requires a clean working tree and the

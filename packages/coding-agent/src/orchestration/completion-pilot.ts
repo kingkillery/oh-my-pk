@@ -149,7 +149,10 @@ export async function runCompletionPilot(input: CompletionPilotInput): Promise<C
 		criteriaEvidence: evidence,
 		triggeredNonSolutions: [],
 		requiredEvidencePresent: checks.length > 0 && final,
-		unresolvedBlockers: input.unresolvedBlockers ?? [],
+		unresolvedBlockers: [
+			...(input.unresolvedBlockers ?? []),
+			...(input.contract.nonSolutions.length > 0 ? ["Pilot cannot independently verify non-solutions"] : []),
+		],
 		scopeValid: true,
 	});
 	return {
