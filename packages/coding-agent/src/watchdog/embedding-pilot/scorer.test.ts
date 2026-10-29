@@ -14,7 +14,7 @@ import {
 	rawScore,
 	scoreChoices as scoreEmbedding,
 } from "./scorer";
-import { DIMENSIONS, embed, FORMAT_VERSION, formatInput, MODEL, normalize } from "./titan";
+import { DIMENSIONS, embed, FORMAT_VERSION, formatInput, MODEL, normalize, splitInput } from "./titan";
 import { fit, type Observation } from "./train";
 
 const vector = (i = 0) => Array.from({ length: DIMENSIONS }, (_, n) => (n === i ? 1 : 0));
@@ -152,7 +152,10 @@ describe("watchdog offline scorer", () => {
 	});
 	test("preserves negation and rejects oversize input", () => {
 		expect(formatInput("Should I stop?", "Do not stop")).toContain("Do not stop");
-		expect(() => formatInput("Question", "x".repeat(200))).toThrow();
+		const input = formatInput("Question", "Do not stop. ".repeat(30));
+		expect(splitInput(input).join("")).toBe(input);
+		expect(splitInput(input).every(chunk => chunk.length <= 120)).toBe(true);
+		expect(() => formatInput("Question", "x".repeat(1921))).toThrow();
 		expect(
 			scoreEmbedding(
 				{ ...request, question: "What else?" },
@@ -162,6 +165,28 @@ describe("watchdog offline scorer", () => {
 				head,
 			).reasonCodes,
 		).toEqual(["INCOMPATIBLE_EMBEDDING"]);
+	});
+	test("embeds every chunk in order and pools normalized vectors", async () => {
+		const spy = spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(
+				async (_url: string | Request | URL, init?: RequestInit) => {
+					const body = JSON.parse(String(init?.body));
+					expect(body.input.join("")).toBe(formatInput("Q", "not stuck ".repeat(35)));
+					return Response.json({
+						data: body.input.map((_x: string, i: number) => ({ index: i, embedding: vector(i % 2) })),
+					});
+				},
+				{ preconnect: fetch.preconnect },
+			),
+		);
+		try {
+			const result = await embed("Q", "not stuck ".repeat(35), "key");
+			expect(result).toHaveLength(DIMENSIONS);
+			expect(result[0]).toBeGreaterThan(0);
+			expect(result[1]).toBeGreaterThan(0);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 	test("fails on missing credentials, malformed response and timeout", async () => {
 		await expect(embed("Q", "S", "")).rejects.toThrow("key");
