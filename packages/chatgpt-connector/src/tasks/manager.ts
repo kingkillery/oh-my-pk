@@ -167,9 +167,13 @@ export class TaskManager implements TaskService {
 
 		const state = task.record.state;
 		if (state === "queued" || state === "running") {
-			throw new ConnectorError("task_busy", `Task ${taskId} is still ${state}; wait for it to settle before following up.`, {
-				state,
-			});
+			throw new ConnectorError(
+				"task_busy",
+				`Task ${taskId} is still ${state}; wait for it to settle before following up.`,
+				{
+					state,
+				},
+			);
 		}
 		if (this.#shuttingDown) throw new ConnectorError("internal_error", "connector is shutting down");
 		this.#cancelIdle(task);
@@ -227,7 +231,10 @@ export class TaskManager implements TaskService {
 		const task = this.#tasks.get(taskId);
 		if (!task) return undefined;
 		const diff = await this.#ensureDiff(task);
-		return { task: summarizeTask(task.record), diff: maxChars === undefined ? diff : truncateText(diff, maxChars).text };
+		return {
+			task: summarizeTask(task.record),
+			diff: maxChars === undefined ? diff : truncateText(diff, maxChars).text,
+		};
 	}
 
 	async cancel(taskId: string, reason?: string): Promise<TaskSummary | undefined> {
@@ -270,7 +277,10 @@ export class TaskManager implements TaskService {
 		const live = this.#tasks.size - settled;
 		const limit = this.#config.limits.maxTasks;
 		if (live >= limit) {
-			throw new ConnectorError("task_busy", `Connector already holds ${live} live tasks (limit ${limit}). Cancel one first.`);
+			throw new ConnectorError(
+				"task_busy",
+				`Connector already holds ${live} live tasks (limit ${limit}). Cancel one first.`,
+			);
 		}
 	}
 
@@ -301,7 +311,7 @@ export class TaskManager implements TaskService {
 			const id = this.#queue.shift();
 			if (!id) break;
 			const task = this.#tasks.get(id);
-			if (!task || task.record.state !== "queued") continue;
+			if (task?.record.state !== "queued") continue;
 			void this.#runTurn(task, task.record.prompt);
 		}
 	}
@@ -320,7 +330,10 @@ export class TaskManager implements TaskService {
 		const timeoutMs = task.timeoutMs;
 		task.timeout = setTimeout(() => {
 			task.timedOut = true;
-			this.#pushEvent(task, { type: "timeout", summary: `Wall-clock limit of ${Math.round(timeoutMs / 1000)}s reached` });
+			this.#pushEvent(task, {
+				type: "timeout",
+				summary: `Wall-clock limit of ${Math.round(timeoutMs / 1000)}s reached`,
+			});
 			this.#interrupt(task, "timeout");
 		}, timeoutMs);
 		task.timeout.unref?.();
@@ -328,7 +341,8 @@ export class TaskManager implements TaskService {
 		const workspace = this.#config.workspaces.find(entry => entry.id === record.workspace);
 		try {
 			if (!task.runner) {
-				if (!workspace) throw new ConnectorError("unknown_workspace", `Workspace "${record.workspace}" disappeared.`);
+				if (!workspace)
+					throw new ConnectorError("unknown_workspace", `Workspace "${record.workspace}" disappeared.`);
 				task.runner = await this.#createRunner({ workspace, model: record.model });
 			}
 			if (task.controller.signal.aborted) {
