@@ -77,7 +77,27 @@ export function buildCompletionGateInputFromTranscript(
 	contract: ActiveTaskContractSnapshot,
 	messages: readonly AgentMessage[],
 	sinceTimestamp?: number,
+	policyVersion: "v1" | "v2" = "v1",
 ): CompletionGateInput {
+	// Tool activity alone cannot establish test success or individual deliverables.
+	// A v2 caller must supply independently verified evidence through another path.
+	if (policyVersion === "v2") {
+		return {
+			policyVersion,
+			contract,
+			deliverablesPresent: [],
+			criteriaEvidence: Object.fromEntries(
+				contract.completionCriteria.map(c => [
+					c.id,
+					c.id === "deliverables_present" && contract.deliverables.length === 0 ? "pass" : "unproven",
+				]),
+			),
+			triggeredNonSolutions: [],
+			requiredEvidencePresent: false,
+			unresolvedBlockers: [],
+			scopeValid: true,
+		};
+	}
 	const toolResults = collectRecentToolResults(messages, sinceTimestamp);
 	const ledger = completionEvidenceLedger(contract, toolResults, sinceTimestamp);
 	const criterionIds = contract.completionCriteria.map(criterion => criterion.id);

@@ -161,10 +161,11 @@ export class EvidenceLedger {
 	 */
 	evaluateCriterionCoverage(
 		criterionIds: readonly string[],
+		policy: "v1" | "v2" = "v1",
 	): Readonly<Record<string, "pass" | "fail" | "unproven" | "contradicted">> {
 		const coverage: Record<string, "pass" | "fail" | "unproven" | "contradicted"> = {};
 		for (const id of criterionIds) {
-			const supporting = this.supportingForCriterion(id);
+			const supporting = this.supportingForCriterion(id).filter(r => policy === "v1" || r.status === "supports");
 			const contradicting = this.contradictingForCriterion(id);
 			if (contradicting.length > 0 && supporting.length > 0) {
 				coverage[id] = "contradicted";

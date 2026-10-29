@@ -245,6 +245,7 @@ import {
 	type CompletionGateInput,
 	evaluateCompletionGate,
 } from "../orchestration/completion-gate";
+import { type CompletionPilotInput, runCompletionPilot } from "../orchestration/completion-pilot";
 import { buildContractInjectionBlock, type InjectionBlock } from "../orchestration/contract-injector";
 import {
 	type AssumptionRecord,
@@ -1377,6 +1378,7 @@ export class AgentSession {
 	#taskContractActivatedAt?: number;
 	#completionGateReminderCount = 0;
 	#completionGateAwaitingProgress = false;
+	#completionPilot?: CompletionPilotInput;
 	#approachRegistry = new ApproachRegistry();
 	#orchestrationTelemetry: OrchestrationTelemetrySink = createOrchestrationTelemetrySink();
 	#advisorYieldQueueUnsubscribe?: () => void;
@@ -10438,18 +10440,61 @@ export class AgentSession {
 		}
 
 		const remindersMax = 2;
-		if (this.#completionGateReminderCount >= remindersMax) {
+		if (this.#completionGateReminderCount >= remindersMax && !this.#completionPilot) {
 			logger.debug("Completion gate: max reminders reached", { count: this.#completionGateReminderCount });
 			return false;
 		}
 
-		const gateInput = buildCompletionGateInputFromTranscript(contract, this.messages, this.#taskContractActivatedAt);
-		const evaluation = this.evaluateRootCompletionGate(gateInput);
+		let evaluation: CompletionGateEvaluation;
+		if (this.#completionPilot) {
+			try {
+				if (JSON.stringify(this.#completionPilot.contract) !== JSON.stringify(contract))
+					throw new Error("Pilot contract does not match the active task");
+				if (!this.sessionManager.getSessionFile()) throw new Error("Pilot requires a persistent session");
+				const receipt = await runCompletionPilot(this.#completionPilot);
+				this.sessionManager.appendCustomEntry("completion-pilot-receipt/v2", receipt);
+				await this.sessionManager.flush();
+				evaluation = receipt.evaluation;
+			} catch (error) {
+				logger.warn("Completion pilot could not produce a durable receipt", { error: String(error) });
+				try {
+					if (this.sessionManager.getSessionFile()) {
+						this.sessionManager.appendCustomEntry("completion-pilot-receipt/v2", {
+							version: "ompk.completion-pilot/v2",
+							outcome: "blocked",
+							reason: "Pilot verification or receipt persistence failed",
+							observedAt: new Date().toISOString(),
+						});
+						await this.sessionManager.flush();
+					}
+				} catch {
+					/* The closeout remains blocked if the journal is unavailable. */
+				}
+				const input = buildCompletionGateInputFromTranscript(
+					contract,
+					this.messages,
+					this.#taskContractActivatedAt,
+					"v2",
+				);
+				evaluation = evaluateCompletionGate({
+					...input,
+					unresolvedBlockers: ["Pilot verification or receipt persistence failed"],
+				});
+			}
+		} else {
+			const gateInput = buildCompletionGateInputFromTranscript(
+				contract,
+				this.messages,
+				this.#taskContractActivatedAt,
+			);
+			evaluation = this.evaluateRootCompletionGate(gateInput);
+		}
 		if (evaluation.outcome === "pass") {
 			this.#completionGateReminderCount = 0;
 			this.#completionGateAwaitingProgress = false;
 			return false;
 		}
+		if (this.#completionGateReminderCount >= remindersMax) return false;
 
 		const reminderBody =
 			evaluation.outcome === "blocked"
@@ -14807,10 +14852,16 @@ export class AgentSession {
 	 */
 	setActiveTaskContract(snapshot: ActiveTaskContractSnapshot | undefined): void {
 		this.#activeTaskContract = snapshot;
+		if (!snapshot) this.#completionPilot = undefined;
 		this.#taskContractActivatedAt = snapshot ? Date.now() : undefined;
 		this.#completionGateReminderCount = 0;
 		this.#completionGateAwaitingProgress = false;
 		this.#syncAdvisorSystemPrompt();
+	}
+
+	/** Explicit SDK opt-in. Commands are executed at closeout; never include secrets. */
+	setCompletionPilot(input: CompletionPilotInput | undefined): void {
+		this.#completionPilot = input ? structuredClone(input) : undefined;
 	}
 
 	getActiveTaskContract(): ActiveTaskContractSnapshot | undefined {

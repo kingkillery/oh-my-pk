@@ -196,6 +196,65 @@ describe("AgentSession task-contract runtime", () => {
 		).toBe(true);
 	});
 
+	it("persists an opted-in v2 receipt at session closeout", async () => {
+		const cwd = path.join(tempDir.path(), "candidate");
+		await Bun.$`git init ${cwd}`.quiet();
+		await Bun.write(path.join(cwd, "artifact.txt"), "pilot fixture\n");
+		await Bun.$`git -C ${cwd} add artifact.txt`.quiet();
+		await Bun.$`git -C ${cwd} -c user.name=Pilot -c user.email=pilot@example.invalid commit -m fixture`.quiet();
+		const revision = (await Bun.$`git -C ${cwd} rev-parse HEAD`.text()).trim();
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const mock = createMockModel({
+			responses: [
+				async () => {
+					started.resolve();
+					await release.promise;
+					return { content: ["Done"] };
+				},
+			],
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: mock.stream,
+		});
+		const manager = SessionManager.create(cwd, path.join(tempDir.path(), "sessions"));
+		session = new AgentSession({
+			agent,
+			sessionManager: manager,
+			settings: Settings.isolated({ "compaction.enabled": false, "retry.enabled": false }),
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+		const running = session.prompt("Implement the auth flow");
+		await started.promise;
+		try {
+			const contract = session.getActiveTaskContract();
+			if (!contract) throw new Error("Expected active contract");
+			session.setCompletionPilot({
+				cwd,
+				revision,
+				contract,
+				checks: contract.completionCriteria.map(c => ({
+					criterionId: c.id,
+					kind: "test" as const,
+					command: [process.execPath, "-e", "process.exit(0)"],
+				})),
+			});
+			release.resolve();
+			await running;
+			await session.waitForIdle();
+			const file = manager.getSessionFile();
+			if (!file) throw new Error("Expected persistent session");
+			const journal = await Bun.file(file).text();
+			expect(journal).toContain("completion-pilot-receipt/v2");
+			expect(journal).toContain('"outcome":"pass"');
+		} finally {
+			release.resolve();
+			await running.catch(() => {});
+		}
+	}, 30_000);
+
 	it("passes the compiled root gate after verification evidence", async () => {
 		session = await makeSession();
 		capturePromptTurns(session);
