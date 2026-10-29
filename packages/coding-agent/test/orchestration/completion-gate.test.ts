@@ -13,6 +13,20 @@ describe("completion gate", () => {
 		knownFailureModes: [],
 	};
 
+	it("v2 blocks on an acknowledged unresolved required blocker", () => {
+		const input = {
+			contract,
+			deliverablesPresent: ["test", "fix"],
+			criteriaEvidence: { c1: true, c2: true },
+			triggeredNonSolutions: [],
+			requiredEvidencePresent: true,
+			unresolvedBlockers: ["access required"],
+			scopeValid: true,
+		} as const;
+		expect(evaluateCompletionGate(input).outcome).toBe("pass");
+		expect(evaluateCompletionGate({ ...input, policyVersion: "v2" }).outcome).toBe("blocked");
+	});
+
 	it("passes when all gates satisfied", () => {
 		const result = evaluateCompletionGate({
 			contract,

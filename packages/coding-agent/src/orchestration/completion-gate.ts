@@ -7,6 +7,8 @@ import type { ActiveTaskContractSnapshot } from "./task-contract";
 export type CompletionGateOutcome = "pass" | "recoverable" | "blocked";
 
 export interface CompletionGateInput {
+	/** v1 preserves existing consumers; v2 blocks on every unresolved required blocker. */
+	readonly policyVersion?: "v1" | "v2";
 	readonly contract: ActiveTaskContractSnapshot;
 	readonly deliverablesPresent: readonly string[];
 	readonly criteriaEvidence: Readonly<Record<string, boolean | "pass" | "fail" | "unproven">>;
@@ -95,7 +97,7 @@ export function evaluateCompletionGate(input: CompletionGateInput): CompletionGa
 	if (
 		!gate.scopeValid ||
 		nonSolutionTriggered ||
-		(input.unresolvedBlockers.length > 0 && !unresolvedBlockersAcknowledged)
+		(input.unresolvedBlockers.length > 0 && (input.policyVersion === "v2" || !unresolvedBlockersAcknowledged))
 	) {
 		outcome = "blocked";
 	} else if (!allDeliverablesPresent || !criteriaSatisfied || !input.requiredEvidencePresent) {

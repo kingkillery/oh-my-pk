@@ -143,6 +143,20 @@ describe("EvidenceLedger queries", () => {
 });
 
 describe("EvidenceLedger.evaluateCriterionCoverage", () => {
+	it("v2 leaves partial-only coverage unproven", () => {
+		const ledger = new EvidenceLedger("task-1");
+		ledger.append({
+			taskContractId: "task-1",
+			criterionIds: ["C1"],
+			claim: "some evidence",
+			kind: "test",
+			locator: "test://one",
+			status: "partial",
+			redactionStatus: "clean",
+		});
+		expect(ledger.evaluateCriterionCoverage(["C1"]).C1).toBe("pass");
+		expect(ledger.evaluateCriterionCoverage(["C1"], "v2").C1).toBe("unproven");
+	});
 	it("returns pass when supporting evidence exists and no contradictions", () => {
 		const ledger = new EvidenceLedger(CONTRACT_ID);
 		ledger.append(makeInput({ status: "supports" }));

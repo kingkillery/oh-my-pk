@@ -16,6 +16,19 @@ function toolResult(toolName: string, timestamp: number, isError = false): ToolR
 }
 
 describe("root completion gate transcript", () => {
+	it("v2 does not infer tests or multiple deliverables from successful tool calls", () => {
+		const compiled = toActiveTaskContractSnapshot(compileTaskContractFromRequest("implement auth flow"));
+		const contract = { ...compiled, deliverables: ["implementation", "regression test"] };
+		const input = buildCompletionGateInputFromTranscript(
+			contract,
+			[toolResult("read", 100), toolResult("write", 101), toolResult("bash", 102)],
+			50,
+			"v2",
+		);
+		expect(input.criteriaEvidence.targeted_verification).toBe("unproven");
+		expect(input.deliverablesPresent).toEqual([]);
+		expect(evaluateCompletionGate(input).outcome).toBe("recoverable");
+	});
 	it("passes when ledger-backed verification evidence exists since activation", () => {
 		const contract = toActiveTaskContractSnapshot(compileTaskContractFromRequest("implement auth flow"));
 		const messages: Message[] = [toolResult("bash", 100), toolResult("read", 101)];
