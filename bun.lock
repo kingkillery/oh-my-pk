@@ -77,6 +77,19 @@
         "@types/bun": "catalog:",
       },
     },
+    "packages/chatgpt-connector": {
+      "name": "@pk-nerdsaver-ai/pi-chatgpt-connector",
+      "version": "16.4.35",
+      "bin": {
+        "ompk-chatgpt": "./src/cli.ts",
+      },
+      "dependencies": {
+        "@pk-nerdsaver-ai/pi-coding-agent": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
     "packages/clips-extension": {
       "name": "@pk-nerdsaver-ai/clips-extension",
       "version": "16.4.35",
@@ -1015,6 +1028,8 @@
     "@pk-nerdsaver-ai/pi-ai": ["@pk-nerdsaver-ai/pi-ai@workspace:packages/ai"],
 
     "@pk-nerdsaver-ai/pi-catalog": ["@pk-nerdsaver-ai/pi-catalog@workspace:packages/catalog"],
+
+    "@pk-nerdsaver-ai/pi-chatgpt-connector": ["@pk-nerdsaver-ai/pi-chatgpt-connector@workspace:packages/chatgpt-connector"],
 
     "@pk-nerdsaver-ai/pi-coding-agent": ["@pk-nerdsaver-ai/pi-coding-agent@workspace:packages/coding-agent"],
 
