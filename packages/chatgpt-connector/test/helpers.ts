@@ -200,8 +200,9 @@ export class FakeRunner implements SessionRunner {
 		this.onStart?.();
 
 		if (step.ignoreAbort) {
-			// Never settles: simulates a runner that dropped the abort signal.
-			const { promise } = Promise.withResolvers<RunOutcome>();
+			// Controlled by the test even after abort.
+			const { promise, resolve } = Promise.withResolvers<RunOutcome>();
+			this.pending.push({ resolve, signal: input.signal });
 			return promise;
 		}
 		if (step.hang) {

@@ -144,6 +144,7 @@ export class OmpkSessionRunner implements SessionRunner {
 
 	constructor(options: OmpkRunnerOptions) {
 		this.#options = options;
+		throw new Error("Built-in connector runner is disabled: an enforced workspace sandbox is required");
 	}
 
 	async run(input: {

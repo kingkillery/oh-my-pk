@@ -86,7 +86,7 @@ export interface LimitsConfig {
 	maxEventsPerTask: number;
 	/**
 	 * Grace period after an abort/timeout interrupt before the manager
-	 * force-finalizes a runner that ignored its signal. Default 15000.
+	 * reports an unconfirmed stop if the runner has not settled. Default 15000.
 	 */
 	abortGraceMs: number;
 }

@@ -19,8 +19,10 @@
   protected-resource surface (`/.well-known/oauth-protected-resource`,
   `WWW-Authenticate` `resource_metadata` challenge) backed by a
   JWKS-verifying RS256/ES256 JWT checker with cache + `kid` rotation refresh.
-- `TaskManager` hardening: an `abortGraceMs` timer force-finalizes runners that
-  ignore their abort signal so a stuck session can't pin a concurrency slot.
+- The in-process runner fails closed until an enforced workspace sandbox exists.
+- Runners that ignore cancellation retain their concurrency slot until they stop;
+  follow-ups use the same bounded queue as initial tasks.
+- OAuth access tokens require an expiry and all configured scopes.
 - `followup_task` fix: a settled task's state is now rewound before the new
   turn so follow-ups actually run (the previous code silently dropped them).
 - Model-facing output hygiene: workspace paths and `sessionFile` are stripped

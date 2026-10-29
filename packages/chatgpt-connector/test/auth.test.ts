@@ -129,6 +129,14 @@ describe("JWT verification (oauth mode)", () => {
 		);
 	});
 
+	test("rejects missing expiry and missing required scopes", async () => {
+		const verifier = createJwtVerifier({ ...oauth, scopes: ["mcp"] }, { fetcher: fetcher() });
+		const { exp: _exp, ...withoutExpiry } = validClaims;
+		await expect(verifier.verify(mint({ ...withoutExpiry, scope: "mcp" }))).rejects.toThrow("expiry");
+		await expect(verifier.verify(mint(validClaims))).rejects.toThrow("scope");
+		await expect(verifier.verify(mint({ ...validClaims, scope: "mcp" }))).resolves.toBeDefined();
+	});
+
 	test("rejects malformed and unsupported-alg tokens", async () => {
 		const verifier = createJwtVerifier(oauth, { fetcher: fetcher() });
 		await expect(verifier.verify("not-a-jwt")).rejects.toThrow();

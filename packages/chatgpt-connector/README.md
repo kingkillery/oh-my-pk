@@ -1,10 +1,16 @@
 # @pk-nerdsaver-ai/pi-chatgpt-connector
 
-A remote MCP server that lets **ChatGPT** launch and drive autonomous **ompk** coding
+A prototype remote MCP server for launching autonomous **ompk** coding
 tasks in an allowlisted set of workspaces — plus the reverse path: an ompk-side
 `ask_chatgpt` custom tool that delegates bounded questions to ChatGPT.
 
 Two directions, one package:
+
+**Task execution is disabled by default.** The in-process OMPK runner does not
+enforce a filesystem boundary. `createConnector()` requires a trusted host to
+inject a runner with an independently enforced workspace sandbox; the CLI cannot
+launch tasks until such a runner is implemented. A tool allowlist or working
+directory alone is not a sandbox. The reverse API tool is independent.
 
 - **ChatGPT → ompk** (`ompk-chatgpt serve`): exposes nine MCP tools over a
   Streamable-HTTP transport. ChatGPT calls `launch_task` with an assignment;
@@ -54,7 +60,7 @@ Key fields:
 | `auth.mode` | `bearer` (static token; for MCP Inspector / private clients), `none` (only behind a tunnel), `oauth` (OAuth 2.1 JWT resource server). |
 | `auth.tokens` | Static bearer tokens, ≥ 16 chars each. |
 | `auth.allowQueryToken` | Also accept `?token=` (default off; header preferred). |
-| `workspaces[]` | Allowlisted directories tasks may run in. `allowWrite: false` mounts a read-only tool profile. `id` defaults to the dir basename and must be unique. |
+| `workspaces[]` | Allowed starting directories. The injected sandbox runner must enforce the workspace boundary and `allowWrite`. `id` defaults to the dir basename and must be unique. |
 | `limits` | `maxTasks`, `maxConcurrentTasks`, `taskTimeoutMs`, `idleTtlMs`, `maxEventsPerTask`, `maxResultChars`, `maxDiffChars`, `abortGraceMs`. |
 | `defaults.workspace` / `.waitSeconds` / `.model` | Fallbacks when a tool call omits them. |
 | `chatgpt.*` | Settings for the reverse `ask_chatgpt` tool (`baseUrl`, `model`, `apiKey`, `timeoutMs`, `reasoningEffort`). |
@@ -167,15 +173,11 @@ in the connector config / environment.
 
 ## Security model
 
-- **Workspace allowlist**: tasks can only run in `workspaces[]` dirs; ids are
-  opaque and resolved to realpaths at config time. A workspace with
-  `allowWrite: false` gets a read-only tool profile — the agent cannot edit,
-  delete, or run mutating shell commands there.
-- **`autoApprove: true`** in the session runner: the agent acts without
-  interactive confirmation. Combined with a write-capable workspace, a
-  compromised credential is a file-system compromise — keep the loopback
-  default, or front the server with OAuth/TLS. Prefer `allowWrite: false`
-  workspaces for read-mostly tasks.
+- **Workspace selection is not isolation**: paths are resolved at config time,
+  but only the host-supplied sandbox can enforce read and write restrictions.
+  The built-in in-process runner is disabled until such enforcement exists.
+- A sandbox runner must also enforce `allowWrite: false`, resist path and
+  symlink escapes, and isolate credentials and other host resources.
 - **No host paths in model output**: `sessionFile` and workspace paths are
   stripped from `tools/call` structured content and text; the model sees ids,
   labels, and relative diff paths only.
@@ -190,9 +192,9 @@ in the connector config / environment.
   request → one JSON response per POST. GET `/mcp` is 405 by design.
 - Task list is in-memory and capped by `limits.maxTasks` (oldest settled
   records are evicted).
-- Runners that ignore their abort signal are force-finalized after
-  `limits.abortGraceMs` (default 15 s) so a stuck session can't pin a
-  concurrency slot forever.
+- Runners that ignore their abort signal remain running and retain their slot;
+  after `limits.abortGraceMs` the task records an unconfirmed stop. Follow-ups
+  wait until the runner actually settles.
 - The `ask_chatgpt` tool's context is whatever the calling agent pastes into
   `question`/`context`; it has no filesystem or session access.
 

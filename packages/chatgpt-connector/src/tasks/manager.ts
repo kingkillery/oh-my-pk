@@ -71,12 +71,13 @@ export function summarizeTask(record: TaskRecord): TaskSummary {
 
 /**
  * Grace period after an abort/timeout interrupt. A runner that ignores its abort
- * signal must not leave a task stuck in `running` forever: after this window the
- * manager force-finalizes the turn and frees its concurrency slot.
+ * signal remains running after this window; its slot is retained until the
+ * runner actually settles.
  */
 export const ABORT_GRACE_MS = 15_000;
 interface ActiveTask {
 	record: TaskRecord;
+	queuedPrompt: string;
 	/** Replaced per turn so a follow-up after an abort is not pre-aborted. */
 	controller: AbortController;
 	runner?: SessionRunner;
@@ -142,6 +143,7 @@ export class TaskManager implements TaskService {
 
 		const task: ActiveTask = {
 			record,
+			queuedPrompt: prompt,
 			controller: new AbortController(),
 			waiters: [],
 			counted: false,
@@ -195,7 +197,9 @@ export class TaskManager implements TaskService {
 		task.cancelled = false;
 		task.timedOut = false;
 		task.controller = new AbortController();
-		void this.#runTurn(task, text);
+		task.queuedPrompt = text;
+		this.#queue.push(task.record.id);
+		this.#pump();
 
 		const waitMs = Math.max(0, (waitSeconds ?? 0) * 1000);
 		const settled = waitMs > 0 ? await this.#waitForSettle(task, waitMs) : false;
@@ -312,7 +316,7 @@ export class TaskManager implements TaskService {
 			if (!id) break;
 			const task = this.#tasks.get(id);
 			if (task?.record.state !== "queued") continue;
-			void this.#runTurn(task, task.record.prompt);
+			void this.#runTurn(task, task.queuedPrompt);
 		}
 	}
 
@@ -393,10 +397,9 @@ export class TaskManager implements TaskService {
 				task.abortGrace = undefined;
 				if (isTerminalState(task.record.state)) return;
 				this.#pushEvent(task, {
-					type: "finalize_forced",
+					type: "abort_unconfirmed",
 					summary: `Runner did not settle within ${Math.round(graceMs / 1000)}s of ${reason}`,
 				});
-				this.#finalize(task, { text: "", aborted: true });
 			}, graceMs);
 			task.abortGrace.unref?.();
 		}
