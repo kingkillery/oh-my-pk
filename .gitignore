@@ -106,6 +106,9 @@ scratch/
 local/
 sandbox/
 tasks/
+# `pi-chatgpt-connector` ships real sources in src/tasks/ (see packages/chatgpt-connector).
+!packages/chatgpt-connector/src/tasks/
+!packages/chatgpt-connector/src/tasks/**
 out(colab-plan-*)/
 colab-session-log-*
 *.local.md
