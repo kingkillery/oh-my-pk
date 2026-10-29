@@ -125,4 +125,18 @@ describe("Jev gate HTTP contracts", () => {
 		expect(requests).toHaveLength(4);
 		expect(requests.slice(2).every(request => request.model === "jev-1.13")).toBe(true);
 	});
+
+	it("retries failed and previously cached null verdicts", async () => {
+		const cachePath = path.join(temporary.path(), "results.json");
+		const rows = [{ command: "git status", cwd: "workspace", label: "allow" as const }];
+		const key = getBashJudgmentCacheKey(rows[0].command, rows[0].cwd);
+		await Bun.write(cachePath, JSON.stringify({ [key]: null }));
+		mode = "overload";
+		expect((await judgeAll(rows, cachePath))[0].verdict).toBeUndefined();
+		expect(Object.hasOwn(await Bun.file(cachePath).json(), key)).toBe(false);
+		mode = "reply";
+		const priorRequests = requests.length;
+		expect((await judgeAll(rows, cachePath))[0].verdict?.choice).toBe("allow");
+		expect(requests.length).toBeGreaterThan(priorRequests);
+	});
 });

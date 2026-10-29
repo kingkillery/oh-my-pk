@@ -36,11 +36,13 @@ export async function judgeAll(rows: Row[], cachePath: string): Promise<Judged[]
 		: {};
 	const keyedRows = rows.map(row => ({ row, key: getBashJudgmentCacheKey(row.command, row.cwd) }));
 	const queue = [
-		...new Map(keyedRows.filter(({ key }) => !Object.hasOwn(cache, key)).map(item => [item.key, item])).values(),
+		...new Map(keyedRows.filter(({ key }) => cache[key] == null).map(item => [item.key, item])).values(),
 	];
 	const workers = Array.from({ length: 8 }, async () => {
 		for (let item = queue.shift(); item; item = queue.shift()) {
-			cache[item.key] = (await judgeBashCommand(item.row.command, item.row.cwd)) ?? null;
+			const verdict = await judgeBashCommand(item.row.command, item.row.cwd);
+			if (verdict) cache[item.key] = verdict;
+			else delete cache[item.key];
 		}
 	});
 	await Promise.all(workers);
