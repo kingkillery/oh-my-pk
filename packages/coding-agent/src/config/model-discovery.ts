@@ -10,6 +10,7 @@ import type { Api, Model, RemoteCompactionConfig } from "@pk-nerdsaver-ai/pi-ai/
 import { buildModel } from "@pk-nerdsaver-ai/pi-catalog/build";
 import {
 	getBundledModelReferenceIndex,
+	isLfmHarnessAdapterModelId,
 	resolveModelReference,
 	stripBracketedModelIdAffixes,
 } from "@pk-nerdsaver-ai/pi-catalog/identity";
@@ -131,6 +132,31 @@ const DISCOVERY_DEFAULT_MAX_TOKENS_ANTHROPIC = 8_192;
 export function discoveryDefaultMaxTokens(api: Api | undefined): number {
 	return api === "anthropic-messages" ? DISCOVERY_DEFAULT_MAX_TOKENS_ANTHROPIC : DISCOVERY_DEFAULT_MAX_TOKENS;
 }
+
+// LFM harness adapters (`harness-hub/*-A2B-{pi,claude-code,…}`) are trained and
+// evaluated strictly against the OpenAI completions wire — their model card
+// states `"api": "openai-completions"` is *required*, because the Responses API
+// was not part of training. When a discovered model id matches the adapter
+// family, a Responses-family or unset provider api must be overridden to
+// `openai-completions`; an explicit non-Responses api (e.g. anthropic-messages)
+// is left alone.
+const RESPONSES_APIS: ReadonlySet<string> = new Set([
+	"openai-responses",
+	"azure-openai-responses",
+	"openai-codex-responses",
+]);
+
+/**
+ * `providerConfig.api` for the discovered id, with LFM-harness-adapter ids
+ * forced onto the completions wire when the configured api is Responses-family
+ * or unset.
+ */
+export function resolveDiscoveredApi(api: Api | undefined, modelId: string): Api | undefined {
+	if (!isLfmHarnessAdapterModelId(modelId)) return api;
+	if (api === undefined || RESPONSES_APIS.has(api)) return "openai-completions";
+	return api;
+}
+
 
 export interface DiscoveryProviderConfig {
 	provider: string;
@@ -349,16 +375,26 @@ export async function discoverOllamaModels(
 		return buildModel({
 			id: entry.id,
 			name: entry.name,
-			api: providerConfig.api,
+			api: resolveDiscoveredApi(providerConfig.api, entry.id),
 			provider: providerConfig.provider,
 			baseUrl: `${endpoint}/v1`,
-			reasoning: metadata?.reasoning ?? false,
+			reasoning: metadata?.reasoning ?? isLfmHarnessAdapterModelId(entry.id),
 			input: metadata?.input ?? ["text"],
 			imageInputDecoder: "stb",
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: metadata?.contextWindow ?? DISCOVERY_DEFAULT_CONTEXT_WINDOW,
 			maxTokens: Math.min(metadata?.contextWindow ?? Number.POSITIVE_INFINITY, DISCOVERY_DEFAULT_MAX_TOKENS),
 			headers: providerConfig.headers,
+			...(isLfmHarnessAdapterModelId(entry.id)
+				? {
+						supportsTools: true,
+						compat: {
+							supportsStore: false,
+							supportsDeveloperRole: false,
+							supportsReasoningEffort: false,
+						},
+					}
+				: {}),
 		} as ModelSpec<Api>);
 	});
 }
@@ -432,12 +468,13 @@ export async function discoverLlamaCppModels(
 			buildModel({
 				id,
 				name: id,
-				api: providerConfig.api,
+				api: resolveDiscoveredApi(providerConfig.api, id),
 				provider: providerConfig.provider,
 				baseUrl,
-				reasoning: false,
+				reasoning: isLfmHarnessAdapterModelId(id),
 				input: serverMetadata?.input ?? ["text"],
 				imageInputDecoder: "stb",
+				supportsTools: isLfmHarnessAdapterModelId(id) ? true : undefined,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow,
 				maxTokens: Math.min(contextWindow, DISCOVERY_DEFAULT_MAX_TOKENS),
@@ -557,7 +594,7 @@ export async function discoverColabModels(
 					buildModel({
 						id,
 						name: `${id} (Colab)`,
-						api: providerConfig.api ?? "openai-completions",
+						api: resolveDiscoveredApi(providerConfig.api ?? "openai-completions", id),
 						provider: providerConfig.provider,
 						baseUrl,
 						reasoning: !isDiffusion,
@@ -566,7 +603,7 @@ export async function discoverColabModels(
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 						contextWindow,
 						maxTokens: Math.min(contextWindow, isDiffusion ? 1536 : 8192),
-						supportsTools: !isDiffusion,
+						supportsTools: !isDiffusion || isLfmHarnessAdapterModelId(id),
 						supportsThinking: !isDiffusion,
 						headers: providerConfig.headers,
 						compat: {
@@ -696,11 +733,12 @@ export async function discoverOpenAIModelsList(
 			buildModel({
 				id,
 				name: id,
-				api: providerConfig.api,
+				api: resolveDiscoveredApi(providerConfig.api, id),
 				provider: providerConfig.provider,
 				baseUrl,
-				reasoning: false,
+				reasoning: isLfmHarnessAdapterModelId(id),
 				input: nativeMetadataForModel?.input ?? ["text"],
+				...(isLfmHarnessAdapterModelId(id) ? { supportsTools: true } : {}),
 				...(providerConfig.discovery.type === "lm-studio" ? { imageInputDecoder: "stb" as const } : {}),
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow,

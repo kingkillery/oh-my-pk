@@ -34,3 +34,50 @@ The agent supports three mutually-exclusive memory backends, selected via the `m
    - `HINDSIGHT_BANK_MISSION`, `HINDSIGHT_DEBUG`
 
 Switching backends mid-session is honoured on the next system-prompt rebuild and the next `/memory` slash command. Existing users with `memories.enabled = true|false` are migrated to `memory.backend = "local"|"off"` exactly once on first launch.
+
+## TokenEconomizer
+
+[TokenEconomizer](https://github.com/microsoft/TokenEconomizer) ships vendored
+under `vendor/tokeneconomizer/` and loads as an inline extension. It learns
+repository facts (microskills), watches tool results for stuck loops
+(loopguard), and folds session transcripts into a cost ledger on session end.
+
+Requirements: **Python 3.10+** on `PATH`. No other install step.
+
+Inside a session:
+
+- `/te status` — what TokenEconomizer knows about this repo, cost so far
+- `/te microskills` — list/update the learned manual
+- `/te config set microskills=on` — enable a mechanism (per-repo or `--global`)
+
+Disable entirely with `TE_DISABLE=1`. Override the Python interpreter with
+`TE_PYTHON`; override the vendored core path with `TE_CORE_PATH`. `toolprune`
+is not supported on this host (same as Pi).
+
+## LFM harness adapters (local inference)
+
+The [`harness-hub` LFM2.5-24B adapters](https://huggingface.co/collections/harness-hub/lfm25-24b-harness-adapters)
+are LoRA weights for `LiquidAI/LFM2.5-24B-A2B`, trained against harness prompts
+and tools. Serve one with vLLM (or llama.cpp for the GGUF variants), then
+register it as an OpenAI-compatible provider:
+
+```json
+{
+	"providers": {
+		"vllm": {
+			"baseUrl": "http://localhost:8000/v1",
+			"api": "openai-completions",
+			"apiKey": "dummy",
+			"models": [{ "id": "lfm-harbor-pi" }]
+		}
+	}
+}
+```
+
+`api: "openai-completions"` is required — the adapters were not trained or
+evaluated against the Responses API. When the model id matches an LFM harness
+adapter (`lfm-harbor-*`, `*A2B-pi`, `*A2B-claude-code`, …), model discovery
+overrides a Responses-family or unset `api` to `openai-completions`
+automatically, marks the model as reasoning-capable, and disables
+unsupported compat fields (`supportsStore`, `supportsDeveloperRole`,
+`supportsReasoningEffort`).
