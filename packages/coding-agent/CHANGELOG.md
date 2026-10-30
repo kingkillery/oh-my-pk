@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Require separate user approval for new Colab compute, with task-scoped experiment preapproval, a 60-minute default and 120-minute ceiling including cleanup. Preserve deadlines across retries and keep cutoff verification mandatory.
+
 ## [16.4.35] - 2026-10-29
 
 ### Changed

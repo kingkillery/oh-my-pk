@@ -9,6 +9,14 @@ import {
 } from "../../lib/decision-endpoint-discovery";
 import type { SlashCommandRuntime } from "../types";
 import clefServerSource from "./clef-server.py" with { type: "text" };
+import { resolveComputeAccount } from "./colab-compute-identity";
+import {
+	assertComputeLease,
+	ColabComputePolicy,
+	type ComputeConfirmation,
+	computeMinutes,
+} from "./colab-compute-policy";
+import { harnessComputePolicy } from "./colab-compute-ui";
 
 const DEFAULT_SESSION = "ompk-clef-decision";
 const DEFAULT_HOSTNAME = "clef-inference";
@@ -16,7 +24,7 @@ const DEFAULT_MODEL = "clef-flash";
 const DEFAULT_ACCELERATOR = "T4";
 const DEFAULT_TTL_MINUTES = 60;
 const MIN_TTL_MINUTES = 10;
-const MAX_TTL_MINUTES = 240;
+const MAX_TTL_MINUTES = 120;
 const REMOTE_PORT = 8000;
 const STARTUP_TIMEOUT_MS = 45 * 60_000;
 const DISCOVERY_TIMEOUT_MS = 5 * 60_000;
@@ -67,7 +75,11 @@ interface DecisionModelState {
 	endpoint?: string;
 }
 export interface DecisionModelLifecycleDeps {
-	armCutoff?: (sessionName: string, ttlMinutes: number) => Promise<CutoffReceipt>;
+	computePolicy?: ColabComputePolicy;
+	confirmCompute?: ComputeConfirmation;
+	computeTaskId?: string;
+	computeAccount?: string;
+	armCutoff?: (sessionName: string, ttlMinutes: number, cutoffAt?: string) => Promise<CutoffReceipt>;
 	discover?: () => Promise<DecisionEndpoint | undefined>;
 	runColab?: (args: readonly string[], options?: { input?: string; timeoutMs?: number }) => Promise<CommandResult>;
 	cancelCutoff?: (taskName: string) => Promise<void>;
@@ -195,6 +207,7 @@ async function runCommand(
 ): Promise<CommandResult> {
 	const child = Bun.spawn({
 		cmd: [...cmd],
+		windowsHide: true,
 		stdin: options.input === undefined ? "ignore" : "pipe",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -234,7 +247,11 @@ async function cancelCutoff(taskName: string): Promise<void> {
 	await runCommand([powershell, "-NoProfile", "-NonInteractive", "-Command", script], { timeoutMs: 20_000 });
 }
 
-async function armWindowsCutoff(sessionName: string, ttlMinutes: number): Promise<CutoffReceipt> {
+export async function armWindowsCutoff(
+	sessionName: string,
+	ttlMinutes: number,
+	exactCutoffAt?: string,
+): Promise<CutoffReceipt> {
 	if (process.platform !== "win32") {
 		throw new Error(
 			"Safe Clef launch currently requires the Windows host so OMPK can verify an OS-level scheduled cutoff.",
@@ -245,7 +262,13 @@ async function armWindowsCutoff(sessionName: string, ttlMinutes: number): Promis
 	const taskName = `OMPK-Clef-${safe}`;
 	const scriptPath = path.join(stateDirectory(), `stop-${safe}.ps1`);
 	const logPath = path.join(stateDirectory(), `stop-${safe}.log`);
-	const cutoffAt = new Date(Date.now() + ttlMinutes * 60_000).toISOString();
+	const cutoffAt = exactCutoffAt ?? new Date(Date.now() + ttlMinutes * 60_000).toISOString();
+	if (
+		!Number.isFinite(Date.parse(cutoffAt)) ||
+		Date.parse(cutoffAt) <= Date.now() ||
+		Date.parse(cutoffAt) > Date.now() + 120 * 60000
+	)
+		throw new Error("Invalid Colab cutoff deadline.");
 	const customCli = $env.OMPK_COLAB_CLI?.trim();
 	const stopInvocation = customCli
 		? `& ${psLiteral(customCli)} stop --session ${psLiteral(sessionName)} *> ${psLiteral(logPath)}`
@@ -265,13 +288,15 @@ async function armWindowsCutoff(sessionName: string, ttlMinutes: number): Promis
 	const powershell = windowsExecutable("System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 	const registration = [
 		"$ErrorActionPreference='Stop'",
-		`$action=New-ScheduledTaskAction -Execute ${psLiteral(powershell)} -Argument ${psLiteral(`-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`)}`,
+		`$action=New-ScheduledTaskAction -Execute ${psLiteral(powershell)} -Argument ${psLiteral(`-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${scriptPath}"`)}`,
 		`$trigger=New-ScheduledTaskTrigger -Once -At ([DateTimeOffset]::Parse(${psLiteral(cutoffAt)}).LocalDateTime) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Minutes 30)`,
 		"$settings=New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)",
 		"$principal=New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited",
 		`Register-ScheduledTask -TaskName ${psLiteral(taskName)} -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null`,
 		`$task=Get-ScheduledTask -TaskName ${psLiteral(taskName)} -ErrorAction Stop`,
-		`if ($task.TaskName -ne ${psLiteral(taskName)}) { throw 'Cutoff task verification failed.' }`,
+		`if ($task.TaskName -ne ${psLiteral(taskName)} -or @($task.Actions).Count -ne 1 -or @($task.Triggers).Count -ne 1 -or !$task.Settings.Enabled -or !$task.Settings.StartWhenAvailable) { throw 'Cutoff task verification failed.' }`,
+		`if ($task.Actions[0].Execute -ne ${psLiteral(powershell)} -or $task.Actions[0].Arguments -ne ${psLiteral(`-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${scriptPath}"`)}) { throw 'Cutoff action verification failed.' }`,
+		`if ([Math]::Abs(([DateTimeOffset]::Parse($task.Triggers[0].StartBoundary)-[DateTimeOffset]::Parse(${psLiteral(cutoffAt)})).TotalMilliseconds) -gt 1000) { throw 'Cutoff deadline verification failed.' }`,
 	].join(";");
 	const result = await runCommand([powershell, "-NoProfile", "-NonInteractive", "-Command", registration], {
 		timeoutMs: 30_000,
@@ -457,8 +482,40 @@ export async function launchClefDecisionModel(
 			`${request.sessionName} is already using ${before.accelerator}; stop it before requesting ${request.accelerator}.`,
 		);
 	}
+	if (before.active && existingState?.model !== request.model)
+		throw new Error("Existing Colab model differs from the approved scope; stop it before changing models.");
 	const credential = resolveTailscaleCredential();
-	const cutoff = await arm(request.sessionName, request.ttlMinutes);
+	computeMinutes(request.ttlMinutes);
+	const scope = {
+		taskId: deps.computeTaskId ?? request.sessionName,
+		account: deps.computeAccount ?? (await resolveComputeAccount()),
+		model: request.model,
+		accelerator: request.accelerator,
+		sessionName: request.sessionName,
+		minutes: request.ttlMinutes,
+	};
+	const policy = deps.computePolicy ?? new ColabComputePolicy(now);
+	// Existing owned runtimes retain their original cutoff and do not renew approval.
+	if (
+		before.active &&
+		(!existingState ||
+			!Number.isFinite(Date.parse(existingState.cutoffAt)) ||
+			Date.parse(existingState.cutoffAt) <= now())
+	)
+		throw new Error("Owned Colab cutoff expired; release before requesting new compute.");
+	let armedReceipt: CutoffReceipt | undefined;
+	const lease = before.active
+		? undefined
+		: await policy.authorize(scope, deps.confirmCompute, async (session, cutoffAt) => {
+				const receipt = await arm(session, (Date.parse(cutoffAt) - now()) / 60000, cutoffAt);
+				armedReceipt = receipt;
+				return { ...receipt, cutoffAt: receipt.cutoffAt };
+			});
+	if (lease) assertComputeLease(lease, scope, now());
+	const cutoff =
+		before.active && existingState
+			? { cutoffAt: existingState.cutoffAt, taskName: existingState.taskName, scriptPath: "" }
+			: armedReceipt!;
 	const state: DecisionModelState = {
 		accelerator: request.accelerator,
 		cutoffAt: cutoff.cutoffAt,
@@ -485,7 +542,7 @@ export async function launchClefDecisionModel(
 		bootstrapStarted = true;
 		const bootstrap = await run(["exec", "--session", request.sessionName, "--timeout", "3600"], {
 			input: buildClefRemoteBootstrap(request, credential),
-			timeoutMs: STARTUP_TIMEOUT_MS,
+			timeoutMs: Math.min(STARTUP_TIMEOUT_MS, Math.max(1, Date.parse(cutoff.cutoffAt) - now())),
 		});
 		if (bootstrap.exitCode !== 0 || !bootstrap.stdout.includes("__OMPK_CLEF_READY__")) {
 			throw new Error(
@@ -516,6 +573,7 @@ export async function launchClefDecisionModel(
 		}
 		if (released) {
 			await cancel(cutoff.taskName);
+			if (lease) policy.confirmReleased(lease, true);
 			await deleteState(request.sessionName);
 			clearDecisionEndpointCache();
 		} else {
@@ -612,7 +670,12 @@ export async function handleDecisionModelSlashCommand(
 			await runtime.output(
 				`Clef: arming a verified ${request.ttlMinutes}m cutoff before requesting ${request.accelerator} compute…`,
 			);
-			const result = await launchClefDecisionModel(request);
+			const approval = harnessComputePolicy(runtime);
+			const result = await launchClefDecisionModel(request, {
+				computePolicy: approval.policy,
+				confirmCompute: approval.confirm,
+				computeTaskId: approval.taskId,
+			});
 			await runtime.output(
 				[
 					`Decision model ready: ${result.endpoint.model}`,
@@ -626,6 +689,7 @@ export async function handleDecisionModelSlashCommand(
 
 		if (request.action === "stop") {
 			const result = await stopClefDecisionModel(request.sessionName);
+			if (result.stopped) harnessComputePolicy(runtime).policy.confirmSessionReleased(request.sessionName, true);
 			await runtime.output(
 				result.stopped
 					? `Clef decision runtime stopped: ${request.sessionName}. Automatic cutoff task cleared.`

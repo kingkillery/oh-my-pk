@@ -4,7 +4,10 @@ import { isDeepStrictEqual } from "node:util";
 import type { Server } from "bun";
 import { kNoAuth } from "../../config/model-registry";
 import type { SlashCommandRuntime } from "../types";
+import { assertComputeLease, type ComputeLease, computeMinutes } from "./colab-compute-policy";
+import { harnessComputePolicy } from "./colab-compute-ui";
 import { startPersistentColabBridge } from "./colab-persistent-bridge";
+import { armWindowsCutoff } from "./decision-model";
 
 const DEFAULT_SESSION_NAME = "ompk-colab-model";
 const DEFAULT_LOCAL_PORT = 18_082;
@@ -450,6 +453,7 @@ export interface ColabModelLaunchResult {
 	alias?: string;
 }
 export interface ColabModelCommandRequest {
+	minutes?: number;
 	accelerator?: ColabAccelerator;
 	modelReference: string;
 	sessionName?: string;
@@ -489,6 +493,7 @@ interface HttpMetadata {
 export type ColabReadinessMode = "tools" | "chat";
 
 interface ColabModelLaunchOptions {
+	authorizeCompute?: (accelerator: ColabAccelerator, sessionName: string) => Promise<ComputeLease>;
 	serving?: ColabServingOptions;
 	accelerator?: ColabAccelerator;
 	fetch?: typeof globalThis.fetch;
@@ -623,6 +628,7 @@ export function parseColabModelCommandArgs(input: string): ColabModelCommandRequ
 	let localPort: number | undefined;
 	let setupName: string | undefined;
 	let listSetups = false;
+	let minutes: number | undefined;
 	const parsePort = (raw: string): number => {
 		if (!/^\d+$/.test(raw)) throw new Error(`Invalid /colab-model port "${raw}". Expected 1-65535.`);
 		const port = Number(raw);
@@ -633,6 +639,10 @@ export function parseColabModelCommandArgs(input: string): ColabModelCommandRequ
 	};
 	for (let index = 0; index < tokens.length; index += 1) {
 		const token = tokens[index];
+		if (token === "--minutes") {
+			minutes = computeMinutes(Number(tokens[++index]));
+			continue;
+		}
 		// `--accelerator` is the canonical name; `--gpu` stays as an alias; `--cpu` is shorthand.
 		if (token === "--gpu" || token === "--accelerator") {
 			const value = tokens[index + 1];
@@ -696,7 +706,15 @@ export function parseColabModelCommandArgs(input: string): ColabModelCommandRequ
 	if (modelTokens.length > 1) {
 		throw new Error("Expected one Hugging Face model id or URL.");
 	}
-	return { accelerator, modelReference: modelTokens[0] ?? "", sessionName, localPort, setupName, listSetups };
+	return {
+		accelerator,
+		modelReference: modelTokens[0] ?? "",
+		sessionName,
+		localPort,
+		setupName,
+		listSetups,
+		...(minutes === undefined ? {} : { minutes }),
+	};
 }
 
 export const COLAB_SETUPS_FILENAME = "colab-setups.json";
@@ -1159,6 +1177,7 @@ async function runCommand(
 ): Promise<CommandResult> {
 	const processHandle = Bun.spawn({
 		cmd: buildColabCommand(args, process.platform, options.cliCommand),
+		windowsHide: true,
 		stdin: options.input === undefined ? "ignore" : "pipe",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -1240,6 +1259,8 @@ async function ensureColabSession(
 	requestedAccelerator: ColabAccelerator | undefined,
 	emit: StatusEmitter,
 	cliCommand?: readonly string[],
+	authorizeCompute?: ColabModelLaunchOptions["authorizeCompute"],
+	modelReference = "",
 ): Promise<ColabAccelerator> {
 	const status = await runCommand(["status", "--session", sessionName], { timeoutMs: 60_000, cliCommand });
 	const existingAccelerator =
@@ -1252,10 +1273,13 @@ async function ensureColabSession(
 
 	let lastFailure = "";
 	for (const accelerator of accelerators) {
+		const lease = await authorizeCompute?.(accelerator, sessionName);
+		if (!lease) throw new Error("Colab compute requires explicit user approval and a verified shutdown guard.");
+		assertComputeLease(lease, { ...lease.request, accelerator, sessionName, model: modelReference });
 		await emit(`Colab: requesting ${accelerator} runtime…`);
 		const launch = await runCommand(colabNewSessionArgs(sessionName, accelerator), {
-			cliCommand,
-			timeoutMs: 5 * 60_000,
+			cliCommand: cliCommand ?? buildColabCommand(["status"]).slice(0, -1),
+			timeoutMs: Math.min(5 * 60_000, Date.parse(lease.cutoffAt) - Date.now()),
 		});
 		if (launch.exitCode === 0)
 			return parseColabSessionAccelerator(`${launch.stdout}\n${launch.stderr}`) ?? accelerator;
@@ -2903,8 +2927,23 @@ export async function launchColabModel(
 			);
 		}
 	}
+	let computeLease: ComputeLease | undefined;
+	const authorizeCompute: ColabModelLaunchOptions["authorizeCompute"] = options.authorizeCompute
+		? async (accelerator, session) => {
+				computeLease = await options.authorizeCompute!(accelerator, session);
+				return computeLease;
+			}
+		: undefined;
 	const accelerator = await measureLaunchStage("allocation", options.onStage, () =>
-		ensureColabSession(sessionName, acquisitionCandidates, options.accelerator, emit, options.cliCommand),
+		ensureColabSession(
+			sessionName,
+			acquisitionCandidates,
+			options.accelerator,
+			emit,
+			options.cliCommand,
+			authorizeCompute,
+			modelReference,
+		),
 	);
 	const rawCache = options.prepareModelCache
 		? await measureLaunchStage("cache-staging", options.onStage, options.prepareModelCache)
@@ -2939,25 +2978,36 @@ export async function launchColabModel(
 			: `generation cap ${modelProfile.maxGenerationTokens ?? DEFAULT_MAX_TOKENS}`;
 		await emit(`Colab: ${modelProfile.id} context budget ${contextWindow.toLocaleString()} tokens; ${tuning}.`);
 	}
-	const setup = await runCommand(["exec", "--session", sessionName, "--timeout", "3600"], {
-		cliCommand: options.cliCommand,
-		input: buildRemoteSetupScript({
-			serving: options.serving,
-			readinessMode,
-			modelCacheDirectory,
-			adapters,
-			alias,
-			accelerator,
-			artifact,
-			contextWindow,
-			modelProfile,
-			reference,
-			remotePort: DEFAULT_REMOTE_PORT,
-			runtime,
-		}),
-		onStdout: createProgressParser(emit, options.onStage),
-		timeoutMs: 60 * 60_000,
-	});
+	const remainingSetupMs = computeLease ? Date.parse(computeLease.cutoffAt) - Date.now() : 60 * 60000;
+	if (remainingSetupMs <= 0) throw new Error("Colab compute approval expired during setup.");
+	const setup = await runCommand(
+		[
+			"exec",
+			"--session",
+			sessionName,
+			"--timeout",
+			String(Math.max(1, Math.floor(Math.min(3600000, remainingSetupMs) / 1000))),
+		],
+		{
+			cliCommand: options.cliCommand,
+			input: buildRemoteSetupScript({
+				serving: options.serving,
+				readinessMode,
+				modelCacheDirectory,
+				adapters,
+				alias,
+				accelerator,
+				artifact,
+				contextWindow,
+				modelProfile,
+				reference,
+				remotePort: DEFAULT_REMOTE_PORT,
+				runtime,
+			}),
+			onStdout: createProgressParser(emit, options.onStage),
+			timeoutMs: Math.min(60 * 60_000, remainingSetupMs),
+		},
+	);
 	if (setup.exitCode !== 0) {
 		throw new Error(
 			`Colab setup failed; no replacement was provisioned. Reconnect explicitly if the runtime expired: ${setup.stderr || setup.stdout}`,
@@ -3061,8 +3111,23 @@ export async function handleColabModelSlashCommand(
 			);
 			return { consumed: true };
 		}
+		const approval = harnessComputePolicy(runtime);
 		const result = await launch(resolved.modelReference, message => runtime.output(message), {
 			accelerator: resolved.accelerator,
+			authorizeCompute: async (accelerator, sessionName) =>
+				approval.policy.authorize(
+					{
+						taskId: approval.taskId,
+						account: await approval.account(),
+						model: resolved.modelReference,
+						accelerator,
+						sessionName,
+						minutes: resolved.minutes,
+					},
+					approval.confirm,
+					async (session, cutoffAt) =>
+						armWindowsCutoff(session, (Date.parse(cutoffAt) - Date.now()) / 60000, cutoffAt),
+				),
 			sessionName: resolved.sessionName,
 			localPort: resolved.localPort,
 		});

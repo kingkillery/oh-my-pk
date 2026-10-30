@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ColabComputePolicy } from "../src/slash-commands/helpers/colab-compute-policy";
 import { type ColabAccelerator, launchColabModel } from "../src/slash-commands/helpers/colab-model";
 
 interface CommandStep {
@@ -16,7 +17,7 @@ const statusArgs = ["status", "--session", sessionName];
 const cacheBoundary = new Error("Reached cache staging after allocation");
 
 // Exercise real CLI subprocesses and stream parsing, with no Colab calls or global mocks.
-async function exerciseSession(steps: CommandStep[], accelerator?: ColabAccelerator) {
+async function exerciseSession(steps: CommandStep[], accelerator?: ColabAccelerator, approve = true) {
 	const directory = await mkdtemp(join(tmpdir(), "colab-model-session-"));
 	const transcriptPath = join(directory, "transcript.json");
 	const transcript = Bun.file(transcriptPath);
@@ -28,6 +29,20 @@ async function exerciseSession(steps: CommandStep[], accelerator?: ColabAccelera
 			sessionName,
 			accelerator,
 			localPort: 18082,
+			authorizeCompute: approve
+				? (accelerator, sessionName) =>
+						new ColabComputePolicy().authorize(
+							{
+								taskId: "fixture",
+								account: "fixture@example.test",
+								model: "owner/model",
+								accelerator,
+								sessionName,
+							},
+							async () => "once",
+							async (_session, cutoffAt) => ({ cutoffAt }),
+						)
+				: undefined,
 			fetch: Object.assign(async () => Response.json([{ type: "file", path: "model-Q4_K_M.gguf", size: 1000 }]), {
 				preconnect: globalThis.fetch.preconnect,
 			}),
@@ -145,4 +160,14 @@ test("a missing session whose name contains a GPU is allocated, not reused", asy
 	);
 	expect(result.failure).toBe(cacheBoundary);
 	expect(result.cacheReached).toBe(true);
+});
+
+test("custom CLI argv does not imply compute permission", async () => {
+	const result = await exerciseSession(
+		[{ args: statusArgs, exitCode: 0, stdout: "Session 'model-session-contract' not found." }],
+		"T4",
+		false,
+	);
+	expect(result.cacheReached).toBe(false);
+	expect(String(result.failure)).toContain("explicit user approval");
 });

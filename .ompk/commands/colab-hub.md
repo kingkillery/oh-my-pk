@@ -14,7 +14,7 @@ through the proxy's notebook tools.
      over its `ssh` command. No notebook, no warm-up needed.
   2. **Warm up new** — needs a Tailscale auth key; ask the user for it,
      then run the full warm-up flow.
-- **With args:** skips straight to warming up a new session.
+- **With args:** still inspect existing sessions and obtain scoped compute approval before provisioning.
   - Auth key: recommend an ephemeral, short-expiry key; single-purpose.
   - Hostname (optional, default `colab-pkherdr`): the stable handle — prefer
     it over the 100.x IP, which changes every Colab session.
@@ -37,7 +37,7 @@ prefer one model server per VM and stop the prior server before replacing it.
 
 ## Steps
 
-### 0. Detect an existing session (bare invocation only)
+### 0. Detect an existing session (every invocation)
 
 Before starting any proxy, check whether a warmed VM is already alive:
 
@@ -151,3 +151,11 @@ Bare invocation: the agent checks for a live session and offers
   `colab-ssh.json` — if a stale `colab-ssh.json` exists, delete it or move it
   to `colab-hub.json`.)
 - Canonical warm-up script: [warmup.sh](../skills/colab-hub/warmup.sh).
+
+## Compute approval and time limits
+
+- Ask before allocating any Colab CPU/GPU/TPU runtime, even with full/yolo tool access. Inspect existing sessions first.
+- Use the shared OMPK Colab compute policy (`docs/colab-compute-policy.md`, `scripts/colab-compute.ts`, and the model slash command). Raw `colab new` is not an approval mechanism.
+- Default total window is 60 minutes, with explicit approval up to 120 minutes. Include setup, retries and cleanup; reserve five minutes for confirmed release.
+- Repeated training/evaluation may use one explicitly approved task-scoped window for the specified account, model/purpose and accelerator, with one runtime at a time. Relaunches never reset the deadline. Scope changes or expiry ask again.
+- Arm and verify shutdown before allocation. Preserve unrelated runtimes, confirm release, and never switch to a paid provider or larger accelerator without fresh approval.

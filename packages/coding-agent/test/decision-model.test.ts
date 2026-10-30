@@ -1,11 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+	launchClefDecisionModel as actualLaunchClefDecisionModel,
 	buildClefRemoteBootstrap,
 	type DecisionModelLaunchRequest,
-	launchClefDecisionModel,
 	parseDecisionModelArgs,
 } from "../src/slash-commands/helpers/decision-model";
 
+function launchClefDecisionModel(
+	request: Parameters<typeof actualLaunchClefDecisionModel>[0],
+	deps: NonNullable<Parameters<typeof actualLaunchClefDecisionModel>[1]> = {},
+) {
+	return actualLaunchClefDecisionModel(request, {
+		confirmCompute: async () => "once",
+		computeAccount: "fixture@example.test",
+		...deps,
+		armCutoff: async (session, minutes, cutoffAt) => {
+			if (!deps.armCutoff) throw new Error("Fixture requires a fake cutoff");
+			const receipt = await deps.armCutoff(session, minutes, cutoffAt);
+			return { ...receipt, cutoffAt: cutoffAt ?? receipt.cutoffAt };
+		},
+	});
+}
 const SESSION = "ompk-clef-decision";
 let savedTsAuthKey: string | undefined;
 
@@ -46,7 +61,7 @@ describe("decision-model command parsing", () => {
 
 	it("never permits a launch without a cutoff", () => {
 		expect(() => parseDecisionModelArgs("launch --no-ttl")).toThrow("always require a natural shutoff timer");
-		expect(() => parseDecisionModelArgs("launch --ttl 5m")).toThrow("10-240");
+		expect(() => parseDecisionModelArgs("launch --ttl 5m")).toThrow("10-120");
 	});
 });
 

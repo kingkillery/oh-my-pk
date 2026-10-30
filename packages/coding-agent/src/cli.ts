@@ -64,6 +64,29 @@ async function showHelp(config: CliConfig): Promise<void> {
  * tarball installs all exercise it on every CI run.
  */
 async function runSmokeTest(): Promise<void> {
+	const { ColabComputePolicy, computeMinutes } = await import("./slash-commands/helpers/colab-compute-policy");
+	if (computeMinutes() !== 60 || computeMinutes(120) !== 120) throw new Error("Colab compute defaults smoke failed");
+	let overLimitRejected = false;
+	try {
+		computeMinutes(121);
+	} catch {
+		overLimitRejected = true;
+	}
+	if (!overLimitRejected) throw new Error("Colab compute limit smoke failed");
+	let unapprovedRejected = false;
+	try {
+		await new ColabComputePolicy().authorize(
+			{ taskId: "smoke", account: "smoke@example.test", model: "smoke", accelerator: "T4", sessionName: "smoke" },
+			undefined,
+			async () => {
+				throw new Error("Unauthorized compute guard reached");
+			},
+		);
+	} catch (error) {
+		unapprovedRejected = error instanceof Error && error.message.includes("explicit user approval");
+	}
+	if (!unapprovedRejected) throw new Error("Colab compute approval smoke failed");
+	process.stdout.write("colab-compute-policy: ok (ask-by-default; default 60m; maximum 120m)\n");
 	const { smokeTestSyncWorker, startServer } = await import("@pk-nerdsaver-ai/omp-stats");
 	const { smokeTestTinyTitleWorker } = await import("./tiny/title-client");
 	const { smokeTestSttWorker } = await import("./stt/asr-client");

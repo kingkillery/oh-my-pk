@@ -739,6 +739,7 @@ describe("/colab-model command", () => {
 		const launch = vi.fn(async () => launchResult());
 		await handleColabModelSlashCommand("--gpu A100 unsloth/Qwen3.8-27B-GGUF", runtime, launch);
 		expect(launch).toHaveBeenCalledWith("unsloth/Qwen3.8-27B-GGUF", expect.any(Function), {
+			authorizeCompute: expect.any(Function),
 			accelerator: "A100",
 			sessionName: undefined,
 			localPort: undefined,
