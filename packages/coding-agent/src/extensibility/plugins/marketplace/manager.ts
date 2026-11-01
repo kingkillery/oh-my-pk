@@ -10,7 +10,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { isEnoent, logger, pathIsWithin } from "@pk-nerdsaver-ai/pi-utils";
+import { isFsMissing, logger, pathIsWithin } from "@pk-nerdsaver-ai/pi-utils";
 import { normalizePluginRuntimeConfig } from "../runtime-config";
 import type { PluginRuntimeConfig } from "../types";
 
@@ -772,7 +772,7 @@ export class MarketplaceManager {
 		try {
 			return normalizePluginRuntimeConfig(await Bun.file(this.#runtimeLockPath(scope)).json());
 		} catch (err) {
-			if (isEnoent(err)) return normalizePluginRuntimeConfig({});
+			if (isFsMissing(err, this.#runtimeLockPath(scope))) return normalizePluginRuntimeConfig({});
 			logger.warn("Failed to load marketplace plugin runtime config", {
 				path: this.#runtimeLockPath(scope),
 				error: String(err),
@@ -786,12 +786,13 @@ export class MarketplaceManager {
 	}
 
 	async #resolvePluginPackageName(installPath: string, fallbackName: string): Promise<string> {
+		const pkgPath = path.join(installPath, "package.json");
 		try {
-			const pkg: { name?: unknown } = await Bun.file(path.join(installPath, "package.json")).json();
+			const pkg: { name?: unknown } = await Bun.file(pkgPath).json();
 			const name = typeof pkg.name === "string" && pkg.name.length > 0 ? pkg.name : fallbackName;
 			return assertRuntimePackageName(name);
 		} catch (err) {
-			if (isEnoent(err)) return assertRuntimePackageName(fallbackName);
+			if (isFsMissing(err, pkgPath)) return assertRuntimePackageName(fallbackName);
 			throw err;
 		}
 	}
@@ -892,7 +893,7 @@ export class MarketplaceManager {
 			const content = await Bun.file(entry.catalogPath).text();
 			return parseMarketplaceCatalog(content, entry.catalogPath);
 		} catch (err) {
-			if (isEnoent(err)) {
+			if (isFsMissing(err, entry.catalogPath)) {
 				throw new Error(
 					`Marketplace catalog not found at ${entry.catalogPath}. Try: /marketplace update ${entry.name}`,
 				);

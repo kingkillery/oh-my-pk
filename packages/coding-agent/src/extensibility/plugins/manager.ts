@@ -9,6 +9,7 @@ import {
 	getProjectDir,
 	getProjectPluginOverridesPath,
 	isEnoent,
+	isFsMissing,
 	logger,
 } from "@pk-nerdsaver-ai/pi-utils";
 import { type GitSource, parseGitUrl } from "./git-url";
@@ -128,7 +129,7 @@ export class PluginManager {
 		try {
 			return normalizePluginRuntimeConfig(await Bun.file(lockPath).json());
 		} catch (err) {
-			if (isEnoent(err)) return normalizePluginRuntimeConfig({});
+			if (isFsMissing(err, lockPath)) return normalizePluginRuntimeConfig({});
 			logger.warn("Failed to load plugin runtime config", { path: lockPath, error: String(err) });
 			return normalizePluginRuntimeConfig({});
 		}
@@ -151,7 +152,7 @@ export class PluginManager {
 		try {
 			return await Bun.file(overridesPath).json();
 		} catch (err) {
-			if (isEnoent(err)) return {};
+			if (isFsMissing(err, overridesPath)) return {};
 			logger.warn("Failed to load project plugin overrides", { path: overridesPath, error: String(err) });
 			return {};
 		}
@@ -171,7 +172,7 @@ export class PluginManager {
 		try {
 			await Bun.file(pkgJsonPath).json();
 		} catch (err) {
-			if (isEnoent(err)) {
+			if (isFsMissing(err, pkgJsonPath)) {
 				await Bun.write(
 					pkgJsonPath,
 					JSON.stringify(
@@ -201,7 +202,7 @@ export class PluginManager {
 			const json = await Bun.file(pkgJsonPath).json();
 			return (json.dependencies as Record<string, string>) ?? {};
 		} catch (err) {
-			if (isEnoent(err)) return {};
+			if (isFsMissing(err, pkgJsonPath)) return {};
 			throw err;
 		}
 	}
@@ -373,7 +374,7 @@ export class PluginManager {
 		try {
 			bunLockBefore = await Bun.file(bunLockPath).text();
 		} catch (err) {
-			if (!isEnoent(err)) throw err;
+			if (!isFsMissing(err, bunLockPath)) throw err;
 			bunLockBefore = null;
 		}
 		const depsBefore = await this.#readDeps(pkgJsonPath);
@@ -458,7 +459,7 @@ export class PluginManager {
 			try {
 				pkg = await Bun.file(pkgPath).json();
 			} catch (err) {
-				if (isEnoent(err)) {
+				if (isFsMissing(err, pkgPath)) {
 					throw new Error(`Package installed but package.json not found at ${pkgPath}`);
 				}
 				throw err;
@@ -609,7 +610,7 @@ export class PluginManager {
 			const pkg: { dependencies?: Record<string, string> } = await Bun.file(pkgJsonPath).json();
 			deps = pkg.dependencies ?? {};
 		} catch (err) {
-			if (!isEnoent(err)) throw err;
+			if (!isFsMissing(err, pkgJsonPath)) throw err;
 		}
 
 		const projectOverrides = await this.#loadProjectOverrides();
@@ -626,7 +627,7 @@ export class PluginManager {
 			try {
 				pluginPkg = await Bun.file(pluginPkgPath).json();
 			} catch (err) {
-				if (isEnoent(err)) continue;
+				if (isFsMissing(err, pluginPkgPath)) continue;
 				throw err;
 			}
 			const manifest = await readPluginManifestOrFallback(pluginPath, pluginPkg);
@@ -665,7 +666,7 @@ export class PluginManager {
 		try {
 			pkg = await Bun.file(pkgFilePath).json();
 		} catch (err) {
-			if (isEnoent(err)) throw new Error(`package.json not found at ${absolutePath}`);
+			if (isFsMissing(err, pkgFilePath)) throw new Error(`package.json not found at ${absolutePath}`);
 			throw err;
 		}
 		if (!pkg.name) {
@@ -875,7 +876,7 @@ export class PluginManager {
 			try {
 				pluginPkg = await Bun.file(pluginPkgPath).json();
 			} catch (err) {
-				if (isEnoent(err)) {
+				if (isFsMissing(err, pluginPkgPath)) {
 					if (!fs.existsSync(pluginPath)) {
 						if (fromDependencies) {
 							const fixed = options.fix ? await this.#fixMissingPlugin() : false;

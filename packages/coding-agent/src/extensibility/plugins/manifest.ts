@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { isEnoent } from "@pk-nerdsaver-ai/pi-utils";
+import { isFsMissing } from "@pk-nerdsaver-ai/pi-utils";
 import type { PluginManifest } from "./types";
 
 export interface PluginPackageJson {
@@ -33,11 +33,12 @@ function normalizeCodexPluginManifest(raw: CodexPluginJson): PartialPluginManife
 }
 
 export async function readCodexPluginManifest(pluginPath: string): Promise<PartialPluginManifest | null> {
+	const manifestPath = path.join(pluginPath, ".codex-plugin", "plugin.json");
 	try {
-		const raw = (await Bun.file(path.join(pluginPath, ".codex-plugin", "plugin.json")).json()) as CodexPluginJson;
+		const raw = (await Bun.file(manifestPath).json()) as CodexPluginJson;
 		return normalizeCodexPluginManifest(raw);
 	} catch (err) {
-		if (isEnoent(err)) return null;
+		if (isFsMissing(err, manifestPath)) return null;
 		throw err;
 	}
 }

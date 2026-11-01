@@ -158,6 +158,20 @@ async function main(): Promise<void> {
 					);
 				}
 			}
+			// Copy vendored TokenEconomizer Python package next to the compiled binary
+			// so `te_bootstrap.py` can locate it via TE_CORE_PATH at runtime.
+			try {
+				const vendorSrc = path.join(packageDir, "vendor", "tokeneconomizer");
+				const vendorDest = path.join(packageDir, "dist", "vendor", "tokeneconomizer");
+				if (fs.existsSync(vendorSrc)) {
+					fs.rmSync(vendorDest, { recursive: true, force: true });
+					fs.cpSync(vendorSrc, vendorDest, { recursive: true });
+				}
+			} catch (err) {
+				console.warn(
+					`Skipped copying TokenEconomizer vendor: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
 		} finally {
 			await runCommand(["bun", "run", "gen:mupdf:reset"]);
 			await runCommand(["bun", "--cwd=../natives", "run", "gen:native:reset"]);

@@ -1,0 +1,28 @@
+#!/bin/sh
+# TokenEconomizer hook launcher: run the hook dispatcher under the first Python 3 on PATH.
+# Fails open -- with no usable Python the hook prints an empty object, which changes nothing.
+# On Windows (Git Bash), $0 can arrive with backslashes, and `python3` can be the Microsoft Store
+# alias under WindowsApps, which is on PATH but runs nothing: such an alias is tried before use,
+# and the `py` launcher is the last candidate.
+self=$0
+if [ "${OS:-}" = Windows_NT ]; then
+  case $self in *\\*) self=$(printf '%s' "$self" | tr '\\' '/') ;; esac
+fi
+dir=$(CDPATH= cd -- "${self%/*}" && pwd)
+# Session logs are UTF-8; without this, Python on Windows reads them in the ANSI code page.
+export PYTHONUTF8=1
+for py in "${TE_PYTHON:-}" python3 python py; do
+  [ -n "$py" ] && command -v "$py" >/dev/null 2>&1 || continue
+  if [ "${OS:-}" = Windows_NT ]; then
+    case $(command -v "$py") in
+      *WindowsApps*) "$py" -c "" </dev/null >/dev/null 2>&1 || continue ;;
+    esac
+    [ "$py" = py ] && exec py -3 "$dir/te_bootstrap.py" hook "$@"
+  elif [ "$py" = py ]; then
+    continue                    # Python's `py` launcher is Windows-only; elsewhere it is not Python
+  fi
+  exec "$py" "$dir/te_bootstrap.py" hook "$@"
+done
+# Drain stdin with a builtin (no `cat` when PATH is empty), then answer "no change".
+while IFS= read -r _line; do :; done
+echo '{}'

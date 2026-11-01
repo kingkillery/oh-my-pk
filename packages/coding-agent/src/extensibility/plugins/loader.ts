@@ -6,7 +6,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getPluginsLockfile, getPluginsNodeModules, getPluginsPackageJson, isEnoent } from "@pk-nerdsaver-ai/pi-utils";
+import { getPluginsLockfile, getPluginsNodeModules, getPluginsPackageJson, isFsMissing } from "@pk-nerdsaver-ai/pi-utils";
 import { getConfigDirPaths } from "../../config";
 import { resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import { installLegacyPiSpecifierShim } from "./legacy-pi-compat";
@@ -36,7 +36,7 @@ async function loadRuntimeConfigAt(lockPath: string): Promise<PluginRuntimeConfi
 	try {
 		return normalizePluginRuntimeConfig(await Bun.file(lockPath).json());
 	} catch (err) {
-		if (isEnoent(err)) return normalizePluginRuntimeConfig({});
+		if (isFsMissing(err, lockPath)) return normalizePluginRuntimeConfig({});
 		throw err;
 	}
 }
@@ -49,7 +49,7 @@ async function loadProjectOverrides(cwd: string): Promise<ProjectPluginOverrides
 		try {
 			return await Bun.file(overridesPath).json();
 		} catch (err) {
-			if (isEnoent(err)) continue;
+			if (isFsMissing(err, overridesPath)) continue;
 			// JSON parse error - continue to next path
 		}
 	}
@@ -114,7 +114,7 @@ export async function getEnabledPlugins(cwd: string, opts: { home?: string } = {
 		} catch (err) {
 			// Linked-only setups may have no `<plugins>/package.json` yet — that's
 			// fine, the lockfile still records the link.
-			if (!isEnoent(err)) throw err;
+			if (!isFsMissing(err, root.pkgJsonPath)) throw err;
 		}
 
 		const runtimeConfig = await loadRuntimeConfigAt(root.lockPath);
@@ -139,7 +139,7 @@ export async function getEnabledPlugins(cwd: string, opts: { home?: string } = {
 			} catch (err) {
 				// Lockfile entry without a corresponding node_modules tree means the
 				// link was deleted out from under us; skip silently.
-				if (isEnoent(err)) continue;
+				if (isFsMissing(err, pluginPkgPath)) continue;
 				throw err;
 			}
 

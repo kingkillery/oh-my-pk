@@ -108,6 +108,7 @@
 	},
 	"files": [
 		"src",
+		"vendor/tokeneconomizer/**/*",
 		"dist/cli.js",
 		"dist/*.node",
 		"scripts",

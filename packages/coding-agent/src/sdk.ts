@@ -2147,6 +2147,7 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 
 		const inlineExtensions: ExtensionFactory[] = options.extensions ? [...options.extensions] : [];
 		inlineExtensions.push((await import("./autoresearch")).createAutoresearchExtension);
+		inlineExtensions.push((await import("./tokeneconomizer/extension.js")).createTokeneconomizerExtension());
 		if (customTools.length > 0) {
 			inlineExtensions.push(
 				createCustomToolsExtension(
@@ -2158,7 +2159,6 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 				),
 			);
 		}
-
 		// Load extensions. Three paths:
 		//   1. `preloadedExtensions` (CLI): caller already loaded — reuse the
 		//      Extension instances. Shallow-clone `extensions` so the inline

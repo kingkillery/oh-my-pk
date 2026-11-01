@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 /**
  * Type-safe filesystem error handling utilities.
  *
@@ -53,4 +55,19 @@ export function isEnotempty(err: unknown): err is FsError {
 
 export function hasFsCode(err: unknown, code: string): err is FsError {
 	return isFsError(err) && err.code === code;
+}
+
+/**
+ * True when a filesystem operation failed because `targetPath` does not
+ * resolve to anything. Covers ENOENT and ENOTDIR outright, and for any other
+ * error — notably the `EUNKNOWN` that Bun's Windows file layer reports when
+ * opening a dangling symlink or junction — falls back to a direct existence
+ * check on `targetPath`. Use at "read a file that may not exist" call sites
+ * where treating an unresolvable path as absent is the correct behavior;
+ * errors on paths that still exist are NOT treated as missing.
+ */
+export function isFsMissing(err: unknown, targetPath: string): boolean {
+	if (isEnoent(err) || isEnotdir(err)) return true;
+	if (!isFsError(err)) return false;
+	return !existsSync(targetPath);
 }

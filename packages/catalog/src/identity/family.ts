@@ -105,6 +105,34 @@ export const isMinimaxM3FamilyModelId = memo((modelId: string): boolean => {
 	if (!lower.includes("minimax")) return false;
 	return /(?:^|[/._-])(?:minimax[/._-])?m3(?:[-.:_]|$)/i.test(lower);
 });
+/**
+ * LiquidAI LFM family ids (`LiquidAI/LFM2.5-24B-A2B`, `lfm2.5-24b`, bare
+ * `lfm-24b`, `lfm-a2b`). Matches any LFM generation or SKU.
+ */
+export const isLfmModelId = memo((modelId: string): boolean => {
+	return /(^|\/)lfm[-.]?\d/i.test(modelId) || /(^|\/)lfm[-._]?(?:a2b|2b|7b|13b|70b|120b)/i.test(modelId);
+});
+
+/**
+ * LFM harness adapters trained in the `harness-hub` collection — model ids that
+ * carry a harness name (`harbor-pi`, `harbor-claude-code`, `harbor-codex`, etc.)
+ * or the adapter-only `A2B-pi` / `A2B-claude-code` suffixes. These adapters
+ * expect an OpenAI **completions**-style wire (no Responses API) and a
+ * completions-side tool-call parser; detection feeds discovery-time api
+ * overrides.
+ */
+export const isLfmHarnessAdapterModelId = memo((modelId: string): boolean => {
+	const lower = modelId.toLowerCase();
+	if (!lower.includes("lfm")) return false;
+	if (/(?:^|[-_/])(?:harbor|a2b|adapter)[-_]?(?:pi|claude|codex|gemini|openai|grok|deepseek|kimi|qwen)(?:[-_]|$)/i.test(lower)) {
+		return true;
+	}
+	if (/(?:^|[-_])(?:pi|claude-code|codex|gemini|openai|grok|deepseek|kimi|qwen)[-_](?:gguf|lora|adapter|hf)?$/i.test(lower) && lower.includes("a2b")) {
+		return true;
+	}
+	return false;
+});
+
 
 /**
  * OpenAI gpt-oss family (`gpt-oss-20b`, `gpt-oss-120b`, `gpt-oss:120b`,

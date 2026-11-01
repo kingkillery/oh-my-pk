@@ -397,7 +397,7 @@ async function resolveExtensionEntries(dir: string): Promise<string[] | null> {
 				await fs.stat(resolvedExtPath);
 				entries.push(resolvedExtPath);
 			} catch (err) {
-				if (isEnoent(err) || isEacces(err) || hasFsCode(err, "EPERM")) continue;
+				if (isEnoent(err) || isEacces(err) || hasFsCode(err, "EPERM") || hasFsCode(err, "EUNKNOWN")) continue;
 				throw err;
 			}
 		}
@@ -412,7 +412,7 @@ async function resolveExtensionEntries(dir: string): Promise<string[] | null> {
 		await fs.stat(indexTs);
 		return [indexTs];
 	} catch (err) {
-		if (isEnoent(err) || isEacces(err) || hasFsCode(err, "EPERM")) {
+		if (isEnoent(err) || isEacces(err) || hasFsCode(err, "EPERM") || hasFsCode(err, "EUNKNOWN")) {
 			// Ignore
 		} else {
 			throw err;
@@ -422,7 +422,7 @@ async function resolveExtensionEntries(dir: string): Promise<string[] | null> {
 		await fs.stat(indexJs);
 		return [indexJs];
 	} catch (err) {
-		if (isEnoent(err) || isEacces(err) || hasFsCode(err, "EPERM")) {
+		if (isEnoent(err) || isEacces(err) || hasFsCode(err, "EPERM") || hasFsCode(err, "EUNKNOWN")) {
 			// Ignore
 		} else {
 			throw err;
@@ -548,7 +548,7 @@ export async function discoverExtensionPaths(
 		try {
 			stat = await fs.stat(resolved);
 		} catch (err) {
-			if (!isEnoent(err)) throw err;
+			if (!isEnoent(err) && !hasFsCode(err, "EUNKNOWN")) throw err;
 		}
 
 		if (stat?.isDirectory()) {
