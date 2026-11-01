@@ -15,7 +15,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { getConfigRootDir, getPluginsDir, isEnoent, logger, tryParseJson } from "@pk-nerdsaver-ai/pi-utils";
+import { getConfigRootDir, getPluginsDir, isFsMissing, logger, tryParseJson } from "@pk-nerdsaver-ai/pi-utils";
 
 import type {
 	InstalledPluginEntry,
@@ -89,7 +89,7 @@ export async function readMarketplacesRegistry(filePath: string): Promise<Market
 		}
 		return data;
 	} catch (err) {
-		if (isEnoent(err)) return emptyMarketplacesRegistry();
+		if (isFsMissing(err, filePath)) return emptyMarketplacesRegistry();
 		throw err;
 	}
 }
@@ -122,7 +122,7 @@ export async function readInstalledPluginsRegistry(filePath: string): Promise<In
 		// Accept any numeric version — forward compatible reads
 		return { ...data, version: 2 };
 	} catch (err) {
-		if (isEnoent(err)) return emptyInstalledPluginsRegistry();
+		if (isFsMissing(err, filePath)) return emptyInstalledPluginsRegistry();
 		throw err;
 	}
 }
