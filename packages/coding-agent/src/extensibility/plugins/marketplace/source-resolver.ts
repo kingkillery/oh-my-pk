@@ -13,7 +13,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { isEnoent, pathIsWithin } from "@pk-nerdsaver-ai/pi-utils";
+import { isFsMissing, pathIsWithin } from "@pk-nerdsaver-ai/pi-utils";
 import * as git from "../../../utils/git";
 
 import type { MarketplaceCatalogMetadata, MarketplacePluginEntry, PluginSource } from "./types";
@@ -139,7 +139,7 @@ async function verifyDirExists(dirPath: string, errorMessage: string): Promise<v
 			throw new Error(errorMessage);
 		}
 	} catch (err) {
-		if (isEnoent(err)) {
+		if (isFsMissing(err, dirPath)) {
 			throw new Error(errorMessage);
 		}
 		throw err;

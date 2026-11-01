@@ -7,7 +7,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { isEnoent, logger } from "@pk-nerdsaver-ai/pi-utils";
+import { isFsMissing, logger } from "@pk-nerdsaver-ai/pi-utils";
 import * as git from "../../../utils/git";
 
 import type { MarketplaceCatalog, MarketplaceSourceType } from "./types";
@@ -210,7 +210,7 @@ async function readMarketplaceCatalog(root: string): Promise<{ catalogPath: stri
 			const content = await Bun.file(catalogPath).text();
 			return { catalogPath, content };
 		} catch (err) {
-			if (isEnoent(err)) continue;
+			if (isFsMissing(err, catalogPath)) continue;
 			throw err;
 		}
 	}
