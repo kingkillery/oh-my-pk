@@ -3,13 +3,27 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AuthStorage, SqliteAuthCredentialStore } from "@pk-nerdsaver-ai/pi-ai/auth-storage";
-import { loginMeta, loginMetaDeviceCode, resolveMuseCliAuthKey } from "@pk-nerdsaver-ai/pi-ai/registry/meta";
+import {
+	loginMeta,
+	loginMetaDeviceCode,
+	resolveMetaMuseCodeApiKey,
+	resolveMuseCliAuthKey,
+} from "@pk-nerdsaver-ai/pi-ai/registry/meta";
 import type { OAuthLoginCallbacks } from "@pk-nerdsaver-ai/pi-ai/registry/oauth/types";
+import { getEnvApiKey } from "@pk-nerdsaver-ai/pi-ai/stream";
 import type { FetchImpl } from "@pk-nerdsaver-ai/pi-ai/types";
 
 const accessToken = "synthetic-oauth-access-token";
 const subscriptionKey = "synthetic-subscription-api-key";
-const environmentKeys = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME"] as const;
+const environmentKeys = [
+	"HOME",
+	"USERPROFILE",
+	"XDG_CONFIG_HOME",
+	"META_API_KEY",
+	"MODEL_API_KEY",
+	"META_MODEL_API_KEY",
+	"META_MUSE_CODE_API_KEY",
+] as const;
 
 type ExchangeOptions = {
 	keyStatus?: number;
@@ -70,7 +84,8 @@ describe("Meta subscription OAuth credential exchange", () => {
 		previousEnvironment = {};
 		for (const name of environmentKeys) {
 			previousEnvironment[name] = process.env[name];
-			process.env[name] = tempDir;
+			if (name.endsWith("API_KEY")) delete process.env[name];
+			else process.env[name] = tempDir;
 		}
 		// The usual layout: $XDG_CONFIG_HOME is ~/.config, so both resolve to one file.
 		process.env.XDG_CONFIG_HOME = path.join(tempDir, ".config");
@@ -199,6 +214,65 @@ describe("Meta subscription OAuth credential exchange", () => {
 		const mirror = JSON.parse(await fs.readFile(path.join(tempDir, "xdg", "muse", "auth.json"), "utf8"));
 		expect(mirror.providers.meta.api_key).toBe(subscriptionKey);
 		expect(await fs.readdir(path.join(tempDir, "xdg", "muse"))).toEqual(["auth.json"]);
+	});
+
+	test("subscription resolution ignores pay-as-you-go keys and honors its dedicated override", async () => {
+		await fs.writeFile(authPath, JSON.stringify({ providers: { meta: { api_key: subscriptionKey } } }));
+		process.env.META_API_KEY = "pay-as-you-go-primary";
+		process.env.MODEL_API_KEY = "pay-as-you-go-secondary";
+		process.env.META_MODEL_API_KEY = "pay-as-you-go-alias";
+		expect(resolveMetaMuseCodeApiKey()).toBe(subscriptionKey);
+		expect(getEnvApiKey("meta-muse-code")).toBe(subscriptionKey);
+		expect(getEnvApiKey("meta")).toBe("pay-as-you-go-primary");
+		process.env.META_MUSE_CODE_API_KEY = "  explicit-subscription-key  ";
+		expect(getEnvApiKey("meta-muse-code")).toBe("explicit-subscription-key");
+		process.env.META_MUSE_CODE_API_KEY = "  ";
+		expect(getEnvApiKey("meta-muse-code")).toBe(subscriptionKey);
+	});
+
+	test("subscription provider login imports a credential without the pay-as-you-go chooser", async () => {
+		await fs.writeFile(authPath, JSON.stringify({ providers: { meta: { api_key: subscriptionKey } } }));
+		const { callbacks, requests } = createExchange();
+		const prompts: string[] = [];
+		const store = await SqliteAuthCredentialStore.open(path.join(tempDir, "subscription-login.db"));
+		try {
+			const storage = new AuthStorage(store);
+			await storage.reload();
+			await storage.login("meta-muse-code", {
+				...callbacks,
+				onPrompt: async prompt => {
+					prompts.push(prompt.message);
+					return "Y";
+				},
+			});
+			expect(prompts).toHaveLength(1);
+			expect(prompts[0]).toContain("Use it?");
+			expect(store.getApiKey("meta-muse-code")).toBe(subscriptionKey);
+			expect(store.getApiKey("meta")).toBeNull();
+			expect(requests.map(request => request.url)).toEqual(["https://api.meta.ai/v1/models"]);
+		} finally {
+			store.close();
+		}
+	});
+
+	test("subscription login exchanges and stores a fresh browser credential when import is declined", async () => {
+		await fs.writeFile(authPath, JSON.stringify({ providers: { meta: { api_key: "old-subscription-key" } } }));
+		const { callbacks, requests } = createExchange();
+		const store = await SqliteAuthCredentialStore.open(path.join(tempDir, "browser-login.db"));
+		try {
+			const storage = new AuthStorage(store);
+			await storage.reload();
+			await storage.login("meta-muse-code", { ...callbacks, onPrompt: async () => "n" });
+			expect(store.getApiKey("meta-muse-code")).toBe(subscriptionKey);
+			expect(requests.map(request => request.url)).toEqual([
+				"https://auth.meta.com/oidc/device/authorization/",
+				"https://auth.meta.com/oidc/device/token/",
+				"https://api.meta.ai/muse-code/key",
+				"https://api.meta.ai/v1/models",
+			]);
+		} finally {
+			store.close();
+		}
 	});
 
 	test.each([

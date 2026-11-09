@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Meta Muse Code discovery now uses the subscription-specific `META_MUSE_CODE_API_KEY` environment override instead of sharing pay-as-you-go Meta API keys.
+
 ## [16.4.31] - 2026-10-22
 
 ### Fixed

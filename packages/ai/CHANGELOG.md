@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The `meta-muse-code` subscription provider now signs in directly to Muse Code and uses its own `META_MUSE_CODE_API_KEY` override or imported Muse CLI credential, rather than silently using pay-as-you-go Meta environment keys. The general `meta` provider keeps its existing authentication choices.
+
 ## [16.4.31] - 2026-10-22
 
 ### Fixed

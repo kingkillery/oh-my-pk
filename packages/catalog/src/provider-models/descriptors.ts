@@ -277,7 +277,7 @@ export const CATALOG_PROVIDERS = [
 	{
 		id: "meta-muse-code",
 		defaultModel: "muse-spark-1.3",
-		envVars: ["META_API_KEY", "MODEL_API_KEY", "META_MODEL_API_KEY"],
+		envVars: ["META_MUSE_CODE_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) =>
 			metaModelManagerOptions({ ...config, providerId: "meta-muse-code" }),
 		dynamicModelsAuthoritative: true,

@@ -76,6 +76,11 @@ export function resolveMetaApiKey(): string | undefined {
 		process.env.META_API_KEY || process.env.MODEL_API_KEY || process.env.META_MODEL_API_KEY || resolveMuseCliAuthKey()
 	);
 }
+
+/** Subscription credentials must never fall back to pay-as-you-go environment keys. */
+export function resolveMetaMuseCodeApiKey(): string | undefined {
+	return process.env.META_MUSE_CODE_API_KEY?.trim() || resolveMuseCliAuthKey();
+}
 const defaultApiKeyLogin = createApiKeyLogin({
 	providerLabel: "Meta AI",
 	authUrl: "https://ai.developer.meta.com/docs/muse-code/auth",
@@ -282,6 +287,11 @@ export async function loginMeta(callbacks: OAuthLoginCallbacks): Promise<string>
 		}
 		return defaultApiKeyLogin(callbacks);
 	}
+	return loginMetaMuseCode(callbacks);
+}
+
+/** Sign in to the subscription without offering a pay-as-you-go key. */
+export async function loginMetaMuseCode(callbacks: OAuthLoginCallbacks): Promise<string> {
 	const detected = resolveMuseCliAuthKey();
 	if (detected) {
 		const useExisting = await callbacks.onPrompt({
@@ -317,6 +327,6 @@ export const metaProvider = {
 export const metaMuseCodeProvider = {
 	id: "meta-muse-code",
 	name: "Meta Muse Code",
-	envKeys: resolveMetaApiKey,
-	login: (cb: OAuthLoginCallbacks) => loginMeta(cb),
+	envKeys: resolveMetaMuseCodeApiKey,
+	login: (cb: OAuthLoginCallbacks) => loginMetaMuseCode(cb),
 } as const satisfies ProviderDefinition;
