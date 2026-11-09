@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed MiniMax Token Plan to "Minimax Code (minimax m plan)" while preserving regional provider IDs and saved credentials. Login now links to the current M Plan console and validates with MiniMax-M3.1-Flash.
+
 ### Fixed
 
 - The `meta-muse-code` subscription provider now signs in directly to Muse Code and uses its own `META_MUSE_CODE_API_KEY` override or imported Muse CLI credential, rather than silently using pay-as-you-go Meta environment keys. The general `meta` provider keeps its existing authentication choices.

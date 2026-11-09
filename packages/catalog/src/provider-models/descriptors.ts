@@ -290,12 +290,12 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "minimax-code",
-		defaultModel: "MiniMax-M3",
+		defaultModel: "MiniMax-M3.1-Flash",
 		envVars: ["MINIMAX_CODE_API_KEY"],
 	},
 	{
 		id: "minimax-code-cn",
-		defaultModel: "MiniMax-M3",
+		defaultModel: "MiniMax-M3.1-Flash",
 		envVars: ["MINIMAX_CODE_CN_API_KEY"],
 	},
 	{

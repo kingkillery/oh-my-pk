@@ -29,6 +29,7 @@ import {
 } from "../src/provider-models/descriptor-types";
 import { PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
 import { buildDevinFallbackModel } from "../src/provider-models/devin";
+import { buildMiniMaxCodeStaticSeed } from "../src/provider-models/minimax-code";
 import {
 	ALIBABA_CODING_PLAN_STATIC_MODELS,
 	ALIBABA_TOKEN_PLAN_STATIC_MODELS,
@@ -58,6 +59,16 @@ import {
 } from "./generated-policies";
 
 const packageRoot = path.join(import.meta.dir, "..");
+// A provider-only refresh keeps unrelated catalog snapshots and credentials untouched.
+const providerSelection = process.argv.find(arg => arg.startsWith("--providers="))?.slice("--providers=".length);
+const selectedProviders = new Set(
+	providerSelection
+		?.split(",")
+		.map(id => id.trim())
+		.filter(Boolean),
+);
+// Fallback and policy passes mutate model objects borrowed from the previous snapshot.
+const preservedSnapshot = selectedProviders.size > 0 ? structuredClone(prevModelsJson) : undefined;
 
 /**
  * Local/self-hosted providers (Ollama, vLLM, LM Studio, LiteLLM). Their model
@@ -455,11 +466,25 @@ async function fetchCodexDiscoveryModels(): Promise<ModelSpec<"openai-codex-resp
 }
 
 async function generateModels() {
+	if (providerSelection !== undefined) {
+		if (selectedProviders.size === 0) throw new Error("--providers requires at least one provider id");
+		const knownProviders = new Set(MODELS_DEV_PROVIDER_DESCRIPTORS.map(descriptor => descriptor.providerId));
+		for (const provider of selectedProviders) {
+			if (
+				!knownProviders.has(provider) &&
+				!PROVIDER_DESCRIPTORS.some(descriptor => descriptor.providerId === provider)
+			) {
+				throw new Error(`Unknown catalog provider: ${provider}`);
+			}
+		}
+	}
 	// Fetch models from dynamic sources.
 	const modelsDevModels = await loadModelsDevData();
 	const catalogProviderDescriptors = PROVIDER_DESCRIPTORS.filter(
 		(descriptor): descriptor is CatalogProviderDescriptor =>
-			isCatalogDescriptor(descriptor) && !DISCOVERY_ONLY_PROVIDERS.has(descriptor.providerId),
+			isCatalogDescriptor(descriptor) &&
+			!DISCOVERY_ONLY_PROVIDERS.has(descriptor.providerId) &&
+			(selectedProviders.size === 0 || selectedProviders.has(descriptor.providerId)),
 	);
 	const catalogProviderModelBatches = await Promise.all(
 		catalogProviderDescriptors.map(async descriptor => ({
@@ -506,6 +531,7 @@ async function generateModels() {
 	// persisted `modelRoles.default = "xai-oauth/<id>"` is honored before the
 	// async refresh fires (interactive boot does not await refresh).
 	allModels.push(...buildXaiOAuthStaticSeed());
+	allModels.push(...buildMiniMaxCodeStaticSeed());
 	allModels.push(...ALIBABA_CODING_PLAN_STATIC_MODELS);
 	// Seed QwenCloud's documented Token Plan models when credentialed
 	// discovery is unavailable. A successful `/models` response is authoritative
@@ -559,14 +585,16 @@ async function generateModels() {
 	allModels.push(...buildFireworksFastSeed());
 
 	const specialDiscoverySources = [
-		{ label: "Antigravity", fetch: fetchAntigravityModels },
-		{ label: "Codex", fetch: fetchCodexDiscoveryModels },
+		{ label: "Antigravity", providerId: "google-antigravity", fetch: fetchAntigravityModels },
+		{ label: "Codex", providerId: "openai-codex", fetch: fetchCodexDiscoveryModels },
 	] as const;
 	const specialDiscoveries = await Promise.all(
-		specialDiscoverySources.map(async source => ({
-			label: source.label,
-			models: await source.fetch(),
-		})),
+		specialDiscoverySources
+			.filter(source => selectedProviders.size === 0 || selectedProviders.has(source.providerId))
+			.map(async source => ({
+				label: source.label,
+				models: await source.fetch(),
+			})),
 	);
 	for (const discovery of specialDiscoveries) {
 		if (discovery.models.length > 0) {
@@ -659,8 +687,21 @@ async function generateModels() {
 		MODELS[key] = sortObj(MODELS[key]);
 	}
 
+	const output =
+		selectedProviders.size === 0
+			? MODELS
+			: {
+					...preservedSnapshot,
+					...Object.fromEntries(
+						[...selectedProviders].map(provider => {
+							if (!MODELS[provider]) throw new Error(`No generated models for ${provider}`);
+							return [provider, MODELS[provider]];
+						}),
+					),
+				};
+
 	// Generate JSON file
-	await Bun.write(path.join(packageRoot, "src/models.json"), JSON.stringify(MODELS));
+	await Bun.write(path.join(packageRoot, "src/models.json"), JSON.stringify(output));
 	console.log("Generated src/models.json");
 
 	// Print statistics
@@ -678,4 +719,7 @@ Model Statistics:`);
 }
 
 // Run the generator
-generateModels().catch(console.error);
+generateModels().catch(error => {
+	console.error(error);
+	process.exitCode = 1;
+});

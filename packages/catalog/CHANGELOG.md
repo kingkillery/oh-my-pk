@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Refreshed both MiniMax M Plan catalogs, including MiniMax-M3.1-Flash with 1M context, image input, and mandatory low-through-max reasoning. The current stable Flash model is the plan default; its retired preview alias is folded into the stable picker entry.
+- Provider-scoped catalog regeneration via `--providers=minimax-code,minimax-code-cn`, preserving unrelated provider snapshots and avoiding unrelated credential discovery.
+
 ### Fixed
 
 - Meta Muse Code discovery now uses the subscription-specific `META_MUSE_CODE_API_KEY` environment override instead of sharing pay-as-you-go Meta API keys.

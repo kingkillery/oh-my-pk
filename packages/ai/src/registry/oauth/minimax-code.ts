@@ -1,8 +1,8 @@
 /**
- * MiniMax Token Plan login flow.
+ * Minimax Code (minimax m plan) login flow.
  *
- * MiniMax Token Plan is a subscription service that provides access to
- * MiniMax models (M2 and newer) through an OpenAI-compatible API.
+ * MiniMax M Plan is a subscription service that provides access to
+ * MiniMax text models through an OpenAI-compatible API.
  *
  * This is not OAuth - it's a simple API key flow:
  * 1. Open browser to the matching regional MiniMax subscription page
@@ -15,19 +15,19 @@
 
 import { createApiKeyLogin } from "../api-key-login";
 
-const AUTH_URL_INTL = "https://platform.minimax.io/subscribe/token-plan";
-const AUTH_URL_CN = "https://platform.minimaxi.com/subscribe/token-plan";
+const AUTH_URL_INTL = "https://platform.minimax.io/console/plan";
+const AUTH_URL_CN = "https://platform.minimaxi.com/console/plan";
 const API_BASE_URL_INTL = "https://api.minimax.io/v1";
 const API_BASE_URL_CN = "https://api.minimaxi.com/v1";
-const VALIDATION_MODEL = "MiniMax-M3";
+const VALIDATION_MODEL = "MiniMax-M3.1-Flash";
 
 function createMiniMaxLogin(authUrl: string, baseUrl: string, provider: string) {
 	return createApiKeyLogin({
-		providerLabel: "MiniMax Token Plan",
+		providerLabel: provider,
 		authUrl,
-		instructions: "Subscribe to Token Plan and copy your API key",
-		promptMessage: "Paste your MiniMax Token Plan API key",
-		placeholder: "sk-...",
+		instructions: "Subscribe to MiniMax M Plan and copy your M Plan API key",
+		promptMessage: "Paste your MiniMax M Plan API key",
+		placeholder: "sk-cp-...",
 		validation: {
 			kind: "chat-completions",
 			provider,
@@ -38,16 +38,20 @@ function createMiniMaxLogin(authUrl: string, baseUrl: string, provider: string) 
 }
 
 /**
- * Login to MiniMax Token Plan (international).
+ * Login to Minimax Code (minimax m plan).
  *
  * Opens browser to subscription page, prompts user to paste their API key.
  * Returns the API key directly (not OAuthCredentials - this isn't OAuth).
  */
-export const loginMiniMaxCode = createMiniMaxLogin(AUTH_URL_INTL, API_BASE_URL_INTL, "MiniMax Token Plan");
+export const loginMiniMaxCode = createMiniMaxLogin(AUTH_URL_INTL, API_BASE_URL_INTL, "Minimax Code (minimax m plan)");
 
 /**
- * Login to MiniMax Token Plan (China).
+ * Login to Minimax Code (minimax m plan) (China).
  *
  * Same flow as international but uses China endpoint.
  */
-export const loginMiniMaxCodeCn = createMiniMaxLogin(AUTH_URL_CN, API_BASE_URL_CN, "MiniMax Token Plan (China)");
+export const loginMiniMaxCodeCn = createMiniMaxLogin(
+	AUTH_URL_CN,
+	API_BASE_URL_CN,
+	"Minimax Code (minimax m plan) (China)",
+);
