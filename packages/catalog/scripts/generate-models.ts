@@ -57,6 +57,7 @@ import {
 	CLOUDFLARE_FALLBACK_MODEL,
 	linkOpenAIPromotionTargets,
 } from "./generated-policies";
+import { selectGeneratedSnapshot } from "./scoped-snapshot";
 
 const packageRoot = path.join(import.meta.dir, "..");
 // A provider-only refresh keeps unrelated catalog snapshots and credentials untouched.
@@ -67,8 +68,15 @@ const selectedProviders = new Set(
 		.map(id => id.trim())
 		.filter(Boolean),
 );
+const modelSelection = process.argv.find(arg => arg.startsWith("--models="))?.slice("--models=".length);
+const selectedModels = new Set(
+	modelSelection
+		?.split(",")
+		.map(id => id.trim())
+		.filter(Boolean),
+);
 // Fallback and policy passes mutate model objects borrowed from the previous snapshot.
-const preservedSnapshot = selectedProviders.size > 0 ? structuredClone(prevModelsJson) : undefined;
+const preservedSnapshot = structuredClone(prevModelsJson) as unknown as Record<string, Record<string, ModelSpec>>;
 
 /**
  * Local/self-hosted providers (Ollama, vLLM, LM Studio, LiteLLM). Their model
@@ -466,6 +474,10 @@ async function fetchCodexDiscoveryModels(): Promise<ModelSpec<"openai-codex-resp
 }
 
 async function generateModels() {
+	if (modelSelection !== undefined) {
+		if (selectedModels.size === 0) throw new Error("--models requires at least one model id");
+		if (selectedProviders.size === 0) throw new Error("--models requires --providers");
+	}
 	if (providerSelection !== undefined) {
 		if (selectedProviders.size === 0) throw new Error("--providers requires at least one provider id");
 		const knownProviders = new Set(MODELS_DEV_PROVIDER_DESCRIPTORS.map(descriptor => descriptor.providerId));
@@ -687,18 +699,7 @@ async function generateModels() {
 		MODELS[key] = sortObj(MODELS[key]);
 	}
 
-	const output =
-		selectedProviders.size === 0
-			? MODELS
-			: {
-					...preservedSnapshot,
-					...Object.fromEntries(
-						[...selectedProviders].map(provider => {
-							if (!MODELS[provider]) throw new Error(`No generated models for ${provider}`);
-							return [provider, MODELS[provider]];
-						}),
-					),
-				};
+	const output = selectGeneratedSnapshot(preservedSnapshot, MODELS, selectedProviders, selectedModels);
 
 	// Generate JSON file
 	await Bun.write(path.join(packageRoot, "src/models.json"), JSON.stringify(output));

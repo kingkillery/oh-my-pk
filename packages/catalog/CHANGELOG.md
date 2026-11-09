@@ -6,6 +6,7 @@
 
 - Refreshed both MiniMax M Plan catalogs, including MiniMax-M3.1-Flash with 1M context, image input, and mandatory low-through-max reasoning. The current stable Flash model is the plan default; its retired preview alias is folded into the stable picker entry.
 - Provider-scoped catalog regeneration via `--providers=minimax-code,minimax-code-cn`, preserving unrelated provider snapshots and avoiding unrelated credential discovery.
+- OpenRouter MiniMax M3.1 Flash discovery and bundled selector support, including its mandatory low-through-max effort range. Catalog generation can refresh exact model IDs with `--providers=openrouter --models=minimax/minimax-m3.1-flash` without rewriting unrelated entries.
 
 ### Fixed
 

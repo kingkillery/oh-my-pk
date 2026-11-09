@@ -195,7 +195,7 @@ function fillThinkingWireDefaults<TApi extends Api>(
 		(spec.api === "anthropic-messages" || spec.api === "bedrock-converse-stream") &&
 		supportsAdaptiveThinkingDisplay(spec.id);
 	const needsRequiresEffort = thinking.requiresEffort === undefined && impliesMandatoryReasoning(parsed, spec.id);
-	const flash = isMiniMaxCodeFlash(spec);
+	const flash = isMiniMaxFlash(spec);
 	const flashDefault =
 		thinking.defaultLevel !== undefined && MINIMAX_FLASH_EFFORTS.includes(thinking.defaultLevel)
 			? thinking.defaultLevel
@@ -242,7 +242,7 @@ export function deriveThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: 
 		mode: inferThinkingControlMode(spec, parsed),
 		efforts,
 	};
-	if (isMiniMaxCodeFlash(spec)) config.defaultLevel = Effort.Max;
+	if (isMiniMaxFlash(spec)) config.defaultLevel = Effort.Max;
 	const effortMap = inferEffortMap(spec, compat, parsed, config.mode, config.efforts);
 	if (effortMap !== undefined) {
 		config.effortMap = effortMap;
@@ -312,7 +312,10 @@ function isOpenAICompatReasoningApi(api: Api): boolean {
 	return api === "openai-completions" || api === "openrouter";
 }
 
-function isMiniMaxCodeFlash<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
+function isMiniMaxFlash<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
+	if (spec.api === "openrouter" && spec.provider === "openrouter") {
+		return spec.id === "minimax/minimax-m3.1-flash";
+	}
 	return (
 		spec.api === "openai-completions" &&
 		(spec.provider === "minimax-code" || spec.provider === "minimax-code-cn") &&
@@ -324,7 +327,7 @@ function getModelDefinedEfforts<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	compat: CompatOf<TApi>,
 ): readonly Effort[] | undefined {
-	if (isMiniMaxCodeFlash(spec)) return MINIMAX_FLASH_EFFORTS;
+	if (isMiniMaxFlash(spec)) return MINIMAX_FLASH_EFFORTS;
 	if (isGlm52ReasoningEffortModelId(spec.id)) {
 		// Z.ai/Zhipu and OpenRouter both surface GLM-5.2's full effort ladder,
 		// including the top `xhigh` (= "max") tier; Umans and Ollama Cloud
@@ -493,7 +496,6 @@ function inferSupportedEfforts<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	compat: CompatOf<TApi>,
 ): readonly Effort[] {
-	if (isMiniMaxCodeFlash(spec)) return MINIMAX_FLASH_EFFORTS;
 	const modelDefinedEfforts = getModelDefinedEfforts(spec, compat);
 	if (modelDefinedEfforts !== undefined) {
 		return modelDefinedEfforts;
