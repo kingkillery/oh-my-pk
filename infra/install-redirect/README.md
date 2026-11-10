@@ -32,6 +32,8 @@ hostname, and serves the documentation home at `/docs`.
 
 - `/` — install landing page with links to `/docs`.
 - `/docs` — documentation home; individual pages remain versioned in `docs/`.
+- `/docs/raw/<path>.md` and `/docs/<path>.md` — canonical Markdown for a page.
+- `/llms.txt`, `/docs/llms.txt` — generated Markdown indexes of curated docs.
 - `/install`, `/install.sh`, `/install.ps1` — installer scripts from the
   repository's `main` branch.
 - `/version` — the private model repository's `VERSION` file.
@@ -42,6 +44,39 @@ hostname, and serves the documentation home at `/docs`.
 The versioned binary routes are immutable and may be used with an explicit
 binary ref. `/version` is the moving pointer used by unpinned explicit binary
 installs.
+
+## Documentation site
+
+The Starlight site is built from `docs/`, not maintained as a second set of
+guides. `docs/README.md` supplies the curated sidebar and both `llms.txt`
+indexes. Each rendered page links to its original Markdown and provides a copy
+button; the raw link also works without JavaScript. Previously addressable,
+tracked Markdown remains available by its existing route, while the curated
+index determines the sidebar, search coverage, and sitemap. Non-curated pages
+carry `noindex`; this is not an access control, and all deployed pages remain
+public.
+
+From `infra/docs-site/`, using Bun 1.3.14, Node 22.12 or newer, and Git:
+
+```sh
+bun install --frozen-lockfile
+bun run build
+bun run test
+bun run check:worker
+```
+
+The build reads the working-tree contents of tracked `docs/` files plus files
+explicitly listed in `docs/README.md`. Build and deploy from a clean, reviewed
+commit: local modifications would otherwise be included. Generated files live
+under `infra/docs-site/dist/` and are not committed. CI runs these checks on
+documentation and Worker changes; it does not deploy automatically.
+
+After the checks pass and deployment is explicitly authorized, run
+`bun run deploy` from `infra/docs-site/` with appropriately scoped Cloudflare
+credentials. This deploys the Worker **and** the built documentation assets
+together; documentation changes are not published until that deployment. The
+Worker runs first so `/`, installers, binaries, and `/collab/*` retain their
+existing behavior across the configured hostnames.
 
 ## Binary repository contract
 
@@ -77,12 +112,10 @@ unpinned-binary pointer.
      environment;
    - a fine-grained, read-only token scoped to the model repository as the
      Worker's `HF_TOKEN` secret.
-3. **Worker secret and deployment** — from `infra/install-redirect/`:
-
-   ```sh
-   wrangler secret put HF_TOKEN
-   wrangler deploy
-   ```
+3. **Worker secret and deployment** — set `HF_TOKEN` with Wrangler using this
+   directory's `wrangler.toml`, then build and validate the documentation assets
+   before deploying as described in [Documentation site](#documentation-site).
+   Deploying this Worker requires the built asset directory.
 
    `wrangler.toml` sets `HF_REPO`, `HF_REPO_TYPE`, the custom-domain routes, and
    the `COLLAB` service binding. Deploy `packages/collab-relay` before relying

@@ -194,7 +194,9 @@ Your rules sit dormant until the model goes off-script. A regex match aborts the
 
 Split a job across workers and get typed results back. `task` fans workers out in parallel; opt editing workers into isolated copy-on-write/worktree environments when you need overlap-safe patches. Each worker runs its own tool surface, and `yield` returns a schema-validated object the parent reads directly.
 
-Launch one directly with `/subagent using <alias-or-model> "<prompt>"`, cap new workers with `/tier light|mid|frontier|auto`, or pass `fork: true` to `task` for an ephemeral child that inherits the parent's system prompt, tools, model, and read-only history snapshot. Fresh contexts remain the default.
+Launch one directly with `/subagent using <alias-or-model> "<prompt>"`, set the capability tier for newly spawned workers with `/tier light|mid|frontier|auto`, or pass `fork: true` to `task` for an ephemeral child that inherits the parent's system prompt, tools, model, and read-only history snapshot. Fresh contexts remain the default.
+
+Use `/simple [on|off|0..32|status]` for a bounded, general-agent-only mode; `/simple 4` allows up to four such workers, and `/simple off` restores full routing. The standard task tool supports batch launches, background results, model/difficulty routing, and isolated workspaces. Its concurrent worker ceiling is `task.maxConcurrency` (default `32`): `oh-my-pk config set task.maxConcurrency 64` raises the ceiling, `oh-my-pk config set task.maxConcurrency 8` lowers it, and `0` removes that ceiling. Other limits, including the Simple-mode ceiling `task.simpleMaxAgents`, can still apply. See the [Subagents guide](docs/subagents.md) and [task reference](docs/tools/task.md).
 
 For whole-repository coverage, the bundled `agentic-mapreduce` skill turns deterministic selectors into bounded map shards and a typed reducer pass with `mr-worker` and `mr-reducer`; `tree-of-thoughts` and `tot-reasoner` cover shards that need adversarial branching.
 
