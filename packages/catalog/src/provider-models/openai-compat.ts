@@ -4329,6 +4329,15 @@ export interface MetaModelManagerConfig {
 	providerId?: Provider;
 }
 
+/** API version header the Muse Code subscription lane sends on every Meta request. */
+const MUSE_CODE_API_VERSION = "1.0.0";
+
+/** Meta `/v1/models` lists image, voice, and segmentation SKUs the coding roster cannot use. */
+const META_NON_CHAT_MODEL_RE = /^(?:muse-image-|muse-voice-|sam-)/i;
+function isMetaNonChatModelId(id: string): boolean {
+	return META_NON_CHAT_MODEL_RE.test(id);
+}
+
 export function metaModelManagerOptions(config?: MetaModelManagerConfig): ModelManagerOptions<"openai-responses"> {
 	const providerId = config?.providerId ?? "meta";
 	if (providerId === "meta-muse-code") {
@@ -4345,6 +4354,8 @@ export function metaModelManagerOptions(config?: MetaModelManagerConfig): ModelM
 	return {
 		...options,
 		dynamicModelsAuthoritative: true,
+		filterModel: (modelId: string, model: ModelsDevModel) =>
+			!isMetaNonChatModelId(modelId) && (options.filterModel?.(modelId, model) ?? true),
 	};
 }
 

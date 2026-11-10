@@ -63,6 +63,8 @@ export const KNOWN_HOSTS = {
 	nvidia: { providers: ["nvidia"], urlMarkers: ["integrate.api.nvidia.com"] },
 	moonshotNative: { providers: ["moonshot", "kimi-code"], urlMarkers: ["api.moonshot.ai", "api.kimi.com"] },
 	opencode: { providers: ["opencode-go", "opencode-zen"], urlMarkers: ["opencode.ai"] },
+	/** Meta Model API (`api.meta.ai/v1`) — first-party Muse Spark/Wonder host, direct or Muse Code subscription keys. */
+	meta: { providers: ["meta", "meta-muse-code"], urlMarkers: ["api.meta.ai"] },
 	chutes: { urlMarkers: ["chutes.ai"] },
 } as const satisfies Record<string, HostClassSpec>;
 

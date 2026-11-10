@@ -127,8 +127,9 @@ describe("Meta subscription OAuth credential exchange", () => {
 		expect(exchange?.init?.headers).toMatchObject({
 			Authorization: `Bearer ${accessToken}`,
 			"Content-Type": "application/json",
+			"x-api-version": "1.0.0",
 		});
-		expect(exchange?.init?.body).toBe("{}");
+		expect(exchange?.init?.body).toBe('{"onboard":true}');
 		const validation = requests.find(request => request.url.endsWith("/v1/models"));
 		expect(validation?.init?.headers).toMatchObject({ Authorization: `Bearer ${subscriptionKey}` });
 		const mirror = JSON.parse(await fs.readFile(authPath, "utf8"));

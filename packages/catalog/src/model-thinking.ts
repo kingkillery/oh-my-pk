@@ -55,6 +55,9 @@ const DEFAULT_REASONING_EFFORTS_WITH_XHIGH: readonly Effort[] = [
 	Effort.High,
 	Effort.XHigh,
 ];
+// Meta documents the `max` effort tier on Muse Spark 1.3 (standard) only;
+// contributor SKUs and older revisions stay on the 5-tier ladder.
+const MUSE_SPARK_13_REASONING_EFFORTS: readonly Effort[] = [...DEFAULT_REASONING_EFFORTS_WITH_XHIGH, Effort.Max];
 const GEMINI_3_PRO_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High];
 const GEMINI_3_FLASH_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
 // `*-flash-tiered` SKUs reject `thinkingLevel: MINIMAL` with 400 INVALID_ARGUMENT.
@@ -328,6 +331,11 @@ function getModelDefinedEfforts<TApi extends Api>(
 	compat: CompatOf<TApi>,
 ): readonly Effort[] | undefined {
 	if (isMiniMaxFlash(spec)) return MINIMAX_FLASH_EFFORTS;
+	// Meta's standard muse-spark-1.3 exposes the `max` effort tier (other
+	// revisions and contributor SKUs keep the default 5-tier ladder).
+	if (bareModelId(spec.id) === "muse-spark-1.3") {
+		return MUSE_SPARK_13_REASONING_EFFORTS;
+	}
 	if (isGlm52ReasoningEffortModelId(spec.id)) {
 		// Z.ai/Zhipu and OpenRouter both surface GLM-5.2's full effort ladder,
 		// including the top `xhigh` (= "max") tier; Umans and Ollama Cloud

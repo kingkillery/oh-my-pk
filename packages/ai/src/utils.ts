@@ -90,8 +90,13 @@ function sanitizeOpenAIResponsesHistoryItemForReplay(
 }
 
 function sanitizeOpenAIResponsesReasoningItemForReplay(item: Record<string, unknown>): OpenAIResponsesReplayItem {
-	const sanitizedItem: Record<string, unknown> = { type: "reasoning" };
-	if (Array.isArray(item.summary)) sanitizedItem.summary = item.summary;
+	// Meta's Responses endpoint requires `summary` on replayed reasoning items
+	// (send an empty array when the model returned none) and rejects items
+	// lacking it with HTTP 400.
+	const sanitizedItem: Record<string, unknown> = {
+		type: "reasoning",
+		summary: Array.isArray(item.summary) ? item.summary : [],
+	};
 	if (Array.isArray(item.content)) sanitizedItem.content = item.content;
 	if (typeof item.encrypted_content === "string" || item.encrypted_content === null) {
 		sanitizedItem.encrypted_content = item.encrypted_content;

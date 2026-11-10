@@ -403,7 +403,10 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		alwaysSendMaxTokens: isKimiModel,
 		disableReasoningOnForcedToolChoice: isKimiModel || isAnthropicModel,
 		disableReasoningOnToolChoice: isDeepseekFamily && Boolean(spec.reasoning) && !isOpenRouter,
-		supportsToolChoice: !isDirectDeepseekReasoning,
+		// api.meta.ai/v1 accepts only tool_choice "auto"; "none", "required" and
+		// named choices are rejected with 400, so requests omit the field
+		// (verified on muse-spark-1.3 against both direct and Muse Code keys).
+		supportsToolChoice: !(isDirectDeepseekReasoning || modelMatchesHost(hostModel, "meta")),
 		supportsForcedToolChoice: true,
 		supportsNamedToolChoice: provider !== "llama.cpp",
 		// gpt-oss was trained on Harmony, which has no parallel-call wrapper:
@@ -602,7 +605,7 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 		filterReasoningHistory: spec.provider === "xai-oauth" || (isOpenRouter && isAnthropicModel),
 		disableReasoningOnForcedToolChoice: isKimiModel,
 		disableReasoningOnToolChoice: isDeepseekFamily && reasoningCapable && !isOpenRouter,
-		supportsToolChoice: true,
+		supportsToolChoice: !modelMatchesHost({ provider: spec.provider, baseUrl }, "meta"),
 		supportsForcedToolChoice: true,
 		supportsNamedToolChoice: true,
 		reasoningContentField: "reasoning_content",

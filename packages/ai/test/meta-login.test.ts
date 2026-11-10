@@ -17,6 +17,7 @@ describe("Meta AI login", () => {
 			expect(init?.method).toBe("GET");
 			expect(init?.headers).toEqual({
 				Authorization: "Bearer LLM|607358788850350|nx9abc",
+				"x-api-version": "1.0.0",
 			});
 			return new Response(JSON.stringify({ object: "list", data: [{ id: "muse-spark-1.2" }] }), {
 				status: 200,

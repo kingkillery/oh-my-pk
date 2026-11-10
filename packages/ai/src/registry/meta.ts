@@ -11,6 +11,8 @@ import type { ProviderDefinition } from "./types";
 const META_MODELS_URL = "https://api.meta.ai/v1/models";
 const META_DEVICE_CLIENT_ID = "1031625952748946";
 const MUSE_KEY_VALIDATION_TIMEOUT_MS = 15_000;
+/** Subscription lane API version header sent on every Meta auth and model request. */
+const MUSE_CODE_API_VERSION = "1.0.0";
 
 /**
  * Local Muse CLI auth.json locations, highest priority first. Import reads them
@@ -87,12 +89,11 @@ const defaultApiKeyLogin = createApiKeyLogin({
 	providerLabel: "Meta AI",
 	authUrl: "https://ai.developer.meta.com/docs/muse-code/auth",
 	instructions: "Create or copy your API key from the Model API dashboard (API keys → Create API key)",
-	promptMessage: "Paste your Meta AI API key",
-	placeholder: "LLM|...",
 	validation: {
 		kind: "models-endpoint",
 		provider: "Meta AI",
 		modelsUrl: META_MODELS_URL,
+		headers: { "x-api-version": MUSE_CODE_API_VERSION },
 	},
 });
 
@@ -113,7 +114,7 @@ async function validateMuseKey(apiKey: string, callbacks: OAuthLoginCallbacks): 
 		: AbortSignal.timeout(MUSE_KEY_VALIDATION_TIMEOUT_MS);
 	const response = await fetchImpl(META_MODELS_URL, {
 		method: "GET",
-		headers: { Authorization: `Bearer ${apiKey}` },
+		headers: { Authorization: `Bearer ${apiKey}`, "x-api-version": MUSE_CODE_API_VERSION },
 		signal,
 	});
 	if (response.ok) return;
@@ -193,6 +194,7 @@ export async function loginMetaDeviceCode(callbacks: OAuthLoginCallbacks): Promi
 		headers: {
 			"Content-Type": "application/x-www-form-urlencoded",
 			Accept: "application/json",
+			"x-api-version": MUSE_CODE_API_VERSION,
 		},
 		body: new URLSearchParams({
 			client_id: META_DEVICE_CLIENT_ID,
@@ -232,6 +234,7 @@ export async function loginMetaDeviceCode(callbacks: OAuthLoginCallbacks): Promi
 				headers: {
 					"Content-Type": "application/x-www-form-urlencoded",
 					Accept: "application/json",
+					"x-api-version": MUSE_CODE_API_VERSION,
 				},
 				body: new URLSearchParams({
 					client_id: META_DEVICE_CLIENT_ID,
@@ -267,8 +270,11 @@ export async function loginMetaDeviceCode(callbacks: OAuthLoginCallbacks): Promi
 			Authorization: `Bearer ${accessToken}`,
 			"Content-Type": "application/json",
 			Accept: "application/json",
+			"x-api-version": MUSE_CODE_API_VERSION,
 		},
-		body: JSON.stringify({}),
+		// `onboard` enrolls a first-time sign-in into the Muse Code subscription
+		// lane; accounts already enrolled ignore it.
+		body: JSON.stringify({ onboard: true }),
 	});
 	if (!keyRes.ok) {
 		throw new Error(`Meta Muse Code credential exchange failed (${keyRes.status}). Sign-in was not saved.`);

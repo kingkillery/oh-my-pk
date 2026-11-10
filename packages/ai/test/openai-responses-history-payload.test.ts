@@ -552,7 +552,7 @@ describe("OpenAI responses history payload", () => {
 			input?: unknown[];
 		};
 		expect(payload.input).toEqual([
-			{ type: "reasoning", encrypted_content: "enc_123" },
+			{ type: "reasoning", summary: [], encrypted_content: "enc_123" },
 			...snapshotHistoryItems,
 			{ role: "user", content: [{ type: "input_text", text: "follow-up user" }] },
 		]);
