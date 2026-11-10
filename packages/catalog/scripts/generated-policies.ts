@@ -19,6 +19,7 @@ import { isMimoModelIdOrName } from "../src/identity/family";
 import { getLongestModelLikeIdSegment } from "../src/identity/id";
 import { buildModelReferenceIndex, resolveModelReference } from "../src/identity/reference";
 import { resolveModelThinking } from "../src/model-thinking";
+import { applyMiniMaxCodeModelPolicy } from "../src/provider-models/minimax-code";
 import {
 	ALIBABA_CODING_PLAN_STATIC_MODELS,
 	ALIBABA_TOKEN_PLAN_STATIC_MODELS,
@@ -246,19 +247,7 @@ function applyGeneratedModelPolicy(model: ModelSpec<Api>): void {
 		model.contextWindow = 1_000_000;
 	}
 
-	if (
-		model.api === "openai-completions" &&
-		(model.provider === "minimax-code" || model.provider === "minimax-code-cn")
-	) {
-		model.compat = {
-			...(model.compat ?? {}),
-			supportsStore: false,
-			supportsDeveloperRole: false,
-			supportsReasoningEffort: false,
-			reasoningContentField: "reasoning_content",
-		};
-		delete model.compat.thinkingFormat;
-	}
+	applyMiniMaxCodeModelPolicy(model);
 	if (model.api === "openai-completions" && model.provider === "opencode-go" && isMimoModelIdOrName(model.id)) {
 		model.compat = {
 			...(model.compat ?? {}),

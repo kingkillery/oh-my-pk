@@ -690,6 +690,18 @@ export default {
 			return Response.redirect(url, 308);
 		}
 		if (pathname.startsWith("/collab/")) return proxyCollabClient(request, env);
+		if (env.ASSETS && (pathname === "/llms.txt" || pathname === "/docs" || pathname.startsWith("/docs/"))) {
+			const isMarkdown = pathname.startsWith("/docs/raw/") || pathname.toLowerCase().endsWith(".md");
+			if (isMarkdown && !pathname.startsWith("/docs/raw/")) {
+				url.pathname = `/docs/raw/${pathname.slice("/docs/".length)}`;
+			}
+			const response = await env.ASSETS.fetch(new Request(url, request));
+			if (!response.ok || (!isMarkdown && pathname !== "/llms.txt" && pathname !== "/docs/llms.txt")) return response;
+			const headers = new Headers(response.headers);
+			headers.set("Content-Type", isMarkdown ? "text/markdown; charset=utf-8" : "text/plain; charset=utf-8");
+			headers.set("X-Content-Type-Options", "nosniff");
+			return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+		}
 		if (pathname === "/llms.txt") return textResponse(llmsIndex(), "text/markdown; charset=utf-8");
 		if (pathname.startsWith("/docs/raw/")) {
 			const rawPath = pathname.slice("/docs/raw/".length);

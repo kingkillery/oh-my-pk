@@ -86,6 +86,16 @@ async function captureDisableReasoningPayload(model: Model<"openai-completions">
 }
 
 describe("OpenAI completions disableReasoning and thinking dialects", () => {
+	for (const provider of ["minimax-code", "minimax-code-cn"] as const) {
+		it(`keeps ${provider} Flash reasoning enabled at low effort when thinking is turned off`, async () => {
+			const model = getBundledModel(provider, "MiniMax-M3.1-Flash") as Model<"openai-completions">;
+			const payload = await captureDisableReasoningPayload(model);
+			expect(payload.model).toBe("MiniMax-M3.1-Flash");
+			expect(payload.reasoning_effort).toBe("low");
+			expect(payload.thinking).toBeUndefined();
+		});
+	}
+
 	it("sends the lowest supported reasoning effort for generic effort-mode models", async () => {
 		const payload = await captureDisableReasoningPayload(createReasoningEffortModel());
 

@@ -1,4 +1,4 @@
-export { isRecord } from "@pk-nerdsaver-ai/pi-utils";
+export { isRecord } from "@pk-nerdsaver-ai/pi-utils/type-guards";
 
 export function toNumber(value: unknown): number | undefined {
 	if (typeof value === "number" && Number.isFinite(value)) {

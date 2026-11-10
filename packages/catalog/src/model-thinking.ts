@@ -63,6 +63,7 @@ const GPT_5_2_PLUS_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effo
 const GPT_5_1_CODEX_MINI_EFFORTS: readonly Effort[] = [Effort.Medium, Effort.High];
 const LOW_MEDIUM_HIGH_REASONING_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High];
 const GLM_52_HIGH_MAX_REASONING_EFFORTS: readonly Effort[] = [Effort.High, Effort.XHigh];
+const MINIMAX_FLASH_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max];
 
 const FUGU_REASONING_EFFORTS: readonly Effort[] = [Effort.High, Effort.XHigh];
 const FUGU_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
@@ -194,7 +195,15 @@ function fillThinkingWireDefaults<TApi extends Api>(
 		(spec.api === "anthropic-messages" || spec.api === "bedrock-converse-stream") &&
 		supportsAdaptiveThinkingDisplay(spec.id);
 	const needsRequiresEffort = thinking.requiresEffort === undefined && impliesMandatoryReasoning(parsed, spec.id);
-	if (!effortsChanged && !shouldReplaceEffortMap && !needsDisplay && !needsRequiresEffort) {
+	const flash = isMiniMaxFlash(spec);
+	const flashDefault =
+		thinking.defaultLevel !== undefined && MINIMAX_FLASH_EFFORTS.includes(thinking.defaultLevel)
+			? thinking.defaultLevel
+			: Effort.Max;
+	const needsFlashDefaults =
+		flash &&
+		(thinking.mode !== "effort" || thinking.requiresEffort !== true || thinking.defaultLevel !== flashDefault);
+	if (!effortsChanged && !shouldReplaceEffortMap && !needsDisplay && !needsRequiresEffort && !needsFlashDefaults) {
 		return thinking;
 	}
 	const filled: ThinkingConfig = { ...thinking };
@@ -214,6 +223,11 @@ function fillThinkingWireDefaults<TApi extends Api>(
 	if (needsRequiresEffort) {
 		filled.requiresEffort = true;
 	}
+	if (flash) {
+		filled.mode = "effort";
+		filled.requiresEffort = true;
+		filled.defaultLevel = flashDefault;
+	}
 	return filled;
 }
 
@@ -228,6 +242,7 @@ export function deriveThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: 
 		mode: inferThinkingControlMode(spec, parsed),
 		efforts,
 	};
+	if (isMiniMaxFlash(spec)) config.defaultLevel = Effort.Max;
 	const effortMap = inferEffortMap(spec, compat, parsed, config.mode, config.efforts);
 	if (effortMap !== undefined) {
 		config.effortMap = effortMap;
@@ -297,10 +312,22 @@ function isOpenAICompatReasoningApi(api: Api): boolean {
 	return api === "openai-completions" || api === "openrouter";
 }
 
+function isMiniMaxFlash<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
+	if (spec.api === "openrouter" && spec.provider === "openrouter") {
+		return spec.id === "minimax/minimax-m3.1-flash";
+	}
+	return (
+		spec.api === "openai-completions" &&
+		(spec.provider === "minimax-code" || spec.provider === "minimax-code-cn") &&
+		/^MiniMax-M3\.1-Flash(?:-Preview)?$/i.test(spec.id)
+	);
+}
+
 function getModelDefinedEfforts<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	compat: CompatOf<TApi>,
 ): readonly Effort[] | undefined {
+	if (isMiniMaxFlash(spec)) return MINIMAX_FLASH_EFFORTS;
 	if (isGlm52ReasoningEffortModelId(spec.id)) {
 		// Z.ai/Zhipu and OpenRouter both surface GLM-5.2's full effort ladder,
 		// including the top `xhigh` (= "max") tier; Umans and Ollama Cloud
@@ -523,6 +550,7 @@ function impliesMandatoryReasoning(parsed: ParsedModel, modelId: string): boolea
 		if (parsed.kind === "pro" && semverGte(parsed.version, "2.5")) return true;
 	}
 	if (isMinimaxM2FamilyModelId(modelId)) return true;
+	if (/^MiniMax-M3\.1-Flash(?:-Preview)?$/i.test(bareModelId(modelId))) return true;
 	if (OPENAI_O_SERIES_RE.test(bareModelId(modelId))) return true;
 	return findThinkingVariantToken(modelId) !== undefined;
 }

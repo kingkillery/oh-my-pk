@@ -38,6 +38,8 @@
 	},
 	"dependencies": {
 		"@bufbuild/protobuf": "catalog:",
+		"@modelcontextprotocol/sdk": "1.32.2",
+		"@muse-code/sdk": "1.4.14",
 		"@pk-nerdsaver-ai/pi-catalog": "catalog:",
 		"@pk-nerdsaver-ai/pi-utils": "catalog:",
 		"@pk-nerdsaver-ai/pi-wire": "catalog:",

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Refreshed both MiniMax M Plan catalogs, including MiniMax-M3.1-Flash with 1M context, image input, and mandatory low-through-max reasoning. The current stable Flash model is the plan default; its retired preview alias is folded into the stable picker entry.
+- Provider-scoped catalog regeneration via `--providers=minimax-code,minimax-code-cn`, preserving unrelated provider snapshots and avoiding unrelated credential discovery.
+- OpenRouter MiniMax M3.1 Flash discovery and bundled selector support, including its mandatory low-through-max effort range. Catalog generation can refresh exact model IDs with `--providers=openrouter --models=minimax/minimax-m3.1-flash` without rewriting unrelated entries.
+
+### Fixed
+
+- Meta Muse Code discovery now uses the subscription-specific `META_MUSE_CODE_API_KEY` environment override instead of sharing pay-as-you-go Meta API keys.
+- Meta Muse Code model discovery no longer queries Meta's direct API, which refuses subscription keys. The bundled Muse catalog is the model list for that provider.
+
 ## [16.4.31] - 2026-10-22
 
 ### Fixed

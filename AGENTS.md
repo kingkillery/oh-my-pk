@@ -14,6 +14,16 @@
 - Fresh agents MUST inspect existing sessions first, offer connection when compatible, and provision only when requested.
 - Treat runtime, served model, bridge, provider registration, and harness generation as separate evidence gates.
 
+## When a single-agent loop is desired
+
+Apply this guidance when the user requests a single-agent loop or explicitly selects a solo-first workflow; it is not a blanket change to OMPK's defaults.
+
+- Reuse OMPK's existing Simple Mode (`task.simpleMode`, `/simple`); do not build another single-agent mode, orchestrator, or supervisor.
+- Keep reasoning, planning, implementation, and final accountability with the primary agent. Load specialized knowledge through skills and tools rather than spawning an agent merely to hold instructions.
+- Preserve optional multi-agent capability: bounded general helpers in Simple Mode, and full specialist/parallel workflows when deliberately selected and authorized. Do not remove full routing or cancel running agents as part of simplification.
+- Integrate `work_context` as a scoped, read-only tool used by the primary agent—not another agent or orchestration layer. Verify its native availability rather than assuming a candidate implementation is installed.
+- Preserve lifecycle authority, permissions, isolation, auditing, and evidence-backed completion. Confirm installed behavior and effective settings; evaluate solo versus assisted workflows before proposing default changes.
+
 ## PR 45 convergence policy
 
 - Treat `main` as the production baseline. PR 45 and `codex/pr45-minimal-reconciliation` are donor branches, not merge bases.

@@ -94,6 +94,7 @@ import * as bundledPiAiProvidersGoogleVertex from "@pk-nerdsaver-ai/pi-ai/provid
 import * as bundledPiAiProvidersGrammar from "@pk-nerdsaver-ai/pi-ai/providers/grammar";
 import * as bundledPiAiProvidersKimi from "@pk-nerdsaver-ai/pi-ai/providers/kimi";
 import * as bundledPiAiProvidersMock from "@pk-nerdsaver-ai/pi-ai/providers/mock";
+import * as bundledPiAiProvidersMuseCode from "@pk-nerdsaver-ai/pi-ai/providers/muse-code";
 import * as bundledPiAiProvidersOllama from "@pk-nerdsaver-ai/pi-ai/providers/ollama";
 import * as bundledPiAiProvidersOpenaiAnthropicShim from "@pk-nerdsaver-ai/pi-ai/providers/openai-anthropic-shim";
 import * as bundledPiAiProvidersOpenaiChatServer from "@pk-nerdsaver-ai/pi-ai/providers/openai-chat-server";
@@ -1282,6 +1283,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	>,
 	"@pk-nerdsaver-ai/pi-ai/providers/kimi": bundledPiAiProvidersKimi as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-ai/providers/mock": bundledPiAiProvidersMock as unknown as Readonly<Record<string, unknown>>,
+	"@pk-nerdsaver-ai/pi-ai/providers/muse-code": bundledPiAiProvidersMuseCode as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@pk-nerdsaver-ai/pi-ai/providers/ollama": bundledPiAiProvidersOllama as unknown as Readonly<
 		Record<string, unknown>
 	>,

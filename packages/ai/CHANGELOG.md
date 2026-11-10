@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed MiniMax Token Plan to "Minimax Code (minimax m plan)" while preserving regional provider IDs and saved credentials. Login now links to the current M Plan console and validates with MiniMax-M3.1-Flash.
+
+### Fixed
+
+- The `meta-muse-code` subscription provider now signs in directly to Muse Code and uses its own `META_MUSE_CODE_API_KEY` override or imported Muse CLI credential, rather than silently using pay-as-you-go Meta environment keys. The general `meta` provider keeps its existing authentication choices.
+- Selecting `meta-muse-code` now runs the installed official Muse Code CLI session instead of sending the subscription key to Meta's pay-as-you-go API. OMPK tools stay on the existing approval and sandbox bridge; Muse's own shell and write tools are disabled.
+- Muse Code sign-in no longer fails when Meta refuses the subscription key outside its own client. That `403` attestation denial proves the key is a live subscription credential, so it is accepted instead of aborting the sign-in; an invalid key still fails.
+- A closed Muse Code session is no longer reused for the next turn. An aborted turn closed the session but left it in the session map, so the following turn was sent to a dead host.
+
 ## [16.4.31] - 2026-10-22
 
 ### Fixed
