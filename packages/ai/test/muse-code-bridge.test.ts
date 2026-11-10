@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { resolveMuseBinary, startOmpkMcpBridge } from "../src/providers/muse-code";
+import { isMuseSessionReusable, resolveMuseBinary, startOmpkMcpBridge } from "../src/providers/muse-code";
 import type { CursorExecHandlers, Tool, ToolResultMessage } from "../src/types";
 
 const echoTool = {
@@ -56,5 +56,24 @@ describe("Muse Code CLI bridge", () => {
 		} finally {
 			await bridge.close();
 		}
+	});
+
+});
+
+describe("Muse Code session reuse", () => {
+	test("reuses a live session for the same model, workspace, and tools", () => {
+		expect(isMuseSessionReusable(false, true, true, true)).toBe(true);
+	});
+
+	test("never reuses a closed session", () => {
+		// After an abort the session stays in the session map; reusing it would
+		// send the next turn to a dead host.
+		expect(isMuseSessionReusable(true, true, true, true)).toBe(false);
+	});
+
+	test("does not reuse a session across a different model, workspace, or tool set", () => {
+		expect(isMuseSessionReusable(false, false, true, true)).toBe(false);
+		expect(isMuseSessionReusable(false, true, false, true)).toBe(false);
+		expect(isMuseSessionReusable(false, true, true, false)).toBe(false);
 	});
 });

@@ -1041,6 +1041,45 @@ export const SETTINGS_SCHEMA = {
 	// dynamic routing on, the compaction classifier picks a tier from this pool
 	// instead of the binary compactModel/frontier choice.
 	"fusion.modelPool": { type: "array", default: [] as string[] },
+	// When on, pool-mode routing asks the decision model (TypeSafe /systemone)
+	// to choose a tier instead of the chat classifier. The judgment state is the
+	// compaction summary plus the trailing window of the conversation. A missing
+	// endpoint, a failed call, or a low-confidence answer falls back to the
+	// classifier, so this never disables routing on its own.
+	"fusion.decisionRouting": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: "Fusion",
+			label: "Decision-Model Routing",
+			description:
+				"Route the fusion pool through the decision model: it judges the compaction summary plus the trailing conversation window and picks a tier. Falls back to the classifier when the decision model is unavailable or unsure.",
+			condition: "fusionEnabled",
+		},
+	},
+
+	// How much of the pre-compaction conversation, measured from the end, joins
+	// the summary as the decision model's state. 0 = summary only.
+	"fusion.decisionWindowPercent": {
+		type: "number",
+		default: 25,
+		ui: {
+			tab: "interaction",
+			group: "Fusion",
+			label: "Decision State Window",
+			description:
+				"Percent of the conversation, taken from the end, sent with the compaction summary as the decision model's routing state (0 = summary only).",
+			options: [
+				{ value: "0", label: "Summary only" },
+				{ value: "10", label: "Last 10%" },
+				{ value: "25", label: "Last 25%" },
+				{ value: "50", label: "Last 50%" },
+			],
+			condition: "fusionEnabled",
+		},
+	},
+
 
 	"fusion.sidekickRequestBudget": {
 		type: "number",

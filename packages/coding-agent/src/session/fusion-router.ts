@@ -21,6 +21,8 @@ import { resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import routeClassifierPrompt from "../prompts/fusion/route-classifier.md" with { type: "text" };
 import routeClassifierPoolPrompt from "../prompts/fusion/route-classifier-pool.md" with { type: "text" };
+import decisionRoutePrompt from "../prompts/fusion/decision-route.md" with { type: "text" };
+import { systemOne, type TypeSafeAnswer, type TypeSafeChoiceQuestion } from "../lib/typesafe-http";
 
 export type FusionRoute = "cheap" | "frontier" | number;
 
@@ -234,6 +236,125 @@ export async function classifyFusionRoute(
 		return route;
 	} catch (err) {
 		logger.warn("fusion-router: classifier failed", { error: err instanceof Error ? err.message : String(err) });
+		return null;
+	}
+}
+
+/** Below this the decision model is treated as unsure and the classifier runs instead. */
+export const DECISION_ROUTE_MIN_CONFIDENCE = 0.6;
+
+/** Cap on the decision-model state so a long window cannot dominate the request. */
+const DECISION_ROUTE_STATE_LIMIT = 12_000;
+
+const DECISION_ROUTE_INSTRUCTIONS = prompt.render(decisionRoutePrompt);
+
+export interface DecisionRouteMessage {
+	role?: string;
+	content?: unknown;
+}
+
+/** Text of one message, ignoring non-text blocks. Exported for tests. */
+export function decisionRouteMessageText(message: DecisionRouteMessage): string {
+	const content = message.content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const part of content) {
+		if (!part || typeof part !== "object") continue;
+		if ("text" in part && typeof part.text === "string") parts.push(part.text);
+	}
+	return parts.join("\n");
+}
+
+/**
+ * State for a decision-model route judgment: the compaction summary, then the
+ * trailing `windowPercent` of the conversation the summary does not yet cover.
+ * Pure — exported for tests.
+ */
+export function buildDecisionRouteState(
+	summary: string,
+	messages: readonly DecisionRouteMessage[],
+	windowPercent: number,
+): string {
+	const rendered = messages
+		.map(message => {
+			const text = decisionRouteMessageText(message).trim();
+			if (!text) return "";
+			const role = typeof message.role === "string" ? message.role : "message";
+			return `${role}: ${text}`;
+		})
+		.filter(line => line.length > 0);
+	const percent = Number.isFinite(windowPercent) ? Math.min(100, Math.max(0, windowPercent)) : 0;
+	const windowCount = percent === 0 || rendered.length === 0 ? 0 : Math.max(1, Math.ceil((rendered.length * percent) / 100));
+	const window = windowCount === 0 ? "" : rendered.slice(-windowCount).join("\n\n");
+	const state = window ? `Summary:\n${summary.trim()}\n\nRecent conversation:\n${window}` : `Summary:\n${summary.trim()}`;
+	return state.length <= DECISION_ROUTE_STATE_LIMIT ? state : state.slice(-DECISION_ROUTE_STATE_LIMIT);
+}
+
+/** Choice question over the pool tiers. Exported for tests. */
+export function decisionRouteQuestion(pool: readonly FusionPoolTier[]): TypeSafeChoiceQuestion {
+	const criteria: Record<string, string> = {};
+	for (const { tier, selector } of pool) {
+		criteria[String(tier)] = `Tier ${tier} (${selector}): ${tier} = most powerful, higher numbers are cheaper and less capable.`;
+	}
+	return { type: "choice", instructions: DECISION_ROUTE_INSTRUCTIONS, criteria };
+}
+
+/**
+ * Map a decision-model answer to a pool tier. Anything other than a confident
+ * choice of a listed tier is `null`, which tells the caller to fall back to the
+ * classifier. Pure — exported for tests.
+ */
+export function parseDecisionRouteAnswer(
+	answer: TypeSafeAnswer | undefined,
+	pool: readonly FusionPoolTier[],
+	minConfidence = DECISION_ROUTE_MIN_CONFIDENCE,
+): number | null {
+	if (!answer || answer.type !== "choice") return null;
+	if (answer.confidence < minConfidence) return null;
+	const tier = Number.parseInt(answer.choice, 10);
+	if (!pool.some(entry => entry.tier === tier)) return null;
+	return tier;
+}
+
+export interface DecisionRouteClient {
+	judge(state: string, question: TypeSafeChoiceQuestion, signal?: AbortSignal): Promise<TypeSafeAnswer | undefined>;
+}
+
+/** The live decision model. Separated so tests can substitute a stub. */
+export function liveDecisionRouteClient(): DecisionRouteClient {
+	return {
+		async judge(state, question, signal) {
+			const response = await systemOne(state, { route: question }, { signal });
+			return response.answers.route;
+		},
+	};
+}
+
+/**
+ * Pick a fusion-pool tier through the decision model. Returns `null` when the
+ * decision model is unavailable, fails, or is not confident enough — callers
+ * then run the chat classifier, so a missing endpoint never disables routing.
+ */
+export async function classifyFusionRouteViaDecision(
+	summary: string,
+	messages: readonly DecisionRouteMessage[],
+	pool: readonly FusionPoolTier[],
+	windowPercent: number,
+	options: { client?: DecisionRouteClient; signal?: AbortSignal } = {},
+): Promise<number | null> {
+	if (pool.length < 2 || !summary.trim()) return null;
+	const client = options.client ?? liveDecisionRouteClient();
+	try {
+		const state = buildDecisionRouteState(summary, messages, windowPercent);
+		const answer = await client.judge(state, decisionRouteQuestion(pool), options.signal);
+		const tier = parseDecisionRouteAnswer(answer, pool);
+		if (tier === null) logger.debug("fusion-router: decision model declined to route");
+		return tier;
+	} catch (err) {
+		logger.warn("fusion-router: decision model unavailable", {
+			error: err instanceof Error ? err.message : String(err),
+		});
 		return null;
 	}
 }

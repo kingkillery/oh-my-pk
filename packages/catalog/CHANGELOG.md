@@ -11,6 +11,7 @@
 ### Fixed
 
 - Meta Muse Code discovery now uses the subscription-specific `META_MUSE_CODE_API_KEY` environment override instead of sharing pay-as-you-go Meta API keys.
+- Meta Muse Code model discovery no longer queries Meta's direct API, which refuses subscription keys. The bundled Muse catalog is the model list for that provider.
 
 ## [16.4.31] - 2026-10-22
 

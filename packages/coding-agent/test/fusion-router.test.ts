@@ -1,8 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import type { Model } from "@pk-nerdsaver-ai/pi-ai";
 import {
+	buildDecisionRouteState,
+	classifyFusionRouteViaDecision,
+	decisionRouteQuestion,
 	formatFusionPoolEntries,
 	isFusionAutoDowngradedRoute,
+	parseDecisionRouteAnswer,
 	parseFusionPoolEntries,
 	parseFusionRoute,
 	renderPoolClassifierPrompt,
@@ -10,6 +14,7 @@ import {
 	resolveSidekickRoute,
 	shouldRunFusionCompactionSwitch,
 } from "@pk-nerdsaver-ai/pi-coding-agent/session/fusion-router";
+import type { TypeSafeAnswer } from "@pk-nerdsaver-ai/pi-coding-agent/lib/typesafe-http";
 
 describe("isFusionAutoDowngradedRoute", () => {
 	const frontier = { provider: "test", id: "frontier" } as Model;
@@ -157,5 +162,74 @@ describe("shouldRunFusionCompactionSwitch", () => {
 	it("skips when nothing is configured — opt-in by design", () => {
 		expect(shouldRunFusionCompactionSwitch(baseOpts)).toBe(false);
 		expect(shouldRunFusionCompactionSwitch({ ...baseOpts, dynamicRouting: true })).toBe(false);
+	});
+});
+
+const pool = [
+	{ tier: 1, selector: "frontier/strong" },
+	{ tier: 3, selector: "mid/balanced" },
+	{ tier: 5, selector: "cheap/fast" },
+];
+
+function choice(value: string, confidence: number): TypeSafeAnswer {
+	return { type: "choice", choice: value, probabilities: { [value]: confidence }, confidence };
+}
+
+describe("decision-model fusion routing", () => {
+	const messages = Array.from({ length: 10 }, (_, index) => ({
+		role: index % 2 === 0 ? "user" : "assistant",
+		content: `turn ${index}`,
+	}));
+
+	it("builds state from the summary plus the trailing window of the conversation", () => {
+		const state = buildDecisionRouteState("settled plan", messages, 25);
+		expect(state.startsWith("Summary:\nsettled plan")).toBe(true);
+		expect(state).toContain("turn 8");
+		expect(state).toContain("turn 9");
+		expect(state).not.toContain("turn 6");
+	});
+
+	it("sends the summary alone when the window is zero", () => {
+		expect(buildDecisionRouteState("only summary", messages, 0)).not.toContain("Recent conversation");
+	});
+
+	it("offers exactly the configured pool tiers as choices", () => {
+		expect(Object.keys(decisionRouteQuestion(pool).criteria)).toEqual(["1", "3", "5"]);
+	});
+
+	it("accepts a confident choice of a listed tier", () => {
+		expect(parseDecisionRouteAnswer(choice("3", 0.8), pool)).toBe(3);
+	});
+
+	it("rejects a low-confidence, unlisted, or non-choice answer", () => {
+		expect(parseDecisionRouteAnswer(choice("3", 0.4), pool)).toBeNull();
+		expect(parseDecisionRouteAnswer(choice("2", 0.9), pool)).toBeNull();
+		expect(parseDecisionRouteAnswer({ type: "noul", noul: 1 }, pool)).toBeNull();
+		expect(parseDecisionRouteAnswer(undefined, pool)).toBeNull();
+	});
+
+	it("returns the decision model's tier and never calls it without a pool", async () => {
+		const seen: string[] = [];
+		const client = {
+			judge: async (state: string) => {
+				seen.push(state);
+				return choice("5", 0.9);
+			},
+		};
+		expect(await classifyFusionRouteViaDecision("apply the plan", messages, pool, 25, { client })).toBe(5);
+		expect(seen[0]).toContain("turn 9");
+		expect(
+			await classifyFusionRouteViaDecision("apply the plan", messages, pool.slice(0, 1), 25, { client }),
+		).toBeNull();
+		expect(seen).toHaveLength(1);
+	});
+
+	it("falls back instead of throwing when the decision model fails", async () => {
+		const client = {
+			judge: async () => {
+				throw new Error("endpoint down");
+			},
+		};
+		expect(await classifyFusionRouteViaDecision("summary", messages, pool, 25, { client })).toBeNull();
 	});
 });

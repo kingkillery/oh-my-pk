@@ -367,6 +367,7 @@ import { collectAutonomousTaskHandoffs } from "./fusion-autonomous-jobs";
 import { getAutonomousRootToolBlockReason, isAutonomousRoot, resolveFusionIoMinLines } from "./fusion-io-policy";
 import {
 	classifyFusionRoute,
+	classifyFusionRouteViaDecision,
 	type FusionPoolTier,
 	type FusionRoute,
 	isFusionAutoDowngradedRoute,
@@ -9249,7 +9250,7 @@ export class AgentSession {
 			}
 
 			// Fusion cost mode: ramp the main model down at the manual /compact boundary too.
-			await this.#applyFusionCompactionSwitch(summary);
+			await this.#applyFusionCompactionSwitch(summary, preparation.recentMessages);
 			const compactionResult: CompactionResult = {
 				summary,
 				shortSummary,
@@ -10712,7 +10713,10 @@ export class AgentSession {
 	 * settings), and a no-op when the target is unavailable, unauthed, or already
 	 * active. Mirrors {@link #promoteContextModel}.
 	 */
-	async #applyFusionCompactionSwitch(summary?: string): Promise<void> {
+	async #applyFusionCompactionSwitch(
+		summary?: string,
+		recentMessages: readonly AgentMessage[] = [],
+	): Promise<void> {
 		// Compaction starts a fresh routing epoch; earlier failures no longer count.
 		this.#fusionToolFailureStreak = 0;
 		// Whole body guarded: this runs inside the compaction commit path, so an
@@ -10785,13 +10789,25 @@ export class AgentSession {
 			}
 			const baseModel = this.#fusionBaseModel ?? currentModel;
 
-			const route = await classifyFusionRoute(
-				summary ?? "",
-				this.#modelRegistry,
-				this.settings,
-				this.sessionId,
-				poolMode ? pool : undefined,
-			);
+			const decisionRouting = this.settings.get("fusion.decisionRouting") === true;
+			const decisionRoute =
+				decisionRouting && poolMode
+					? await classifyFusionRouteViaDecision(
+							summary ?? "",
+							recentMessages,
+							pool,
+							this.settings.get("fusion.decisionWindowPercent"),
+						)
+					: null;
+			const route =
+				decisionRoute ??
+				(await classifyFusionRoute(
+					summary ?? "",
+					this.#modelRegistry,
+					this.settings,
+					this.sessionId,
+					poolMode ? pool : undefined,
+				));
 			// Binary mode falls back to the static one-shot ramp-down when the
 			// classifier is unavailable; pool mode is classifier-driven and does not.
 			const effectiveRoute = resolveEffectiveFusionRoute(route, {
@@ -11942,7 +11958,7 @@ export class AgentSession {
 			};
 			// Fusion cost mode: ramp the main model down to the configured cheaper
 			// tier now that the history rewrite has already invalidated the cache.
-			await this.#applyFusionCompactionSwitch(summary);
+			await this.#applyFusionCompactionSwitch(summary, preparation.recentMessages);
 			await this.#emitSessionEvent({ type: "auto_compaction_end", action, result, aborted: false, willRetry });
 
 			// Progress guard: a "successful" pass whose residual context still has no

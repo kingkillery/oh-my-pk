@@ -4330,8 +4330,15 @@ export interface MetaModelManagerConfig {
 }
 
 export function metaModelManagerOptions(config?: MetaModelManagerConfig): ModelManagerOptions<"openai-responses"> {
+	const providerId = config?.providerId ?? "meta";
+	if (providerId === "meta-muse-code") {
+		// Muse Code subscriptions are served by the Muse CLI, and Meta refuses a
+		// subscription key on the direct API, so discovery there always fails.
+		// The bundled catalog is the model list for this provider.
+		return { providerId };
+	}
 	const options = createSimpleOpenAIResponsesOptions(
-		(config?.providerId ?? "meta") as Parameters<typeof getBundledModels>[0],
+		providerId as Parameters<typeof getBundledModels>[0],
 		"https://api.meta.ai/v1",
 		config,
 	);

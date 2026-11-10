@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as AIError from "../error";
 import * as path from "node:path";
 import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import { createApiKeyLogin } from "./api-key-login";
@@ -9,6 +10,7 @@ import type { ProviderDefinition } from "./types";
 
 const META_MODELS_URL = "https://api.meta.ai/v1/models";
 const META_DEVICE_CLIENT_ID = "1031625952748946";
+const MUSE_KEY_VALIDATION_TIMEOUT_MS = 15_000;
 
 /**
  * Local Muse CLI auth.json locations, highest priority first. Import reads them
@@ -94,14 +96,38 @@ const defaultApiKeyLogin = createApiKeyLogin({
 	},
 });
 
-function validateMuseKey(apiKey: string, callbacks: OAuthLoginCallbacks): Promise<void> {
-	return validateApiKeyAgainstModelsEndpoint({
-		provider: "Meta Muse Code",
-		apiKey,
-		modelsUrl: META_MODELS_URL,
-		fetch: callbacks.fetch,
-		signal: callbacks.signal,
+/**
+ * Validate a Muse Code subscription credential.
+ *
+ * Meta restricts subscription keys to its own client: any other caller gets
+ * a 403 `permission_error` / `client_attestation_denied` from
+ * `api.meta.ai` — including this models endpoint. That denial proves the key
+ * is a live subscription key (an invalid key gets 401), so it must not fail
+ * the sign-in. The key still cannot be used for direct API calls; it is used
+ * through the Muse CLI.
+ */
+async function validateMuseKey(apiKey: string, callbacks: OAuthLoginCallbacks): Promise<void> {
+	const fetchImpl = callbacks.fetch ?? fetch;
+	const signal = callbacks.signal
+		? AbortSignal.any([callbacks.signal, AbortSignal.timeout(MUSE_KEY_VALIDATION_TIMEOUT_MS)])
+		: AbortSignal.timeout(MUSE_KEY_VALIDATION_TIMEOUT_MS);
+	const response = await fetchImpl(META_MODELS_URL, {
+		method: "GET",
+		headers: { Authorization: `Bearer ${apiKey}` },
+		signal,
 	});
+	if (response.ok) return;
+	const details = (await response.text().catch(() => "")).trim();
+	if (response.status === 403 && isMuseSubscriptionAttestationDenial(details)) return;
+	const message = details
+		? `Meta Muse Code API key validation failed (${response.status}): ${details}`
+		: `Meta Muse Code API key validation failed (${response.status})`;
+	throw new AIError.ApiKeyRequiredError(message);
+}
+
+/** Meta's refusal of a subscription key used outside the Muse Code client. */
+function isMuseSubscriptionAttestationDenial(details: string): boolean {
+	return details.includes("client_attestation_denied") || details.includes("permission_error");
 }
 
 /**
@@ -121,6 +147,10 @@ async function writeMuseAuthMirror(accessToken: string, apiKey: string): Promise
 			existing.providers && typeof existing.providers === "object"
 				? (existing.providers as Record<string, unknown>)
 				: {};
+		// The Muse CLI treats `mechanism: "oauth"` as "not logged in" unless the
+		// entry also says how the credential was obtained. `obtained_via:
+		// "device_code"` is the field that makes it accept the entry; without it
+		// the CLI ignores `api_key` entirely.
 		const mirror = {
 			...existing,
 			schema_version: 1,

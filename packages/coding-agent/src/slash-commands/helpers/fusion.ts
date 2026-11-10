@@ -54,6 +54,8 @@ export function buildFusionStatusText(runtime: SlashCommandRuntime): string {
 	const enabled = runtime.settings.get("fusion.enabled") === true;
 	const mode = runtime.settings.get("fusion.mode");
 	const dynamicRouting = runtime.settings.get("fusion.dynamicRouting") === true;
+	const decisionRouting = runtime.settings.get("fusion.decisionRouting") === true;
+	const decisionWindow = runtime.settings.get("fusion.decisionWindowPercent");
 	const sidekick = runtime.settings.get("fusion.sidekickModel") || "pi/smol";
 	const strong = runtime.settings.get("fusion.sidekickStrongModel")?.trim();
 	const compact = runtime.settings.get("fusion.compactModel")?.trim();
@@ -99,6 +101,7 @@ export function buildFusionStatusText(runtime: SlashCommandRuntime): string {
 		`  Strong sidekick: ${strong || "(unset)"}`,
 		`  Compact model:   ${compact || "(unset)"}`,
 		`  Dynamic routing: ${dynamicRouting ? "on" : "off"}`,
+		`  Decision routing: ${decisionRouting ? `on (last ${decisionWindow}% + summary)` : "off"}`,
 	];
 	const poolStatus =
 		pool.length >= 2

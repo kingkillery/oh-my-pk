@@ -33,6 +33,8 @@ type ExchangeOptions = {
 	rejectKeys?: string[];
 	tokenBody?: unknown;
 	failExchange?: boolean;
+	/** Meta refuses subscription keys outside the Muse client with a 403 attestation denial. */
+	attestationDenied?: boolean;
 };
 
 function createExchange(options: ExchangeOptions = {}) {
@@ -60,7 +62,14 @@ function createExchange(options: ExchangeOptions = {}) {
 			case "https://api.meta.ai/v1/models": {
 				const bearer = (init?.headers as Record<string, string> | undefined)?.Authorization ?? "";
 				const rejected = options.rejectKeys?.some(key => bearer === `Bearer ${key}`);
-				return Response.json({ data: [] }, { status: rejected ? 401 : (options.validationStatus ?? 200) });
+				if (rejected) return Response.json({ data: [] }, { status: 401 });
+				if (options.attestationDenied) {
+					return new Response(
+						"This API key is billed to a Muse Code subscription. Muse Code subscriptions cover requests from the Muse Code client only. (type=permission_error, param=client_attestation_denied)",
+						{ status: 403 },
+					);
+				}
+				return Response.json({ data: [] }, { status: options.validationStatus ?? 200 });
 			}
 			default:
 				throw new Error(`Unexpected test request: ${url}`);
@@ -124,6 +133,11 @@ describe("Meta subscription OAuth credential exchange", () => {
 		expect(validation?.init?.headers).toMatchObject({ Authorization: `Bearer ${subscriptionKey}` });
 		const mirror = JSON.parse(await fs.readFile(authPath, "utf8"));
 		expect(mirror.providers.meta.api_key).toBe(subscriptionKey);
+		// The Muse CLI accepts `mechanism: "oauth"` only when the entry also
+		// records how the credential was obtained; `obtained_via: "device_code"`
+		// is the field that makes it treat the entry as logged in.
+		expect(mirror.providers.meta.mechanism).toBe("oauth");
+		expect(mirror.providers.meta.obtained_via).toBe("device_code");
 		expect(mirror.providers.meta.access_token).toBe(accessToken);
 		expect(mirror.providers.other).toEqual({ key: "other-provider-key" });
 		expect(mirror.marker).toBe("preserved");
@@ -172,6 +186,13 @@ describe("Meta subscription OAuth credential exchange", () => {
 		const { callbacks } = createExchange({ validationStatus: 401 });
 		await expect(loginMetaDeviceCode(callbacks)).rejects.toThrow("Meta Muse Code API key validation failed (401)");
 		expect(await fs.readFile(authPath, "utf8")).toBe(before);
+	});
+
+	test("accepts a subscription key that Meta refuses outside the Muse client", async () => {
+		const { callbacks } = createExchange({ attestationDenied: true });
+		expect(await loginMetaDeviceCode(callbacks)).toBe(subscriptionKey);
+		const mirror = JSON.parse(await fs.readFile(authPath, "utf8"));
+		expect(mirror.providers.meta.api_key).toBe(subscriptionKey);
 	});
 
 	test("does not turn subscription login into pay-as-you-go access", async () => {

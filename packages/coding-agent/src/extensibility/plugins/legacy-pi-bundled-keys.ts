@@ -71,6 +71,7 @@ export const BUNDLED_PI_REGISTRY_KEYS: ReadonlySet<string> = new Set([
 	"@pk-nerdsaver-ai/pi-ai/providers/grammar",
 	"@pk-nerdsaver-ai/pi-ai/providers/kimi",
 	"@pk-nerdsaver-ai/pi-ai/providers/mock",
+	"@pk-nerdsaver-ai/pi-ai/providers/muse-code",
 	"@pk-nerdsaver-ai/pi-ai/providers/ollama",
 	"@pk-nerdsaver-ai/pi-ai/providers/openai-anthropic-shim",
 	"@pk-nerdsaver-ai/pi-ai/providers/openai-chat-server-schema",

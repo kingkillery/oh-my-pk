@@ -58,6 +58,24 @@ interface StreamBlocks {
 const MUSE_MCP_SERVER_NAME = "ompk_tools";
 const MUSE_MCP_PROVIDER = "meta-muse-code";
 const MUSE_SESSION_KEY = "muse-code-cli-session";
+/** Muse settings only accept secret header values as a whole `${VAR}` reference. */
+const MUSE_MCP_AUTH_ENV = "OMPK_MUSE_MCP_AUTHORIZATION";
+
+/** Build the `muse serve` argument list; Muse refuses unknown keys and inline secrets. */
+export function museServeArgs(bridgeUrl: string, museProvider?: string): string[] {
+	return [
+		"serve",
+		"--disable-shell",
+		"--disable-write",
+		"--disable-request-user-input",
+		...(museProvider ? ["--provider", museProvider] : []),
+		"-c",
+		`mcpServers.${MUSE_MCP_SERVER_NAME}=${JSON.stringify({
+			url: bridgeUrl,
+			headers: { Authorization: `\${${MUSE_MCP_AUTH_ENV}}` },
+		})}`,
+	];
+}
 
 /** Resolve the installed Muse Code executable without hardcoding its version. */
 export function resolveMuseBinary(override?: string): string {
@@ -222,6 +240,20 @@ function renderMuseInput(context: Context): MuseInputPart[] {
 	return parts;
 }
 
+/**
+ * Whether a stored session may serve another turn. A closed session (abort or
+ * explicit close) stays in the session map, so reusing it would send the turn
+ * to a dead host.
+ */
+export function isMuseSessionReusable(
+	closed: boolean,
+	sameModel: boolean,
+	sameCwd: boolean,
+	sameTools: boolean,
+): boolean {
+	return !closed && sameModel && sameCwd && sameTools;
+}
+
 class MuseCodeSessionState implements ProviderSessionState {
 	#closed = false;
 	#history: readonly Message[] = [];
@@ -236,9 +268,8 @@ class MuseCodeSessionState implements ProviderSessionState {
 	) {}
 
 	matches(modelId: string, cwd: string, toolsKey: string): boolean {
-		return this.modelId === modelId && this.cwd === cwd && this.toolsKey === toolsKey;
+		return isMuseSessionReusable(this.#closed, this.modelId === modelId, this.cwd === cwd, this.toolsKey === toolsKey);
 	}
-
 	turnInput(context: Context): MuseInputPart[] {
 		const current = context.messages;
 		let shared = 0;
@@ -305,25 +336,10 @@ async function createMuseState(
 	try {
 		client = await MuseClientRuntime.spawn({
 			museBin: resolveMuseBinary(options.museBin),
-			args: [
-				"serve",
-				"--disable-shell",
-				"--disable-write",
-				"--disable-request-user-input",
-				...(options.museProvider ? ["--provider", options.museProvider] : []),
-				"-c",
-				`mcpServers=${JSON.stringify({
-					[MUSE_MCP_SERVER_NAME]: {
-						type: "streamable-http",
-						url: bridge.url,
-						headers: { Authorization: bridge.authorization },
-						required: true,
-					},
-				})}`,
-			],
+			args: museServeArgs(bridge.url, options.museProvider),
 			cwd,
-			env: { ...process.env },
-			clientInfo: { name: "oh-my-pk", version: VERSION },
+			env: { ...process.env, [MUSE_MCP_AUTH_ENV]: bridge.authorization },
+			clientInfo: { name: "oh_my_pk", version: VERSION },
 		});
 		const session = await client.startSession({
 			workspaceRoot: cwd,

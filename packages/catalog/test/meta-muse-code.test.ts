@@ -11,7 +11,10 @@ describe("Meta Muse Code subscription descriptor", () => {
 		expect(DEFAULT_MODEL_PER_PROVIDER["meta-muse-code"]).toBe("muse-spark-1.3");
 		const manager = descriptor?.createModelManagerOptions({ apiKey: "subscription-key" });
 		expect(manager?.providerId).toBe("meta-muse-code");
-		expect(manager?.dynamicModelsAuthoritative).toBe(true);
+		// Subscription keys are refused by the direct API, so the bundled
+		// catalog is the model list for this provider.
+		expect(manager?.fetchDynamicModels).toBeUndefined();
+		expect(manager?.dynamicModelsAuthoritative).toBeUndefined();
 		expect(CATALOG_PROVIDERS.find(entry => entry.id === "meta")?.envVars).toEqual([
 			"META_API_KEY",
 			"MODEL_API_KEY",

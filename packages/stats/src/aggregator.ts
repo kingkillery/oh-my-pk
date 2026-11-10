@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { workerHostEntry } from "@pk-nerdsaver-ai/pi-utils";
+import { workerHostEntry } from "@pk-nerdsaver-ai/pi-utils/worker-host";
 import {
 	getRecentErrors as dbGetRecentErrors,
 	getRecentRequests as dbGetRecentRequests,
@@ -152,7 +152,11 @@ function dispatch(handle: WorkerHandle, request: SyncWorkerRequest): Promise<Par
  * Resolves with the worker's `import.meta.url` (caller-visible diagnostics);
  * rejects on transport error, error response, or timeout.
  */
-export async function smokeTestSyncWorker({ timeoutMs = 5_000 }: { timeoutMs?: number } = {}): Promise<void> {
+// 30s, not 5s: the pong arrives only after the worker has loaded the stats
+// module graph, and this repo runs parallel agent sessions that contend for
+// the machine. The other smoke workers allow 30s; this one loads the slowest
+// graph of the six and was the only one timing out.
+export async function smokeTestSyncWorker({ timeoutMs = 30_000 }: { timeoutMs?: number } = {}): Promise<void> {
 	const worker = createSyncWorker();
 	const { promise, resolve, reject } = Promise.withResolvers<void>();
 	const timer = setTimeout(() => reject(new Error(`sync worker did not pong within ${timeoutMs}ms`)), timeoutMs);
