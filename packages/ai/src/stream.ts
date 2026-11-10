@@ -26,6 +26,7 @@ import type { GoogleGeminiCliOptions } from "./providers/google-gemini-cli";
 import type { GoogleInteractionsOptions } from "./providers/google-interactions";
 import type { GoogleVertexOptions } from "./providers/google-vertex";
 import { isKimiModel, streamKimi } from "./providers/kimi";
+import { type MuseCodeOptions, streamMuseCode } from "./providers/muse-code";
 import type { OllamaChatOptions } from "./providers/ollama";
 import type { OpenAICodexResponsesOptions } from "./providers/openai-codex-responses";
 import type { OpenAICompletionsOptions } from "./providers/openai-completions";
@@ -583,6 +584,17 @@ function streamSimpleUnlimited<TApi extends Api>(
 		return withGeminiThinkingLoopGuard(model, requestOptions, opts =>
 			customApiProvider.streamSimple(model, context, opts),
 		);
+	}
+	// Muse Code subscriptions are restricted to the official client. When that
+	// provider is selected, drive the installed Muse CLI session instead of
+	// presenting the subscription key to the pay-as-you-go Meta API.
+	if (model.provider === "meta-muse-code") {
+		const museOptions: MuseCodeOptions = {
+			...requestOptions,
+			execHandlers: requestOptions?.cursorExecHandlers,
+			onToolResult: requestOptions?.cursorOnToolResult,
+		};
+		return streamMuseCode(model as Model<"openai-responses">, context, museOptions);
 	}
 
 	// Vertex AI uses Application Default Credentials, not API keys

@@ -9,6 +9,7 @@
 ### Fixed
 
 - The `meta-muse-code` subscription provider now signs in directly to Muse Code and uses its own `META_MUSE_CODE_API_KEY` override or imported Muse CLI credential, rather than silently using pay-as-you-go Meta environment keys. The general `meta` provider keeps its existing authentication choices.
+- Selecting `meta-muse-code` now runs the installed official Muse Code CLI session instead of sending the subscription key to Meta's pay-as-you-go API. OMPK tools stay on the existing approval and sandbox bridge; Muse's own shell and write tools are disabled.
 
 ## [16.4.31] - 2026-10-22
 
