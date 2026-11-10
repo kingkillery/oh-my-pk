@@ -12,6 +12,11 @@ routes = [
 	{ pattern = "oh-my-pi.pkking.computer", custom_domain = true },
 ]
 
+[assets]
+directory = "../docs-site/dist/assets"
+binding = "ASSETS"
+run_worker_first = true
+
 [[services]]
 binding = "COLLAB"
 service = "ompk-collab"

@@ -59,6 +59,7 @@ The `docs/` tree is the versioned, distributable product documentation. Personal
 - [Collab sessions and browser client](collab.md)
 - [Capture to agent](capture-to-agent.md)
 - [Task agent discovery](task-agent-discovery.md)
+- [Subagents and parallel work](subagents.md)
 - [Task contract orchestration](task-contract-orchestration.md)
 - [Multi-agent fork collaboration](multi-agent-fork-collaboration.md)
 - [Prime Agent control-plane adaptation](prime-agent-control-plane-adaptation.md)

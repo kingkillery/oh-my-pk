@@ -138,7 +138,8 @@ Artifacts and side channels:
   - Missing-`yield` recovery sends up to three internal reminder prompts to the child session.
 
 ## Limits & Caps
-- Concurrency: one session-scoped `Semaphore` sized from `task.maxConcurrency` at first use (later setting changes do not resize it) bounds concurrent subagents across parallel `task` calls — both async job bodies and the sync fallback acquire it.
+- Concurrency: one session-scoped `Semaphore` sized from `task.maxConcurrency` at first use (later setting changes do not resize it) bounds concurrent subagents across parallel `task` calls — both async job bodies and the sync fallback acquire it. See the user-facing controls below.
+
 - Idle TTL: `task.agentIdleTtlMs`, default `420_000` ms (7 min); `<= 0` disables parking and keeps idle sessions live until exit.
 - Per-subagent output truncation: `MAX_OUTPUT_BYTES = 500_000` and `MAX_OUTPUT_LINES = 5000` in `packages/coding-agent/src/task/types.ts` (overridable via `PI_TASK_MAX_OUTPUT_BYTES` / `PI_TASK_MAX_OUTPUT_LINES`). Full raw output is still written to `<id>.md`.
 - Progress coalescing: `PROGRESS_COALESCE_MS = 150`; recent-output tail: `RECENT_OUTPUT_TAIL_BYTES = 8 * 1024` (last 8 non-empty lines).
@@ -147,6 +148,12 @@ Artifacts and side channels:
 - Soft request budget (`task.softRequestBudget`) and wall clock (`task.maxRuntimeMs`) apply to every spawn.
 - Recursion depth gate: `task.maxRecursionDepth`; `packages/coding-agent/src/tools/index.ts` hides the `task` tool at or beyond the limit, and `runSubprocess(...)` also strips child `task` access at max depth.
 - Final inline summary preview uses `fullOutputThreshold = 5000` chars in `packages/coding-agent/src/task/index.ts`; `agent://<id>` points to the full artifact.
+
+### User-facing concurrency controls
+
+`task.maxConcurrency` is the session task semaphore's ceiling for simultaneous subagents (default `32`). Set it with `oh-my-pk config set task.maxConcurrency <number>` or under `task:` in a project `.ompk/config.yml`. Use a positive whole number for a limit, or `0` to remove this semaphore's ceiling; separate Simple-mode, provider, and lifecycle admission limits may still apply. Extra batch items and parallel calls wait for a slot. The ceiling applies to both synchronous and background task execution.
+
+The session semaphore is initialized on the first task spawn and does not resize if the setting changes later in that session. Set the value before launching workers, or start a new session after changing it. In Simple mode, `task.simpleMaxAgents` (default `1`, maximum `32`) adds a separate ceiling, even when `task.maxConcurrency` is `0`. See the [Subagents guide](../subagents.md) for examples and the `/simple` command.
 
 ## Errors
 - Parameter validation failures are returned as normal tool text with empty `results`:

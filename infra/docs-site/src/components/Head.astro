@@ -1,0 +1,8 @@
+---
+import Default from "@astrojs/starlight/components/Head.astro";
+const rawPath = Astro.locals.starlightRoute.entry.data.rawPath;
+const markdownUrl = rawPath ? `/docs/raw/${rawPath.split("/").map(encodeURIComponent).join("/")}` : undefined;
+---
+<Default><slot /></Default>
+{markdownUrl && <link rel="alternate" type="text/markdown" href={markdownUrl} />}
+<link rel="describedby" type="text/plain" href="/docs/llms.txt" />
