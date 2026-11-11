@@ -1,5 +1,7 @@
 import { watch } from "node:fs";
+import { readdir } from "node:fs/promises";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { AgentTool } from "@pk-nerdsaver-ai/pi-agent-core";
 import { type ProviderSessionState, streamSimple } from "@pk-nerdsaver-ai/pi-ai";
 import type { MuseCodeOptions } from "@pk-nerdsaver-ai/pi-ai/providers/muse-code";
@@ -37,11 +39,12 @@ const options: MuseCodeOptions = {
 const roots = new Set<string>();
 const observed = Promise.withResolvers<void>();
 const watcher = watch(cwd, (_event, filename) => {
-	if (filename?.startsWith("ompk-muse-")) {
+	if (filename?.startsWith("ompk-muse-") && !roots.has(filename)) {
 		roots.add(filename);
 		observed.resolve();
 	}
 });
+const sharedState = new Map<string, ProviderSessionState>();
 try {
 	const context = {
 		systemPrompt: [],
@@ -61,6 +64,41 @@ try {
 	) {
 		throw new Error("Concurrent failed Muse starts did not share one host or clean their session state");
 	}
+
+	const failedRoots = new Set(roots);
+	const abort = new AbortController();
+	const echoOptions: MuseCodeOptions = {
+		...options,
+		apiKey: "test-only-key",
+		museBin: undefined,
+		museProvider: "echo",
+		providerSessionState: sharedState,
+	};
+	const first = streamSimple(model, context, { ...echoOptions, signal: abort.signal }).result();
+	const rootDeadline = Date.now() + 10_000;
+	let sharedRoot: string | undefined;
+	while (!sharedRoot && Date.now() < rootDeadline) {
+		sharedRoot = (await readdir(cwd)).find(name => name.startsWith("ompk-muse-") && !failedRoots.has(name));
+		if (sharedRoot) roots.add(sharedRoot);
+		else await delay(10);
+	}
+	if (!sharedRoot) throw new Error("Timed out observing the shared Muse host root");
+	const secondKey = Promise.withResolvers<string>();
+	const secondOptions: MuseCodeOptions = { ...echoOptions, apiKey: () => secondKey.promise };
+	const second = streamSimple(model, context, secondOptions).result();
+	abort.abort();
+	secondKey.resolve("test-only-key");
+	const [aborted, completed] = await Promise.all([first, second]);
+	if (
+		aborted.stopReason !== "aborted" ||
+		completed.stopReason !== "stop" ||
+		sharedState.size !== 1 ||
+		[...roots].length !== 2
+	) {
+		throw new Error("Aborting the creating caller cancelled its concurrent Muse sibling or created another host");
+	}
 } finally {
+	for (const state of sharedState.values()) await state.close();
+	sharedState.clear();
 	watcher.close();
 }

@@ -527,23 +527,23 @@ async function sessionFor(model: Model, context: Context, options: MuseCodeOptio
 	if (options.signal?.aborted) throw new AIError.AbortError();
 	const pending = new PendingMuseSession(createMuseState(model, context, options, hostKey, apiKey));
 	store?.set(stateKey, pending);
-	const abortPending = () => {
-		void pending.close();
-	};
-	options.signal?.addEventListener("abort", abortPending, { once: true });
 	try {
 		const created = await pending.ready;
-		if (pending.closed || options.signal?.aborted || (store && store.get(stateKey) !== pending)) {
+		if (pending.closed || (store && store.get(stateKey) !== pending)) {
 			await created.close();
 			throw new AIError.AbortError();
 		}
+		// The provider-state lifecycle owns shared startup. An aborted creator
+		// must not close a host that a sibling is already waiting to use.
 		store?.set(stateKey, created);
+		if (options.signal?.aborted) {
+			if (!store) await created.close();
+			throw new AIError.AbortError();
+		}
 		return created;
 	} catch (error) {
 		if (store?.get(stateKey) === pending) store.delete(stateKey);
 		throw error;
-	} finally {
-		options.signal?.removeEventListener("abort", abortPending);
 	}
 }
 

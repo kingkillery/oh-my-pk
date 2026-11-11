@@ -154,7 +154,7 @@ describe("Muse MCP bridge with real OMPK tools", () => {
 	});
 });
 
-it("removes the temporary host root when the Muse executable cannot start", async () => {
+it("cleans temporary hosts after failed and concurrently aborted starts", async () => {
 	const temp = await fs.mkdtemp(path.join(os.tmpdir(), "muse-host-failure-test-"));
 	const child = Bun.spawn([process.execPath, path.join(import.meta.dir, "fixtures", "muse-host-failure.ts")], {
 		cwd: temp,

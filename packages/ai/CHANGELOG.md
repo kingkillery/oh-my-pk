@@ -12,7 +12,7 @@
 - Selecting `meta-muse-code` now runs the installed official Muse Code CLI session instead of sending the subscription key to Meta's pay-as-you-go API. OMPK tools stay on the existing approval and sandbox bridge; Muse's own shell and write tools are disabled.
 - Muse Code sign-in no longer fails when Meta refuses the subscription key outside its own client. That `403` attestation denial proves the key is a live subscription credential, so it is accepted instead of aborting the sign-in; an invalid key still fails.
 - A closed Muse Code session is no longer reused for the next turn. An aborted turn closed the session but left it in the session map, so the following turn was sent to a dead host.
-- Muse Code now connects its OMPK tool bridge using a trusted, isolated temporary host workspace instead of leaving the bridge withheld. Its host configuration and environment are isolated from user settings, and tool execution remains subject to OMPK approval policies.
+- Muse Code now connects its OMPK tool bridge using a trusted, isolated temporary host workspace instead of leaving the bridge withheld. Its host configuration and environment are isolated from user settings, tool execution remains subject to OMPK approval policies, and aborting one caller no longer cancels siblings sharing its pending host startup.
 
 ## [16.4.31] - 2026-10-22
 
