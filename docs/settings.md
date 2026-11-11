@@ -382,6 +382,25 @@ Failure semantics: `difficulty` only applies to fresh spawns — combining it wi
 
 Observability: every routed spawn carries machine-readable provenance — requested difficulty, selection source, the active profile name (when one supplied the role), and the final resolved model — on `AgentProgress.modelRouting` / `SingleResult.modelRouting`. `task.showResolvedModelBadge` (default `false`) additionally renders a concise form of that context next to the existing resolved-model badge in the TUI status line, e.g. `high/profile:balanced → anthropic/claude-opus-4-5`; it never displays candidate selectors, raw assignments, or credentials.
 
+### Fusion and Decision Routing
+
+Fusion (`fusion.*`) implements Devin-Fusion style paired agent execution and dynamic model routing at compaction boundaries:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `fusion.enabled` | `boolean` | `false` | Master toggle for Fusion execution. Toggle interactively with `/fusion on` / `/fusion off`. |
+| `fusion.mode` | `enum` | `"escalate"` | Strategy mode: `off`, `delegate`, `escalate`, `token-savings`, or `autonomous`. |
+| `fusion.decisionRouting` | `boolean` | `false` | Route the fusion pool through a fast decision model at compaction boundaries. Toggle with `/fusion decision <on\|off>` or `/fusion pool decision <on\|off>`. |
+| `fusion.dynamicRouting` | `boolean` | `false` | Dynamic tier switching at compaction boundaries. Automatically activated when `fusion.decisionRouting` is turned on. |
+| `fusion.modelPool` | `array` | `[]` | Ranked list of `"<tier>=<selector>"` mappings (Tier 1 = strongest … Tier 5 = fastest/cheapest). Configured via `/fusion pool set <1-5> <model>`. |
+| `fusion.compactModel` | `string` | `""` | Cheaper main-model tier switched in at compaction when not in pool mode. |
+| `fusion.sidekickModel` | `string` | `"pi/smol"` | Model selector used for persistent sidekick tasks. |
+| `fusion.sidekickStrongModel` | `string` | `""` | Stronger model tier for sidekick tasks during difficult stretches. |
+| `fusion.escalateFailureStreak` | `number` | `3` | Consecutive tool failures before auto-escalating back to Tier 1. |
+| `fusion.decisionWindowPercent` | `number` | `25` | Percentage of trailing conversation history evaluated by the decision router. |
+
+For detailed usage, see [Fusion mode and decision routing](./fusion.md).
+
 ### Advisor
 
 The advisor is a second model that reviews each completed turn and can inject advice into the primary session. Assign a model with `modelRoles.advisor`, then enable it with `advisor.enabled`, `/advisor on`, or by launching with the `--advisor` flag.
