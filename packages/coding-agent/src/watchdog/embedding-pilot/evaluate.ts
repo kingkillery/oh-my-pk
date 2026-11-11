@@ -289,5 +289,5 @@ if (import.meta.main) {
 	const [input, output] = process.argv.slice(2);
 	if (!input || !output) throw new Error("Usage: bun evaluate.ts <prepared-dataset.json> <report.json>");
 	const rows: EvaluationRow[] = JSON.parse(await Bun.file(input).text());
-	await Bun.write(output, JSON.stringify(evaluate(rows), null, 2) + "\n");
+	await Bun.write(output, `${JSON.stringify(evaluate(rows), null, 2)}\n`);
 }

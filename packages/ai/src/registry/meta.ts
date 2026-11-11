@@ -1,9 +1,8 @@
 import * as fs from "node:fs";
-import * as AIError from "../error";
 import * as path from "node:path";
 import { logger } from "@pk-nerdsaver-ai/pi-utils";
+import * as AIError from "../error";
 import { createApiKeyLogin } from "./api-key-login";
-import { validateApiKeyAgainstModelsEndpoint } from "./api-key-validation";
 import { pollOAuthDeviceCodeFlow } from "./oauth/device-flow";
 import type { OAuthLoginCallbacks } from "./oauth/types";
 import type { ProviderDefinition } from "./types";
@@ -89,6 +88,8 @@ const defaultApiKeyLogin = createApiKeyLogin({
 	providerLabel: "Meta AI",
 	authUrl: "https://ai.developer.meta.com/docs/muse-code/auth",
 	instructions: "Create or copy your API key from the Model API dashboard (API keys → Create API key)",
+	promptMessage: "Paste your Meta AI API key",
+	placeholder: "LLM|...",
 	validation: {
 		kind: "models-endpoint",
 		provider: "Meta AI",

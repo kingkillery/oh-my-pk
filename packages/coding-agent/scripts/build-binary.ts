@@ -168,9 +168,7 @@ async function main(): Promise<void> {
 					fs.cpSync(vendorSrc, vendorDest, { recursive: true });
 				}
 			} catch (err) {
-				console.warn(
-					`Skipped copying TokenEconomizer vendor: ${err instanceof Error ? err.message : String(err)}`,
-				);
+				console.warn(`Skipped copying TokenEconomizer vendor: ${err instanceof Error ? err.message : String(err)}`);
 			}
 		} finally {
 			await runCommand(["bun", "run", "gen:mupdf:reset"]);

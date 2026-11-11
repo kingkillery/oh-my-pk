@@ -694,7 +694,7 @@ export async function handoff(opts: SyncOptions, plan: PlanResult): Promise<void
  * /new <repo> message via the Telegram Bot API. The handoff-bot on the
  * target picks up the message and creates the session automatically.
  */
-async function autoLaunchHandoffBotSession(sshTarget: string, remoteDirSsh: string, repoName: string): Promise<void> {
+async function autoLaunchHandoffBotSession(sshTarget: string, _remoteDirSsh: string, repoName: string): Promise<void> {
 	console.log(`→ auto-launch handoff-bot session on ${sshTarget}`);
 
 	// Read the bot config from the target

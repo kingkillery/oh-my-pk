@@ -166,6 +166,6 @@ const outIndex = process.argv.indexOf("--out");
 if (outIndex !== -1) {
 	const target = process.argv[outIndex + 1];
 	if (!target) throw new Error("--out requires a path");
-	await Bun.write(target, JSON.stringify({ fixtureOnly: true, head: frozen, report: output }, null, 2) + "\n");
+	await Bun.write(target, `${JSON.stringify({ fixtureOnly: true, head: frozen, report: output }, null, 2)}\n`);
 }
-process.stdout.write(JSON.stringify(output, null, 2) + "\n");
+process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);

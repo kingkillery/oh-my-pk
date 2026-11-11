@@ -10713,10 +10713,7 @@ export class AgentSession {
 	 * settings), and a no-op when the target is unavailable, unauthed, or already
 	 * active. Mirrors {@link #promoteContextModel}.
 	 */
-	async #applyFusionCompactionSwitch(
-		summary?: string,
-		recentMessages: readonly AgentMessage[] = [],
-	): Promise<void> {
+	async #applyFusionCompactionSwitch(summary?: string, recentMessages: readonly AgentMessage[] = []): Promise<void> {
 		// Compaction starts a fresh routing epoch; earlier failures no longer count.
 		this.#fusionToolFailureStreak = 0;
 		// Whole body guarded: this runs inside the compaction commit path, so an

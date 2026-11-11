@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-	carriedSection,
-	launch,
-	createTokeneconomizerExtension,
-} from "../src/tokeneconomizer/extension";
+import { carriedSection, createTokeneconomizerExtension, launch } from "../src/tokeneconomizer/extension";
 
 describe("carriedSection", () => {
 	test("empty entries -> empty string", () => {
@@ -11,9 +7,7 @@ describe("carriedSection", () => {
 	});
 
 	test("compaction with tokeneconomizer systemMessage section", () => {
-		const entries = [
-			{ type: "compaction", systemMessage: { sections: { tokeneconomizer: "hello" } } },
-		];
+		const entries = [{ type: "compaction", systemMessage: { sections: { tokeneconomizer: "hello" } } }];
 		expect(carriedSection(entries)).toBe("hello");
 	});
 

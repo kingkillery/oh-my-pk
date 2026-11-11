@@ -40,8 +40,7 @@ const SCRIPTS = join(HERE, "..", "..", "vendor", "tokeneconomizer", "plugin", "s
 const HOOK_TIMEOUT_MS = 60_000;
 const SECTION = "tokeneconomizer";
 
-const truthy = (v: string | undefined): boolean =>
-	["1", "true", "yes", "on"].includes((v ?? "").trim().toLowerCase());
+const truthy = (v: string | undefined): boolean => ["1", "true", "yes", "on"].includes((v ?? "").trim().toLowerCase());
 
 interface DispatcherResult {
 	hookSpecificOutput?: {
@@ -86,11 +85,7 @@ function parseDispatcherOutput(raw: string): DispatcherResult {
  * which Windows cannot start; there the bootstrap they run is started with
  * Python itself (`TE_PYTHON`, else `python`).
  */
-export function launch(
-	script: string,
-	args: string[],
-	platform: string = process.platform,
-): [string, string[]] {
+export function launch(script: string, args: string[], platform: string = process.platform): [string, string[]] {
 	if (platform !== "win32") return [join(SCRIPTS, script), args];
 	const mode = script === "te-hook" ? "hook" : "cli";
 	const python = process.env.TE_PYTHON ?? "python";
@@ -195,9 +190,7 @@ export function carriedSection(entries: unknown[]): string {
 	}
 	const open = `<${SECTION}>\n`;
 	const close = `\n</${SECTION}>`;
-	return text.startsWith(open) && text.endsWith(close)
-		? text.slice(open.length, text.length - close.length)
-		: text;
+	return text.startsWith(open) && text.endsWith(close) ? text.slice(open.length, text.length - close.length) : text;
 }
 
 function isTextPart(part: unknown): part is { type: "text"; text: string } {
@@ -255,9 +248,9 @@ export function createTokeneconomizerExtension(): ExtensionFactory {
 		api.on("session_start", async (event, ctx) => {
 			prompts = 0;
 			const entries: unknown[] = ctx.sessionManager.getBranch() as unknown as unknown[];
-			const carried = entries.some((entry) => isRecord(entry) && entry.type === "message");
+			const carried = entries.some(entry => isRecord(entry) && entry.type === "message");
 			const reason = readReason(event);
-			const source = carried ? "resume" : (reason !== undefined ? (SOURCE[reason] ?? "startup") : "startup");
+			const source = carried ? "resume" : reason !== undefined ? (SOURCE[reason] ?? "startup") : "startup";
 			const mode = ctx.hasUI ? "tui" : "print";
 			const out = await callHook({ ...base(ctx), hook_event_name: "SessionStart", source }, mode);
 			if (carried) {
@@ -325,7 +318,10 @@ export function createTokeneconomizerExtension(): ExtensionFactory {
 			if (turn === "" || stopsSent === turn) return;
 			stopsSent = turn;
 			const mode = ctx.hasUI ? "tui" : "print";
-			await callHook({ ...base(ctx), hook_event_name: "Stop", prompt_id: turn, stop_hook_active: stopHookActive }, mode);
+			await callHook(
+				{ ...base(ctx), hook_event_name: "Stop", prompt_id: turn, stop_hook_active: stopHookActive },
+				mode,
+			);
 		};
 
 		api.on("agent_end", async (_event, ctx) => {
@@ -349,18 +345,15 @@ export function createTokeneconomizerExtension(): ExtensionFactory {
 		api.registerCommand("te", {
 			description: "TokenEconomizer: status | microskills | config | repos",
 			handler: async (args, ctx) => {
-				const argv = (args ?? "status").trim().split(/\s+/).filter((s) => s.length > 0);
+				const argv = (args ?? "status")
+					.trim()
+					.split(/\s+/)
+					.filter(s => s.length > 0);
 				const mode = ctx.hasUI ? "tui" : "print";
-				const out = await run(
-					"te",
-					["--host", "ompk", "--cwd", ctx.cwd, ...argv],
-					"",
-					mode,
-					{
-						TE_SESSION_ID: ctx.sessionManager.getSessionId(),
-						TE_CORE_PATH: vendorRootForCommand(),
-					},
-				);
+				const out = await run("te", ["--host", "ompk", "--cwd", ctx.cwd, ...argv], "", mode, {
+					TE_SESSION_ID: ctx.sessionManager.getSessionId(),
+					TE_CORE_PATH: vendorRootForCommand(),
+				});
 				notify(ctx, out.trim() || "te: no output (is Python 3.10+ on PATH?)");
 			},
 		});

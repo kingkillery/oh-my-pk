@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { Model } from "@pk-nerdsaver-ai/pi-ai";
+import type { TypeSafeAnswer } from "@pk-nerdsaver-ai/pi-coding-agent/lib/typesafe-http";
 import {
 	buildDecisionRouteState,
 	classifyFusionRouteViaDecision,
@@ -14,7 +15,6 @@ import {
 	resolveSidekickRoute,
 	shouldRunFusionCompactionSwitch,
 } from "@pk-nerdsaver-ai/pi-coding-agent/session/fusion-router";
-import type { TypeSafeAnswer } from "@pk-nerdsaver-ai/pi-coding-agent/lib/typesafe-http";
 
 describe("isFusionAutoDowngradedRoute", () => {
 	const frontier = { provider: "test", id: "frontier" } as Model;

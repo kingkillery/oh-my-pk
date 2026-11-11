@@ -57,7 +57,6 @@ describe("Muse Code CLI bridge", () => {
 			await bridge.close();
 		}
 	});
-
 });
 
 describe("Muse Code session reuse", () => {

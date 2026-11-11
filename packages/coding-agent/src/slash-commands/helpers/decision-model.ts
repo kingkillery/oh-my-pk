@@ -170,7 +170,7 @@ async function readState(sessionName: string): Promise<DecisionModelState | unde
 }
 async function writeState(state: DecisionModelState): Promise<void> {
 	await fs.mkdir(stateDirectory(), { recursive: true });
-	await fs.writeFile(stateFile(state.sessionName), JSON.stringify(state, null, 2) + "\n", "utf8");
+	await fs.writeFile(stateFile(state.sessionName), `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
 async function removeState(sessionName: string): Promise<void> {
@@ -260,7 +260,7 @@ async function armWindowsCutoff(sessionName: string, ttlMinutes: number): Promis
 		`if ($code -eq 0) { Unregister-ScheduledTask -TaskName ${psLiteral(taskName)} -Confirm:$false -ErrorAction SilentlyContinue }`,
 		"exit $code",
 	].join("\r\n");
-	await fs.writeFile(scriptPath, stopScript + "\r\n", "utf8");
+	await fs.writeFile(scriptPath, `${stopScript}\r\n`, "utf8");
 	await cancelCutoff(taskName);
 	const powershell = windowsExecutable("System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 	const registration = [

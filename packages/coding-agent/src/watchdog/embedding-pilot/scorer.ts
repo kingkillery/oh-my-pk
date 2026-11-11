@@ -208,8 +208,7 @@ export function scoreChoices(
 		provenance,
 	});
 	if (
-		!policy ||
-		!policy.identity ||
+		!policy?.identity ||
 		!policy.scope ||
 		!policy.evaluation ||
 		!policy.config ||

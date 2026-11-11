@@ -268,7 +268,12 @@ class MuseCodeSessionState implements ProviderSessionState {
 	) {}
 
 	matches(modelId: string, cwd: string, toolsKey: string): boolean {
-		return isMuseSessionReusable(this.#closed, this.modelId === modelId, this.cwd === cwd, this.toolsKey === toolsKey);
+		return isMuseSessionReusable(
+			this.#closed,
+			this.modelId === modelId,
+			this.cwd === cwd,
+			this.toolsKey === toolsKey,
+		);
 	}
 	turnInput(context: Context): MuseInputPart[] {
 		const current = context.messages;

@@ -124,15 +124,23 @@ export const isLfmModelId = memo((modelId: string): boolean => {
 export const isLfmHarnessAdapterModelId = memo((modelId: string): boolean => {
 	const lower = modelId.toLowerCase();
 	if (!lower.includes("lfm")) return false;
-	if (/(?:^|[-_/])(?:harbor|a2b|adapter)[-_]?(?:pi|claude|codex|gemini|openai|grok|deepseek|kimi|qwen)(?:[-_]|$)/i.test(lower)) {
+	if (
+		/(?:^|[-_/])(?:harbor|a2b|adapter)[-_]?(?:pi|claude|codex|gemini|openai|grok|deepseek|kimi|qwen)(?:[-_]|$)/i.test(
+			lower,
+		)
+	) {
 		return true;
 	}
-	if (/(?:^|[-_])(?:pi|claude-code|codex|gemini|openai|grok|deepseek|kimi|qwen)[-_](?:gguf|lora|adapter|hf)?$/i.test(lower) && lower.includes("a2b")) {
+	if (
+		/(?:^|[-_])(?:pi|claude-code|codex|gemini|openai|grok|deepseek|kimi|qwen)[-_](?:gguf|lora|adapter|hf)?$/i.test(
+			lower,
+		) &&
+		lower.includes("a2b")
+	) {
 		return true;
 	}
 	return false;
 });
-
 
 /**
  * OpenAI gpt-oss family (`gpt-oss-20b`, `gpt-oss-120b`, `gpt-oss:120b`,

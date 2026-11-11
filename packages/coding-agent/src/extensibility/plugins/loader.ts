@@ -6,7 +6,12 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getPluginsLockfile, getPluginsNodeModules, getPluginsPackageJson, isFsMissing } from "@pk-nerdsaver-ai/pi-utils";
+import {
+	getPluginsLockfile,
+	getPluginsNodeModules,
+	getPluginsPackageJson,
+	isFsMissing,
+} from "@pk-nerdsaver-ai/pi-utils";
 import { getConfigDirPaths } from "../../config";
 import { resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import { installLegacyPiSpecifierShim } from "./legacy-pi-compat";

@@ -157,7 +157,6 @@ export function resolveDiscoveredApi(api: Api | undefined, modelId: string): Api
 	return api;
 }
 
-
 export interface DiscoveryProviderConfig {
 	provider: string;
 	api: Api;

@@ -1080,7 +1080,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-
 	"fusion.sidekickRequestBudget": {
 		type: "number",
 		default: 40,

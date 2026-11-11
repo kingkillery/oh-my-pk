@@ -198,7 +198,7 @@ async function probeDecisionEndpoint(
 		const response = await fetchImpl(healthUrl, { signal: controller.signal });
 		if (!response.ok) return undefined;
 		const payload = asRecord(await response.json());
-		if (!payload || payload.status !== "ok") return undefined;
+		if (payload?.status !== "ok") return undefined;
 		const configuredModel = readEnv("OMP_DECISION_MODEL");
 		const reportedModel = typeof payload.model === "string" ? payload.model : undefined;
 		const model = configuredModel ?? reportedModel;

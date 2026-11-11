@@ -19,10 +19,10 @@ import { logger, prompt } from "@pk-nerdsaver-ai/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
+import { systemOne, type TypeSafeAnswer, type TypeSafeChoiceQuestion } from "../lib/typesafe-http";
+import decisionRoutePrompt from "../prompts/fusion/decision-route.md" with { type: "text" };
 import routeClassifierPrompt from "../prompts/fusion/route-classifier.md" with { type: "text" };
 import routeClassifierPoolPrompt from "../prompts/fusion/route-classifier-pool.md" with { type: "text" };
-import decisionRoutePrompt from "../prompts/fusion/decision-route.md" with { type: "text" };
-import { systemOne, type TypeSafeAnswer, type TypeSafeChoiceQuestion } from "../lib/typesafe-http";
 
 export type FusionRoute = "cheap" | "frontier" | number;
 
@@ -285,9 +285,12 @@ export function buildDecisionRouteState(
 		})
 		.filter(line => line.length > 0);
 	const percent = Number.isFinite(windowPercent) ? Math.min(100, Math.max(0, windowPercent)) : 0;
-	const windowCount = percent === 0 || rendered.length === 0 ? 0 : Math.max(1, Math.ceil((rendered.length * percent) / 100));
+	const windowCount =
+		percent === 0 || rendered.length === 0 ? 0 : Math.max(1, Math.ceil((rendered.length * percent) / 100));
 	const window = windowCount === 0 ? "" : rendered.slice(-windowCount).join("\n\n");
-	const state = window ? `Summary:\n${summary.trim()}\n\nRecent conversation:\n${window}` : `Summary:\n${summary.trim()}`;
+	const state = window
+		? `Summary:\n${summary.trim()}\n\nRecent conversation:\n${window}`
+		: `Summary:\n${summary.trim()}`;
 	return state.length <= DECISION_ROUTE_STATE_LIMIT ? state : state.slice(-DECISION_ROUTE_STATE_LIMIT);
 }
 
@@ -295,7 +298,8 @@ export function buildDecisionRouteState(
 export function decisionRouteQuestion(pool: readonly FusionPoolTier[]): TypeSafeChoiceQuestion {
 	const criteria: Record<string, string> = {};
 	for (const { tier, selector } of pool) {
-		criteria[String(tier)] = `Tier ${tier} (${selector}): ${tier} = most powerful, higher numbers are cheaper and less capable.`;
+		criteria[String(tier)] =
+			`Tier ${tier} (${selector}): ${tier} = most powerful, higher numbers are cheaper and less capable.`;
 	}
 	return { type: "choice", instructions: DECISION_ROUTE_INSTRUCTIONS, criteria };
 }
@@ -310,7 +314,7 @@ export function parseDecisionRouteAnswer(
 	pool: readonly FusionPoolTier[],
 	minConfidence = DECISION_ROUTE_MIN_CONFIDENCE,
 ): number | null {
-	if (!answer || answer.type !== "choice") return null;
+	if (answer?.type !== "choice") return null;
 	if (answer.confidence < minConfidence) return null;
 	const tier = Number.parseInt(answer.choice, 10);
 	if (!pool.some(entry => entry.tier === tier)) return null;
