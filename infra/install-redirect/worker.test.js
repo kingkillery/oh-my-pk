@@ -99,3 +99,59 @@ describe("oh-my-pk product host collab route", () => {
 		expect(await response.text()).toBe("Collab client unavailable");
 	});
 });
+
+describe("oh-my-pk version and binary endpoints", () => {
+	it("serves /version from HF raw endpoint when available", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(url => {
+			if (String(url).includes("/raw/main/VERSION")) {
+				return Promise.resolve(new Response("v16.4.34\n", { status: 200 }));
+			}
+			return Promise.resolve(new Response("Not found", { status: 404 }));
+		});
+
+		const env = { HF_REPO: "pkkidking/oh-my-pi-binaries", HF_TOKEN: "mock-token" };
+		const response = await worker.fetch(new Request("https://oh-my-pk.pkking.computer/version"), env, {});
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
+		expect(await response.text()).toBe("v16.4.34\n");
+	});
+
+	it("falls back to GitHub release tag when HF returns an error for /version", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(url => {
+			if (String(url).includes("/raw/main/VERSION")) {
+				return Promise.resolve(new Response("Storage limit reached", { status: 403 }));
+			}
+			if (String(url).includes("releases/latest")) {
+				return Promise.resolve(
+					new Response(null, {
+						status: 302,
+						headers: { Location: "https://github.com/kingkillery/oh-my-pk/releases/tag/v16.4.34" },
+					}),
+				);
+			}
+			return Promise.resolve(new Response("Not found", { status: 404 }));
+		});
+
+		const env = { HF_REPO: "pkkidking/oh-my-pi-binaries", HF_TOKEN: "mock-token" };
+		const response = await worker.fetch(new Request("https://oh-my-pk.pkking.computer/version"), env, {});
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe("v16.4.34\n");
+	});
+
+	it("redirects /bin/<tag>/<file> to GitHub releases when HF resolve returns 403 storage limit", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response("Private repository storage limit reached", { status: 403 }),
+		);
+
+		const env = { HF_REPO: "pkkidking/oh-my-pi-binaries", HF_TOKEN: "mock-token" };
+		const response = await worker.fetch(
+			new Request("https://oh-my-pk.pkking.computer/bin/v16.4.34/omp-linux-x64"),
+			env,
+			{},
+		);
+		expect(response.status).toBe(302);
+		expect(response.headers.get("Location")).toBe(
+			"https://github.com/kingkillery/oh-my-pk/releases/download/v16.4.34/omp-linux-x64",
+		);
+	});
+});
