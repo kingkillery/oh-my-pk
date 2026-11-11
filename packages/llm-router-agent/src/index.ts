@@ -1,9 +1,15 @@
 export { createRouter, LLMRouter } from "./agent.js";
 export { loadRouterConfig, mergeConfig, normalizeConfig, validateRouterConfig } from "./config.js";
-export { cloneDefaultConfig, DEFAULT_CONFIG } from "./defaults.js";
+export { cloneDefaultConfig, DEFAULT_CONFIG, PREFERRED_ROUTER_MODELS } from "./defaults.js";
 export { default as extension } from "./extension.js";
 export { estimateTokens, extractFeatures, preferenceFromString } from "./features.js";
 export { decideRoute } from "./policy.js";
+export {
+	decideOptimalModel,
+	DEFAULT_ROUTER_ENDPOINT,
+	type DecisionRequestOptions,
+	type DecisionResult,
+} from "./fast-decision-client.js";
 export {
 	readStepContextMetadata,
 	stepContextToContextTrace,

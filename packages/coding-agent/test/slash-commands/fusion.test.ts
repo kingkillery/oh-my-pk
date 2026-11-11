@@ -200,6 +200,48 @@ describe("/fusion pool", () => {
 		expect(outputs.join(" ")).toContain("Usage: /fusion-pool set");
 	});
 });
+describe("/fusion decision and pool decision commands", () => {
+	test("/fusion decision on enables decisionRouting, dynamicRouting, and fusion.enabled", async () => {
+		const { outputs, store, result } = runFusion("decision on", {
+			"fusion.enabled": false,
+			"fusion.dynamicRouting": false,
+			"fusion.decisionRouting": false,
+		});
+		await result;
+		expect(store.get("fusion.decisionRouting")).toBe(true);
+		expect(store.get("fusion.dynamicRouting")).toBe(true);
+		expect(store.get("fusion.enabled")).toBe(true);
+		expect(outputs.join(" ")).toContain("Decision routing enabled");
+	});
+
+	test("/fusion --decision-mode on alias works", async () => {
+		const { outputs, store, result } = runFusion("--decision-mode on", {
+			"fusion.decisionRouting": false,
+		});
+		await result;
+		expect(store.get("fusion.decisionRouting")).toBe(true);
+		expect(outputs.join(" ")).toContain("Decision routing enabled");
+	});
+
+	test("/fusion pool decision on sets decision routing for pool", async () => {
+		const { outputs, store, result } = runFusion("pool decision on", {
+			"fusion.decisionRouting": false,
+		});
+		await result;
+		expect(store.get("fusion.decisionRouting")).toBe(true);
+		expect(outputs.join(" ")).toContain("Decision routing enabled for Fusion pool");
+	});
+
+	test("/fusion decision off disables decision routing", async () => {
+		const { outputs, store, result } = runFusion("decision off", {
+			"fusion.decisionRouting": true,
+		});
+		await result;
+		expect(store.get("fusion.decisionRouting")).toBe(false);
+		expect(outputs.join(" ")).toContain("Decision routing disabled");
+	});
+});
+
 
 describe("/fusion menu", () => {
 	test("toggle item enables fusion and spawns the sidekick mid-session", async () => {

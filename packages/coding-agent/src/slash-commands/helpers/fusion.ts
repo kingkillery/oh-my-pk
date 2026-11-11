@@ -138,10 +138,12 @@ export async function handleFusionPoolArgs(
 		if (pool.length === 0) {
 			return `Fusion pool is empty. Assign tiers with ${usagePrefix} set <1-5> <model> (1 = most powerful, 5 = least intelligent).`;
 		}
+		const decisionRouting = runtime.settings.get("fusion.decisionRouting") === true;
+		const routingMode = decisionRouting ? "active (decision-model routing)" : "active (dynamic routing)";
 		const status =
 			pool.length >= 2
 				? runtime.settings.get("fusion.dynamicRouting") === true && runtime.settings.get("fusion.enabled") === true
-					? "active"
+					? routingMode
 					: "configured, but needs fusion.enabled + fusion.dynamicRouting to route"
 				: "needs at least 2 tiers to route";
 		return `Fusion routing pool (1 = most powerful … 5 = least intelligent) — ${status}:\n${describePoolTiers(runtime).join("\n")}`;
@@ -153,6 +155,31 @@ export async function handleFusionPoolArgs(
 	if (verb === "clear") {
 		runtime.settings.set("fusion.modelPool", []);
 		await runtime.output("Fusion pool cleared.");
+		return commandConsumed();
+	}
+	if (verb === "decision" || verb === "decision-mode" || verb === "--decision-mode") {
+		const value = rest.trim().toLowerCase();
+		if (value !== "on" && value !== "off") {
+			const current = runtime.settings.get("fusion.decisionRouting") === true ? "on" : "off";
+			return usage(`Usage: ${usagePrefix} decision <on|off>  (currently ${current})`, runtime);
+		}
+		const enable = value === "on";
+		runtime.settings.clearOverride("fusion.decisionRouting");
+		runtime.settings.set("fusion.decisionRouting", enable);
+		if (enable) {
+			runtime.settings.clearOverride("fusion.dynamicRouting");
+			runtime.settings.set("fusion.dynamicRouting", true);
+			if (runtime.settings.get("fusion.enabled") !== true) {
+				runtime.settings.clearOverride("fusion.enabled");
+				runtime.settings.set("fusion.enabled", true);
+			}
+		}
+		await runtime.output(
+			enable
+				? "Decision routing enabled for Fusion pool: models in the pool will be routed using the decision router."
+				: "Decision routing disabled for Fusion pool.",
+		);
+		await runtime.notifyConfigChanged?.();
 		return commandConsumed();
 	}
 	if (verb === "set") {
@@ -194,7 +221,7 @@ export async function handleFusionPoolArgs(
 		await runtime.output(`Tier ${tier} unassigned.`);
 		return commandConsumed();
 	}
-	return usage(`Usage: ${usagePrefix} [list|set <1-5> <model>|remove <1-5>|clear]`, runtime);
+	return usage(`Usage: ${usagePrefix} [list|set <1-5> <model>|remove <1-5>|clear|decision <on|off>]`, runtime);
 }
 
 /**
@@ -225,7 +252,7 @@ export function disableFusion(runtime: SlashCommandRuntime): string {
 }
 
 export const FUSION_USAGE =
-	"Usage: /fusion [on|off|status|mode <off|delegate|escalate|token-savings|autonomous>|routing <on|off>|sidekick <model>|strong <model|clear>|compact <model|clear>|pool <list|set|remove|clear>|jobs|pause [job]|resume [job]|stop [job]]";
+	"Usage: /fusion [on|off|status|mode <off|delegate|escalate|token-savings|autonomous>|routing <on|off>|decision <on|off>|sidekick <model>|strong <model|clear>|compact <model|clear>|pool <list|set|remove|clear|decision <on|off>>|jobs|pause [job]|resume [job]|stop [job]]";
 
 /**
  * `/fusion jobs|pause|resume|stop` — session-scoped durable native_task
@@ -338,6 +365,36 @@ export async function handleFusionCommand(
 			runtime.settings.clearOverride("fusion.dynamicRouting");
 			runtime.settings.set("fusion.dynamicRouting", value === "on");
 			await runtime.output(`Dynamic routing ${value}.`);
+			await runtime.notifyConfigChanged?.();
+			return commandConsumed();
+		}
+		case "decision":
+		case "decision-mode":
+		case "--decision-mode": {
+			const value = rest.trim().toLowerCase();
+			if (value !== "on" && value !== "off") {
+				const current = runtime.settings.get("fusion.decisionRouting") === true ? "on" : "off";
+				return usage(
+					`Usage: /fusion decision <on|off> or /fusion --decision-mode <on|off>  (currently ${current})`,
+					runtime,
+				);
+			}
+			const enable = value === "on";
+			runtime.settings.clearOverride("fusion.decisionRouting");
+			runtime.settings.set("fusion.decisionRouting", enable);
+			if (enable) {
+				runtime.settings.clearOverride("fusion.dynamicRouting");
+				runtime.settings.set("fusion.dynamicRouting", true);
+				if (runtime.settings.get("fusion.enabled") !== true) {
+					runtime.settings.clearOverride("fusion.enabled");
+					runtime.settings.set("fusion.enabled", true);
+				}
+			}
+			await runtime.output(
+				enable
+					? "Decision routing enabled: Fusion pool models will be routed using the decision router."
+					: "Decision routing disabled for Fusion.",
+			);
 			await runtime.notifyConfigChanged?.();
 			return commandConsumed();
 		}

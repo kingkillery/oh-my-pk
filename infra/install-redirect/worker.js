@@ -1,3 +1,5 @@
+import { handleChatCompletions, handleModelsList, handleRouteDecision } from "./router.js";
+
 // Cloudflare Worker for the Hugging Face-backed oh-my-pk installer channel.
 // This route is independent of the GitHub Actions/GitHub Releases channel.
 //
@@ -762,11 +764,36 @@ function textResponse(text, contentType = "text/plain; charset=utf-8", status = 
 
 export default {
 	async fetch(request, env, ctx) {
+		const url = new URL(request.url);
+		const pathname = url.pathname;
+
+		// Handle CORS preflight
+		if (request.method === "OPTIONS") {
+			return new Response(null, {
+				status: 204,
+				headers: {
+					"Access-Control-Allow-Origin": "*",
+					"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+					"Access-Control-Allow-Headers": "Content-Type, Authorization, X-Title, HTTP-Referer",
+					"Access-Control-Max-Age": "86400",
+				},
+			});
+		}
+
+		// OpenAI-compatible LLM Router endpoints
+		if (pathname === "/v1/models" && (request.method === "GET" || request.method === "HEAD")) {
+			return handleModelsList();
+		}
+		if (pathname === "/v1/route" && request.method === "POST") {
+			return handleRouteDecision(request);
+		}
+		if (pathname === "/v1/chat/completions" && request.method === "POST") {
+			return handleChatCompletions(request, env);
+		}
+
 		if (request.method !== "GET" && request.method !== "HEAD") {
 			return new Response("Method not allowed", { status: 405 });
 		}
-		const url = new URL(request.url);
-		const pathname = url.pathname;
 		if (pathname === "/collab") {
 			url.pathname = "/collab/";
 			return Response.redirect(url, 308);
