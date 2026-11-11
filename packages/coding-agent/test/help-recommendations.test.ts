@@ -11,6 +11,31 @@ describe("built-in help recommendations", () => {
 		expect(match?.whenToUse).toMatch(/share|watch|remote/i);
 	});
 
+	test("matches fusion questions to fusion recommendation and docs/fusion.md", () => {
+		const [match] = findHelpRecommendations("How do I use fusion paired models and decision routing?");
+		expect(match?.id).toBe("fusion");
+		expect(match?.command).toContain("/fusion");
+		expect(match?.docs).toBe("docs/fusion.md");
+	});
+
+	test("matches settings questions to settings recommendation and docs/settings.md", () => {
+		const [match] = findHelpRecommendations("How do I inspect or change configuration settings?");
+		expect(match?.id).toBe("settings");
+		expect(match?.docs).toBe("docs/settings.md");
+	});
+
+	test("matches router questions to models-router and docs/models.md", () => {
+		const [match] = findHelpRecommendations("How do I use the model router and preferred models pool?");
+		expect(match?.id).toBe("models-router");
+		expect(match?.docs).toBe("docs/models.md");
+	});
+
+	test("matches subagent questions to subagents and docs/subagents.md", () => {
+		const [match] = findHelpRecommendations("How do I configure parallel subagent launch lanes?");
+		expect(match?.id).toBe("subagents");
+		expect(match?.docs).toBe("docs/subagents.md");
+	});
+
 	test("renders the matching command, when-to-use guidance, and docs path", () => {
 		const output = renderHelp("I want the agent to make a plan before changing files");
 
@@ -31,6 +56,6 @@ describe("built-in help recommendations", () => {
 
 		expect(output).toContain("Built-in feature help");
 		expect(output).toContain("/help <question>");
-		expect(output).toContain("/mcp");
+		expect(output).toContain("/fusion");
 	});
 });
