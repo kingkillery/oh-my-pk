@@ -296,3 +296,46 @@ For your fork, update config first:
 - `rules`
 
 If the fork exposes a different event name for tool calls, wire that event to `router.captureTool(...)` or `ToolUseCaptureLayer.record(...)`. The package does not import `@oh-my-pi/pi-coding-agent`, so it remains resilient when package names or type exports move.
+
+## Cloudflare Router Endpoint (`https://oh-my-pk.pkking.computer/v1`)
+
+A high-performance Cloudflare Worker router endpoint hosts our preferred models pool behind an OpenAI-compatible interface:
+
+- **`GET /v1/models`**: Lists all 10 preferred models plus `router/auto` and `router/decision`.
+- **`POST /v1/route`**: Lightweight evaluation route returning the optimal model, lane, reason, confidence, and estimated token savings.
+- **`POST /v1/chat/completions`**: OpenAI-compatible chat completion proxy supporting streaming and auto-routing.
+
+### Preferred Model Pool
+
+| Provider | Target Model | Lane | Role / Strengths |
+|:---|:---|:---|:---|
+| **kimi-code** | `k3.1-pro` | `coding` | 131k context coding specialist, deep reasoning |
+| **minimax-code** | `MiniMax-M3.1-Flash` | `balanced` / `long_context` | 1M context window, fast execution, $0.25/Mtok |
+| **openrouter** | `deepseek/deepseek-v4.1-flash-1017` | `fast` | Ultra-fast reasoning and task lane ($0.14/Mtok) |
+| **openrouter** | `recursive/flint-v1.0:free` | `free` / `decision` | High-speed zero-cost lane & decision classifier |
+| **openrouter** | `baidu/ernie-5.5-flash-preview:free` | `free` | High-throughput zero-cost general lane |
+| **openrouter** | `nvidia/nemotron-3-ultra-550b-a55b:free` | `free` | 128k context zero-cost reasoning lane |
+| **openrouter** | `dots-studio/dots-3-note-preview:free` | `free` | Compact zero-cost lane |
+| **google-antigravity** | `gemini-3.8-flash-tiered` | `multimodal` | 1M context vision, audio, and agent execution |
+| **openai-codex** | `gpt-6-luna` | `structured` | Fast agentic tool calls and structured outputs |
+| **openai-codex** | `gpt-6.1-terra` | `quality` / `safe` | Frontier flagship reasoning, security, and safety |
+
+## Super-Fast Decision Dispatcher
+
+The `fast-decision-client` evaluates incoming prompts against model complexity and routes requests to the lowest-cost model capable of serving the request:
+
+```bash
+# Run ad-hoc decision routing
+bun scripts/fast-decision-dispatch.ts "Refactor this TypeScript state machine with unit tests"
+
+# Run with explicit speed preference
+bun scripts/fast-decision-dispatch.ts --preference=speed "Translate hello world to Japanese"
+
+# Run full decision benchmark
+bun scripts/fast-decision-dispatch.ts --benchmark
+```
+
+### Benchmark Results
+
+- **Average Decision Latency**: ~123 ms over live Cloudflare edge network
+- **Token / Cost Savings**: **~68% aggregate savings** vs routing all requests to top frontier models ($18.00/Mtok down to $5.79/Mtok across typical mixed workloads).
