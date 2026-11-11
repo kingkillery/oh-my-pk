@@ -3118,12 +3118,16 @@ export async function handleColabModelSlashCommand(
 		await runtime.notifyConfigChanged?.();
 		await runtime.output(
 			[
+				"STATUS: running",
 				`Colab model ready: ${RUNTIME_PROVIDER}/${liveId}`,
 				`${result.repoId} ${result.quantization} on ${result.accelerator}`,
 				`llama.cpp: ${result.runtime.id} ${result.runtime.pinnedTag ?? ""} ${result.runtime.commit ?? ""}`
 					.replace(/\s+/g, " ")
 					.trim(),
-				`OpenAI-compatible API: ${result.apiBaseUrl}`,
+				`Endpoint: ${result.apiBaseUrl}`,
+				`Chat: curl ${result.apiBaseUrl}/chat/completions -H "content-type: application/json" -d "{\\"model\\":\\"${liveId}\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"Say ready.\\"}]}"`,
+				`Connect: colab url --session ${result.sessionName}`,
+				`SSH: install the client public key on the VM, then ssh -p 2222 root@<tailscale-ipv4>. Direct SSH is not reachable until that tunnel is up.`,
 				`Runtime: ${result.sessionName} (stop with: colab stop --session ${result.sessionName})`,
 				...(isDiffusion
 					? ["Tools: unavailable — the diffusion CLI cannot emit tool calls; this model answers chat only."]
