@@ -70,6 +70,8 @@ Unified LLM API with automatic model discovery, provider configuration, token an
 - **zAI** (requires `ZAI_API_KEY`)
 - **Umans AI Coding Plan** (supports `/login umans` or `UMANS_AI_CODING_PLAN_API_KEY`)
 - **Minimax Code (minimax m plan)** (requires `MINIMAX_CODE_API_KEY` or `MINIMAX_CODE_CN_API_KEY`)
+- **Meta AI** (pay-as-you-go developer key: `META_API_KEY`, `MODEL_API_KEY`, or `META_MODEL_API_KEY`)
+- **Meta Muse Code** (Muse Code subscription: `META_MUSE_CODE_API_KEY`; runs the installed official Muse Code CLI, see below)
 - **Xiaomi MiMo** (requires `XIAOMI_API_KEY`)
 - **ZenMux** (requires `ZENMUX_API_KEY`)
 - **Qwen Portal** (supports `QWEN_OAUTH_TOKEN` or `QWEN_PORTAL_API_KEY`)
@@ -955,6 +957,8 @@ In Node.js environments, you can set environment variables to avoid passing API 
 | zAI            | `ZAI_API_KEY`                                                                |
 | Umans AI Coding Plan | `UMANS_AI_CODING_PLAN_API_KEY`                                           |
 | MiniMax Code   | `MINIMAX_CODE_API_KEY` (international) or `MINIMAX_CODE_CN_API_KEY` (China) |
+| Meta AI        | `META_API_KEY`, `MODEL_API_KEY`, or `META_MODEL_API_KEY` (pay-as-you-go)    |
+| Meta Muse Code | `META_MUSE_CODE_API_KEY` (subscription only)                                |
 | Xiaomi MiMo    | `XIAOMI_API_KEY`                                                             |
 | ZenMux         | `ZENMUX_API_KEY`                                                             |
 | vLLM           | `VLLM_API_KEY`                                                               |
@@ -1019,6 +1023,7 @@ Several providers support OAuth authentication (some also support static API key
 - **Google Gemini CLI** (Gemini 2.0/2.5 via Google Cloud Code Assist; free tier or paid subscription)
 - **Antigravity** (Free Gemini 3, Claude, GPT-OSS via Google Cloud)
 - **Qwen Portal** (Qwen OAuth token or API key)
+- **Meta Muse Code** (Muse Code subscription, device-code sign-in; requires the installed Muse Code CLI)
 
 For paid Cloud Code Assist subscriptions, set `GOOGLE_CLOUD_PROJECT` or `GOOGLE_CLOUD_PROJECT_ID` to your project ID.
 
@@ -1181,6 +1186,8 @@ const response = await complete(
 **GitHub Copilot**: If you get "The requested model is not supported" error, enable the model manually in VS Code: open Copilot Chat, click the model selector, select the model (warning icon), and click "Enable".
 
 **Google Gemini CLI / Antigravity**: These use Google Cloud OAuth. The `apiKey` returned by `getOAuthApiKey()` is a JSON string containing both the token and project ID, which the library handles automatically.
+
+**Meta Muse Code**: Meta restricts Muse Code subscriptions to the official client, so the `meta-muse-code` provider does not send the subscription key to the pay-as-you-go Meta API. It spawns the installed official Muse Code CLI and drives a session through it. The CLI must be installed; OMPK resolves it from `MUSE_BIN`, then the versioned binary under `%LOCALAPPDATA%\Programs\muse\` on Windows, then `muse` on `PATH`. The library exposes the caller's tools to the CLI over an authenticated loopback MCP bridge, while the CLI's own shell, write, and user-input tools stay disabled. `meta-muse-code` never falls back to the pay-as-you-go `META_API_KEY` family.
 
 ## License
 

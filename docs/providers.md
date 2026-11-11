@@ -119,6 +119,8 @@ Each provider has one or more environment variables that supply a key when no st
 | `qwen-portal` | `QWEN_OAUTH_TOKEN`, then `QWEN_PORTAL_API_KEY` |
 | `synthetic` | `SYNTHETIC_API_KEY` |
 | `minimax` | `MINIMAX_API_KEY` |
+| `meta` | `META_API_KEY`, then `MODEL_API_KEY`, then `META_MODEL_API_KEY` (pay-as-you-go developer key) |
+| `meta-muse-code` | `META_MUSE_CODE_API_KEY` (Muse Code subscription only) |
 | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` |
 | `aimlapi` | `AIMLAPI_API_KEY` |
 | `gitlab-duo` | `GITLAB_TOKEN` |
@@ -160,6 +162,43 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434
 - values may be wrapped in single or double quotes, which are stripped;
 - values containing a NUL byte are dropped;
 - an `OMP_`-prefixed key is also mirrored to the matching `PI_`-prefixed name.
+
+## Meta AI and Meta Muse Code
+
+Meta exposes two separate provider IDs with different credentials and different transports:
+
+| Provider ID | Credentials | Transport |
+|---|---|---|
+| `meta` | Pay-as-you-go developer key (`META_API_KEY` and aliases), or a Muse subscription imported from the Muse CLI | Direct HTTPS to `https://api.meta.ai/v1` |
+| `meta-muse-code` | Muse Code subscription only (`META_MUSE_CODE_API_KEY`, or an imported Muse CLI subscription key) | The installed official Muse Code CLI session |
+
+Note that `meta` sends whatever key it resolved straight to the pay-as-you-go Meta API. If your credential is a Muse subscription key, select `meta-muse-code` instead so the request goes through the official CLI.
+
+### `meta-muse-code` requires the Muse Code CLI
+
+Meta restricts Muse Code subscriptions to the official client, so OMPK cannot send the subscription key straight to the pay-as-you-go Meta API. Selecting `meta-muse-code` instead starts an installed **Muse Code CLI** session and routes the turn through it.
+
+Install the Muse Code CLI before selecting this provider. OMPK resolves the executable in this order:
+
+1. The `MUSE_BIN` environment variable.
+2. On Windows, the versioned binary under `%LOCALAPPDATA%\Programs\muse\` (selected by its `.muse-version` file).
+3. Otherwise, `muse` from `PATH`.
+
+If the CLI is missing, the session fails to start with a spawn error rather than falling back to the pay-as-you-go API.
+
+### Signing in
+
+`/login meta` offers a choice between the two credential types: option **1** signs in to a Muse Code subscription, option **2** accepts a pay-as-you-go developer key. `/login meta-muse-code` always takes the subscription path.
+
+The subscription sign-in uses a device-code flow, exchanges the OAuth token for a subscription API key, requires an active subscription, and validates the key against `https://api.meta.ai/v1/models` before saving. A failed sign-in leaves stored credentials and `~/.config/muse/auth.json` untouched.
+
+Existing Muse CLI credentials are imported automatically from `~/.config/muse/auth.json` (including WSL Ubuntu homes, `$XDG_CONFIG_HOME`, and Windows `%USERPROFILE%`), so a prior `muse login` works without signing in again. Only a real subscription `api_key` is imported; an `access_token`, or an `api_key` that merely copies one, is never used as an API key. A successful sign-in also mirrors the credential to the Muse CLI config so the CLI stays in sync.
+
+`meta-muse-code` never falls back to the pay-as-you-go Meta environment keys. If you have `META_API_KEY` set, it is ignored for this provider; set `META_MUSE_CODE_API_KEY` instead.
+
+### Tool handling
+
+OMPK exposes its own tools to the Muse CLI over an authenticated loopback MCP bridge, so approvals, sandboxing, and tool events stay native to OMPK. The Muse CLI's own shell, write, and user-input tools are disabled.
 
 ## Built-in local engines
 
