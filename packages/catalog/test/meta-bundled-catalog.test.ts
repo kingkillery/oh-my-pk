@@ -24,6 +24,7 @@ describe("meta bundled catalog", () => {
 			"muse-spark-1.2-contributor",
 			"muse-spark-1.3",
 			"muse-spark-1.3-contributor",
+			"muse-wonder-1.0",
 		]);
 		for (const model of Object.values(models)) {
 			expect(model.provider).toBe("meta");
