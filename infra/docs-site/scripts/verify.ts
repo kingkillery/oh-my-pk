@@ -99,7 +99,9 @@ const failures = (await Promise.all([...pageLinks].map(async path => {
 assert.deepEqual(failures, [], "rendered documentation links must point to generated assets");
 assert.equal((await request("/docs/pagefind/pagefind.js")).status, 200);
 assert.equal((await request("/docs/no-such-document/")).status, 404);
-assert.equal((await request("/version")).status, 503);
+const versionRes = await request("/version");
+assert.equal(versionRes.status, 200);
+assert((await versionRes.text()).startsWith("v"), "version should return a release tag starting with v");
 assert.equal((await request("/collab/")).status, 503);
 assert.equal((await request("/", "POST")).status, 405);
 console.log(`Verified ${sections.length} documentation sections, ${sections.reduce((sum, section) => sum + section.entries.length, 0)} curated pages, ${pageLinks.size} internal paths, raw Markdown, indexes, and Worker routing.`);

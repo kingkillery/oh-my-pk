@@ -17,6 +17,7 @@
 //   var (optional): HF_REPO_TYPE "models" (default) | "datasets"
 //   service: COLLAB      ompk-collab Worker binding
 
+const GITHUB_REPO = "kingkillery/oh-my-pk";
 const GITHUB_RAW_BASE = "https://raw.githubusercontent.com/kingkillery/oh-my-pk/main/scripts";
 
 function hfResolveUrl(env, repoPath) {
@@ -24,6 +25,29 @@ function hfResolveUrl(env, repoPath) {
 	const revision = env.HF_REVISION || "main";
 	// `repoPath` is the path inside the repo, e.g. "VERSION" or "v16.1.8/omp-linux-x64".
 	return `https://huggingface.co/${repoType}${env.HF_REPO}/resolve/${revision}/${repoPath}`;
+}
+
+function hfRawUrl(env, repoPath) {
+	const repoType = env.HF_REPO_TYPE === "datasets" ? "datasets/" : "";
+	const revision = env.HF_REVISION || "main";
+	return `https://huggingface.co/${repoType}${env.HF_REPO}/raw/${revision}/${repoPath}`;
+}
+
+async function resolveLatestGithubVersion() {
+	try {
+		const res = await fetch(`https://github.com/${GITHUB_REPO}/releases/latest`, {
+			redirect: "manual",
+			headers: { "User-Agent": "oh-my-pk-install-redirect" },
+		});
+		const loc = res.headers.get("location");
+		if (loc) {
+			const tag = loc.split("/").pop();
+			if (tag && tag.startsWith("v")) return tag;
+		}
+	} catch {
+		// ignore
+	}
+	return "v16.4.34";
 }
 
 async function proxyInstallScript(target, request) {
@@ -41,15 +65,59 @@ async function proxyInstallScript(target, request) {
 }
 
 async function proxyHf(env, repoPath, { cacheSeconds, ctx, request }) {
-	if (!env.HF_REPO || !env.HF_TOKEN) {
-		return new Response("Distribution backend not configured (HF_REPO/HF_TOKEN).", { status: 503 });
-	}
 	// Edge-cache successful binary/version responses so repeated installs do not
 	// re-hit Hugging Face. Keyed by the public request URL.
-	const cache = caches.default;
+	const cache = typeof caches !== "undefined" && caches?.default ? caches.default : null;
 	const cacheKey = new Request(new URL(request.url).toString(), { method: "GET" });
-	const cached = await cache.match(cacheKey);
-	if (cached) return cached;
+	if (cache) {
+		const cached = await cache.match(cacheKey);
+		if (cached) return cached;
+	}
+
+	// Special handling for VERSION: try HF raw git file first (which is not blocked
+	// by LFS storage limits), then fallback to GitHub latest release tag.
+	if (repoPath === "VERSION") {
+		let versionText = "";
+		if (env.HF_REPO && env.HF_TOKEN) {
+			try {
+				const rawUpstream = await fetch(hfRawUrl(env, "VERSION"), {
+					headers: { Authorization: `Bearer ${env.HF_TOKEN}`, "User-Agent": "oh-my-pk-install-redirect" },
+				});
+				if (rawUpstream.ok) {
+					const text = (await rawUpstream.text()).trim();
+					if (text && text.startsWith("v")) versionText = `${text}\n`;
+				}
+			} catch {}
+		}
+		if (!versionText) {
+			const tag = await resolveLatestGithubVersion();
+			versionText = `${tag}\n`;
+		}
+		const headers = new Headers();
+		headers.set("Cache-Control", `public, max-age=${cacheSeconds}`);
+		headers.set("Access-Control-Allow-Origin", "*");
+		headers.set("Content-Type", "text/plain; charset=utf-8");
+		const response = new Response(versionText, { status: 200, headers });
+		if (cache && ctx) ctx.waitUntil(cache.put(cacheKey, response.clone()));
+		return response;
+	}
+
+	if (!env.HF_REPO || !env.HF_TOKEN) {
+		// Fall back to GitHub release assets redirect if HF backend is unconfigured
+		const parts = repoPath.split("/");
+		if (parts.length === 2 && parts[0].startsWith("v")) {
+			const [tag, file] = parts;
+			return new Response(null, {
+				status: 302,
+				headers: {
+					Location: `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${file}`,
+					"Cache-Control": `public, max-age=${cacheSeconds}`,
+					"Access-Control-Allow-Origin": "*",
+				},
+			});
+		}
+		return new Response("Distribution backend not configured (HF_REPO/HF_TOKEN).", { status: 503 });
+	}
 
 	// `resolve` 302-redirects private LFS objects to a pre-signed CDN URL that needs
 	// no auth, so following the redirect (default) is safe — the token only unlocks
@@ -58,6 +126,20 @@ async function proxyHf(env, repoPath, { cacheSeconds, ctx, request }) {
 		headers: { Authorization: `Bearer ${env.HF_TOKEN}`, "User-Agent": "oh-my-pk-install-redirect" },
 	});
 	if (!upstream.ok) {
+		// If Hugging Face is unreachable, storage-limited (403), or returns an error,
+		// fall back to GitHub release assets redirect so installers don't fail.
+		const parts = repoPath.split("/");
+		if (parts.length === 2 && parts[0].startsWith("v")) {
+			const [tag, file] = parts;
+			return new Response(null, {
+				status: 302,
+				headers: {
+					Location: `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${file}`,
+					"Cache-Control": `public, max-age=${cacheSeconds}`,
+					"Access-Control-Allow-Origin": "*",
+				},
+			});
+		}
 		return new Response(`Asset not found: ${repoPath} (${upstream.status})`, { status: upstream.status === 404 ? 404 : 502 });
 	}
 
@@ -70,7 +152,7 @@ async function proxyHf(env, repoPath, { cacheSeconds, ctx, request }) {
 	if (contentLength) headers.set("Content-Length", contentLength);
 
 	const response = new Response(upstream.body, { status: 200, headers });
-	if (ctx) ctx.waitUntil(cache.put(cacheKey, response.clone()));
+	if (cache && ctx) ctx.waitUntil(cache.put(cacheKey, response.clone()));
 	return response;
 }
 
