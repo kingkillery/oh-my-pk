@@ -823,3 +823,62 @@ If `models.yml` fails schema or validation checks:
 
 - registry keeps operating with built-in models
 - error is exposed via `ModelRegistry.getError()` and surfaced in UI/notifications
+
+
+## Cloudflare Model Router & Preferred Pool (`https://oh-my-pk.pkking.computer/v1`)
+
+`oh-my-pk` hosts a high-performance, edge-deployed model router behind an OpenAI-compatible API on Cloudflare Workers:
+
+- **Base URL**: `https://oh-my-pk.pkking.computer/v1`
+- **Models Endpoint**: `GET https://oh-my-pk.pkking.computer/v1/models`
+- **Chat Completions**: `POST https://oh-my-pk.pkking.computer/v1/chat/completions`
+- **Decision Route**: `POST https://oh-my-pk.pkking.computer/v1/route`
+
+### Preferred Model Pool
+
+The router maintains an active pool of prioritized models optimized across coding, frontier reasoning, speed, multimodal, and zero-cost free tiers:
+
+| Provider | Model Identifier | Routing Lane | Context | Cost / Mtok | Primary Role & Capabilities |
+|:---|:---|:---|:---|:---|:---|
+| **kimi-code** | `k3.1-pro` | `coding` | 131k | $1.20 | Deep reasoning code specialist, architecture, refactoring |
+| **minimax-code** | `MiniMax-M3.1-Flash` | `balanced` / `long_context` | 1M | $0.25 | 1M-token balanced execution, large codebase context |
+| **openrouter** | `deepseek/deepseek-v4.1-flash-1017` | `fast` | 128k | $0.14 | Ultra-fast low-latency reasoning and task delegation |
+| **openrouter** | `recursive/flint-v1.0:free` | `free` / `decision` | 64k | $0.00 | Free high-speed tier & instant routing classifier |
+| **openrouter** | `baidu/ernie-5.5-flash-preview:free` | `free` | 32k | $0.00 | High-throughput zero-cost general lane |
+| **openrouter** | `nvidia/nemotron-3-ultra-550b-a55b:free` | `free` | 128k | $0.00 | 128k zero-cost reasoning lane |
+| **openrouter** | `dots-studio/dots-3-note-preview:free` | `free` | 32k | $0.00 | Compact zero-cost lightweight lane |
+| **google-antigravity** | `gemini-3.8-flash-tiered` | `multimodal` | 1M | $0.30 | 1M-token multimodal vision, audio, browser control |
+| **openai-codex** | `gpt-6-luna` | `structured` | 128k | $1.50 | Fast agentic tool calls and structured outputs |
+| **openai-codex** | `gpt-6.1-terra` | `quality` / `safe` | 200k | $3.00 | Frontier flagship quality, security audits, and policy |
+
+### Using the Router Provider in `models.yml`
+
+To route session requests through the Cloudflare router endpoint, add an entry to your `~/.ompk/agent/models.yml`:
+
+```yaml
+providers:
+  ompk-router:
+    baseUrl: https://oh-my-pk.pkking.computer/v1
+    api: openai-completions
+    models:
+      - id: router/auto
+        name: Auto Router (Smart Dispatch)
+        contextWindow: 1000000
+        maxTokens: 32768
+```
+
+### Super-Fast Decision Dispatcher CLI
+
+A CLI tool is available to test routing decisions and benchmark token savings:
+
+```bash
+# Run ad-hoc decision routing
+bun scripts/fast-decision-dispatch.ts "Refactor this TypeScript state machine with unit tests"
+
+# Force speed or cost preferences
+bun scripts/fast-decision-dispatch.ts --preference=speed "Translate hello world to Japanese"
+bun scripts/fast-decision-dispatch.ts --preference=cost "Who wrote Don Quixote?"
+
+# Run the live benchmark across prompt categories
+bun scripts/fast-decision-dispatch.ts --benchmark
+```

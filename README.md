@@ -206,8 +206,7 @@ Agent Hub can sync background agents into pk-kanban, keeping long-running worker
 
 Pair a reviewer model to the 'advisor' role and it reads every turn the main agent takes, injecting notes inline — a quiet aside, a concern, or a hard blocker. It runs on its own context and its own model, so it catches what the doer rushed past. The main agent sees the note and course-corrects, or tells you why it won't.
 
-Need the second model to do work instead of review it? `/fusion on` keeps a warm cheap sidekick for settled mechanical tasks while the frontier model keeps the reasoning. Choose `delegate` or `escalate`, optionally route through a model pool, and inspect live sidekick state and token split with `/fusion status`. Fusion is opt-in and requires an available, credentialed sidekick model.
-
+Need the second model to do work instead of review it? `/fusion on` keeps a warm cheap sidekick for settled mechanical tasks while the frontier model keeps the reasoning. Choose `delegate` or `escalate`, optionally route through a tiered model pool, and toggle decision-model routing with `/fusion decision on` (or route specifically across custom pool tiers with `/fusion pool decision on`). Inspect live sidekick state and token split with `/fusion status`. See the [Fusion guide](docs/fusion.md) and [Models & Router](docs/models.md).
 ### 07 · Hand someone the link, they're in.
 
 /collab puts your live session on a relay and hands back a link — and a QR. A teammate joins from another terminal with oh-my-pk join, or just opens it in a browser. Share read-write to pair on the same agent, or /collab view for a read-only link anyone can watch but no one can steer. Frames are sealed client-side; the relay never sees your keys.

@@ -32,6 +32,7 @@ The `docs/` tree is the versioned, distributable product documentation. Personal
 - [Advisor and watchdog](advisor-watchdog.md)
 - [Cost and performance tuning](cost-performance-tuning.md)
 - [Ethereal workspaces](ethereal-workspaces.md)
+- [Fusion mode and decision routing](fusion.md)
 - [Session tree](tree.md)
 
 ## Tool reference
