@@ -4711,7 +4711,7 @@ export class AgentSession {
 		// beginDispose() stopped the advisor and captured its recorder close; await
 		// it so the final advisor turn is flushed before the process may exit.
 		await this.#advisorRecorderClosed;
-		this.#closeAllProviderSessions("dispose");
+		await this.#closeAllProviderSessions("dispose");
 		// Disconnect the MCP manager this session OWNS so its stdio servers are
 		// not orphaned at exit. Best-effort: a failure here must never throw out
 		// of dispose. Only owning (top-level) sessions provide this callback;
@@ -4786,27 +4786,41 @@ export class AgentSession {
 		this.#eventListeners = [];
 	}
 
-	#closeAllProviderSessions(reason: string): void {
+	async #closeAllProviderSessions(reason: string): Promise<void> {
+		const pending: Promise<void>[] = [];
 		for (const [providerKey, state] of this.#providerSessionState) {
 			try {
-				state.close();
+				const closed = state.close();
+				if (closed) {
+					pending.push(
+						closed.catch(error => {
+							logger.warn("Failed to close provider session state", {
+								providerKey,
+								reason,
+								error: String(error),
+							});
+						}),
+					);
+				}
 			} catch (error) {
-				logger.warn("Failed to close provider session state", {
-					providerKey,
-					reason,
-					error: String(error),
-				});
+				logger.warn("Failed to close provider session state", { providerKey, reason, error: String(error) });
 			}
 		}
-
 		this.#providerSessionState.clear();
+		if (pending.length > 0) {
+			try {
+				await withTimeout(Promise.all(pending), 5000, "Timed out closing provider sessions");
+			} catch (error) {
+				logger.warn("Provider session cleanup did not finish", { reason, error: String(error) });
+			}
+		}
 	}
 
 	freshSession(): FreshSessionResult | undefined {
 		if (this.isStreaming) return undefined;
 		const previousSessionId = this.sessionId;
 		const closedProviderSessions = this.#providerSessionState.size;
-		this.#closeAllProviderSessions("fresh session");
+		void this.#closeAllProviderSessions("fresh session");
 		this.#freshProviderSessionId = Bun.randomUUIDv7();
 		this.#syncAgentSessionId();
 		this.#rekeyHindsightMemoryForCurrentSessionId();
@@ -7978,7 +7992,7 @@ export class AgentSession {
 			this.#disconnectFromAgent();
 			await this.abort();
 			this.#cancelOwnAsyncJobs();
-			this.#closeAllProviderSessions("new session");
+			await this.#closeAllProviderSessions("new session");
 		}
 		this.agent.reset();
 		if (options?.drop && previousSessionFile) {
@@ -11137,7 +11151,15 @@ export class AgentSession {
 			if (!state) continue;
 
 			try {
-				state.close();
+				const closed = state.close();
+				if (closed) {
+					void closed.catch(error => {
+						logger.warn("Failed to close provider session state during model switch", {
+							providerKey,
+							error: String(error),
+						});
+					});
+				}
 			} catch (error) {
 				logger.warn("Failed to close provider session state during model switch", {
 					providerKey,
@@ -13707,9 +13729,9 @@ export class AgentSession {
 			this.#resetAdvisorSessionState();
 			this.#syncTodoPhasesFromBranch();
 			if (switchingToDifferentSession) {
-				this.#closeAllProviderSessions("session switch");
+				await this.#closeAllProviderSessions("session switch");
 			} else if (didReloadConversationChange) {
-				this.#closeAllProviderSessions("session reload");
+				await this.#closeAllProviderSessions("session reload");
 			}
 
 			// Restore model if saved

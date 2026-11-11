@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
@@ -10,7 +11,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import type { FoldedItem, MuseClient, Session } from "@muse-code/sdk";
 import { MuseClient as MuseClientRuntime } from "@muse-code/sdk";
 import { clampThinkingLevelForModel, minimumSupportedEffort } from "@pk-nerdsaver-ai/pi-catalog/model-thinking";
-import { VERSION } from "@pk-nerdsaver-ai/pi-utils";
+import { logger, VERSION } from "@pk-nerdsaver-ai/pi-utils";
+import { resolveApiKeyOnce } from "../auth-retry";
 import * as AIError from "../error";
 import type {
 	AssistantMessage,
@@ -65,9 +67,13 @@ const MUSE_MCP_AUTH_ENV = "OMPK_MUSE_MCP_AUTHORIZATION";
 export function museServeArgs(bridgeUrl: string, museProvider?: string): string[] {
 	return [
 		"serve",
+		"--preset",
+		"empty",
 		"--disable-shell",
 		"--disable-write",
 		"--disable-request-user-input",
+		"--no-session-log",
+		"--trust-workspace",
 		...(museProvider ? ["--provider", museProvider] : []),
 		"-c",
 		`mcpServers.${MUSE_MCP_SERVER_NAME}=${JSON.stringify({
@@ -75,6 +81,62 @@ export function museServeArgs(bridgeUrl: string, museProvider?: string): string[
 			headers: { Authorization: `\${${MUSE_MCP_AUTH_ENV}}` },
 		})}`,
 	];
+}
+
+/** Isolate Muse's own settings while supplying only the selected provider credential. */
+export function museHostEnvironment(
+	hostHome: string,
+	apiKey: string | undefined,
+	bridgeAuthorization: string,
+	inherited: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {};
+	for (const name of [
+		"PATH",
+		"Path",
+		"PATHEXT",
+		"SYSTEMROOT",
+		"SystemRoot",
+		"COMSPEC",
+		"ComSpec",
+		"WINDIR",
+		"windir",
+		"SHELL",
+		"TERM",
+		"LANG",
+		"LC_ALL",
+		"LC_CTYPE",
+		"HTTP_PROXY",
+		"HTTPS_PROXY",
+		"ALL_PROXY",
+		"NO_PROXY",
+		"http_proxy",
+		"https_proxy",
+		"all_proxy",
+		"no_proxy",
+		"TBH_CA_CERTIFICATE",
+		"SSL_CERT_FILE",
+		"SSL_CERT_DIR",
+		"NODE_USE_ENV_PROXY",
+	]) {
+		if (inherited[name] !== undefined) env[name] = inherited[name];
+	}
+	return {
+		...env,
+		HOME: hostHome,
+		USERPROFILE: hostHome,
+		APPDATA: hostHome,
+		LOCALAPPDATA: hostHome,
+		TEMP: hostHome,
+		TMP: hostHome,
+		TMPDIR: hostHome,
+		XDG_CONFIG_HOME: join(hostHome, "config"),
+		XDG_DATA_HOME: join(hostHome, "data"),
+		XDG_CACHE_HOME: join(hostHome, "cache"),
+		XDG_STATE_HOME: join(hostHome, "state"),
+		...(apiKey ? { META_API_KEY: apiKey } : {}),
+		[MUSE_MCP_AUTH_ENV]: bridgeAuthorization,
+	};
 }
 
 /** Resolve the installed Muse Code executable without hardcoding its version. */
@@ -250,29 +312,41 @@ export function isMuseSessionReusable(
 	sameModel: boolean,
 	sameCwd: boolean,
 	sameTools: boolean,
+	sameCredential: boolean,
 ): boolean {
-	return !closed && sameModel && sameCwd && sameTools;
+	return !closed && sameModel && sameCwd && sameTools && sameCredential;
 }
 
 class MuseCodeSessionState implements ProviderSessionState {
 	#closed = false;
 	#history: readonly Message[] = [];
+	#apiKey: string | undefined;
+	#closing: Promise<void> | undefined;
 
 	constructor(
 		readonly modelId: string,
 		readonly cwd: string,
 		readonly toolsKey: string,
+		readonly hostKey: string,
 		readonly client: MuseClient,
 		readonly session: Session,
 		readonly bridge: OmpkMcpBridge,
-	) {}
+		readonly hostRoot: string,
+		apiKey: string | undefined,
+	) {
+		this.#apiKey = apiKey;
+	}
 
-	matches(modelId: string, cwd: string, toolsKey: string): boolean {
-		return isMuseSessionReusable(
-			this.#closed,
-			this.modelId === modelId,
-			this.cwd === cwd,
-			this.toolsKey === toolsKey,
+	matches(modelId: string, cwd: string, toolsKey: string, hostKey: string, apiKey: string | undefined): boolean {
+		return (
+			this.hostKey === hostKey &&
+			isMuseSessionReusable(
+				this.#closed,
+				this.modelId === modelId,
+				this.cwd === cwd,
+				this.toolsKey === toolsKey,
+				this.#apiKey === apiKey,
+			)
 		);
 	}
 	turnInput(context: Context): MuseInputPart[] {
@@ -315,13 +389,46 @@ class MuseCodeSessionState implements ProviderSessionState {
 		this.#history = history;
 	}
 
-	close(): void {
-		if (this.#closed) return;
+	close(): Promise<void> {
+		if (this.#closing) return this.#closing;
 		this.#closed = true;
-		void this.client
-			.close()
-			.catch(() => {})
-			.finally(() => this.bridge.close());
+		this.#apiKey = undefined;
+		this.#closing = (async () => {
+			try {
+				await this.client.close();
+			} catch {
+				logger.warn("Failed to close Muse host");
+			}
+			try {
+				await this.bridge.close();
+			} catch {
+				logger.warn("Failed to close Muse tool bridge");
+			}
+			try {
+				await rm(this.hostRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			} catch {
+				logger.warn("Failed to remove Muse temporary host directory");
+			}
+		})();
+		return this.#closing;
+	}
+}
+
+class PendingMuseSession implements ProviderSessionState {
+	#closed = false;
+	#closing: Promise<void> | undefined;
+
+	constructor(readonly ready: Promise<MuseCodeSessionState>) {}
+
+	get closed(): boolean {
+		return this.#closed;
+	}
+
+	close(): Promise<void> {
+		if (this.#closing) return this.#closing;
+		this.#closed = true;
+		this.#closing = this.ready.then(state => state.close()).catch(() => {});
+		return this.#closing;
 	}
 }
 
@@ -329,25 +436,40 @@ async function createMuseState(
 	model: Model,
 	context: Context,
 	options: MuseCodeOptions,
+	hostKey: string,
+	apiKey: string | undefined,
 ): Promise<MuseCodeSessionState> {
 	if (!context.tools?.length || !options.execHandlers?.mcp) {
 		throw new AIError.ProviderResponseError("Muse Code requires the OMPK tool bridge for this session", {
 			provider: model.provider,
 		});
 	}
-	const bridge = await startOmpkMcpBridge(context.tools, options.execHandlers, options.onToolResult);
-	const cwd = process.cwd();
+	if (!apiKey && options.museProvider !== "echo") {
+		throw new AIError.ProviderResponseError("Muse Code requires a subscription key; sign in to meta-muse-code", {
+			provider: model.provider,
+		});
+	}
+	const cwd = options.cwd ?? process.cwd();
 	let client: MuseClient | undefined;
+	// Trust only an empty workspace; Muse's private home is a sibling directory.
+	const hostRoot = await mkdtemp(join(tmpdir(), "ompk-muse-"));
+	const hostWorkspace = join(hostRoot, "workspace");
+	const hostHome = join(hostRoot, "home");
+	let bridge: OmpkMcpBridge | undefined;
 	try {
+		await Promise.all([mkdir(hostWorkspace), mkdir(hostHome)]);
+		await Promise.all([mkdir(join(hostHome, "config")), mkdir(join(hostHome, "data"))]);
+		bridge = await startOmpkMcpBridge(context.tools, options.execHandlers, options.onToolResult);
 		client = await MuseClientRuntime.spawn({
 			museBin: resolveMuseBinary(options.museBin),
 			args: museServeArgs(bridge.url, options.museProvider),
-			cwd,
-			env: { ...process.env, [MUSE_MCP_AUTH_ENV]: bridge.authorization },
+			cwd: hostWorkspace,
+			env: museHostEnvironment(hostHome, apiKey, bridge.authorization),
 			clientInfo: { name: "oh_my_pk", version: VERSION },
+			shutdownTimeoutMs: 2000,
 		});
 		const session = await client.startSession({
-			workspaceRoot: cwd,
+			workspaceRoot: hostWorkspace,
 			modelId: model.id,
 			providerId: options.museProvider ?? "meta",
 			approvalMode: "allowAll",
@@ -359,20 +481,21 @@ async function createMuseState(
 				.map(tool => tool.name)
 				.sort()
 				.join("\u0000"),
+			hostKey,
 			client,
 			session,
 			bridge,
+			hostRoot,
+			apiKey,
 		);
 	} catch (error) {
 		await client?.close().catch(() => {});
-		await bridge.close().catch(() => {});
+		await bridge?.close().catch(() => {});
+		await rm(hostRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => {
+			logger.warn("Failed to remove Muse temporary host directory");
+		});
 		throw error;
 	}
-}
-
-function storedSession(options: MuseCodeOptions): MuseCodeSessionState | undefined {
-	const state = options.providerSessionState?.get(MUSE_SESSION_KEY);
-	return state instanceof MuseCodeSessionState ? state : undefined;
 }
 
 async function sessionFor(model: Model, context: Context, options: MuseCodeOptions): Promise<MuseCodeSessionState> {
@@ -380,12 +503,48 @@ async function sessionFor(model: Model, context: Context, options: MuseCodeOptio
 		.map(tool => tool.name)
 		.sort()
 		.join("\u0000");
-	const existing = storedSession(options);
-	if (existing?.matches(model.id, process.cwd(), toolsKey)) return existing;
-	existing?.close();
-	const created = await createMuseState(model, context, options);
-	options.providerSessionState?.set(MUSE_SESSION_KEY, created);
-	return created;
+	const apiKey = await resolveApiKeyOnce(options.apiKey, options.signal);
+	const cwd = options.cwd ?? process.cwd();
+	const stateKey = options.sessionId ? `${MUSE_SESSION_KEY}:${options.sessionId}` : MUSE_SESSION_KEY;
+	const hostKey = `${options.museProvider ?? "meta"}\u0000${options.museBin ?? Bun.env.MUSE_BIN ?? ""}`;
+	const store = options.providerSessionState;
+	for (;;) {
+		const existing = store?.get(stateKey);
+		if (!existing) break;
+		if (existing instanceof PendingMuseSession) {
+			const created = await existing.ready;
+			if (existing.closed || options.signal?.aborted) throw new AIError.AbortError();
+			if (created.matches(model.id, cwd, toolsKey, hostKey, apiKey)) return created;
+		} else if (
+			existing instanceof MuseCodeSessionState &&
+			existing.matches(model.id, cwd, toolsKey, hostKey, apiKey)
+		) {
+			return existing;
+		}
+		await existing.close();
+		if (store?.get(stateKey) === existing) store.delete(stateKey);
+	}
+	if (options.signal?.aborted) throw new AIError.AbortError();
+	const pending = new PendingMuseSession(createMuseState(model, context, options, hostKey, apiKey));
+	store?.set(stateKey, pending);
+	const abortPending = () => {
+		void pending.close();
+	};
+	options.signal?.addEventListener("abort", abortPending, { once: true });
+	try {
+		const created = await pending.ready;
+		if (pending.closed || options.signal?.aborted || (store && store.get(stateKey) !== pending)) {
+			await created.close();
+			throw new AIError.AbortError();
+		}
+		store?.set(stateKey, created);
+		return created;
+	} catch (error) {
+		if (store?.get(stateKey) === pending) store.delete(stateKey);
+		throw error;
+	} finally {
+		options.signal?.removeEventListener("abort", abortPending);
+	}
 }
 
 function applyStreamedItem(
@@ -456,14 +615,19 @@ function newAssistantMessage(model: Model): AssistantMessage {
 export const streamMuseCode = (model: Model<"openai-responses">, context: Context, options?: MuseCodeOptions) => {
 	const stream = new AssistantMessageEventStream();
 	const output = newAssistantMessage(model);
-	const museOptions = options as MuseCodeOptions;
+	const museOptions = options ?? {};
 
 	void (async () => {
 		const startedAt = performance.now();
 		let state: MuseCodeSessionState | undefined;
+		const abortSession = () => {
+			void state?.close();
+		};
 		try {
 			stream.push({ type: "start", partial: output });
 			state = await sessionFor(model, context, museOptions);
+			museOptions.signal?.addEventListener("abort", abortSession, { once: true });
+			if (museOptions.signal?.aborted) throw new AIError.AbortError();
 			const turn = await state.send(state.turnInput(context), model, museOptions);
 			const blocks: StreamBlocks = { textIndex: -1, textValue: "", thinkingIndex: -1, thinkingValue: "" };
 			for await (const item of turn.items()) {
@@ -512,16 +676,19 @@ export const streamMuseCode = (model: Model<"openai-responses">, context: Contex
 			output.duration = outcome.params.durationMs ?? performance.now() - startedAt;
 			if (outcome.params.timeToFirstTokenMs) output.ttft = outcome.params.timeToFirstTokenMs;
 			state.record(context.messages.slice());
+			if (!museOptions.providerSessionState) await state.close();
 			stream.push({ type: "done", reason: "stop", message: output });
 			stream.end();
 		} catch (error) {
-			state?.close();
+			await state?.close();
 			const aborted = options?.signal?.aborted === true;
 			output.stopReason = aborted ? "aborted" : "error";
 			if (!aborted) output.errorMessage = error instanceof Error ? error.message : String(error);
 			output.duration = performance.now() - startedAt;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			museOptions.signal?.removeEventListener("abort", abortSession);
 		}
 	})();
 	return stream;

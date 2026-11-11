@@ -217,7 +217,7 @@ export function getPriorityPremiumRequests(
 }
 
 export interface ProviderSessionState {
-	close(): void;
+	close(): void | Promise<void>;
 }
 
 export interface ProviderResponseMetadata {

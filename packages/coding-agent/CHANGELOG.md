@@ -5,6 +5,9 @@
 
 - Fusion pool routing can run through the decision model. With `fusion.decisionRouting` on, each compaction asks the decision model to choose a pool tier from the compaction summary plus the trailing `fusion.decisionWindowPercent` of the kept conversation, and falls back to the classifier when the decision model is unavailable or unsure.
 
+### Fixed
+
+- Session shutdown waits briefly for asynchronous provider-host cleanup before returning, so owned hosts and temporary resources can close.
 
 ## [16.4.35] - 2026-10-29
 
