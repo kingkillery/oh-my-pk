@@ -47,6 +47,24 @@ export const NON_INTERACTIVE_ENV: Readonly<Record<string, string>> = {
 	CLOUDSDK_CORE_DISABLE_PROMPTS: "1",
 };
 
+const WINDOWS_NON_INTERACTIVE_ENV: Readonly<Record<string, string>> = {
+	PAGER: "",
+	GIT_PAGER: "",
+	MANPAGER: "",
+	SYSTEMD_PAGER: "",
+	BAT_PAGER: "",
+	DELTA_PAGER: "",
+	GH_PAGER: "",
+	GLAB_PAGER: "",
+	PSQL_PAGER: "",
+	MYSQL_PAGER: "",
+	HOMEBREW_PAGER: "",
+	GIT_EDITOR: "cmd /c exit 0",
+	VISUAL: "cmd /c exit 0",
+	EDITOR: "cmd /c exit 0",
+	SSH_ASKPASS: "",
+};
+
 const WINDOWS_UTF8_ENV_DEFAULT_GROUPS: ReadonlyArray<ReadonlyArray<readonly [key: string, value: string]>> = [
 	[
 		["PYTHONIOENCODING", "utf-8"],
@@ -106,7 +124,10 @@ export function buildNonInteractiveEnv(
 		return overrides ? { ...NON_INTERACTIVE_ENV, ...overrides } : NON_INTERACTIVE_ENV;
 	}
 
-	const env: Record<string, string> = { ...NON_INTERACTIVE_ENV };
+	const env: Record<string, string> = {
+		...NON_INTERACTIVE_ENV,
+		...WINDOWS_NON_INTERACTIVE_ENV,
+	};
 	for (const group of WINDOWS_UTF8_ENV_DEFAULT_GROUPS) {
 		if (hasEnvGroupValue(baseEnv, group, platform) || hasEnvGroupValue(overrides, group, platform)) {
 			continue;

@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import * as timers from "node:timers/promises";
 import { logger, ptree, untilAborted } from "@pk-nerdsaver-ai/pi-utils";
-import { NON_INTERACTIVE_ENV } from "../exec/non-interactive-env";
+import { buildNonInteractiveEnv } from "../exec/non-interactive-env";
 import { DapClient } from "./client";
 import type {
 	DapAttachArguments,
@@ -1096,8 +1096,7 @@ export class DapSessionManager {
 				cwd: args.cwd ?? session.cwd,
 				stdin: "pipe",
 				env: {
-					...Bun.env,
-					...NON_INTERACTIVE_ENV,
+					...buildNonInteractiveEnv(undefined, Bun.env),
 					...env,
 				},
 				detached: true,

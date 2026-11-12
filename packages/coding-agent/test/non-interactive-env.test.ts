@@ -44,4 +44,35 @@ describe("buildNonInteractiveEnv", () => {
 		expect(env.LANG).toBeUndefined();
 		expect(env.LC_ALL).toBeUndefined();
 	});
+	it("does not force Unix pager or editor commands on Windows", () => {
+		const env = buildNonInteractiveEnv(undefined, {}, "win32");
+
+		for (const key of [
+			"PAGER",
+			"GIT_PAGER",
+			"MANPAGER",
+			"SYSTEMD_PAGER",
+			"BAT_PAGER",
+			"DELTA_PAGER",
+			"GH_PAGER",
+			"GLAB_PAGER",
+			"PSQL_PAGER",
+			"MYSQL_PAGER",
+			"HOMEBREW_PAGER",
+		]) {
+			expect(env[key]).toBe("");
+		}
+		expect(env.GIT_EDITOR).toBe("cmd /c exit 0");
+		expect(env.VISUAL).toBe("cmd /c exit 0");
+		expect(env.EDITOR).toBe("cmd /c exit 0");
+		expect(env.SSH_ASKPASS).toBe("");
+	});
+
+	it("keeps Unix noninteractive commands unchanged on non-Windows platforms", () => {
+		const env = buildNonInteractiveEnv(undefined, {}, "linux");
+
+		expect(env.PAGER).toBe("cat");
+		expect(env.GIT_EDITOR).toBe("true");
+		expect(env.SSH_ASKPASS).toBe("/usr/bin/false");
+	});
 });
