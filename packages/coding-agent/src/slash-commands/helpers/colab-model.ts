@@ -19,6 +19,58 @@ const HTTP_PREFIX = "__OMPK_COLAB_HTTP__";
 const TOOL_READINESS_FUNCTION = "ompk_tool_readiness_probe";
 const TOOL_READINESS_DECOY_FUNCTION = "ompk_decoy_probe";
 const MAX_COMMAND_OUTPUT = 2 * 1024 * 1024;
+const TEMPORARY_COLAB_PROVIDER = "temporary-colab";
+
+async function upsertTemporaryColabModel(input: {
+	baseUrl: string;
+	modelId: string;
+	name: string;
+	contextWindow: number;
+	maxTokens: number;
+	supportsTools: boolean;
+}): Promise<string> {
+	const file = path.join(os.homedir(), ".ompk", "agent", "models.yml");
+	await Bun.write(file, await renderTemporaryColabConfig(file, input));
+	return file;
+}
+
+async function renderTemporaryColabConfig(
+	file: string,
+	input: {
+		baseUrl: string;
+		modelId: string;
+		name: string;
+		contextWindow: number;
+		maxTokens: number;
+		supportsTools: boolean;
+	},
+): Promise<string> {
+	const existing = (await Bun.file(file).exists()) ? await Bun.file(file).text() : "providers:\n";
+	const block = [
+		`  ${TEMPORARY_COLAB_PROVIDER}:`,
+		`    baseUrl: ${input.baseUrl}`,
+		"    api: openai-completions",
+		"    auth: none",
+		"    models:",
+		`      - id: ${input.modelId}`,
+		`        name: ${TEMPORARY_COLAB_PROVIDER}`,
+		"        reasoning: false",
+		"        input:",
+		"          - text",
+		`        supportsTools: ${input.supportsTools}`,
+		"        cost:",
+		"          input: 0",
+		"          output: 0",
+		"          cacheRead: 0",
+		"          cacheWrite: 0",
+		`        contextWindow: ${input.contextWindow}`,
+		`        maxTokens: ${input.maxTokens}`,
+	].join("\n");
+	const pattern = new RegExp(`(?:^|\\n)  ${TEMPORARY_COLAB_PROVIDER}:[\\s\\S]*?(?=\\n  [A-Za-z0-9_-]+:|$)`);
+	if (pattern.test(existing)) return existing.replace(pattern, `\n${block}`);
+	return `${existing.trimEnd()}\n${block}\n`;
+}
+
 
 /** Colab runtime hardware. `CPU` is the no-accelerator runtime (`colab new` without `--gpu`). */
 export type ColabAccelerator = "T4" | "L4" | "A100" | "H100" | "G4" | "CPU";
@@ -3116,6 +3168,14 @@ export async function handleColabModelSlashCommand(
 		await runtime.session.setModel(model);
 		await runtime.notifyTitleChanged?.();
 		await runtime.notifyConfigChanged?.();
+		const temporaryConfig = await upsertTemporaryColabModel({
+			baseUrl: result.apiBaseUrl,
+			modelId: liveId,
+			name: `${modelName} · Colab ${result.accelerator}`,
+			contextWindow: result.contextWindow,
+			maxTokens: result.maxTokens,
+			supportsTools: !isDiffusion,
+		});
 		await runtime.output(
 			[
 				"STATUS: running",
@@ -3129,6 +3189,7 @@ export async function handleColabModelSlashCommand(
 				`Connect: colab url --session ${result.sessionName}`,
 				`SSH: install the client public key on the VM, then ssh -p 2222 root@<tailscale-ipv4>. Direct SSH is not reachable until that tunnel is up.`,
 				`Runtime: ${result.sessionName} (stop with: colab stop --session ${result.sessionName})`,
+				`OMPK config: ${temporaryConfig}`,
 				...(isDiffusion
 					? ["Tools: unavailable — the diffusion CLI cannot emit tool calls; this model answers chat only."]
 					: []),
