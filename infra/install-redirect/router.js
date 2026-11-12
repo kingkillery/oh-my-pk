@@ -104,6 +104,58 @@ export const PREFERRED_MODELS = [
 		lane: "free",
 		contextWindow: 128000,
 	},
+	// Verified free set — 2026-11-12. OpenRouter ids are zero-priced
+	// (prompt and completion) with tool support and a live 200; NVIDIA ids
+	// answered a real chat call on a free-tier key. Ids that 401/404 or only
+	// burn NIM credits were left out.
+	{
+		id: "openrouter/cohere/north-mini-code:free",
+		object: "model",
+		owned_by: "openrouter",
+		label: "North Mini Code Free Lane (tool-capable)",
+		lane: "free",
+		contextWindow: 256000,
+	},
+	{
+		id: "openrouter/liquid/lfm-2.5-2.6b:free",
+		object: "model",
+		owned_by: "openrouter",
+		label: "LFM 2.5 2.6B Free Lane (fastest cheap lane)",
+		lane: "free",
+		contextWindow: 65536,
+	},
+	{
+		id: "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+		object: "model",
+		owned_by: "openrouter",
+		label: "Nemotron 3 Nano Omni Free Lane (multimodal reasoning)",
+		lane: "free",
+		contextWindow: 256000,
+	},
+	{
+		id: "nvidia/nvidia/nemotron-3.5-lightning-30b-a3b",
+		object: "model",
+		owned_by: "nvidia",
+		label: "Nemotron 3.5 Lightning via NVIDIA NIM (key round-robin)",
+		lane: "free",
+		contextWindow: 32768,
+	},
+	{
+		id: "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+		object: "model",
+		owned_by: "nvidia",
+		label: "Nemotron 3 Nano Omni via NVIDIA NIM (key round-robin)",
+		lane: "free",
+		contextWindow: 32768,
+	},
+	{
+		id: "nvidia/nvidia/nemotron-3.5-bolt-e4b",
+		object: "model",
+		owned_by: "nvidia",
+		label: "Nemotron 3.5 Bolt via NVIDIA NIM (key round-robin)",
+		lane: "free",
+		contextWindow: 32768,
+	},
 	{
 		id: "google-antigravity/gemini-3.8-flash-tiered",
 		object: "model",

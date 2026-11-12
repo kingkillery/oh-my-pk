@@ -851,6 +851,24 @@ The router maintains an active pool of prioritized models optimized across codin
 | **openai-codex** | `gpt-6-luna` | `structured` | 128k | $1.50 | Fast agentic tool calls and structured outputs |
 | **openai-codex** | `gpt-6.1-terra` | `quality` / `safe` | 200k | $3.00 | Frontier flagship quality, security audits, and policy |
 
+#### Verified free lanes (2026-11-12)
+
+Free lanes are admitted only after a live chat call returns content. OpenRouter ids must be zero-priced on both prompt and completion and advertise tool support; NVIDIA ids must answer on a free-tier key without burning NIM credits.
+
+| Provider | Model Identifier | Routing Lane | Context | Cost / Mtok | Primary Role & Capabilities |
+|:---|:---|:---|:---|:---|:---|
+| **nvidia** | `minimaxai/minimax-m3.1-flash` | `balanced` | 1M | $0.00 | Long-context balanced execution via NIM |
+| **nvidia** | `deepseek-ai/deepseek-v4.1-flash` | `fast` | 128k | $0.00 | Low-latency reasoning; slow enough to risk a 524 on long prompts |
+| **nvidia** | `nvidia/nemotron-3-ultra-550b-a55b` | `free` | 128k | $0.00 | Zero-cost reasoning lane via NIM |
+| **nvidia** | `nvidia/nemotron-3.5-lightning-30b-a3b` | `free` | 32k | $0.00 | Small, fast NIM model |
+| **nvidia** | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | `free` | 32k | $0.00 | Multimodal reasoning via NIM |
+| **nvidia** | `nvidia/nemotron-3.5-bolt-e4b` | `free` | 32k | $0.00 | Small NIM model |
+| **openrouter** | `cohere/north-mini-code:free` | `free` | 256k | $0.00 | Tool-capable free code lane |
+| **openrouter** | `liquid/lfm-2.5-2.6b:free` | `free` | 64k | $0.00 | Smallest, fastest free lane |
+| **openrouter** | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | `free` | 256k | $0.00 | Multimodal reasoning, free tier |
+
+NVIDIA ids are dispatched through the NIM endpoint and OpenRouter ids through OpenRouter. Both pools round-robin across the keys in `NVIDIA_API_KEYS` and `OPENROUTER_API_KEYS`.
+
 ### Using the Router Provider in `models.yml`
 
 To route session requests through the Cloudflare router endpoint, add an entry to your `~/.ompk/agent/models.yml`:
@@ -860,12 +878,25 @@ providers:
   ompk-router:
     baseUrl: https://oh-my-pk.pkking.computer/v1
     api: openai-completions
+    auth: none
     models:
       - id: router/auto
         name: Auto Router (Smart Dispatch)
         contextWindow: 1000000
         maxTokens: 32768
+      - id: nvidia/minimaxai/minimax-m3.1-flash
+        name: MiniMax M3.1 Flash (NVIDIA)
+        input:
+          - text
+        cost:
+          input: 0
+          output: 0
+          cacheRead: 0
+          cacheWrite: 0
+        contextWindow: 1000000
 ```
+
+`auth: none` is required: the Worker holds provider credentials, so no client key is sent. Ids carry the provider prefix (`nvidia/…`, `openrouter/…:free`); the Worker strips one prefix before dispatch. The full free set is served by `GET /v1/models`.
 
 ### Super-Fast Decision Dispatcher CLI
 
