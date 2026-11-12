@@ -1,6 +1,6 @@
 {
 	"name": "@pk-nerdsaver-ai/pi-chatgpt-connector",
-	"version": "16.4.35",
+	"version": "16.4.36",
 	"description": "ChatGPT connector for oh-my-pk: a remote MCP server that launches and drives ompk tasks from ChatGPT, plus an ompk-side tool for delegating work to ChatGPT",
 	"homepage": "https://github.com/kingkillery/oh-my-pk",
 	"license": "MIT",

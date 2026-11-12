@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [16.4.36] - 2026-11-12
+
 ### Changed
 
 - Renamed MiniMax Token Plan to "Minimax Code (minimax m plan)" while preserving regional provider IDs and saved credentials. Login now links to the current M Plan console and validates with MiniMax-M3.1-Flash.

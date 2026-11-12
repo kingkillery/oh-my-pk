@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [16.4.36] - 2026-11-12
+
 ### Added
 
 - Refreshed both MiniMax M Plan catalogs, including MiniMax-M3.1-Flash with 1M context, image input, and mandatory low-through-max reasoning. The current stable Flash model is the plan default; its retired preview alias is folded into the stable picker entry.

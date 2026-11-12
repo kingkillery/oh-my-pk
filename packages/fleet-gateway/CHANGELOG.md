@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [16.4.36] - 2026-11-12
+
 ### Added
 
 - Initial `ompk-fleet-gateway`: one MCP front door routing coding work to ompk connectors on enrolled machines.

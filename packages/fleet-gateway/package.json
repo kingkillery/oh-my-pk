@@ -1,6 +1,6 @@
 {
 	"name": "@pk-nerdsaver-ai/pi-fleet-gateway",
-	"version": "16.4.34",
+	"version": "16.4.36",
 	"description": "omp fleet gateway: one MCP connection that routes coding work to ompk connectors on every enrolled machine",
 	"homepage": "https://github.com/kingkillery/oh-my-pk",
 	"license": "MIT",

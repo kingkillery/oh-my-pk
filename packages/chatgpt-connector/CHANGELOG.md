@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [16.4.36] - 2026-11-12
+
 ### Added
 
 - `@pk-nerdsaver-ai/pi-chatgpt-connector`: remote MCP server that lets ChatGPT
