@@ -66,6 +66,82 @@ describe("Cloudflare Router Endpoints", () => {
 		expect(speedRoute.lane).toBe("fast");
 	});
 
+	it("prefers the verified OpenRouter flash lane for normal turns", () => {
+		const route = evaluateFastRoute({ messages: [{ role: "user", content: "Explain the difference between a queue and a stack." }] });
+		expect(route.selectedModel).toBe("openrouter/deepseek/deepseek-v4.1-flash-1017");
+		expect(route.lane).toBe("fast");
+		expect(route.fallbackChain.slice(0, 3)).toEqual([
+			"minimax-code/MiniMax-M3.1-Flash",
+			"nvidia/minimaxai/minimax-m3.1-flash",
+			"groq/openai/gpt-oss-120b",
+		]);
+	});
+
+	it("does not make a separate decision request on the auto common path", async () => {
+		const calls = [];
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+			calls.push({ url: String(url), body: JSON.parse(init?.body) });
+			return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" } }] }), { status: 200 }));
+		});
+		const res = await worker.fetch(
+			new Request("https://oh-my-pk.pkking.computer/v1/chat/completions", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ model: "router/auto", messages: [{ role: "user", content: "Say hello" }] }),
+			}),
+			{ OPENROUTER_API_KEY: "test-openrouter-key" },
+			{},
+		);
+		expect(res.status).toBe(200);
+		expect(calls).toHaveLength(1);
+		expect(calls[0].body.model).toBe("deepseek/deepseek-v4.1-flash-1017");
+		fetchSpy.mockRestore();
+	});
+
+	it("tries the deterministic fallback only after a retryable upstream failure", async () => {
+		const models = [];
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+			const body = JSON.parse(init?.body);
+			models.push(body.model);
+			const status = models.length === 1 ? 429 : 200;
+			return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" } }] }), { status }));
+		});
+		const res = await worker.fetch(
+			new Request("https://oh-my-pk.pkking.computer/v1/chat/completions", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ model: "router/auto", messages: [{ role: "user", content: "Say hello" }] }),
+			}),
+			{ OPENROUTER_API_KEY: "test-openrouter-key" },
+			{},
+		);
+		expect(res.status).toBe(200);
+		expect(models).toEqual(["deepseek/deepseek-v4.1-flash-1017", "minimax/minimax-m3.1-flash"]);
+		fetchSpy.mockRestore();
+	});
+
+	it("falls through the same chain when the primary request rejects", async () => {
+		const models = [];
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+			const body = JSON.parse(init?.body);
+			models.push(body.model);
+			if (models.length === 1) throw new Error("upstream timeout");
+			return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" } }] }), { status: 200 }));
+		});
+		const res = await worker.fetch(
+			new Request("https://oh-my-pk.pkking.computer/v1/chat/completions", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ model: "router/auto", messages: [{ role: "user", content: "Say hello" }] }),
+			}),
+			{ OPENROUTER_API_KEY: "test-openrouter-key" },
+			{},
+		);
+		expect(res.status).toBe(200);
+		expect(models).toEqual(["deepseek/deepseek-v4.1-flash-1017", "minimax/minimax-m3.1-flash"]);
+		fetchSpy.mockRestore();
+	});
+
 	it("returns decision metadata on POST /v1/route", async () => {
 		const req = new Request("https://oh-my-pk.pkking.computer/v1/route", {
 			method: "POST",

@@ -361,15 +361,23 @@ export function evaluateFastRoute(input) {
 		};
 	}
 
-	// 6. Default Balanced
+	// Normal turns use the verified OpenRouter flash lane first. The remaining
+	// entries are ordered by the configured low-latency fallback preference;
+	// dispatch retries them only after an upstream failure, so the common path
+	// remains one local decision and one model request.
 	return {
-		selectedModel: "minimax-code/MiniMax-M3.1-Flash",
-		lane: "balanced",
-		reason: "General balanced request routed to Minimax M3.1 Flash",
-		confidence: 0.88,
-		estimatedCostPerM: 0.25,
-		estimatedLatencyMs: 1100,
-		fallbackChain: ["openrouter/deepseek/deepseek-v4.1-flash-1017", "kimi-code/k3.1-pro"],
+		selectedModel: "openrouter/deepseek/deepseek-v4.1-flash-1017",
+		lane: "fast",
+		reason: "Normal request routed to the fastest verified OpenRouter flash lane",
+		confidence: 0.9,
+		estimatedCostPerM: 0.14,
+		estimatedLatencyMs: 900,
+		fallbackChain: [
+			"minimax-code/MiniMax-M3.1-Flash",
+			"nvidia/minimaxai/minimax-m3.1-flash",
+			"groq/openai/gpt-oss-120b",
+			"cerebras/gpt-oss-120b",
+		],
 	};
 }
 
@@ -433,13 +441,19 @@ export async function handleChatCompletions(request, env) {
 			headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" },
 		});
 	}
+	const incomingFallbackChain = Array.isArray(body.__routerFallbackChain)
+		? body.__routerFallbackChain.filter(model => typeof model === "string")
+		: [];
+	delete body.__routerFallbackChain;
 
 	let targetModel = body.model;
 	let decisionMeta = null;
+	const fallbackChainForRequest = incomingFallbackChain.slice();
 
 	if (!targetModel || targetModel === "router/auto") {
 		decisionMeta = evaluateFastRoute(body);
 		targetModel = decisionMeta.selectedModel;
+		fallbackChainForRequest.push(...decisionMeta.fallbackChain);
 	} else if (targetModel === "router/decision") {
 		// Call decision evaluation and return synthetic response
 		decisionMeta = evaluateFastRoute(body);
@@ -601,6 +615,19 @@ export async function handleChatCompletions(request, env) {
 		if (token) headers["Authorization"] = `Bearer ${token}`;
 		return fetch(upstreamUrl, { method: "POST", headers, body: JSON.stringify(upstreamBody) });
 	};
+	const retryFallback = () => {
+		const nextModel = fallbackChainForRequest.shift();
+		if (!nextModel || nextModel === targetModel) return undefined;
+		const retryBody = { ...body, model: nextModel, __routerFallbackChain: fallbackChainForRequest };
+		return handleChatCompletions(
+			new Request(request.url, {
+				method: "POST",
+				headers: request.headers,
+				body: JSON.stringify(retryBody),
+			}),
+			env,
+		);
+	};
 	let upstreamResponse;
 	try {
 		if (keyPool) {
@@ -608,7 +635,6 @@ export async function handleChatCompletions(request, env) {
 			// rate limits and auth failures so one bad key cannot break the lane.
 			for (let attempt = 0; attempt < keyPool.length; attempt++) {
 				const token = keyPool[keyRr++ % keyPool.length];
-				// Release the previous attempt body before overwriting the handle.
 				if (attempt > 0) upstreamResponse.body?.cancel().catch(() => {});
 				upstreamResponse = await doFetch(token);
 				if (![401, 403, 429, 503].includes(upstreamResponse.status)) break;
@@ -617,13 +643,10 @@ export async function handleChatCompletions(request, env) {
 			upstreamResponse = await doFetch(upstreamToken);
 		}
 	} catch (error) {
+		const fallbackResponse = retryFallback();
+		if (fallbackResponse) return fallbackResponse;
 		return new Response(
-			JSON.stringify({
-				error: {
-					message: `Upstream dispatch error to ${upstreamUrl}: ${error.message}`,
-					type: "upstream_error",
-				},
-			}),
+			JSON.stringify({ error: { message: `Upstream dispatch error to ${upstreamUrl}: ${error.message}`, type: "upstream_error" } }),
 			{
 				status: 502,
 				headers: {
@@ -632,6 +655,13 @@ export async function handleChatCompletions(request, env) {
 				},
 			},
 		);
+	}
+	if ([401, 403, 408, 425, 429, 500, 502, 503, 504, 524].includes(upstreamResponse.status)) {
+		const fallbackResponse = retryFallback();
+		if (fallbackResponse) {
+			upstreamResponse.body?.cancel().catch(() => {});
+			return fallbackResponse;
+		}
 	}
 
 	const latencyMs = Date.now() - startTime;
