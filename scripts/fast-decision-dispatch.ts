@@ -12,7 +12,7 @@
  *   bun scripts/fast-decision-dispatch.ts --benchmark
  */
 
-import { decideOptimalModel, type DecisionResult } from "../packages/llm-router-agent/src/fast-decision-client";
+import { type DecisionResult, decideOptimalModel } from "../packages/llm-router-agent/src/fast-decision-client";
 
 interface BenchmarkItem {
 	prompt: string;
@@ -89,9 +89,7 @@ async function runBenchmark(): Promise<void> {
 		console.log(`| ${cat} | ${model} | ${cost} | ${base} | ${savings} | ${lat} |`);
 	}
 
-	const overallSavingsPercent = Math.round(
-		((totalFrontierCost - totalRoutedCost) / totalFrontierCost) * 100,
-	);
+	const overallSavingsPercent = Math.round(((totalFrontierCost - totalRoutedCost) / totalFrontierCost) * 100);
 	const avgDecisionMs = Math.round(totalDecisionTime / results.length);
 
 	console.log("\n-------------------------------------------------------------------------------");
@@ -138,7 +136,9 @@ async function main(): Promise<void> {
 	console.log(` • Confidence:            ${Math.round(result.confidence * 100)}%`);
 	console.log(` • Estimated Model Cost:  $${result.estimatedCostPerM.toFixed(2)} / M tokens`);
 	console.log(` • Baseline Frontier:     $${result.baselineFrontierCostPerM.toFixed(2)} / M tokens`);
-	console.log(` • Token Savings:         ${result.tokenSavingsPercent}% ($${result.tokenSavingsUsdPerM.toFixed(2)}/Mtok saved)`);
+	console.log(
+		` • Token Savings:         ${result.tokenSavingsPercent}% ($${result.tokenSavingsUsdPerM.toFixed(2)}/Mtok saved)`,
+	);
 	console.log(` • Decision Latency:      ${result.decisionLatencyMs} ms`);
 	console.log(` • Fallback Chain:        ${result.fallbackChain.join(" -> ")}`);
 	console.log(` • Decision Source:       ${result.source}`);
