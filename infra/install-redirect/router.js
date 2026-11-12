@@ -104,6 +104,48 @@ export const PREFERRED_MODELS = [
 		lane: "free",
 		contextWindow: 128000,
 	},
+	// Verified Groq + Cerebras — 2026-11-12. Live 200 on a real chat call.
+	{
+		id: "groq/openai/gpt-oss-120b",
+		object: "model",
+		owned_by: "groq",
+		label: "GPT-OSS 120B via Groq (free tier)",
+		lane: "free",
+		contextWindow: 128000,
+	},
+	{
+		id: "groq/openai/gpt-oss-20b",
+		object: "model",
+		owned_by: "groq",
+		label: "GPT-OSS 20B via Groq (free tier)",
+		lane: "free",
+		contextWindow: 128000,
+	},
+	{
+		id: "groq/qwen/qwen3.8-27b",
+		object: "model",
+		owned_by: "groq",
+		label: "Qwen 3.8 27B via Groq (free tier)",
+		lane: "free",
+		contextWindow: 128000,
+	},
+	{
+		id: "cerebras/gpt-oss-120b",
+		object: "model",
+		owned_by: "cerebras",
+		label: "GPT-OSS 120B via Cerebras (free tier)",
+		lane: "free",
+		contextWindow: 128000,
+	},
+	{
+		id: "cerebras/qwen-3.8-27b",
+		object: "model",
+		owned_by: "cerebras",
+		label: "Qwen 3.8 27B via Cerebras (free tier)",
+		lane: "free",
+		contextWindow: 128000,
+	},
+
 	// Verified free set — 2026-11-12. OpenRouter ids are zero-priced
 	// (prompt and completion) with tool support and a live 200; NVIDIA ids
 	// answered a real chat call on a free-tier key. Ids that 401/404 or only
@@ -200,6 +242,8 @@ function splitKeys(...values) {
 
 const nvidiaKeys = env => splitKeys(env.NVIDIA_API_KEYS, env.NVIDIA_API_KEY);
 const openrouterKeys = env => splitKeys(env.OPENROUTER_API_KEYS, env.OPENROUTER_API_KEY);
+const groqKeys = env => splitKeys(env.GROQ_API_KEYS, env.GROQ_API_KEY);
+const cerebrasKeys = env => splitKeys(env.CEREBRAS_API_KEYS, env.CEREBRAS_API_KEY);
 
 /**
  * Fast heuristic decision evaluator based on prompt features, tokens, and preferences.
@@ -471,6 +515,28 @@ export async function handleChatCompletions(request, env) {
 			upstreamUrl = "https://openrouter.ai/api/v1/chat/completions";
 			upstreamModelId = `openai/${targetModel.replace(/^openai-codex\//, "").replace(/^openai\//, "")}`;
 			upstreamToken = env.OPENROUTER_API_KEY || upstreamToken;
+		}
+	} else if (targetModel.startsWith("groq/")) {
+		keyPool = groqKeys(env);
+		if (keyPool.length > 0) {
+			upstreamUrl = "https://api.groq.com/openai/v1/chat/completions";
+			upstreamModelId = targetModel.replace(/^groq\//, "");
+		} else {
+			return new Response(
+				JSON.stringify({ error: { message: "Groq lane selected but no keys configured. Set GROQ_API_KEYS (comma-separated) via `wrangler secret put`.", type: "configuration_error" } }),
+				{ status: 503, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } },
+			);
+		}
+	} else if (targetModel.startsWith("cerebras/")) {
+		keyPool = cerebrasKeys(env);
+		if (keyPool.length > 0) {
+			upstreamUrl = "https://api.cerebras.ai/v1/chat/completions";
+			upstreamModelId = targetModel.replace(/^cerebras\//, "");
+		} else {
+			return new Response(
+				JSON.stringify({ error: { message: "Cerebras lane selected but no keys configured. Set CEREBRAS_API_KEYS (comma-separated) via `wrangler secret put`.", type: "configuration_error" } }),
+				{ status: 503, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } },
+			);
 		}
 	} else if (targetModel.startsWith("nvidia/")) {
 		// Opt-in NVIDIA NIM direct lane. Round-robin across NVIDIA_API_KEYS

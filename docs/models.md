@@ -866,8 +866,13 @@ Free lanes are admitted only after a live chat call returns content. OpenRouter 
 | **openrouter** | `cohere/north-mini-code:free` | `free` | 256k | $0.00 | Tool-capable free code lane |
 | **openrouter** | `liquid/lfm-2.5-2.6b:free` | `free` | 64k | $0.00 | Smallest, fastest free lane |
 | **openrouter** | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | `free` | 256k | $0.00 | Multimodal reasoning, free tier |
+| **groq** | `openai/gpt-oss-120b` | `free` | 128k | $0.00 | Groq LPU, very fast, free tier |
+| **groq** | `openai/gpt-oss-20b` | `free` | 128k | $0.00 | Smaller Groq free lane |
+| **groq** | `qwen/qwen3.8-27b` | `free` | 128k | $0.00 | Qwen 3.8 via Groq, free tier |
+| **cerebras** | `gpt-oss-120b` | `free` | 128k | $0.00 | Cerebras wafer-scale, free tier |
+| **cerebras** | `qwen-3.8-27b` | `free` | 128k | $0.00 | Qwen 3.8 via Cerebras, free tier |
 
-NVIDIA ids are dispatched through the NIM endpoint and OpenRouter ids through OpenRouter. Both pools round-robin across the keys in `NVIDIA_API_KEYS` and `OPENROUTER_API_KEYS`.
+NVIDIA ids are dispatched through the NIM endpoint, OpenRouter ids through OpenRouter, Groq ids through Groq, and Cerebras ids through Cerebras. Each pool round-robins across the keys in `NVIDIA_API_KEYS`, `OPENROUTER_API_KEYS`, `GROQ_API_KEYS`, and `CEREBRAS_API_KEYS` respectively.
 
 ### Using the Router Provider in `models.yml`
 
