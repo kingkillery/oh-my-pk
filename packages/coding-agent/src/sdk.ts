@@ -53,6 +53,7 @@ import {
 	pickDefaultAvailableModel,
 	resolveAllowedModels,
 	resolveModelRoleValue,
+	resolvePrefixedModelRole,
 } from "./config/model-resolver";
 import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate } from "./config/prompt-templates";
 import { Settings, type SkillsSettings } from "./config/settings";
@@ -2352,9 +2353,17 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 		if (!model && options.modelPattern) {
 			const availableModels = modelRegistry.getAll();
 			const matchPreferences = getModelMatchPreferences(settings);
-			const { model: resolved } = parseModelPattern(options.modelPattern, availableModels, matchPreferences, {
-				modelRegistry,
-			});
+			// `pi/<role>` selectors (built-in or configured custom roles) expand
+			// through role resolution; everything else is a plain model pattern.
+			const { model: resolved } = resolvePrefixedModelRole(options.modelPattern, settings)
+				? resolveModelRoleValue(options.modelPattern, availableModels, {
+						settings,
+						matchPreferences,
+						modelRegistry,
+					})
+				: parseModelPattern(options.modelPattern, availableModels, matchPreferences, {
+						modelRegistry,
+					});
 			if (resolved) {
 				model = resolved;
 				modelFallbackMessage = undefined;

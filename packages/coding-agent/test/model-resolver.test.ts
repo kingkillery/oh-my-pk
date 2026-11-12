@@ -718,6 +718,47 @@ describe("resolveModelRoleValue", () => {
 		expect(result.thinkingLevel).toBe(Effort.High);
 		expect(result.explicitThinkingLevel).toBe(true);
 	});
+
+	test("resolves pi/<custom-role> from configured modelRoles", () => {
+		const settings = Settings.isolated({
+			modelRoles: { muse: "anthropic/claude-sonnet-4-5" },
+		});
+
+		const result = resolveModelRoleValue("pi/muse", allModels, { settings });
+
+		expect(result.model?.provider).toBe("anthropic");
+		expect(result.model?.id).toBe("claude-sonnet-4-5");
+		expect(result.warning).toBeUndefined();
+	});
+
+	test("resolves pi/<custom-role>:<thinking> from configured modelRoles", () => {
+		const settings = Settings.isolated({
+			modelRoles: { muse: "anthropic/claude-sonnet-4-5" },
+		});
+
+		const result = resolveModelRoleValue("pi/muse:high", allModels, { settings });
+
+		expect(result.model?.provider).toBe("anthropic");
+		expect(result.model?.id).toBe("claude-sonnet-4-5");
+		expect(result.thinkingLevel).toBe(Effort.High);
+		expect(result.explicitThinkingLevel).toBe(true);
+	});
+
+	test("does not claim bare custom role names as role selectors", () => {
+		const settings = Settings.isolated({
+			modelRoles: { muse: "anthropic/claude-sonnet-4-5" },
+		});
+
+		expect(expandRoleAlias("muse", settings)).toBe("muse");
+	});
+
+	test("leaves unknown pi/<role> selectors unresolved", () => {
+		const settings = Settings.isolated({ modelRoles: {} });
+
+		const result = resolveModelRoleValue("pi/nope", allModels, { settings });
+
+		expect(result.model).toBeUndefined();
+	});
 });
 describe("resolveAgentModelPatterns", () => {
 	test("falls back to the active session model when pi/task is unset", () => {
@@ -1006,6 +1047,82 @@ describe("resolveCliModel", () => {
 		expect(offResult.error).toBeUndefined();
 		expect(offResult.model?.id).toBe(profileArn);
 		expect(offResult.thinkingLevel).toBe("off");
+	});
+
+	test("resolves --model pi/<role> through configured roles", () => {
+		const registry = {
+			getAll: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+		const settings = Settings.isolated({
+			modelRoles: { budget: "openai/gpt-4o", muse: "anthropic/claude-sonnet-4-5" },
+		});
+
+		const builtin = resolveCliModel({ cliModel: "pi/budget", modelRegistry: registry, settings });
+		expect(builtin.error).toBeUndefined();
+		expect(builtin.model?.provider).toBe("openai");
+		expect(builtin.model?.id).toBe("gpt-4o");
+
+		const custom = resolveCliModel({ cliModel: "pi/muse", modelRegistry: registry, settings });
+		expect(custom.error).toBeUndefined();
+		expect(custom.model?.provider).toBe("anthropic");
+		expect(custom.model?.id).toBe("claude-sonnet-4-5");
+	});
+
+	test("supports --model pi/<role>:<thinking>", () => {
+		const registry = {
+			getAll: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+		const settings = Settings.isolated({
+			modelRoles: { muse: "anthropic/claude-sonnet-4-5" },
+		});
+
+		const result = resolveCliModel({ cliModel: "pi/muse:high", modelRegistry: registry, settings });
+
+		expect(result.error).toBeUndefined();
+		expect(result.model?.id).toBe("claude-sonnet-4-5");
+		expect(result.thinkingLevel).toBe(Effort.High);
+	});
+
+	test("tries later entries of a role fallback chain for --model pi/<role>", () => {
+		const registry = {
+			getAll: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+		const settings = Settings.isolated({
+			modelRoles: { muse: "anthropic/missing-model,openai/gpt-4o" },
+		});
+
+		const result = resolveCliModel({ cliModel: "pi/muse", modelRegistry: registry, settings });
+
+		expect(result.error).toBeUndefined();
+		expect(result.model?.provider).toBe("openai");
+		expect(result.model?.id).toBe("gpt-4o");
+	});
+
+	test("fails fast for unknown --model pi/<role> instead of fuzzy matching", () => {
+		const registry = {
+			getAll: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+		const settings = Settings.isolated({ modelRoles: {} });
+
+		const result = resolveCliModel({ cliModel: "pi/nope", modelRegistry: registry, settings });
+
+		expect(result.model).toBeUndefined();
+		expect(result.error).toContain("pi/nope");
+		expect(result.error).toContain("not found");
+	});
+
+	test("terminates on self-referential --model pi/<role> configuration", () => {
+		const registry = {
+			getAll: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+		const settings = Settings.isolated({
+			modelRoles: { muse: "pi/muse" },
+		});
+
+		const result = resolveCliModel({ cliModel: "pi/muse", modelRegistry: registry, settings });
+
+		expect(result.model).toBeUndefined();
+		expect(result.error).toContain("not found");
 	});
 
 	test("returns a clear error when there are no models", () => {

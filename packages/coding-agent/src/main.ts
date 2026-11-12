@@ -830,6 +830,7 @@ export async function buildSessionOptions(
 			cliModel: parsed.model,
 			modelRegistry,
 			preferences: modelMatchPreferences,
+			settings: activeSettings,
 		});
 		if (resolved.warning) {
 			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);

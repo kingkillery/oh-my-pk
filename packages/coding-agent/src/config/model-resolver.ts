@@ -885,8 +885,26 @@ export function resolveKnownModelRole(value: string): ModelRole | undefined {
 	return undefined;
 }
 
-function getModelRoleAlias(value: string): ModelRole | undefined {
-	return resolveKnownModelRole(value);
+/**
+ * Resolve the role named by an explicit `pi/<role>` selector. Unlike
+ * {@link resolveKnownModelRole}, this also recognizes custom roles configured
+ * in `modelRoles` (or the active profile). Custom roles require the `pi/`
+ * prefix so a bare token can never shadow a concrete model id.
+ */
+export function resolvePrefixedModelRole(value: string, settings?: Settings): string | undefined {
+	const normalized = value.trim();
+	if (!normalized) return undefined;
+	const { base } = splitThinkingSuffix(normalized, PREFIX_MODEL_ROLE.length, MAX_THINKING_SUFFIX_OPTIONS);
+	if (!base.startsWith(PREFIX_MODEL_ROLE)) return undefined;
+	const candidate = base.slice(PREFIX_MODEL_ROLE.length);
+	if (!candidate || candidate.includes("/")) return undefined;
+	if (resolveKnownModelRole(base)) return candidate;
+	const configuredRoles = typeof settings?.getModelRoles === "function" ? settings.getModelRoles() : undefined;
+	return configuredRoles && Object.hasOwn(configuredRoles, candidate) ? candidate : undefined;
+}
+
+function getModelRoleAlias(value: string, settings?: Settings): string | undefined {
+	return resolveKnownModelRole(value) ?? resolvePrefixedModelRole(value, settings);
 }
 
 /**
@@ -958,7 +976,7 @@ function resolveDefaultInheritedPatterns(
 	configuredDefault: string | undefined,
 	roleDefaults: string[],
 	settings: Settings | undefined,
-	visited: Set<ModelRole>,
+	visited: Set<string>,
 ): string[] {
 	if (!shouldInheritDefaultBeforePriority(role) || !configuredDefault) return [];
 
@@ -969,7 +987,7 @@ function resolveDefaultInheritedPatterns(
 			PREFIX_MODEL_ROLE.length,
 			MAX_THINKING_SUFFIX_OPTIONS,
 		);
-		const aliasRole = getModelRoleAlias(aliasCandidate);
+		const aliasRole = getModelRoleAlias(aliasCandidate, settings);
 		if (aliasRole === role) {
 			// Self-alias (e.g. modelRoles.default = "pi/smol") would loop back to the
 			// same unset role; collapse straight to the built-in priority chain.
@@ -998,7 +1016,7 @@ function resolveDefaultInheritedPatterns(
 function resolveConfiguredRolePattern(
 	value: string,
 	settings?: Settings,
-	visited: Set<ModelRole> = new Set(),
+	visited: Set<string> = new Set(),
 ): string[] | undefined {
 	const normalized = value.trim();
 	if (!normalized) return undefined;
@@ -1008,17 +1026,22 @@ function resolveConfiguredRolePattern(
 		PREFIX_MODEL_ROLE.length,
 		MAX_THINKING_SUFFIX_OPTIONS,
 	);
-	const role = getModelRoleAlias(aliasCandidate);
+	const role = getModelRoleAlias(aliasCandidate, settings);
 	if (!role) return [normalized];
 	if (visited.has(role)) return undefined;
 	visited.add(role);
 
 	const configured = settings?.getModelRole(role)?.trim();
 	const configuredDefault = settings?.getModelRole(DEFAULT_MODEL_ROLE)?.trim();
-	const roleDefaults = rolePriorityDefaults(role);
+	// Priority defaults and default-inheritance only exist for built-in roles;
+	// a configured custom role must supply its own pattern.
+	const builtinRole = resolveKnownModelRole(aliasCandidate);
+	const roleDefaults = builtinRole ? rolePriorityDefaults(builtinRole) : [];
 	const resolved = configured
 		? normalizeModelPatternList(configured)
-		: resolveDefaultInheritedPatterns(role, configuredDefault, roleDefaults, settings, visited);
+		: builtinRole
+			? resolveDefaultInheritedPatterns(builtinRole, configuredDefault, roleDefaults, settings, visited)
+			: [];
 	if (resolved.length === 0) {
 		resolved.push(...roleDefaults);
 	}
@@ -1584,8 +1607,9 @@ export function resolveCliModel(options: {
 	cliModel?: string;
 	modelRegistry: CliModelRegistry;
 	preferences?: ModelMatchPreferences;
+	settings?: Settings;
 }): ResolveCliModelResult {
-	const { cliProvider, cliModel, modelRegistry, preferences } = options;
+	const { cliProvider, cliModel, modelRegistry, preferences, settings } = options;
 
 	if (!cliModel) {
 		return { model: undefined, selector: undefined, warning: undefined, error: undefined };
@@ -1617,6 +1641,24 @@ export function resolveCliModel(options: {
 	}
 
 	const trimmedModel = cliModel.trim();
+	if (!provider && resolvePrefixedModelRole(trimmedModel, settings)) {
+		// Expand `pi/<role>` through the same role machinery as settings/agent
+		// patterns, then resolve each concrete pattern. Nested role selectors
+		// are skipped (one expansion layer, matching resolveModelRoleValue),
+		// which also keeps self-referential roles from recursing forever.
+		for (const pattern of resolveConfiguredModelPatterns(trimmedModel, settings)) {
+			if (resolvePrefixedModelRole(pattern, settings)) continue;
+			const result = resolveCliModel({ cliModel: pattern, modelRegistry, preferences });
+			if (result.model) return result;
+		}
+		return {
+			model: undefined,
+			selector: undefined,
+			thinkingLevel: undefined,
+			warning: undefined,
+			error: `Model "${trimmedModel}" not found. Run "${APP_NAME} models" to see available models.`,
+		};
+	}
 	if (!provider) {
 		const lower = trimmedModel.toLowerCase();
 		// When input has provider/id format (e.g. "zai/glm-5"), prefer decomposed
