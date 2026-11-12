@@ -46,9 +46,7 @@ export async function decideOptimalModel(
 	const endpoint = options.endpoint || DEFAULT_ROUTER_ENDPOINT;
 
 	const messages =
-		typeof promptOrMessages === "string"
-			? [{ role: "user", content: promptOrMessages }]
-			: promptOrMessages;
+		typeof promptOrMessages === "string" ? [{ role: "user", content: promptOrMessages }] : promptOrMessages;
 
 	// Try remote fast decision endpoint first
 	try {

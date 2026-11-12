@@ -1,15 +1,27 @@
-import { watch } from "node:fs";
+import { existsSync, watch } from "node:fs";
 import { readdir } from "node:fs/promises";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentTool } from "@pk-nerdsaver-ai/pi-agent-core";
 import { type ProviderSessionState, streamSimple } from "@pk-nerdsaver-ai/pi-ai";
-import type { MuseCodeOptions } from "@pk-nerdsaver-ai/pi-ai/providers/muse-code";
+import { type MuseCodeOptions, resolveMuseBinary } from "@pk-nerdsaver-ai/pi-ai/providers/muse-code";
 import { getBundledModel } from "@pk-nerdsaver-ai/pi-catalog/models";
 import { Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import { CursorExecHandlers } from "@pk-nerdsaver-ai/pi-coding-agent/cursor";
 import type { ToolSession } from "@pk-nerdsaver-ai/pi-coding-agent/tools";
 import { ReadTool } from "@pk-nerdsaver-ai/pi-coding-agent/tools/read";
+
+/** Whether a Muse CLI is actually available to spawn. */
+function findMuseExecutable(): string | undefined {
+	const resolved = resolveMuseBinary();
+	if (resolved !== "muse") return existsSync(resolved) ? resolved : undefined;
+	for (const entry of (process.env.PATH ?? "").split(path.delimiter)) {
+		if (!entry) continue;
+		const candidate = path.join(entry, process.platform === "win32" ? "muse.exe" : "muse");
+		if (existsSync(candidate)) return candidate;
+	}
+	return undefined;
+}
 
 const cwd = process.cwd();
 const toolSession: ToolSession = {
@@ -67,35 +79,40 @@ try {
 
 	const failedRoots = new Set(roots);
 	const abort = new AbortController();
-	const echoOptions: MuseCodeOptions = {
-		...options,
-		apiKey: "test-only-key",
-		museBin: undefined,
-		museProvider: "echo",
-		providerSessionState: sharedState,
-	};
-	const first = streamSimple(model, context, { ...echoOptions, signal: abort.signal }).result();
-	const rootDeadline = Date.now() + 10_000;
-	let sharedRoot: string | undefined;
-	while (!sharedRoot && Date.now() < rootDeadline) {
-		sharedRoot = (await readdir(cwd)).find(name => name.startsWith("ompk-muse-") && !failedRoots.has(name));
-		if (sharedRoot) roots.add(sharedRoot);
-		else await delay(10);
-	}
-	if (!sharedRoot) throw new Error("Timed out observing the shared Muse host root");
-	const secondKey = Promise.withResolvers<string>();
-	const secondOptions: MuseCodeOptions = { ...echoOptions, apiKey: () => secondKey.promise };
-	const second = streamSimple(model, context, secondOptions).result();
-	abort.abort();
-	secondKey.resolve("test-only-key");
-	const [aborted, completed] = await Promise.all([first, second]);
-	if (
-		aborted.stopReason !== "aborted" ||
-		completed.stopReason !== "stop" ||
-		sharedState.size !== 1 ||
-		[...roots].length !== 2
-	) {
-		throw new Error("Aborting the creating caller cancelled its concurrent Muse sibling or created another host");
+	// The shared-host phase starts a real Muse host process, so it needs an
+	// installed Muse CLI. The failed-start phase above runs without one.
+	const museBin = findMuseExecutable();
+	if (museBin) {
+		const echoOptions: MuseCodeOptions = {
+			...options,
+			apiKey: "test-only-key",
+			museBin,
+			museProvider: "echo",
+			providerSessionState: sharedState,
+		};
+		const first = streamSimple(model, context, { ...echoOptions, signal: abort.signal }).result();
+		const rootDeadline = Date.now() + 10_000;
+		let sharedRoot: string | undefined;
+		while (!sharedRoot && Date.now() < rootDeadline) {
+			sharedRoot = (await readdir(cwd)).find(name => name.startsWith("ompk-muse-") && !failedRoots.has(name));
+			if (sharedRoot) roots.add(sharedRoot);
+			else await delay(10);
+		}
+		if (!sharedRoot) throw new Error("Timed out observing the shared Muse host root");
+		const secondKey = Promise.withResolvers<string>();
+		const secondOptions: MuseCodeOptions = { ...echoOptions, apiKey: () => secondKey.promise };
+		const second = streamSimple(model, context, secondOptions).result();
+		abort.abort();
+		secondKey.resolve("test-only-key");
+		const [aborted, completed] = await Promise.all([first, second]);
+		if (
+			aborted.stopReason !== "aborted" ||
+			completed.stopReason !== "stop" ||
+			sharedState.size !== 1 ||
+			[...roots].length !== 2
+		) {
+			throw new Error("Aborting the creating caller cancelled its concurrent Muse sibling or created another host");
+		}
 	}
 } finally {
 	for (const state of sharedState.values()) await state.close();

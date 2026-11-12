@@ -49,7 +49,9 @@ describe("system prompt harness and settings workflow", () => {
 
 	it("instructs agent on settings changes with explicit user approval", async () => {
 		const prompt = await render();
-		expect(prompt).toContain("**Explicitly ask the user for confirmation/approval** before making persistent changes to settings");
+		expect(prompt).toContain(
+			"**Explicitly ask the user for confirmation/approval** before making persistent changes to settings",
+		);
 		expect(prompt).toContain("omp config set <key> <value>");
 	});
 });

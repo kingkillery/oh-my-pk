@@ -46,7 +46,8 @@ export const BUILTIN_HELP_RECOMMENDATIONS: readonly HelpRecommendation[] = [
 		title: "Inspect and change configuration settings",
 		summary:
 			"Manage settings with validation, inspect defaults, or change persistent configuration with explicit confirmation.",
-		whenToUse: "Use to inspect or change settings like concurrency limits, simple mode, models, themes, and fusion options.",
+		whenToUse:
+			"Use to inspect or change settings like concurrency limits, simple mode, models, themes, and fusion options.",
 		command: "/settings or omp config <get|set|list>",
 		docs: "docs/settings.md",
 		keywords: [
@@ -66,7 +67,8 @@ export const BUILTIN_HELP_RECOMMENDATIONS: readonly HelpRecommendation[] = [
 		title: "Model selection and Cloudflare router",
 		summary:
 			"Configure preferred models, use the edge model router, and dispatch requests via the fast decision dispatcher.",
-		whenToUse: "Use to inspect preferred models, configure the Cloudflare router endpoint, or benchmark token savings.",
+		whenToUse:
+			"Use to inspect preferred models, configure the Cloudflare router endpoint, or benchmark token savings.",
 		command: "/model, /route, or bun scripts/fast-decision-dispatch.ts",
 		docs: "docs/models.md",
 		keywords: [

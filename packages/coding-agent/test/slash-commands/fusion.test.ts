@@ -242,7 +242,6 @@ describe("/fusion decision and pool decision commands", () => {
 	});
 });
 
-
 describe("/fusion menu", () => {
 	test("toggle item enables fusion and spawns the sidekick mid-session", async () => {
 		const { runtime, store } = makeRuntime({ "fusion.enabled": false, "fusion.mode": "off" });
