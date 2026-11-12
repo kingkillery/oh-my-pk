@@ -18,6 +18,9 @@ target/
 !.env.example
 .local/
 
+# Secure credential input scratch (may hold a masked secret on disk)
+.secure-input.ps1
+
 # Editors
 .vscode/
 .zed/
