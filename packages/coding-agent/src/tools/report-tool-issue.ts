@@ -20,6 +20,7 @@
  * never blocked on the network and never throws.
  */
 import { Database } from "bun:sqlite";
+import * as path from "node:path";
 import type { AgentTool } from "@pk-nerdsaver-ai/pi-agent-core";
 import type { FetchImpl } from "@pk-nerdsaver-ai/pi-ai";
 import { $env, $flag, getAutoQaDbDir, getInstallId, logger, VERSION } from "@pk-nerdsaver-ai/pi-utils";
@@ -436,10 +437,18 @@ export async function writeVaultIssueNote(
 	version: string,
 ): Promise<string | null> {
 	try {
+		// A relative vault root would write the note relative to the session cwd,
+		// dropping `<vault>/<project>/issues/` into whatever repository happens to
+		// be open. A mangled Windows drive (`C;/…` instead of `C:/…`) is exactly
+		// that shape, so refuse anything that is not an absolute path.
+		if (!path.isAbsolute(vaultRoot)) {
+			logger.debug("autoqa vault note skipped: vault path is not absolute", { vaultRoot });
+			return null;
+		}
 		// Filename keys on tool + a 3-word slug so near-duplicate wording lands
 		// in the same note as a Variant section instead of proliferating files.
-		const dir = `${vaultRoot.replace(/[\\/]+$/, "")}/${project}/issues`;
-		const file = `${dir}/${tool}-${slugify(report, 3)}.md`;
+		const dir = path.join(vaultRoot, project, "issues");
+		const file = path.join(dir, `${tool}-${slugify(report, 3)}.md`);
 		const now = new Date().toISOString();
 		const existing = Bun.file(file);
 		if (await existing.exists()) {
