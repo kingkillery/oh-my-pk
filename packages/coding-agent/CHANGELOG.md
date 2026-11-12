@@ -4,6 +4,8 @@
 ### Added
 
 - Fusion pool routing can run through the decision model. With `fusion.decisionRouting` on, each compaction asks the decision model to choose a pool tier from the compaction summary plus the trailing `fusion.decisionWindowPercent` of the kept conversation, and falls back to the classifier when the decision model is unavailable or unsure.
+- `omp models add` registers a custom OpenAI- or Anthropic-compatible endpoint in `models.yml`, selectable as `<provider>/<model>`. `--api-key` takes the *name* of an environment variable (resolved at runtime, falling back to the literal value); use `--auth none` for keyless endpoints. Bare hosts get `http://` and a missing API version gets `/v1`.
+- `/inference-provider` (alias `/inference`) manages custom endpoints in-session: `add`, `edit`, `remove`, and `list`, or no argument for an interactive wizard. It shares validation and the atomic config writer with `omp models add`, and refuses names that collide with built-in providers.
 
 ### Fixed
 

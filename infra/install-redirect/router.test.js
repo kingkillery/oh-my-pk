@@ -141,4 +141,149 @@ describe("Cloudflare Router Endpoints", () => {
 
 		fetchSpy.mockRestore();
 	});
+
+	it("round-robins OPENROUTER_API_KEYS on free models", async () => {
+		const tokens = [];
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+			tokens.push(init?.headers["Authorization"]);
+			return Promise.resolve(
+				new Response(JSON.stringify({ id: "gen-f", choices: [{ message: { role: "assistant", content: "ok" } }] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		});
+
+		const env = { OPENROUTER_API_KEYS: "sk-or-a, sk-or-b" };
+		const req = () =>
+			new Request("https://oh-my-pk.pkking.computer/v1/chat/completions", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					model: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+					messages: [{ role: "user", content: "hi" }],
+				}),
+			});
+
+		await worker.fetch(req(), env, {});
+		await worker.fetch(req(), env, {});
+
+		expect(tokens).toHaveLength(2);
+		expect(new Set(tokens)).toEqual(new Set(["Bearer sk-or-a", "Bearer sk-or-b"]));
+		expect(fetchSpy.mock.calls[0][1].headers["Authorization"]).toMatch(/^Bearer sk-or-/);
+
+		fetchSpy.mockRestore();
+	});
+	it.each([429, 401, 403, 503])("round-robins NVIDIA keys and rotates past a %i", async (failStatus) => {
+		const seenTokens = [];
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+			seenTokens.push(init?.headers["Authorization"]);
+			// First key is rate-limited, the next one succeeds.
+			const status = seenTokens.length === 1 ? failStatus : 200;
+			return Promise.resolve(
+				new Response(JSON.stringify({ id: "gen-rr", choices: [{ message: { role: "assistant", content: "ok" } }] }), {
+					status,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		});
+
+		const env = { NVIDIA_API_KEYS: "nvapi-a, nvapi-b" };
+		const req = () =>
+			new Request("https://oh-my-pk.pkking.computer/v1/chat/completions", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					model: "nvidia/deepseek-ai/deepseek-v4.1-flash",
+					messages: [{ role: "user", content: "hi" }],
+				}),
+			});
+
+		const res1 = await worker.fetch(req(), env, {});
+		expect(res1.status).toBe(200);
+		expect(seenTokens).toHaveLength(2);
+		expect(new Set(seenTokens)).toEqual(new Set(["Bearer nvapi-a", "Bearer nvapi-b"]));
+		expect(fetchSpy.mock.calls[0][0]).toBe("https://integrate.api.nvidia.com/v1/chat/completions");
+
+		// Second request adds exactly one key: rotation advanced, no retry.
+		const res2 = await worker.fetch(req(), env, {});
+		expect(res2.status).toBe(200);
+		expect(seenTokens).toHaveLength(3);
+
+		fetchSpy.mockRestore();
+	});
+
+	it("returns 503 for nvidia lane without keys", async () => {
+		const req = new Request("https://oh-my-pk.pkking.computer/v1/chat/completions", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				model: "nvidia/deepseek-ai/deepseek-v4.1-flash-1017",
+				messages: [{ role: "user", content: "hi" }],
+			}),
+		});
+		const res = await worker.fetch(req, {}, {});
+		expect(res.status).toBe(503);
+	});
+
+	it("dedupes repeated keys so a retry never reuses the throttled key", async () => {
+		const seenTokens = [];
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+			seenTokens.push(init?.headers["Authorization"]);
+			const status = seenTokens.length === 1 ? 429 : 200;
+			return Promise.resolve(
+				new Response(JSON.stringify({ id: "gen-dedupe", choices: [{ message: { role: "assistant", content: "ok" } }] }), {
+					status,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		});
+
+		const env = { NVIDIA_API_KEYS: "nvapi-a, nvapi-a, nvapi-b" };
+		const res = await worker.fetch(
+			new Request("https://oh-my-pk.pkking.computer/v1/chat/completions", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ model: "nvidia/deepseek-ai/deepseek-v4.1-flash", messages: [{ role: "user", content: "hi" }] }),
+			}),
+			env,
+			{},
+		);
+
+		expect(res.status).toBe(200);
+		expect(seenTokens).toHaveLength(2);
+		expect(new Set(seenTokens).size).toBe(2);
+		expect(seenTokens[1]).not.toBe(seenTokens[0]);
+
+		fetchSpy.mockRestore();
+	});
+
+	it("uses the caller's own bearer when no NVIDIA keys are configured", async () => {
+		const seenTokens = [];
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => {
+			seenTokens.push(init?.headers["Authorization"]);
+			return Promise.resolve(
+				new Response(JSON.stringify({ id: "gen-client", choices: [{ message: { role: "assistant", content: "ok" } }] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		});
+
+		const res = await worker.fetch(
+			new Request("https://oh-my-pk.pkking.computer/v1/chat/completions", {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: "Bearer nvapi-client" },
+				body: JSON.stringify({ model: "nvidia/deepseek-ai/deepseek-v4.1-flash", messages: [{ role: "user", content: "hi" }] }),
+			}),
+			{},
+			{},
+		);
+
+		expect(res.status).toBe(200);
+		expect(seenTokens).toEqual(["Bearer nvapi-client"]);
+		expect(fetchSpy.mock.calls[0][0]).toBe("https://integrate.api.nvidia.com/v1/chat/completions");
+
+		fetchSpy.mockRestore();
+	});
 });

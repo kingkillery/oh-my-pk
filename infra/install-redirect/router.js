@@ -78,6 +78,32 @@ export const PREFERRED_MODELS = [
 		lane: "free",
 		contextWindow: 32000,
 	},
+	// Opt-in NVIDIA NIM direct lanes (round-robin across NVIDIA_API_KEYS).
+	// Any `nvidia/<nim-model-id>` passes through; these are just discovery entries.
+	{
+		id: "nvidia/deepseek-ai/deepseek-v4.1-flash",
+		object: "model",
+		owned_by: "nvidia",
+		label: "DeepSeek V4.1 Flash via NVIDIA NIM (key round-robin)",
+		lane: "fast",
+		contextWindow: 128000,
+	},
+	{
+		id: "nvidia/minimaxai/minimax-m3.1-flash",
+		object: "model",
+		owned_by: "nvidia",
+		label: "MiniMax M3.1 Flash via NVIDIA NIM (key round-robin)",
+		lane: "balanced",
+		contextWindow: 1000000,
+	},
+	{
+		id: "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+		object: "model",
+		owned_by: "nvidia",
+		label: "Nemotron 3 Ultra via NVIDIA NIM (key round-robin)",
+		lane: "free",
+		contextWindow: 128000,
+	},
 	{
 		id: "google-antigravity/gemini-3.8-flash-tiered",
 		object: "model",
@@ -103,6 +129,25 @@ export const PREFERRED_MODELS = [
 		contextWindow: 200000,
 	},
 ];
+
+// Module-scope counter: round-robins within an isolate, spreads randomly across
+// isolates — enough to even out per-key rate limits without KV/DO state.
+// ponytail: per-isolate counter, KV-backed global rotation if uneven spread ever matters.
+let keyRr = 0;
+
+function splitKeys(...values) {
+	const keys = values
+		.filter(Boolean)
+		.join(",")
+		.split(",")
+		.map(k => k.trim())
+		.filter(Boolean);
+	// Duplicates would make the retry loop hit the same throttled key twice.
+	return [...new Set(keys)];
+}
+
+const nvidiaKeys = env => splitKeys(env.NVIDIA_API_KEYS, env.NVIDIA_API_KEY);
+const openrouterKeys = env => splitKeys(env.OPENROUTER_API_KEYS, env.OPENROUTER_API_KEY);
 
 /**
  * Fast heuristic decision evaluator based on prompt features, tokens, and preferences.
@@ -338,6 +383,7 @@ export async function handleChatCompletions(request, env) {
 	let upstreamUrl = "https://openrouter.ai/api/v1/chat/completions";
 	let upstreamToken = env.OPENROUTER_API_KEY || (clientAuth ? clientAuth.replace(/^Bearer\s+/i, "") : "");
 	let upstreamModelId = targetModel;
+	let keyPool = null;
 
 	if (targetModel.startsWith("openrouter/")) {
 		upstreamUrl = "https://openrouter.ai/api/v1/chat/completions";
@@ -374,6 +420,31 @@ export async function handleChatCompletions(request, env) {
 			upstreamModelId = `openai/${targetModel.replace(/^openai-codex\//, "").replace(/^openai\//, "")}`;
 			upstreamToken = env.OPENROUTER_API_KEY || upstreamToken;
 		}
+	} else if (targetModel.startsWith("nvidia/")) {
+		// Opt-in NVIDIA NIM direct lane. Round-robin across NVIDIA_API_KEYS
+		// (each key has its own ~40 TPM limit) applies whenever keys exist.
+		keyPool = nvidiaKeys(env);
+		// A caller that brought their own NIM key is a pool of one.
+		if (keyPool.length === 0 && clientAuth) {
+			keyPool = [clientAuth.replace(/^Bearer\s+/i, "")];
+		}
+		if (keyPool.length > 0) {
+			upstreamUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+			upstreamModelId = targetModel.replace(/^nvidia\//, "");
+		} else {
+			return new Response(
+				JSON.stringify({
+					error: {
+						message: "NVIDIA lane selected but no keys configured. Set NVIDIA_API_KEYS (comma-separated) via `wrangler secret put`.",
+						type: "configuration_error",
+					},
+				}),
+				{
+					status: 503,
+					headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" },
+				},
+			);
+		}
 	} else if (targetModel.startsWith("google-antigravity/")) {
 		if (env.GEMINI_API_KEY) {
 			upstreamUrl = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
@@ -386,15 +457,20 @@ export async function handleChatCompletions(request, env) {
 		}
 	}
 
+	// Any lane that lands on OpenRouter uses the key pool when configured —
+	// free models get their per-account daily quota multiplied by key count.
+	if (!keyPool && upstreamUrl.startsWith("https://openrouter.ai/")) {
+		keyPool = openrouterKeys(env);
+		if (keyPool.length === 0) keyPool = null;
+	}
+
+
 	const upstreamHeaders = {
 		"Content-Type": "application/json",
 		"User-Agent": "oh-my-pk-router/1.0",
 		"HTTP-Referer": "https://oh-my-pk.pkking.computer",
 		"X-Title": "oh-my-pk-router",
 	};
-	if (upstreamToken) {
-		upstreamHeaders["Authorization"] = `Bearer ${upstreamToken}`;
-	}
 
 	const upstreamBody = {
 		...body,
@@ -402,13 +478,26 @@ export async function handleChatCompletions(request, env) {
 	};
 
 	const startTime = Date.now();
+	const doFetch = token => {
+		const headers = { ...upstreamHeaders };
+		if (token) headers["Authorization"] = `Bearer ${token}`;
+		return fetch(upstreamUrl, { method: "POST", headers, body: JSON.stringify(upstreamBody) });
+	};
 	let upstreamResponse;
 	try {
-		upstreamResponse = await fetch(upstreamUrl, {
-			method: "POST",
-			headers: upstreamHeaders,
-			body: JSON.stringify(upstreamBody),
-		});
+		if (keyPool) {
+			// Round-robin: start at the next key, rotate through the pool on
+			// rate limits and auth failures so one bad key cannot break the lane.
+			for (let attempt = 0; attempt < keyPool.length; attempt++) {
+				const token = keyPool[keyRr++ % keyPool.length];
+				// Release the previous attempt body before overwriting the handle.
+				if (attempt > 0) upstreamResponse.body?.cancel().catch(() => {});
+				upstreamResponse = await doFetch(token);
+				if (![401, 403, 429, 503].includes(upstreamResponse.status)) break;
+			}
+		} else {
+			upstreamResponse = await doFetch(upstreamToken);
+		}
 	} catch (error) {
 		return new Response(
 			JSON.stringify({

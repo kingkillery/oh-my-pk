@@ -57,6 +57,8 @@ import { formatFastModeStatus, handleFastCommand, handleFastCommandTui } from ".
 import { formatDuration } from "./helpers/format";
 import { handleFusionCommand, handleFusionPoolArgs } from "./helpers/fusion";
 import { handleFusionCommandTui, showFusionMenu } from "./helpers/fusion-tui";
+import { handleInferenceProviderSlashCommand } from "./helpers/inference-provider";
+import { handleInferenceProviderCommandTui } from "./helpers/inference-provider-tui";
 import { createMarketplaceManager } from "./helpers/marketplace-manager";
 import { handleMcpAcp } from "./helpers/mcp";
 import { handleOkfSlashCommand } from "./helpers/okf";
@@ -3026,6 +3028,22 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => handleRouteSlashCommand(command, runtime),
+	},
+	{
+		name: "inference-provider",
+		aliases: ["inference"],
+		description: "Add, edit, or remove custom inference providers (endpoints not built into omp)",
+		acpDescription: "Manage custom inference providers",
+		inlineHint: "[add|edit|remove|list]",
+		subcommands: [
+			{ name: "add", description: "Register a custom inference provider", usage: "<name> <endpoint>" },
+			{ name: "edit", description: "Change an existing custom inference provider", usage: "<name>" },
+			{ name: "remove", description: "Remove a custom inference provider", usage: "<name>" },
+			{ name: "list", description: "List every custom inference provider" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => handleInferenceProviderSlashCommand(command, runtime),
+		handleTui: async (command, runtime) => handleInferenceProviderCommandTui(command, runtime.ctx),
 	},
 	{
 		name: "quit",

@@ -1,5 +1,5 @@
 /**
- * `omp models` — list, search, and refresh available models.
+ * `omp models` — list, search, refresh, and add available models.
  *
  * Subcommands:
  * - `ls` (default): list every available model with a canonical + provider view.
@@ -7,6 +7,7 @@
  * - `refresh`: force an online catalog re-fetch (ignoring the model cache TTL),
  *   then list. This is the supported replacement for `rm -rf ~/.ompk/models.db`
  *   when a provider ships a new model that the 24h cache has not picked up yet.
+ * - `add`: register an OpenAI-compatible custom endpoint in `models.yml`.
  *
  * `ls`/`find` use the cache when fresh (`online-if-uncached`); only `refresh`
  * forces the network (`online`).
@@ -16,12 +17,23 @@ import { getSupportedEfforts } from "@pk-nerdsaver-ai/pi-catalog/model-thinking"
 import { APP_NAME, formatNumber, getProjectDir } from "@pk-nerdsaver-ai/pi-utils";
 import chalk from "chalk";
 import { ModelRegistry } from "../config/model-registry";
+import { ModelsConfigFile } from "../config/models-config";
+import type { ModelsConfig } from "../config/models-config-schema";
 import { Settings } from "../config/settings";
 import { discoverAndLoadExtensions, loadExtensions } from "../extensibility/extensions";
 import { discoverAuthStorage } from "../sdk";
+import {
+	CUSTOM_PROVIDER_APIS,
+	type CustomProviderApi,
+	loadModelsConfig,
+	normalizeEndpoint,
+	upsertProviderEntry,
+	validateProviderName,
+	writeModelsConfig,
+} from "../slash-commands/helpers/inference-provider";
 import { EventBus } from "../utils/event-bus";
 
-export type ModelsAction = "ls" | "find" | "refresh" | "canonical";
+export type ModelsAction = "ls" | "find" | "refresh" | "canonical" | "add";
 
 export interface ModelsCommandArgs {
 	action: ModelsAction;
@@ -35,6 +47,19 @@ export interface ModelsCommandArgs {
 		noExtensions?: boolean;
 		/** Extra `config.yml` overlays to apply for this invocation. */
 		config?: string[];
+		/** Provider id for `add`. */
+		provider?: string;
+		/** OpenAI-compatible base URL for `add`. */
+		baseUrl?: string;
+		/** Model id served by the custom endpoint. */
+		model?: string;
+		/** API key env var name. Omit with `--auth none`. */
+		apiKey?: string;
+		auth?: "apiKey" | "none";
+		api?: CustomProviderApi;
+		contextWindow?: number;
+		maxTokens?: number;
+		replace?: boolean;
 	};
 }
 
@@ -49,6 +74,7 @@ const KNOWN_ACTIONS: Record<string, ModelsAction> = {
 	find: "find",
 	refresh: "refresh",
 	canonical: "canonical",
+	add: "add",
 };
 
 /** Resolve the two positional args into an action + filter (provider names fall through to `ls`). */
@@ -383,6 +409,158 @@ export async function runModelsListing(options: RunModelsListingOptions): Promis
 	}
 }
 
+function failAdd(message: string, json: boolean): void {
+	process.stderr.write(`${json ? JSON.stringify({ error: message }) : message}\n`);
+	process.exitCode = 1;
+}
+
+/**
+ * Normalize a CLI `--base-url` into the base an OpenAI-compatible adapter
+ * needs. Convenience over {@link normalizeEndpoint}: bare hosts get `http://`,
+ * a copied `/chat/completions` suffix is stripped, and a missing API version
+ * gets `/v1` — without ever emitting a doubled slash.
+ */
+function resolveBaseUrl(raw: string): { ok: true; baseUrl: string } | { ok: false; error: string } {
+	const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`;
+	const normalized = normalizeEndpoint(withScheme);
+	if (!normalized.ok) return normalized;
+	const url = new URL(normalized.baseUrl);
+	if (url.search || url.hash) {
+		return { ok: false, error: `Endpoint must not carry a query string or fragment: ${raw}` };
+	}
+	const pathname = url.pathname
+		.replace(/\/+$/, "")
+		.replace(/\/chat\/completions$/, "")
+		.replace(/\/+$/, "");
+	url.pathname = /\/v\d+$/.test(pathname) ? pathname : `${pathname}/v1`;
+	return { ok: true, baseUrl: url.toString().replace(/\/+$/, "") };
+}
+
+/** Apply explicit `--context-window` / `--max-tokens` to one provider’s models. */
+function withModelLimits(config: ModelsConfig, name: string, flags: ModelsCommandArgs["flags"]): ModelsConfig {
+	const entry = config.providers?.[name];
+	if (!entry || (!flags.contextWindow && !flags.maxTokens)) return config;
+	return {
+		...config,
+		providers: {
+			...config.providers,
+			[name]: {
+				...entry,
+				models: (entry.models ?? []).map(model => ({
+					...model,
+					...(flags.contextWindow ? { contextWindow: flags.contextWindow } : {}),
+					...(flags.maxTokens ? { maxTokens: flags.maxTokens } : {}),
+				})),
+			},
+		},
+	};
+}
+
+/** Narrow a validated `--auth` flag value without a cast. */
+export function parseAuthFlag(raw: string | undefined): "apiKey" | "none" | undefined {
+	return raw === "apiKey" || raw === "none" ? raw : undefined;
+}
+
+/** Narrow a validated `--api` flag value without a cast. */
+export function parseCustomProviderApi(raw: string | undefined): CustomProviderApi | undefined {
+	return CUSTOM_PROVIDER_APIS.find(api => api === raw);
+}
+
+/**
+ * Register one custom endpoint in `models.yml`.
+ *
+ * Shares provider-name validation, entry shape, and the atomic config writer
+ * with `/inference-provider`, so the CLI and the slash command produce
+ * identical provider records. Select the result as `<provider>/<model>`.
+ */
+export async function addCustomEndpoint(flags: ModelsCommandArgs["flags"], modelsPath?: string): Promise<void> {
+	const json = flags.json ?? false;
+	const fail = (message: string) => failAdd(message, json);
+
+	if (!flags.provider?.trim() || !flags.model?.trim() || !flags.baseUrl?.trim()) {
+		fail(
+			`\`${APP_NAME} models add\` requires --provider, --base-url, and --model.\nExample: ${APP_NAME} models add --provider tailscale --base-url http://100.69.212.61:8000/v1 --model gemma --auth none`,
+		);
+		return;
+	}
+
+	const named = validateProviderName(flags.provider);
+	if (!named.ok) {
+		fail(named.error);
+		return;
+	}
+	const model = flags.model.trim();
+	if (model.includes("/")) {
+		fail(
+			`Model ids cannot contain '/': OMPK splits \`<provider>/<model>\` selectors on the first slash. Use the id exactly as the endpoint serves it.`,
+		);
+		return;
+	}
+
+	const endpoint = resolveBaseUrl(flags.baseUrl.trim());
+	if (!endpoint.ok) {
+		fail(`Invalid --base-url. ${endpoint.error}`);
+		return;
+	}
+
+	const auth = flags.auth ?? (flags.apiKey?.trim() ? "apiKey" : "none");
+	const apiKey = auth === "apiKey" ? flags.apiKey?.trim() : undefined;
+	if (auth === "apiKey" && !apiKey) {
+		fail("Pass --api-key <ENV_VAR> or --auth none.");
+		return;
+	}
+	if (auth === "none" && flags.apiKey?.trim()) {
+		writeLine("Ignoring --api-key because --auth is none.");
+	}
+
+	const file = modelsPath ? ModelsConfigFile.relocate(modelsPath) : ModelsConfigFile;
+	const loaded = await loadModelsConfig(file);
+	if (!loaded.ok) {
+		fail(loaded.error ?? `Could not read ${file.path()}.`);
+		return;
+	}
+	if (loaded.config.providers?.[named.name] && !flags.replace) {
+		fail(`Provider '${named.name}' already exists. Pass --replace to overwrite it.`);
+		return;
+	}
+
+	const next = withModelLimits(
+		upsertProviderEntry(loaded.config, {
+			name: named.name,
+			baseUrl: endpoint.baseUrl,
+			api: flags.api ?? "openai-completions",
+			apiKey,
+			models: [model],
+		}),
+		named.name,
+		flags,
+	);
+	try {
+		await writeModelsConfig(file, next);
+	} catch (error) {
+		fail(error instanceof Error ? error.message : String(error));
+		return;
+	}
+
+	const selector = `${named.name}/${model}`;
+	if (json) {
+		writeLine(
+			JSON.stringify({
+				provider: named.name,
+				model,
+				baseUrl: endpoint.baseUrl,
+				auth,
+				selector,
+				path: file.path(),
+			}),
+		);
+		return;
+	}
+	writeLine(`Added ${selector}`);
+	writeLine(`Endpoint: ${endpoint.baseUrl}`);
+	writeLine(`Config: ${file.path()}`);
+}
+
 /**
  * Entry point for the standalone `omp models` command: bootstraps auth storage,
  * settings, and the model registry, force/cache-refreshes built-in providers per
@@ -391,7 +569,10 @@ export async function runModelsListing(options: RunModelsListingOptions): Promis
 export async function runModelsCommand(command: ModelsCommandArgs): Promise<void> {
 	const { action, pattern } = command;
 	const json = command.flags.json ?? false;
-
+	if (action === "add") {
+		await addCustomEndpoint(command.flags);
+		return;
+	}
 	if (action === "find" && (!pattern || pattern.trim().length === 0)) {
 		process.stderr.write(
 			`\`${APP_NAME} models find\` requires a search substring, e.g. \`${APP_NAME} models find minimax\`\n`,

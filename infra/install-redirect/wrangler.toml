@@ -30,3 +30,13 @@ HF_REPO_TYPE = "models"
 # HF_TOKEN is a SECRET — never commit it. Set it once with:
 #   wrangler secret put HF_TOKEN
 # Use a fine-grained, read-only token scoped to the binaries repo.
+#
+# NVIDIA_API_KEYS is a SECRET — comma-separated NIM keys (build.nvidia.com),
+# each with its own ~40 TPM limit; the router round-robins across them.
+#   wrangler secret put NVIDIA_API_KEYS   # paste: nvapi-aaa,nvapi-bbb,nvapi-ccc
+#
+# OPENROUTER_API_KEYS is a SECRET — comma-separated OpenRouter keys. Every lane
+# that lands on OpenRouter (including every `:free` model) round-robins across
+# them, multiplying per-account daily free quota by key count.
+#   wrangler secret put OPENROUTER_API_KEYS   # paste: sk-or-v1-aaa,sk-or-v1-bbb
+# OPENROUTER_API_KEY (single) still works as a one-key fallback.

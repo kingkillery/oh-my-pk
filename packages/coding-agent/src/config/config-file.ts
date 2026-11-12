@@ -53,6 +53,7 @@ export interface IConfigFile<T> {
 	path?(): string;
 	load(): T | null;
 	invalidate?(): void;
+	save?(value: T): void;
 }
 
 export class ConfigError extends Error {
@@ -61,6 +62,8 @@ export class ConfigError extends Error {
 		public readonly id: string,
 		public readonly schemaErrors: ConfigSchemaError[] | null | undefined,
 		public readonly other?: { err: unknown; stage: string },
+		/** Which operation failed; drives the message verb and error name. */
+		public readonly operation: "load" | "save" = "load",
 	) {
 		let messages: string[] | undefined;
 		let cause: Error | undefined;
@@ -81,7 +84,8 @@ export class ConfigError extends Error {
 			klass = "Unknown";
 		}
 
-		const title = `Failed to load config file ${id}, ${klass} error:`;
+		const verb = operation === "save" ? "save" : "load";
+		const title = `Failed to ${verb} config file ${id}, ${klass} error:`;
 		let message: string;
 		switch (messages?.length ?? 0) {
 			case 0:
@@ -95,7 +99,7 @@ export class ConfigError extends Error {
 		}
 
 		super(message, { cause });
-		this.name = "LoadError";
+		this.name = operation === "save" ? "SaveError" : "LoadError";
 		this.#message = message;
 	}
 
@@ -314,6 +318,60 @@ export class ConfigFile<T> implements IConfigFile<T> {
 
 	path(): string {
 		return this.#basePath;
+	}
+
+	/**
+	 * Persist a schema-valid config. Creates parent directories, writes
+	 * atomically (sibling temp file + rename), and leaves the file untouched
+	 * when the value or an aux validator rejects it.
+	 */
+	save(value: T): void {
+		const checked = this.schema(value);
+		if (checked instanceof ArkErrors || checked instanceof Error) {
+			throw new ConfigError(
+				this.id,
+				[
+					{
+						instancePath: "root",
+						message: checked instanceof ArkErrors ? checked.summary : checked.message,
+					},
+				],
+				undefined,
+				"save",
+			);
+		}
+		const config = checked as T;
+		try {
+			this.#auxValidate?.(config);
+		} catch (error) {
+			throw error instanceof ConfigError
+				? error
+				: new ConfigError(this.id, undefined, { err: error, stage: "AuxValidate" }, "save");
+		}
+		const contents =
+			this.#basePath.endsWith(".json") || this.#basePath.endsWith(".jsonc")
+				? JSON.stringify(config, null, 2)
+				: YAML.stringify(config, null, 2);
+		fs.mkdirSync(path.dirname(this.#basePath), { recursive: true });
+		this.#writeAtomic(contents);
+		this.invalidate();
+	}
+
+	/** Write via a sibling temp file + rename so no reader sees a partial file. */
+	#writeAtomic(contents: string): void {
+		const dir = path.dirname(this.#basePath);
+		const tmp = path.join(dir, `.${path.basename(this.#basePath)}.${process.pid}.${Date.now()}.tmp`);
+		try {
+			fs.writeFileSync(tmp, contents, { mode: 0o600 });
+			fs.renameSync(tmp, this.#basePath);
+		} catch (error) {
+			try {
+				fs.rmSync(tmp, { force: true });
+			} catch {
+				// Best-effort cleanup; the original file is untouched.
+			}
+			throw new ConfigError(this.id, undefined, { err: error, stage: "Write" }, "save");
+		}
 	}
 
 	invalidate() {

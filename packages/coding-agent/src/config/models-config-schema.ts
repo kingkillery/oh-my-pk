@@ -276,6 +276,9 @@ const ProviderConfigSchema = type({
 	return true;
 });
 
+/** Provider entry shape persisted in `models.yml` under `providers:`. */
+export type ProviderConfig = typeof ProviderConfigSchema.infer;
+
 const EquivalenceConfigSchema = type({
 	"overrides?": { "[string]": "string" },
 	"exclude?": "string[]",
