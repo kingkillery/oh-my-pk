@@ -10,6 +10,7 @@
 ### Fixed
 
 - Session shutdown waits briefly for asynchronous provider-host cleanup before returning, so owned hosts and temporary resources can close.
+- Auto-QA vault mirroring refuses a vault root that is not an absolute path. A relative root (for example a mangled `C;/…` drive) previously resolved against the session cwd and wrote issue notes inside the open repository.
 
 ## [16.4.35] - 2026-10-29
 
