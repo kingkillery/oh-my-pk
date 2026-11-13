@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed provider-scoped catalog regeneration (`--providers`) rejecting special OAuth providers such as `google-antigravity`.
+
 ## [16.4.36] - 2026-11-12
 
 ### Added

@@ -27,7 +27,7 @@ import {
 	type CatalogProviderDescriptor,
 	isCatalogDescriptor,
 } from "../src/provider-models/descriptor-types";
-import { PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
+import { getCatalogProviderEntry, PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
 import { buildDevinFallbackModel } from "../src/provider-models/devin";
 import { buildMiniMaxCodeStaticSeed } from "../src/provider-models/minimax-code";
 import {
@@ -482,10 +482,7 @@ async function generateModels() {
 		if (selectedProviders.size === 0) throw new Error("--providers requires at least one provider id");
 		const knownProviders = new Set(MODELS_DEV_PROVIDER_DESCRIPTORS.map(descriptor => descriptor.providerId));
 		for (const provider of selectedProviders) {
-			if (
-				!knownProviders.has(provider) &&
-				!PROVIDER_DESCRIPTORS.some(descriptor => descriptor.providerId === provider)
-			) {
+			if (!knownProviders.has(provider) && !getCatalogProviderEntry(provider)) {
 				throw new Error(`Unknown catalog provider: ${provider}`);
 			}
 		}
