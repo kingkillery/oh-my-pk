@@ -446,7 +446,7 @@ describe("Google Gemini CLI alignment", () => {
 		expect(requestHeaders!.get("Client-Metadata")).toBeNull();
 	});
 
-	it("sends the antigravity/hub User-Agent header on the Antigravity transport", async () => {
+	it("sends the antigravity/cli User-Agent header on the Antigravity transport", async () => {
 		let requestHeaders: Headers | undefined;
 		const fetchMock: FetchImpl = async (_url, init) => {
 			requestHeaders = new Headers(init?.headers);
@@ -460,7 +460,7 @@ describe("Google Gemini CLI alignment", () => {
 		}).result();
 
 		expect(requestHeaders).toBeDefined();
-		expect(requestHeaders!.get("User-Agent")).toMatch(/^antigravity\/hub\/[0-9.]+ /);
+		expect(requestHeaders!.get("User-Agent")).toMatch(/^antigravity\/cli\/[0-9.]+ /);
 	});
 
 	it("filters out empty text parts at stream end but preserves terminal thought signatures", async () => {

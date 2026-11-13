@@ -25,6 +25,12 @@ export const ANTIGRAVITY_SYSTEM_INSTRUCTION =
  * and usage code can read it without pulling the heavy google-gemini-cli provider
  * (and its @google/genai → google-auth-library dependency chain) into the startup
  * parse graph.
+ *
+ * The client segment gates the served model list. `daily-cloudcode-pa` returns a
+ * strict superset of the `hub` list to the `cli` client (the official `agy`
+ * Antigravity CLI), including the Gemini 4 effort tiers. `hub` never receives
+ * Gemini 4 at any version, and `cli` builds below ~1.5 receive the reduced list;
+ * both 404 on the missing wire ids.
  */
 export let getAntigravityUserAgent = () => {
 	const DEFAULT_ANTIGRAVITY_VERSION = "2.1.4";
@@ -35,7 +41,7 @@ export let getAntigravityUserAgent = () => {
 	// process.arch:     x64→amd64, ia32→386, others pass through (arm64)
 	const os = process.platform === "win32" ? "windows" : process.platform;
 	const arch = process.arch === "x64" ? "amd64" : process.arch === "ia32" ? "386" : process.arch;
-	const userAgent = `antigravity/hub/${version} ${os}/${arch}`;
+	const userAgent = `antigravity/cli/${version} ${os}/${arch}`;
 	getAntigravityUserAgent = () => userAgent;
 	return userAgent;
 };
