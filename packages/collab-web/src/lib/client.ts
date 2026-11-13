@@ -12,6 +12,7 @@ import type {
 	AgentSnapshot,
 	AssistantMessage,
 	HostFrame,
+	RelayControlMessage,
 	RemoteSessionScope,
 	RemoteSessionSnapshot,
 	SessionEntry,
@@ -21,10 +22,11 @@ import type {
 	SubagentProgressPayload,
 } from "@pk-nerdsaver-ai/pi-wire";
 import { importRoomKey } from "./codec";
+import { type ConnectionPhase, DEFAULT_HOST_HOLD_MS, ROOM_CLOSED_REASON } from "./connection-state";
 import { COLLAB_PROTO, encodeBase64Url, parseCollabLink } from "./link";
 import { CollabSocket } from "./socket";
 
-export type ConnectionPhase = "connecting" | "waiting" | "live" | "reconnecting" | "ended";
+export type { ConnectionPhase };
 
 export interface ActiveTool {
 	toolCallId: string;
@@ -61,6 +63,11 @@ export interface GuestSnapshot {
 	working: boolean;
 	/** True when this guest joined through a read-only (view) link. */
 	readOnly: boolean;
+	/**
+	 * Epoch ms when the relay stops holding the room for a dropped host.
+	 * Null while the host is present. The guest socket stays up during the hold.
+	 */
+	hostAwayUntil: number | null;
 	/** Capped at 50, newest last. */
 	notices: readonly Notice[];
 }
@@ -123,6 +130,7 @@ export class GuestClient {
 	#activeTools: ReadonlyMap<string, ActiveTool> = new Map();
 	#working = false;
 	#readOnly = false;
+	#hostAwayUntil: number | null = null;
 	#notices: readonly Notice[] = [];
 	#snapshot: GuestSnapshot;
 
@@ -135,17 +143,7 @@ export class GuestClient {
 		this.#socket = new CollabSocket({ wsUrl: parsed.wsUrl, role: "guest", key: importRoomKey(parsed.key) });
 		this.#socket.onOpen = () => this.#handleOpen();
 		this.#socket.onFrame = frame => this.#applyFrameSafe(frame);
-		this.#socket.onControl = msg => {
-			if (msg.t === "room-closed") {
-				this.#end("room closed");
-				return;
-			}
-			// No frame follows while the host is away, so commit the notice immediately.
-			if (msg.t === "host-away") this.#pushNotice("warning", "host connection lost — waiting for it to return");
-			else if (msg.t === "host-back") this.#pushNotice("info", "host reconnected");
-			else return;
-			this.#commit();
-		};
+		this.#socket.onControl = msg => this.#handleControl(msg);
 		this.#socket.onClose = (reason, willReconnect) => this.#handleClose(reason, willReconnect);
 		this.#snapshot = this.#buildSnapshot();
 	}
@@ -169,6 +167,15 @@ export class GuestClient {
 		this.#clearWelcomeTimer();
 		this.#clearSnapshotProgressTimer();
 		this.#socket.close();
+	}
+
+	/**
+	 * Reconnect immediately after the page wakes or the network returns.
+	 * A terminal session (room closed, host bye, fatal close) stays down.
+	 */
+	resume(): void {
+		if (this.#phase === "ended") return;
+		this.#socket.wake();
 	}
 
 	subscribe(listener: () => void): () => void {
@@ -283,6 +290,59 @@ export class GuestClient {
 		this.#applyFrameSafe(frame);
 	}
 
+	/** Test seam: apply a relay control message through the real control path. */
+	applyControlForTest(msg: RelayControlMessage): void {
+		this.#handleControl(msg);
+	}
+
+	/**
+	 * Localhost screenshot seam. Sets the visible snapshot without opening a socket.
+	 * Production sessions never call this.
+	 */
+	presentPreview(input: {
+		phase: ConnectionPhase;
+		endedReason?: string | null;
+		hostAwayUntil?: number | null;
+		readOnly?: boolean;
+		working?: boolean;
+		header?: SessionHeader | null;
+		entries?: readonly SessionEntry[];
+		state?: SessionState | null;
+	}): void {
+		this.#phase = input.phase;
+		this.#endedReason = input.endedReason ?? null;
+		this.#hostAwayUntil = input.hostAwayUntil ?? null;
+		this.#readOnly = input.readOnly === true;
+		this.#working = input.working === true;
+		this.#header = input.header ?? null;
+		this.#entries = input.entries ?? [];
+		this.#state = input.state ?? null;
+		this.#stream = null;
+		this.#streamDone = false;
+		this.#activeTools = new Map();
+		this.#agents = [];
+		this.#welcomed = input.phase === "live";
+		this.#commit();
+	}
+
+	#handleControl(msg: RelayControlMessage): void {
+		if (msg.t === "room-closed") {
+			this.#hostAwayUntil = null;
+			this.#end(ROOM_CLOSED_REASON);
+			return;
+		}
+		if (msg.t === "host-away") {
+			const grace = Number.isFinite(msg.graceMs) && msg.graceMs > 0 ? msg.graceMs : DEFAULT_HOST_HOLD_MS;
+			this.#hostAwayUntil = Date.now() + grace;
+			this.#commit();
+			return;
+		}
+		if (msg.t === "host-back") {
+			this.#hostAwayUntil = null;
+			this.#commit();
+		}
+	}
+
 	#handleOpen(): void {
 		this.#socket.send({ t: "hello", proto: COLLAB_PROTO, name: this.#name, writeToken: this.#writeToken });
 		this.#phase = this.#everConnected ? "reconnecting" : "waiting";
@@ -307,6 +367,7 @@ export class GuestClient {
 		this.#clearSnapshotProgressTimer();
 		this.#phase = "ended";
 		this.#endedReason = reason;
+		this.#hostAwayUntil = null;
 		for (const [, pending] of this.#pendingTranscripts) {
 			clearTimeout(pending.timer);
 			pending.resolve(null);
@@ -363,6 +424,8 @@ export class GuestClient {
 			case "welcome":
 				// Reset accumulator: a fresh welcome arriving mid-load (reconnect)
 				// supersedes any partially-streamed snapshot from the prior session.
+				// A welcome is host traffic, so a previous host-away hold is over.
+				this.#hostAwayUntil = null;
 				this.#header = frame.header;
 				this.#entries = [];
 				this.#state = frame.state;
@@ -562,6 +625,7 @@ export class GuestClient {
 			activeTools: this.#activeTools,
 			working: this.#working,
 			readOnly: this.#readOnly,
+			hostAwayUntil: this.#hostAwayUntil,
 			notices: this.#notices,
 		};
 	}

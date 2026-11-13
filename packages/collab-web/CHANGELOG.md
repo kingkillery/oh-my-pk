@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Phone layout for the browser guest: the transcript uses the screen width, the composer stays above the keyboard (visual viewport and safe-area insets), and Stop is a labeled control in the thumb zone.
+- Connection status is words plus an icon: Connecting, Joining, Live, Host away with the relay hold countdown, Reconnecting, Room closed, and Read-only. Room closed asks you to rescan the QR on your computer.
+- Waking the page or coming back online reconnects immediately, including when the socket drops a few seconds after the phone wakes.
+- Optional Remember on this device, off by default. It stores only the last link in local storage and Forget removes it. The link is not logged or sent anywhere beyond the existing relay connection.
+- Maskable icons and an installable manifest name. There is no service worker.
+
+### Changed
+
+- Narrow screens show a single join or continue action. The desktop connect introduction is unchanged.
+
 ## [16.3.0] - 2026-07-23
 
 ### Added

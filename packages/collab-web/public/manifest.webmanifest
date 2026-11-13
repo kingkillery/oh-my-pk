@@ -1,7 +1,8 @@
 {
-	"name": "omp collab",
-	"short_name": "omp collab",
-	"description": "Live guest client for omp collab sessions: streaming transcript, tool cards, subagent panel, and a composer that prompts the host agent — end-to-end encrypted.",
+	"id": "./",
+	"name": "oh-my-pk",
+	"short_name": "oh-my-pk",
+	"description": "Remote control for a live oh-my-pk session.",
 	"start_url": "./",
 	"scope": "./",
 	"display": "standalone",
@@ -11,6 +12,8 @@
 		{ "src": "./favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
 		{ "src": "./favicon-192x192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
 		{ "src": "./favicon-512x512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
-		{ "src": "./favicon-180x180.png", "type": "image/png", "sizes": "180x180", "purpose": "any" }
+		{ "src": "./favicon-180x180.png", "type": "image/png", "sizes": "180x180", "purpose": "any" },
+		{ "src": "./icon-maskable-192.png", "type": "image/png", "sizes": "192x192", "purpose": "maskable" },
+		{ "src": "./icon-maskable-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
 	]
 }

@@ -405,7 +405,19 @@
 }
 
 @media (max-width: 640px) {
+	.ag-drawer {
+		width: 100%;
+		padding-top: env(safe-area-inset-top, 0px);
+		padding-bottom: env(safe-area-inset-bottom, 0px);
+	}
+
 	.ag-chat-input {
 		font-size: 16px;
+		min-height: 44px;
+	}
+
+	.ag-iconbtn {
+		width: 44px;
+		height: 44px;
 	}
 }
