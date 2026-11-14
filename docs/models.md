@@ -250,6 +250,43 @@ Provider defaults vs per-model overrides:
 - `modelOverrides` can override model metadata (`name`, `reasoning`, `thinking`, `input`, `supportsTools`, `cost`, `premiumMultiplier`, `contextWindow`, `maxTokens`, `omitMaxOutputTokens`, `headers`, `compat`, `contextPromotionTarget`).
 - `compat` is deep-merged for nested routing blocks (`openRouterRouting`, `vercelGatewayRouting`, `extraBody`).
 
+## Subscription-backed failover for Gemini models
+
+A Gemini model id can exist on two transports with different billing:
+
+- `google/<id>` bills the Gemini API against the prepaid balance of the API key's AI Studio project. With a depleted balance every model on that key answers `402` (`prepayment credits are depleted`), even when the account's Google AI Ultra plan covers the same model elsewhere.
+- `google-antigravity/<id>` bills the Antigravity subscription instead.
+
+A routing pool turns the first into a failover candidate for the second, so a request that names the API-key provider lands on the subscription transport whenever the key cannot pay:
+
+```yaml
+routing:
+  enabled: true
+  pools:
+    gemini-4-hydrogen:
+      members:
+        - google/gemini-4-hydrogen
+        - google-antigravity/gemini-4-hydrogen-medium
+```
+
+Semantics:
+
+- The requested model is tried first. `402` (payment required), `429`, and `503` failures that happen before any text or tool call is emitted move the turn to the next member.
+- `affinity-fallback` (the default) sticks to the member that worked for the rest of the session, and the failed member cools down for `routing.cooldownDurationMs` (default 60 s).
+- Only authenticated members become candidates, so the subscription member is used only while an Antigravity credential is active.
+- Failover never happens unless `routing.enabled` is true; the opt-in gate keeps billing surprises out of default installs.
+
+Effort tiers need pairing by hand, because the two transports spell the same model differently: Antigravity appends the effort to the wire id (`gemini-4-hydrogen-medium`), while the Gemini API id carries no suffix (`gemini-4-hydrogen`). Pair like with like — `-low`, `-medium`, `-high`, and `-xhigh` are separate wire models, not a dial on one id. `/route pool <modelA> <modelB>` writes the same entry from a session.
+
+If you would rather have the registry group the variants itself, declare a shared canonical id instead of a pool; equivalence precedes pooling, so both paths route the same way:
+
+```yaml
+equivalence:
+  overrides:
+    google/gemini-4-hydrogen: gemini-4-hydrogen
+    google-antigravity/gemini-4-hydrogen-medium: gemini-4-hydrogen
+```
+
 ## Runtime discovery integration
 
 ### Implicit Ollama discovery

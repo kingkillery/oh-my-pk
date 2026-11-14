@@ -6,6 +6,13 @@ import type { FetchImpl, Model, ModelSpec } from "../types";
 const GOOGLE_GENERATIVE_AI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_MAX_PAGES = 25;
+/**
+ * Gemini 4 is provisioned through the Antigravity subscription transport, whose wire ids carry an
+ * effort suffix. The public API-key endpoint advertises the same family but rejects it with `402`
+ * while the project's prepaid balance is empty, so listing it here only adds dead duplicates of
+ * models the subscription already serves.
+ */
+const ANTIGRAVITY_EXCLUSIVE_MODEL_PREFIX = "gemini-4-";
 
 const resilientString = type("unknown").pipe(val => {
 	if (val === undefined) return undefined;
@@ -184,6 +191,9 @@ function normalizeModel(
 		return null;
 	}
 	if (!supportsTextGeneration(item.supportedGenerationMethods)) {
+		return null;
+	}
+	if (id.startsWith(ANTIGRAVITY_EXCLUSIVE_MODEL_PREFIX)) {
 		return null;
 	}
 

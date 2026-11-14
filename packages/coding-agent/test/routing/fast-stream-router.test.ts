@@ -122,6 +122,21 @@ describe("FastStreamRouter", () => {
 		expect(manager.getHealthSnapshot().get(`${primary.provider}/${primary.id}`)?.consecutiveFailures).toBe(1);
 	});
 
+	it("fails over on a 402 payment-required rejection to a subscription-backed candidate", async () => {
+		const manager = new ModelPoolManager({ enabled: true });
+		const router = new FastStreamRouter(manager, () => "candidate-key");
+		const tried: Model[] = [];
+		const output = router.streamWithRouting(primary, { messages: [] }, undefined, pool, target => {
+			tried.push(target);
+			return target === primary ? failure(target, 402) : success(target);
+		});
+		const { result } = await collect(output);
+		expect(tried).toEqual([primary, secondary]);
+		expect(result.provider).toBe(secondary.provider);
+		expect(result.stopReason).toBe("stop");
+		expect(manager.getHealthSnapshot().get(`${primary.provider}/${primary.id}`)?.consecutiveFailures).toBe(1);
+	});
+
 	it("fails over on a message-only capacity error with no start event", async () => {
 		const router = new FastStreamRouter(new ModelPoolManager({ enabled: true }), () => "candidate-key");
 		const output = router.streamWithRouting(primary, { messages: [] }, undefined, pool, target => {

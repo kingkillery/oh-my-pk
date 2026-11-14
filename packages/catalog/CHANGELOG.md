@@ -6,6 +6,7 @@
 
 - Fixed provider-scoped catalog regeneration (`--providers`) rejecting special OAuth providers such as `google-antigravity`.
 - Fixed `google-antigravity` model discovery omitting Gemini 4 (Hydrogen, Argon, Carbon) and Gemini 3.8 Flash effort tiers that the account is entitled to. The Antigravity User-Agent now identifies as the `cli` client instead of `hub`; the backend serves a strict superset of the model list to that client.
+- Fixed the `google` (API-key) provider advertising dead Gemini 4 duplicates. `gemini-4-argon`, `gemini-4-carbon`, and `gemini-4-hydrogen` are now served only by `google-antigravity`, whose subscription transport accepts them; the API-key endpoint lists the same family but rejects it with `402` while the project's prepaid balance is empty.
 
 ## [16.4.36] - 2026-11-12
 

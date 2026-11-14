@@ -71,6 +71,11 @@ export class FastStreamRouter {
 		if (!error || (error instanceof Error && error.name === "AbortError")) return false;
 		const httpStatus = status(error);
 		if (isTransientStatus(httpStatus)) return true;
+		// A depleted prepaid balance (402) is definitive for *this* provider, but a pool's
+		// equivalent model on a subscription transport — the same Gemini family on
+		// `google-antigravity` instead of a pay-as-you-go API key — is a valid answer, so
+		// fail over there instead of retrying a provider that cannot be paid for.
+		if (httpStatus === 402) return true;
 		// A definitive client/auth error must not be overridden by incidental capacity wording.
 		if (httpStatus !== undefined && httpStatus >= 400 && httpStatus < 500) return false;
 
