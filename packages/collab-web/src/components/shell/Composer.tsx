@@ -2,6 +2,7 @@ import { SendHorizontal, Square } from "lucide-react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { GuestClient, GuestSnapshot } from "../../lib/client";
+import { ROOM_CLOSED_REASON } from "../../lib/connection-state";
 
 export interface ComposerProps {
 	client: GuestClient;
@@ -13,11 +14,22 @@ const LINE_PX = 20;
 const PAD_Y = 18;
 const MAX_ROWS = 8;
 
+function composerPlaceholder(snapshot: GuestSnapshot, live: boolean, hostAway: boolean): string {
+	if (snapshot.phase === "ended") return snapshot.endedReason === ROOM_CLOSED_REASON ? "Room closed" : "Ended";
+	if (snapshot.readOnly) return "Read-only";
+	if (hostAway) return "Host away";
+	if (live) return "Message";
+	if (snapshot.phase === "reconnecting") return "Reconnecting";
+	if (snapshot.phase === "waiting") return "Joining";
+	return "Connecting";
+}
+
 export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 	const [text, setText] = useState("");
 	const taRef = useRef<HTMLTextAreaElement | null>(null);
 
-	const live = snapshot.phase === "live";
+	const hostAway = snapshot.hostAwayUntil !== null && snapshot.phase === "live";
+	const live = snapshot.phase === "live" && !hostAway;
 	const readOnly = snapshot.readOnly;
 	const canPrompt = live && !readOnly;
 	const busy = snapshot.working || (snapshot.state?.isStreaming ?? false);
@@ -57,13 +69,7 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 					value={text}
 					onChange={e => setText(e.target.value)}
 					onKeyDown={onKeyDown}
-					placeholder={
-						readOnly
-							? "Read-only session"
-							: live
-								? "Ask the host agent to change or inspect something…"
-								: "Waiting for session…"
-					}
+					placeholder={composerPlaceholder(snapshot, live, hostAway)}
 					disabled={!canPrompt}
 					rows={1}
 					spellCheck={false}
@@ -84,9 +90,9 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 								className="sh-btn sh-btn-stop"
 								onClick={() => client.sendAbort()}
 								disabled={!live}
-								title="stop the current turn"
+								aria-label="Stop"
 							>
-								<Square size={11} /> <span className="sh-btn-label">Stop</span>
+								<Square size={16} /> <span className="sh-btn-label">Stop</span>
 							</button>
 						)}
 						<button
@@ -94,9 +100,9 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 							className="sh-btn sh-btn-primary"
 							onClick={send}
 							disabled={!canSend}
-							title="send (Enter)"
+							aria-label="Send"
 						>
-							<SendHorizontal size={12} /> <span className="sh-btn-label">Send</span>
+							<SendHorizontal size={16} /> <span className="sh-btn-label">Send</span>
 						</button>
 					</div>
 				</div>

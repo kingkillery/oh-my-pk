@@ -10,10 +10,11 @@
 
 import type { GuestFrame, HostFrame, RelayControlMessage } from "@pk-nerdsaver-ai/pi-wire";
 import { open, seal } from "./codec";
+import { ROOM_CLOSED_REASON } from "./connection-state";
 import { packEnvelope, unpackEnvelope } from "./link";
 
 const FATAL_CLOSE_REASONS: Record<number, string> = {
-	4001: "room closed",
+	4001: ROOM_CLOSED_REASON,
 	4004: "no such room",
 	4009: "a host is already connected for this room",
 	4010: "host connection replaced",
@@ -53,6 +54,12 @@ export class CollabSocket {
 	#recvChain: Promise<void> = Promise.resolve();
 	/** Envelopes sealed while disconnected, flushed on the next open. */
 	#pendingSends: Uint8Array<ArrayBuffer>[] = [];
+	/**
+	 * While this epoch is in the future, the next transient close retries
+	 * immediately. Covers a phone that wakes with a socket that still looks open
+	 * and then drops a moment later.
+	 */
+	#wakeUntil = 0;
 
 	constructor(opts: CollabSocketOptions) {
 		this.#opts = opts;
@@ -86,6 +93,17 @@ export class CollabSocket {
 			.catch(() => {
 				// dropped frame; the socket-level close path reports actionable failures
 			});
+	}
+
+	/**
+	 * Reconnect now if the socket is down. If it still looks open, remember the
+	 * wake so a close in the next few seconds skips backoff once.
+	 * No-op after a fatal or intentional close.
+	 */
+	wake(): void {
+		if (this.#closed) return;
+		this.#wakeUntil = Date.now() + 5_000;
+		this.#ensureOpen();
 	}
 
 	/** Intentional close: clears any retry timer, suppresses reconnect. A later connect() starts fresh. */
@@ -200,10 +218,33 @@ export class CollabSocket {
 		this.onClose?.(reason, false);
 	}
 
+	#ensureOpen(): void {
+		if (this.#closed) return;
+		const ws = this.#ws;
+		if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+		this.#clearRetry();
+		if (ws) {
+			this.#ws = null;
+			try {
+				ws.close();
+			} catch {
+				// already closing
+			}
+		}
+		this.#openSocket();
+	}
+
 	#scheduleRetry(): void {
-		const base = Math.min(BACKOFF_BASE_MS * 2 ** this.#attempt, BACKOFF_MAX_MS);
-		this.#attempt++;
-		const delay = base * (0.75 + Math.random() * 0.5);
+		let delay: number;
+		if (Date.now() < this.#wakeUntil) {
+			this.#wakeUntil = 0;
+			this.#attempt = 0;
+			delay = 0;
+		} else {
+			const base = Math.min(BACKOFF_BASE_MS * 2 ** this.#attempt, BACKOFF_MAX_MS);
+			this.#attempt++;
+			delay = base * (0.75 + Math.random() * 0.5);
+		}
 		this.#retryTimer = setTimeout(() => {
 			this.#retryTimer = undefined;
 			if (this.#closed) return;

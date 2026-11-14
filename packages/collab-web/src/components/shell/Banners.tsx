@@ -1,35 +1,48 @@
 import type { ReactNode } from "react";
-import type { ConnectionPhase } from "../../lib/client";
+import { type ConnectionView, formatHold } from "../../lib/connection-state";
+import { StatusIconMark } from "./ConnectionStatus";
 
 export interface BannersProps {
-	phase: ConnectionPhase;
+	view: ConnectionView;
 	endedReason: string | null;
 	onRejoin(): void;
 	onNewLink(): void;
 }
 
-export function Banners({ phase, endedReason, onRejoin, onNewLink }: BannersProps): ReactNode {
-	if (phase === "connecting" || phase === "waiting") {
+export function Banners({ view, endedReason, onRejoin, onNewLink }: BannersProps): ReactNode {
+	if (
+		view.kind === "connecting" ||
+		view.kind === "joining" ||
+		view.kind === "reconnecting" ||
+		view.kind === "host-away"
+	) {
 		return (
-			<div className="sh-banner" role="status">
-				<span className="sh-banner-dot" />
-				{phase === "connecting" ? "connecting to relay…" : "joining session…"}
+			<div className={`sh-banner sh-banner-${view.kind}`} role="status">
+				<StatusIconMark kind={view.kind} />
+				<span>{view.label}</span>
+				{view.holdSeconds !== null && <span className="sh-status-hold">{formatHold(view.holdSeconds)}</span>}
 			</div>
 		);
 	}
-	if (phase === "reconnecting") {
+	if (view.kind === "room-closed") {
 		return (
-			<div className="sh-banner" role="status">
-				<span className="sh-banner-dot" />
-				reconnecting…
-			</div>
-		);
-	}
-	if (phase === "ended") {
-		return (
-			<div className="sh-ended" role="alertdialog" aria-label="session ended">
+			<div className="sh-ended" role="alertdialog" aria-label="Room closed">
 				<div className="sh-ended-card">
-					<div className="sh-ended-title">session ended</div>
+					<div className="sh-ended-title">Room closed</div>
+					<div className="sh-ended-actions">
+						<button type="button" className="sh-btn sh-btn-primary" onClick={onNewLink}>
+							Rescan the QR on your computer
+						</button>
+					</div>
+				</div>
+			</div>
+		);
+	}
+	if (view.kind === "ended") {
+		return (
+			<div className="sh-ended" role="alertdialog" aria-label="Session ended">
+				<div className="sh-ended-card">
+					<div className="sh-ended-title">Ended</div>
 					{endedReason && <div className="sh-ended-reason">{endedReason}</div>}
 					<div className="sh-ended-actions">
 						<button type="button" className="sh-btn sh-btn-primary" onClick={onRejoin}>

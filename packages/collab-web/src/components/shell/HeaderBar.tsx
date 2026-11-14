@@ -1,27 +1,37 @@
 import { History, LogOut, PanelLeft } from "lucide-react";
 import type { ReactNode } from "react";
 import type { GuestSnapshot } from "../../lib/client";
+import type { ConnectionView } from "../../lib/connection-state";
 import { fmtPercent, shortenPath } from "../../lib/format";
+import { ConnectionPill } from "./ConnectionStatus";
 import { ThemeToggle } from "./ThemeToggle";
 
 export interface HeaderBarProps {
 	snapshot: GuestSnapshot;
+	view: ConnectionView;
 	subCount: number;
 	railOpen: boolean;
+	remembered: boolean;
 	onToggleRail(): void;
 	onOpenSessions(): void;
 	onLeave(): void;
+	onRemember(): void;
+	onForget(): void;
 }
 
 export function HeaderBar({
 	snapshot,
+	view,
 	subCount,
 	railOpen,
+	remembered,
 	onToggleRail,
 	onOpenSessions,
 	onLeave,
+	onRemember,
+	onForget,
 }: HeaderBarProps): ReactNode {
-	const { header, state, phase, readOnly } = snapshot;
+	const { header, state, readOnly } = snapshot;
 	const title = header?.title ?? state?.sessionName ?? "session";
 	const usage = state?.contextUsage;
 	let pct: number | null = null;
@@ -45,7 +55,7 @@ export function HeaderBar({
 					title={railOpen ? "hide session agents" : "show session agents"}
 					aria-label={railOpen ? "Hide session agents" : "Show session agents"}
 				>
-					<PanelLeft size={14} />
+					<PanelLeft size={16} />
 					{subCount > 0 && !railOpen && <span className="sh-badge">{subCount}</span>}
 				</button>
 				<div className="sh-title-group">
@@ -60,11 +70,6 @@ export function HeaderBar({
 				</div>
 			</div>
 			<div className="sh-header-right">
-				{readOnly && (
-					<span className="sh-chip" title="you joined with a read-only link — watching only">
-						read-only
-					</span>
-				)}
 				{state?.model && <span className="sh-chip sh-chip-meta">{state.model.name}</span>}
 				{state?.thinkingLevel && <span className="sh-chip sh-chip-meta">{state.thinkingLevel}</span>}
 				{pct != null && (
@@ -72,14 +77,14 @@ export function HeaderBar({
 						className={pct > 80 ? "sh-gauge sh-gauge-warn" : "sh-gauge"}
 						title={`context · ${fmtPercent(pct)}`}
 					>
-						<span className="sh-gauge-track">
+						<span className="sh-gauge-track" aria-hidden="true">
 							<span className="sh-gauge-fill" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
 						</span>
 						<span className="sh-gauge-pct">{fmtPercent(pct)}</span>
 					</span>
 				)}
 				{state && state.participants.length > 0 && (
-					<span className="sh-avatars">
+					<span className="sh-avatars" aria-hidden="true">
 						{state.participants.map((p, i) => (
 							<span
 								key={`${p.name}:${i}`}
@@ -91,6 +96,21 @@ export function HeaderBar({
 						))}
 					</span>
 				)}
+				<div className="sh-header-status">
+					<ConnectionPill view={view} />
+					{readOnly && <span className="sh-chip">Read-only</span>}
+					<button
+						type="button"
+						className="sh-btn sh-remember"
+						aria-pressed={remembered}
+						aria-label={
+							remembered ? "Forget this session on this device" : "Remember this session on this device"
+						}
+						onClick={remembered ? onForget : onRemember}
+					>
+						{remembered ? "Forget" : "Remember"}
+					</button>
+				</div>
 				{!readOnly && (
 					<button
 						type="button"
@@ -99,10 +119,9 @@ export function HeaderBar({
 						title="browse host sessions"
 						aria-label="Browse host sessions"
 					>
-						<History size={14} />
+						<History size={16} />
 					</button>
 				)}
-				<span className={`sh-dot sh-dot-${phase}`} title={phase} />
 				<ThemeToggle />
 				<button
 					type="button"
@@ -111,7 +130,7 @@ export function HeaderBar({
 					title="leave session"
 					aria-label="Leave session"
 				>
-					<LogOut size={14} />
+					<LogOut size={16} />
 				</button>
 			</div>
 		</header>

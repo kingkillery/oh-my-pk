@@ -288,3 +288,16 @@
 		animation: none;
 	}
 }
+
+@media (max-width: 640px) {
+	.ss-drawer {
+		width: 100%;
+		padding-top: env(safe-area-inset-top, 0px);
+		padding-bottom: env(safe-area-inset-bottom, 0px);
+	}
+
+	.ss-iconbtn {
+		width: 44px;
+		height: 44px;
+	}
+}

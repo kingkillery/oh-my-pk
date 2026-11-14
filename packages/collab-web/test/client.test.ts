@@ -219,6 +219,56 @@ describe("GuestClient frame apply", () => {
 		expect(client.getSnapshot().progress.get("Sub1")).toEqual(payload);
 	});
 
+	it("host-away records the hold and host-back or welcome clears it", () => {
+		const now = 1_700_000_000_000;
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+		try {
+			const client = liveClient();
+			expect(client.getSnapshot().hostAwayUntil).toBeNull();
+
+			client.applyControlForTest({ t: "host-away", graceMs: 45_000 });
+			expect(client.getSnapshot().hostAwayUntil).toBe(now + 45_000);
+			expect(client.getSnapshot().phase).toBe("live");
+
+			client.applyControlForTest({ t: "host-away", graceMs: Number.NaN });
+			expect(client.getSnapshot().hostAwayUntil).toBe(now + 45_000);
+
+			client.applyControlForTest({ t: "host-back" });
+			expect(client.getSnapshot().hostAwayUntil).toBeNull();
+
+			client.applyControlForTest({ t: "host-away", graceMs: 10_000 });
+			client.applyFrameForTest(welcomeFrame(0));
+			expect(client.getSnapshot().hostAwayUntil).toBeNull();
+			expect(client.getSnapshot().phase).toBe("live");
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	it("room-closed ends the session with the room-closed reason", () => {
+		const client = liveClient();
+		client.applyControlForTest({ t: "host-away", graceMs: 45_000 });
+		client.applyControlForTest({ t: "room-closed" });
+		const snap = client.getSnapshot();
+		expect(snap.phase).toBe("ended");
+		expect(snap.endedReason).toBe("room closed");
+		expect(snap.hostAwayUntil).toBeNull();
+	});
+
+	it("resume wakes the socket unless the session has ended", () => {
+		const wake = vi.spyOn(CollabSocket.prototype, "wake").mockImplementation(() => {});
+		try {
+			const client = liveClient();
+			client.resume();
+			expect(wake).toHaveBeenCalledTimes(1);
+			client.applyFrameForTest({ t: "bye", reason: "host left" });
+			client.resume();
+			expect(wake).toHaveBeenCalledTimes(1);
+		} finally {
+			wake.mockRestore();
+		}
+	});
+
 	it("bye ends the session with a reason", () => {
 		const client = liveClient();
 		client.applyFrameForTest({ t: "bye", reason: "host left" });

@@ -64,4 +64,67 @@ describe("CollabSocket close handling", () => {
 			globalThis.WebSocket = realWebSocket;
 		}
 	});
+
+	test("wake opens immediately while a retry is waiting", async () => {
+		const key = await crypto.subtle.importKey("raw", new Uint8Array(32), "AES-GCM", false, ["encrypt", "decrypt"]);
+		vi.useFakeTimers();
+		const realWebSocket = globalThis.WebSocket;
+		globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+		try {
+			const socket = new CollabSocket({ wsUrl: "wss://relay.example/r/roomroomroom", role: "guest", key });
+			socket.connect();
+			const first = FakeWebSocket.instances[0];
+			expect(first).toBeDefined();
+			first!.open();
+			first!.serverClose(1006, "");
+			expect(FakeWebSocket.instances).toHaveLength(1);
+
+			socket.wake();
+			expect(FakeWebSocket.instances).toHaveLength(2);
+		} finally {
+			globalThis.WebSocket = realWebSocket;
+		}
+	});
+
+	test("a socket that still looks open retries immediately if it drops just after wake", async () => {
+		const key = await crypto.subtle.importKey("raw", new Uint8Array(32), "AES-GCM", false, ["encrypt", "decrypt"]);
+		vi.useFakeTimers();
+		const realWebSocket = globalThis.WebSocket;
+		globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+		try {
+			const socket = new CollabSocket({ wsUrl: "wss://relay.example/r/roomroomroom", role: "guest", key });
+			socket.connect();
+			const first = FakeWebSocket.instances[0];
+			expect(first).toBeDefined();
+			first!.open();
+			socket.wake();
+			expect(FakeWebSocket.instances).toHaveLength(1);
+
+			first!.serverClose(1006, "");
+			vi.advanceTimersByTime(1);
+			expect(FakeWebSocket.instances).toHaveLength(2);
+		} finally {
+			globalThis.WebSocket = realWebSocket;
+		}
+	});
+
+	test("wake does not revive a fatal close", async () => {
+		const key = await crypto.subtle.importKey("raw", new Uint8Array(32), "AES-GCM", false, ["encrypt", "decrypt"]);
+		vi.useFakeTimers();
+		const realWebSocket = globalThis.WebSocket;
+		globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+		try {
+			const socket = new CollabSocket({ wsUrl: "wss://relay.example/r/roomroomroom", role: "guest", key });
+			socket.connect();
+			const first = FakeWebSocket.instances[0];
+			expect(first).toBeDefined();
+			first!.open();
+			first!.serverClose(4001, "room closed");
+			socket.wake();
+			vi.advanceTimersByTime(5_000);
+			expect(FakeWebSocket.instances).toHaveLength(1);
+		} finally {
+			globalThis.WebSocket = realWebSocket;
+		}
+	});
 });

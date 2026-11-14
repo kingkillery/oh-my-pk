@@ -410,11 +410,26 @@
 
 /* ---- responsive mobile styles ---- */
 @media (max-width: 640px) {
+	.tr-root {
+		padding: 16px 16px 28px;
+		font-size: 16px;
+		line-height: 1.55;
+	}
+
 	.tr-row {
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
-		padding: 8px 0;
+		padding: 12px 0;
+	}
+
+	.tr-think-head {
+		min-height: 44px;
+		font-size: 14px;
+	}
+
+	.tr-md code {
+		font-size: 13px;
 	}
 	.tr-gutter {
 		text-align: left;

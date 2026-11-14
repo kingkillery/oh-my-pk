@@ -6,30 +6,44 @@ import { ThemeToggle } from "./ThemeToggle";
 export interface ConnectScreenProps {
 	defaultName: string;
 	error: string | null;
-	onConnect(link: string, name: string): void;
+	/** A link is already stored on this device. The value itself is not shown. */
+	savedAvailable: boolean;
+	onConnect(link: string, name: string, remember: boolean): void;
+	onContinue(): void;
+	onForget(): void;
 }
 
-export function ConnectScreen({ defaultName, error, onConnect }: ConnectScreenProps): ReactNode {
+export function ConnectScreen({
+	defaultName,
+	error,
+	savedAvailable,
+	onConnect,
+	onContinue,
+	onForget,
+}: ConnectScreenProps): ReactNode {
 	const [link, setLink] = useState("");
 	const [name, setName] = useState(defaultName);
+	const [remember, setRemember] = useState(false);
 	const [localError, setLocalError] = useState<string | null>(null);
+	const [replace, setReplace] = useState(false);
 
 	const submit = (e: FormEvent<HTMLFormElement>): void => {
 		e.preventDefault();
 		const trimmed = link.trim();
 		if (!trimmed) {
-			setLocalError("paste a join link first");
+			setLocalError("Paste a join link");
 			return;
 		}
 		setLocalError(null);
-		onConnect(trimmed, name.trim() || "guest");
+		onConnect(trimmed, name.trim() || "guest", remember);
 	};
 
 	const shown = localError ?? error;
+	const continueSaved = savedAvailable && !replace;
 
 	return (
 		<div className="sh-connect">
-			<section className="sh-connect-intro" aria-label="oh-my-pk collaboration">
+			<section className="sh-connect-intro" aria-label="oh-my-pk">
 				<div className="sh-connect-brand">
 					<span className="sh-lockup-mark" aria-hidden="true" />
 					<span>oh-my-pk</span>
@@ -53,52 +67,88 @@ export function ConnectScreen({ defaultName, error, onConnect }: ConnectScreenPr
 					</span>
 				</div>
 			</section>
-			<form className="sh-connect-card" onSubmit={submit}>
-				<div className="sh-connect-head">
-					<div>
-						<h2>Join a session</h2>
-						<p>
-							Use the link printed by <code>/collab</code>.
-						</p>
+			{continueSaved ? (
+				<div className="sh-connect-card">
+					<div className="sh-connect-brand sh-connect-brand-card">
+						<span className="sh-lockup-mark" aria-hidden="true" />
+						<span>oh-my-pk</span>
 					</div>
-					<ThemeToggle />
+					<div className="sh-connect-head">
+						<h2>Session</h2>
+						<ThemeToggle />
+					</div>
+					{shown && (
+						<div className="sh-connect-error" role="alert">
+							{shown}
+						</div>
+					)}
+					<button type="button" className="sh-btn sh-btn-primary sh-connect-submit" onClick={onContinue}>
+						Continue
+					</button>
+					<button type="button" className="sh-btn sh-connect-submit" onClick={onForget}>
+						Forget
+					</button>
+					<button type="button" className="sh-btn sh-textbtn" onClick={() => setReplace(true)}>
+						Use a different link
+					</button>
 				</div>
-				<label className="sh-field">
-					<span className="sh-field-label">Join link</span>
-					<input
-						className="sh-input sh-input-mono"
-						type="text"
-						value={link}
-						onChange={e => setLink(e.target.value)}
-						placeholder="ws://host:port/r/room.key"
-						spellCheck={false}
-						autoComplete="off"
-						autoFocus
-					/>
-					<span className="sh-field-hint">The room key stays in your browser.</span>
-				</label>
-				<label className="sh-field">
-					<span className="sh-field-label">Display name</span>
-					<input
-						className="sh-input"
-						type="text"
-						value={name}
-						onChange={e => setName(e.target.value)}
-						placeholder="guest"
-						spellCheck={false}
-						autoComplete="off"
-						maxLength={32}
-					/>
-				</label>
-				{shown && (
-					<div className="sh-connect-error" role="alert">
-						{shown}
+			) : (
+				<form className="sh-connect-card" onSubmit={submit}>
+					<div className="sh-connect-brand sh-connect-brand-card">
+						<span className="sh-lockup-mark" aria-hidden="true" />
+						<span>oh-my-pk</span>
 					</div>
-				)}
-				<button className="sh-btn sh-btn-primary sh-connect-submit" type="submit">
-					Connect to workspace
-				</button>
-			</form>
+					<div className="sh-connect-head">
+						<div>
+							<h2>Join a session</h2>
+							<p className="sh-connect-help">
+								Use the link printed by <code>/collab</code>.
+							</p>
+						</div>
+						<ThemeToggle />
+					</div>
+					<label className="sh-field">
+						<span className="sh-field-label">Join link</span>
+						<input
+							className="sh-input sh-input-mono"
+							type="text"
+							value={link}
+							onChange={e => setLink(e.target.value)}
+							spellCheck={false}
+							autoComplete="off"
+							autoCapitalize="off"
+							autoCorrect="off"
+							autoFocus
+						/>
+						<span className="sh-field-hint">The room key stays in your browser.</span>
+					</label>
+					<label className="sh-field">
+						<span className="sh-field-label">Display name</span>
+						<input
+							className="sh-input"
+							type="text"
+							value={name}
+							onChange={e => setName(e.target.value)}
+							placeholder="guest"
+							spellCheck={false}
+							autoComplete="off"
+							maxLength={32}
+						/>
+					</label>
+					<label className="sh-check">
+						<input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
+						<span>Remember on this device</span>
+					</label>
+					{shown && (
+						<div className="sh-connect-error" role="alert">
+							{shown}
+						</div>
+					)}
+					<button className="sh-btn sh-btn-primary sh-connect-submit" type="submit">
+						Connect
+					</button>
+				</form>
+			)}
 		</div>
 	);
 }
