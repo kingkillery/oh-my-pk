@@ -823,6 +823,20 @@ export class VaultProtocolHandler implements ProtocolHandler {
 		await this.#writeFile(parsed, content, context);
 	}
 
+	/** Resolve a plain vault file for guarded writers without creating it or weakening vault confinement. */
+	async resolveFilePath(
+		input: string | InternalUrl,
+		context?: ResolveContext | WriteContext,
+	): Promise<{ root: string; targetPath: string }> {
+		if (!isVaultEnabled()) throw new VaultDisabledError();
+		const parsed = parseVaultUrl(input);
+		if (parsed.kind !== "fs-file") throw new Error("vault:// path resolution requires a plain file URL");
+		const resolved = await this.#resolveFsTarget(parsed, context);
+		const existing = await findExistingAncestor(resolved.targetPath, resolved.root);
+		ensureWithinRoot(existing, resolved.root);
+		return resolved;
+	}
+
 	async #spawn(args: string[], context?: ResolveContext | WriteContext): Promise<ObsidianSpawnResult> {
 		const bin = requireObsidianBinary(this.#resolveObsidianBinary);
 		return this.#spawnObsidian(bin, args, context?.signal, DEFAULT_OBSIDIAN_TIMEOUT_MS);

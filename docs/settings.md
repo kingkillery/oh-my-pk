@@ -98,6 +98,50 @@ Keys must match a real schema path exactly. There is no shorthand — set `theme
 
 `oh-my-pk config set`, `oh-my-pk config reset`, `/settings`, and any runtime settings change all write to the global `config.yml` under the active agent directory. They never write to `<cwd>/.ompk/config.yml`. To create a project-local override, edit that file directly (see [Project-local config](#project-local-config)). Saves are debounced and re-read the file under a lock, so external edits made while a session is open are preserved.
 
+## Project notebook storage
+
+New continuity workstreams default to `continuity.store: repo`. Explicitly register
+a workstream with the `continuity` tool before its first save. The default record
+is `.agents/continuity/notes/<workstream-id>.md`; the discovery pointer is in
+`.agents/continuity/workstreams.json`. Paths in new pointers are relative to the
+project root, not the machine's checkout path. Commit both the note and index to
+resume from a GitHub clone. OMPK does not commit or push them automatically.
+
+Use the existing Obsidian vault instead when the notebook should not live in the
+repository:
+
+```text
+/auto-handoffs store vault Design-and-Building
+/auto-handoffs store status
+/auto-handoffs store repo
+```
+
+`/notebook` is an alias for `/auto-handoffs`. These commands set the defaults for
+**new registrations only**: `continuity.store` (`repo` by default) and
+`continuity.vault` (empty by default). They do not move existing records, enable
+automatic saving, or enable vault access. `vault.enabled` must be enabled separately.
+With vault defaults, a new note is addressed as
+`vault://<name>/Continuity/<project-directory-name>/<workstream-id>.md`.
+
+For an existing handoff in a different folder, register its exact named
+`vault://VaultName/path/to/note.md` URL. Repointing an already registered workstream
+requires `replace: true` and an explicit `canonical` destination in the continuity
+tool. Registration changes the pointer only: neither note is copied or deleted.
+Existing targets must be tagged canonical handoffs for that workstream; arbitrary
+wiki pages are never converted or overwritten automatically.
+
+In vault mode, the repository contains only the pointer and metadata. The note
+and retained revisions stay in the vault. On another machine, make the same
+named vault available through the vault protocol; its filesystem path may differ.
+An unavailable or disabled vault produces an explicit error, not a fresh repo
+notebook. No vault tree is scanned or imported to resolve a handoff.
+
+Saves use cooperative file locks, revision checks, content hashes and byte
+verification. After resume, pass `expectedRevision` and `expectedSha256` to guard
+the next update. These locks coordinate local OMPK writers, not Obsidian Sync or
+independent editors on other machines. A lock timeout leaves the lock untouched;
+confirm the recorded owner has stopped before manually recovering an abandoned lock.
+
 ## Precedence
 
 From lowest to highest priority, the effective value of a setting is built as:

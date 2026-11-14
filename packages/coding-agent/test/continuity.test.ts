@@ -323,7 +323,9 @@ describe("authority", () => {
 		expect(snapshot).toContain("<handoff-prompt>");
 		expect(snapshot).toContain("</handoff-prompt>");
 		expect(snapshot).toContain("authority: snapshot");
-		expect(snapshot).toContain(`canonical_source: "${canonical.replace(/\\/g, "\\\\")}"`);
+		expect(parseHandoff(snapshot)?.meta.canonicalSource).toBe(
+			path.relative(root, canonical).split(path.sep).join("/"),
+		);
 		expect(snapshot).not.toContain("vault://");
 		expect(snapshot).not.toContain("session_memory");
 		for (const heading of ["Objective", "Current State", "Key Context", "Next Steps", "Validation", "Blockers"]) {
@@ -334,7 +336,7 @@ describe("authority", () => {
 		expect(index.kind).toBe("ok");
 		if (index.kind !== "ok") return;
 		expect(index.index.workstreams).toHaveLength(1);
-		expect(index.index.workstreams[0]?.canonical).toBe(canonical);
+		expect(index.index.workstreams[0]?.canonical).toBe(path.relative(root, canonical).split(path.sep).join("/"));
 	});
 });
 

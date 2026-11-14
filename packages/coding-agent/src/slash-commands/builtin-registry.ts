@@ -3035,25 +3035,48 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		aliases: ["notebook"],
 		description: "Configure automatic end-of-turn project-notebook handoffs",
 		acpDescription: "Configure automatic end-of-turn handoffs",
-		inlineHint: "[off|changed|always|save on|save off|status]",
+		inlineHint: "[off|changed|always|save on|save off|store repo|store vault <name>|status]",
 		subcommands: [
 			{ name: "off", description: "Only write a handoff when asked" },
 			{ name: "changed", description: "Write one after a turn that edited files" },
 			{ name: "always", description: "Write one after every completed turn" },
 			{ name: "save", description: "Toggle saving handoffs to the notebook", usage: "<on|off>" },
+			{
+				name: "store",
+				description: "Choose storage for new workstreams; existing pointers stay unchanged",
+				usage: "<status|repo|vault name>",
+			},
 			{ name: "status", description: "Show the current handoff mode" },
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
-			const args = command.args.trim().toLowerCase();
-			const set = async <P extends "continuity.endOfTurnHandoff" | "continuity.autoSave">(
+			const rawArgs = command.args.trim();
+			const args = rawArgs.toLowerCase();
+			const set = async <
+				P extends "continuity.endOfTurnHandoff" | "continuity.autoSave" | "continuity.store" | "continuity.vault",
+			>(
 				path: P,
 				value: SettingValue<P>,
 			): Promise<void> => {
 				runtime.settings.set(path, value);
 				if (runtime.settings.get(path) !== value) runtime.settings.override(path, value);
 			};
-			if (args === "off") {
+			const vaultMatch = /^store\s+vault\s+(.+)$/i.exec(rawArgs);
+			if (args === "store repo") {
+				await set("continuity.store", "repo");
+			} else if (vaultMatch) {
+				const name = vaultMatch[1].trim();
+				if (name === "_" || /[\\/?#\r\n]/.test(name)) {
+					await runtime.output(
+						"Choose a named Obsidian vault, not an active-vault alias, path, or URL. Settings were not changed.",
+					);
+					return commandConsumed();
+				}
+				await set("continuity.vault", name);
+				await set("continuity.store", "vault");
+			} else if (args === "store" || args === "store status") {
+				// Read-only status; do not persist settings.
+			} else if (args === "off") {
 				await set("continuity.endOfTurnHandoff", "off");
 				await set("continuity.autoSave", false);
 			} else if (args === "changed" || args === "on") {
@@ -3065,14 +3088,22 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			} else if (args === "save off" || args === "nosave") {
 				await set("continuity.autoSave", false);
 			} else if (args && args !== "status") {
-				await runtime.output("Usage: /auto-handoffs [off|on|changed|always|save on|save off|status]");
+				await runtime.output(
+					"Usage: /auto-handoffs [off|on|changed|always|save on|save off|store repo|store vault <name>|store status|status]",
+				);
 				return commandConsumed();
 			}
-			if (args && args !== "status") await runtime.notifyConfigChanged?.();
+			if (args && args !== "status" && args !== "store" && args !== "store status")
+				await runtime.notifyConfigChanged?.();
 			const state = readAutoContinuity(runtime.settings);
 			const indicator = autoContinuityIndicator(runtime.settings);
 			await runtime.output(
 				`${describeAutoContinuity(runtime.settings)}${indicator ? ` Footer: ${indicator}.` : ""} Configured: ${state.configured}${state.autoSave ? ", auto-save on" : ""}.`,
+			);
+			const store = runtime.settings.get("continuity.store");
+			const vault = runtime.settings.get("continuity.vault") || "(unset)";
+			await runtime.output(
+				`New workstream storage: ${store}${store === "vault" ? ` (${vault})` : ""}. Existing notes and pointers are unchanged. Vault unavailability never creates a repository fallback.${store === "vault" && !runtime.settings.get("vault.enabled") ? " vault.enabled is off; vault access must be enabled separately." : ""}`,
 			);
 			return commandConsumed();
 		},

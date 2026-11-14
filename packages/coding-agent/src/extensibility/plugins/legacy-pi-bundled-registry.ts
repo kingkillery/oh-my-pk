@@ -881,6 +881,7 @@ import * as bundledPiCodingAgentToolsCheckpoint from "@pk-nerdsaver-ai/pi-coding
 import * as bundledPiCodingAgentToolsConflictDetect from "@pk-nerdsaver-ai/pi-coding-agent/tools/conflict-detect";
 import * as bundledPiCodingAgentToolsContext from "@pk-nerdsaver-ai/pi-coding-agent/tools/context";
 import * as bundledPiCodingAgentToolsContextOracle from "@pk-nerdsaver-ai/pi-coding-agent/tools/context-oracle";
+import * as bundledPiCodingAgentToolsContinuity from "@pk-nerdsaver-ai/pi-coding-agent/tools/continuity";
 import * as bundledPiCodingAgentToolsDebug from "@pk-nerdsaver-ai/pi-coding-agent/tools/debug";
 import * as bundledPiCodingAgentToolsEval from "@pk-nerdsaver-ai/pi-coding-agent/tools/eval";
 import * as bundledPiCodingAgentToolsEvalBackends from "@pk-nerdsaver-ai/pi-coding-agent/tools/eval-backends";
@@ -3209,6 +3210,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@pk-nerdsaver-ai/pi-coding-agent/tools/context-oracle":
 		bundledPiCodingAgentToolsContextOracle as unknown as Readonly<Record<string, unknown>>,
 	"@pk-nerdsaver-ai/pi-coding-agent/tools/context": bundledPiCodingAgentToolsContext as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@pk-nerdsaver-ai/pi-coding-agent/tools/continuity": bundledPiCodingAgentToolsContinuity as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@pk-nerdsaver-ai/pi-coding-agent/tools/debug": bundledPiCodingAgentToolsDebug as unknown as Readonly<

@@ -175,7 +175,6 @@ export interface ResumeRequest {
 	workstreamId?: string;
 	/** Age in days after which cited evidence must be re-verified. */
 	staleAfterDays?: number;
-	/** Digest of the canonical bytes returned by resume. */
 	now?: Date;
 }
 

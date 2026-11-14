@@ -121,6 +121,6 @@ describe("/auto-handoffs command", () => {
 
 	it("exposes the documented modes plus a separate save toggle", () => {
 		const names = command?.subcommands?.map(subcommand => subcommand.name) ?? [];
-		expect(names).toEqual(["off", "changed", "always", "save", "status"]);
+		expect(names).toEqual(["off", "changed", "always", "save", "store", "status"]);
 	});
 });

@@ -2,15 +2,20 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Routing pools now fail over on a `402` payment-required rejection. A depleted prepaid balance is definitive for the API-key provider that returned it, but a pooled equivalent on a subscription transport — a Gemini model on `google-antigravity` instead of `google` — still serves the turn. See `docs/models.md`.
+
 ### Added
 
 - `/auto-handoffs` (alias `/notebook`) sets `continuity.endOfTurnHandoff` to `off`, `changed`, or `always`. `changed` emits a six-section handoff only after a turn that mutated the workspace; `continuity.autoSave` is a separate flag and stays off, because there is no verified notebook writer to store it.
 - `/auto-handoffs status` reports whether automatic injection is active. The status line shows `continuity auto on` only while it can inject, and simple mode forces the effective mode off even if the setting is `always`.
+- Continuity workstreams register repository-relative notes by default, so the note and index can travel in a Git clone. `/auto-handoffs store repo` or `store vault <name>` selects defaults for new registrations; named `vault://` pointers keep note bodies and revision history in the existing vault without mirroring it into the repository. Explicit repointing never moves or deletes either note.
 
 ### Fixed
 
-- Continuity saves and resumes refuse a canonical path that resolves outside the injected project root, and a retained revision refuses a workstream id that is not a single path segment. A save that cannot re-read the workstream index leaves the pointer untouched instead of rebuilding an empty registry.
-- Continuity saves take an exclusive lock on the project index, so two overlapping saves serialize instead of both reading the same revision. A lock older than 30 seconds is treated as abandoned.
+- Continuity records resolve inside the project or an explicitly named Obsidian vault, with traversal and symlink checks. Unavailable vaults fail closed without creating a repository fallback; existing untagged notes are not overwritten.
+- Continuity saves share index and physical-record locks, and check revisions and content hashes before replacing bytes. Lock waits are bounded; age alone never authorizes stealing a live lock. Unreadable indexes remain untouched.
 - A save re-reads the workstream registry after taking the lock and refuses to write if the registered path or authority changed while it was waiting.
 
 ## [16.4.36] - 2026-11-12

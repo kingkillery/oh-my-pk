@@ -1,14 +1,20 @@
 import type { AgentTool, AgentToolResult, ToolApprovalDecision } from "@pk-nerdsaver-ai/pi-agent-core";
 import { type } from "arktype";
-import { continuityStatus, exportHandoff, resumeHandoff, saveHandoff } from "../continuity/service";
+import { continuityStatus, exportHandoff, registerWorkstream, resumeHandoff, saveHandoff } from "../continuity/service";
 import type { HandoffSections } from "../continuity/types";
 import description from "../prompts/tools/continuity.md" with { type: "text" };
 import type { ToolSession } from ".";
 
 const schema = type({
-	action: "'status' | 'save' | 'resume' | 'export'",
+	action: "'status' | 'save' | 'resume' | 'export' | 'register'",
 	"intent?": "string",
 	"workstreamId?": "string",
+	"title?": "string",
+	"aliases?": "string[]",
+	"canonical?": "string",
+	"store?": "'repo' | 'vault'",
+	"vault?": "string",
+	"replace?": "boolean",
 	"sections?": type({
 		"objective?": "string",
 		"currentState?": "string",
@@ -18,6 +24,7 @@ const schema = type({
 		"blockers?": "string",
 	}),
 	"expectedRevision?": "number.integer >= 0",
+	"expectedSha256?": "string",
 	"evidenceObservedAt?": "string",
 	"sourceSessions?": "string[]",
 	"destination?": "string",
@@ -29,7 +36,7 @@ export class ContinuityTool implements AgentTool<typeof schema> {
 	readonly name = "continuity";
 	readonly approval = (args: unknown): ToolApprovalDecision => {
 		if (typeof args === "object" && args !== null && "action" in args && typeof args.action === "string") {
-			return args.action === "save" || args.action === "export" ? "write" : "read";
+			return args.action === "save" || args.action === "export" || args.action === "register" ? "write" : "read";
 		}
 		return "read";
 	};
@@ -47,9 +54,17 @@ export class ContinuityTool implements AgentTool<typeof schema> {
 		const root = this.#session.cwd;
 		let result: unknown;
 		switch (params.action) {
-			case "status":
-				result = await continuityStatus(root);
+			case "status": {
+				const status = await continuityStatus(root);
+				result = {
+					...status,
+					defaults: {
+						store: this.#session.settings.get("continuity.store") ?? "repo",
+						vault: this.#session.settings.get("continuity.vault") ?? "",
+					},
+				};
 				break;
+			}
 			case "resume":
 				result = await resumeHandoff({
 					root,
@@ -65,10 +80,40 @@ export class ContinuityTool implements AgentTool<typeof schema> {
 					workstreamId: params.workstreamId,
 					sections: (params.sections ?? {}) as HandoffSections,
 					expectedRevision: params.expectedRevision,
+					expectedSha256: params.expectedSha256,
 					evidenceObservedAt: params.evidenceObservedAt,
 					sourceSessions: params.sourceSessions,
 				});
 				break;
+			case "register": {
+				const workstreamId = params.workstreamId?.trim();
+				if (!workstreamId) {
+					result = {
+						status: "rejected",
+						reason: "workstreamId-required",
+						detail: "register needs an explicit workstream id",
+					};
+					break;
+				}
+				const settings = this.#session.settings;
+				const store =
+					params.store ??
+					(params.canonical?.startsWith("vault://") ? "vault" : this.#session.settings.get("continuity.store"));
+				const configuredVault = settings.get("continuity.vault")?.trim();
+				result = await registerWorkstream({
+					root,
+					workstreamId,
+					title: params.title,
+					aliases: params.aliases,
+					canonical: params.canonical,
+					store,
+					vault:
+						params.vault?.trim() ||
+						(!params.canonical && store === "vault" ? configuredVault || undefined : undefined),
+					replace: params.replace,
+				});
+				break;
+			}
 			case "export":
 				if (!params.destination) {
 					result = {

@@ -880,6 +880,7 @@ export const BUNDLED_PI_REGISTRY_KEYS: ReadonlySet<string> = new Set([
 	"@pk-nerdsaver-ai/pi-coding-agent/tools/conflict-detect",
 	"@pk-nerdsaver-ai/pi-coding-agent/tools/context-oracle",
 	"@pk-nerdsaver-ai/pi-coding-agent/tools/context",
+	"@pk-nerdsaver-ai/pi-coding-agent/tools/continuity",
 	"@pk-nerdsaver-ai/pi-coding-agent/tools/debug",
 	"@pk-nerdsaver-ai/pi-coding-agent/tools/eval-backends",
 	"@pk-nerdsaver-ai/pi-coding-agent/tools/eval-render",

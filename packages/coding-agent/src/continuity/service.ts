@@ -1,13 +1,17 @@
 import * as path from "node:path";
+import { ContinuityLocationError, type RecordLocation, registrationPointer, resolveRecord } from "./location";
 import { contentSignature, openQuestions, parseHandoff, renderHandoff } from "./render";
 import {
-	assertWithinRoot,
+	assertWorkstreamId,
 	indexPath,
 	readIndex,
 	readTextIfPresent,
+	resolveWithinRoot,
+	retainFile,
 	retainRevision,
 	sha256,
 	withContinuityLock,
+	withFileLock,
 	writeFileAtomic,
 	writeIndex,
 } from "./store";
@@ -16,6 +20,8 @@ import type {
 	HandoffMeta,
 	HandoffSectionKey,
 	HandoffSections,
+	RegisterOutcome,
+	RegisterRequest,
 	ResolveCandidate,
 	ResolveOutcome,
 	ResumeOutcome,
@@ -170,201 +176,307 @@ export function incompleteSections(sections: Partial<HandoffSections>): HandoffS
 	return HANDOFF_SECTIONS.map(([key]) => key).filter(key => (sections[key] ?? "").trim().length === 0);
 }
 
+export async function registerWorkstream(request: RegisterRequest): Promise<RegisterOutcome> {
+	try {
+		const location = await resolveRecord(request.root, registrationPointer(request));
+		return await withContinuityLock(request.root, async () => {
+			const read = await readIndex(request.root);
+			if (read.kind === "corrupt")
+				return { status: "backend_unavailable", reason: "index-corrupt", detail: read.detail };
+			const index: WorkstreamIndex = read.kind === "ok" ? read.index : { version: 1, workstreams: [] };
+			const previous = index.workstreams.find(entry => entry.id === request.workstreamId);
+			if (previous) {
+				const same =
+					previous.canonical === location.canonical ||
+					(location.store === "repo" && path.resolve(request.root, previous.canonical) === location.path);
+				if (same && previous.authority === "canonical")
+					return { status: "unchanged", entry: previous, indexPath: indexPath(request.root) };
+				if (!request.replace || !request.canonical)
+					return {
+						status: "rejected",
+						reason: "explicit-repoint-required",
+						detail:
+							"This workstream is already registered. Supply replace: true and an explicit canonical path to repoint it; neither note will be copied or deleted.",
+					};
+			}
+			const text = await readTextIfPresent(location.path);
+			const parsed = text === undefined ? undefined : parseHandoff(text);
+			if (
+				text !== undefined &&
+				(!parsed || parsed.meta.workstream !== request.workstreamId || parsed.meta.authority !== "canonical")
+			) {
+				return {
+					status: "rejected",
+					reason: "canonical-identity-mismatch",
+					detail:
+						"An existing target must be a canonical tagged handoff for this workstream. Its contents were left untouched.",
+				};
+			}
+			const entry: WorkstreamEntry = {
+				id: request.workstreamId,
+				title: request.title?.trim() || parsed?.meta.title || previous?.title || request.workstreamId,
+				aliases: request.aliases ?? previous?.aliases ?? [],
+				canonical: location.canonical,
+				store: location.store,
+				...(location.vault ? { vault: location.vault } : {}),
+				authority: "canonical",
+				revision: parsed?.meta.revision ?? 0,
+				updatedAt: parsed?.meta.updated ?? "",
+				...(text !== undefined ? { sha256: sha256(text) } : {}),
+			};
+			const workstreams = previous
+				? index.workstreams.map(value => (value.id === entry.id ? entry : value))
+				: [...index.workstreams, entry];
+			await writeIndex(request.root, { version: 1, workstreams });
+			return { status: "registered", entry, indexPath: indexPath(request.root) };
+		});
+	} catch (error) {
+		return {
+			status: "backend_unavailable",
+			reason: error instanceof ContinuityLocationError ? error.reason : "registration-failed",
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
 export async function saveHandoff(request: SaveRequest): Promise<SaveOutcome> {
-	const resolution = await resolveWorkstream(request.root, request.intent, request.workstreamId);
-	if (resolution.status !== "resolved") return resolution;
-	const entry = resolution.entry;
 	const missing = incompleteSections(request.sections);
 	if (missing.length > 0)
 		return {
 			status: "rejected",
-			workstream: entry.id,
 			reason: "incomplete-sections",
 			detail: `Refusing to save a handoff with empty sections: ${missing.join(", ")}`,
 		};
-	const target = entry.canonical;
+	let location: RecordLocation | undefined;
+	let workstream = request.workstreamId ?? "";
 	try {
-		assertWithinRoot(request.root, target);
-	} catch (error) {
-		return {
-			status: "rejected",
-			workstream: entry.id,
-			reason: "canonical-outside-root",
-			detail: error instanceof Error ? error.message : String(error),
-		};
-	}
-
-	if (entry.authority !== "canonical") {
-		return {
-			status: "rejected",
-			workstream: entry.id,
-			reason: "not-canonical-authority",
-			detail: `${target} is registered as ${entry.authority}; update the canonical record instead of overwriting a copy.`,
-		};
-	}
-	return withContinuityLock(request.root, () => writeLocked(request, entry, target));
-
-	async function writeLocked(request: SaveRequest, entry: WorkstreamEntry, target: string): Promise<SaveOutcome> {
-		const registered = await readIndex(request.root);
-		const current =
-			registered.kind === "ok"
-				? registered.index.workstreams.find(candidate => candidate.id === entry.id)
-				: undefined;
-		if (!current || path.resolve(current.canonical) !== path.resolve(target) || current.authority !== "canonical") {
+		const resolution = await resolveWorkstream(request.root, request.intent, request.workstreamId);
+		if (resolution.status !== "resolved") return resolution;
+		const entry = resolution.entry;
+		workstream = entry.id;
+		assertWorkstreamId(entry.id);
+		if (entry.authority !== "canonical")
 			return {
 				status: "rejected",
-				workstream: entry.id,
-				reason: "registry-changed",
-				detail:
-					"The workstream registry changed while waiting for the lock; refusing to write against a stale registration.",
+				workstream,
+				reason: "not-canonical-authority",
+				detail: "Update the canonical record instead of overwriting a copy.",
 			};
-		}
-
-		const existing = await readTextIfPresent(target);
-		const parsed = existing === undefined ? undefined : parseHandoff(existing);
-		if (existing !== undefined && !parsed) {
-			return {
-				status: "rejected",
-				workstream: entry.id,
-				reason: "canonical-unreadable",
-				detail: `${target} is not a well-formed tagged handoff; refusing to overwrite it.`,
-			};
-		}
-
-		const currentRevision = parsed?.meta.revision ?? current.revision;
-		if (request.expectedRevision !== undefined && request.expectedRevision !== currentRevision) {
-			return {
-				status: "stale",
-				workstream: entry.id,
-				path: target,
-				expectedRevision: request.expectedRevision,
-				actualRevision: currentRevision,
-			};
-		}
-
-		const now = request.now ?? new Date();
-		const evidenceObserved = request.evidenceObservedAt ?? entry.evidenceObservedAt;
-		const sourceSessions = mergeSources(parsed?.meta.sourceSessions ?? entry.sourceSessions, request.sourceSessions);
-		const nextMeta: HandoffMeta = {
-			workstream: entry.id,
-			title: entry.title,
-			authority: "canonical",
-			revision: currentRevision + 1,
-			updated: now.toISOString(),
-			...(evidenceObserved ? { evidenceObserved } : {}),
-			...(sourceSessions ? { sourceSessions } : {}),
-		};
-
-		if (parsed && contentSignature(parsed.meta, parsed.sections) === contentSignature(nextMeta, request.sections)) {
-			return {
-				status: "unchanged",
-				workstream: entry.id,
-				path: target,
-				revision: currentRevision,
-				sha256: sha256(existing ?? ""),
-			};
-		}
-
-		if (existing !== undefined && parsed) {
-			try {
-				await retainRevision(request.root, entry.id, parsed.meta.revision, existing);
-			} catch (error) {
-				return {
-					status: "write_failed",
-					workstream: entry.id,
-					path: target,
-					reason: "retention-failed",
-					pointerUpdated: false,
-					detail: error instanceof Error ? error.message : String(error),
+		location = await resolveRecord(request.root, entry);
+		const target = location;
+		return await withContinuityLock(request.root, async () => {
+			const recordLock = await resolveWithinRoot(
+				target.root,
+				path.join(path.dirname(target.path), `.${path.basename(target.path)}.ompk.lock`),
+			);
+			return withFileLock(recordLock, async () => {
+				const registered = await readIndex(request.root);
+				const current =
+					registered.kind === "ok"
+						? registered.index.workstreams.find(candidate => candidate.id === entry.id)
+						: undefined;
+				if (current?.authority !== "canonical") {
+					return {
+						status: "rejected",
+						workstream,
+						reason: "registry-changed",
+						detail: "The registration changed while waiting for the lock; no record was written.",
+					};
+				}
+				const fresh = await resolveRecord(request.root, current);
+				if (fresh.path !== target.path || fresh.store !== target.store || fresh.vault !== target.vault)
+					return {
+						status: "rejected",
+						workstream,
+						reason: "registry-changed",
+						detail: "The resolved record path changed while waiting for the lock.",
+					};
+				const existing = await readTextIfPresent(target.path);
+				const parsed = existing === undefined ? undefined : parseHandoff(existing);
+				if (existing !== undefined && !parsed)
+					return {
+						status: "rejected",
+						workstream,
+						reason: "canonical-unreadable",
+						detail: "The target is not a well-formed tagged handoff; refusing to overwrite it.",
+					};
+				if (parsed && (parsed.meta.workstream !== entry.id || parsed.meta.authority !== "canonical"))
+					return {
+						status: "rejected",
+						workstream,
+						reason: "canonical-identity-mismatch",
+						detail: "The target belongs to another workstream or is not canonical.",
+					};
+				if (existing === undefined && (current.revision > 0 || current.sha256))
+					return {
+						status: "rejected",
+						workstream,
+						reason: "canonical-missing",
+						detail: "A previously saved record is missing; refusing to recreate it silently.",
+					};
+				const revision = parsed?.meta.revision ?? current.revision;
+				if (request.expectedRevision !== undefined && request.expectedRevision !== revision)
+					return {
+						status: "stale",
+						workstream,
+						path: target.path,
+						expectedRevision: request.expectedRevision,
+						actualRevision: revision,
+					};
+				const expectedHash = request.expectedSha256 ?? current.sha256;
+				if (expectedHash && (existing === undefined || sha256(existing) !== expectedHash))
+					return {
+						status: "rejected",
+						workstream,
+						reason: "content-changed",
+						detail: "Canonical bytes changed since the last observation. Resume the record again before saving.",
+					};
+				const evidenceObserved = request.evidenceObservedAt ?? current.evidenceObservedAt;
+				const sourceSessions = mergeSources(
+					parsed?.meta.sourceSessions ?? current.sourceSessions,
+					request.sourceSessions,
+				);
+				const nextMeta: HandoffMeta = {
+					workstream,
+					title: current.title,
+					authority: "canonical",
+					revision: revision + 1,
+					updated: (request.now ?? new Date()).toISOString(),
+					...(evidenceObserved ? { evidenceObserved } : {}),
+					...(sourceSessions ? { sourceSessions } : {}),
 				};
-			}
-		}
-
-		const rendered = renderHandoff(nextMeta, request.sections);
-		try {
-			await writeFileAtomic(target, rendered);
-		} catch (error) {
-			return {
-				status: "write_failed",
-				workstream: entry.id,
-				path: target,
-				reason: "canonical-write-failed",
-				pointerUpdated: false,
-				detail: error instanceof Error ? error.message : String(error),
-			};
-		}
-
-		const verified = await readTextIfPresent(target);
-		if (verified !== rendered) {
-			return {
-				status: "write_failed",
-				workstream: entry.id,
-				path: target,
-				reason: "verification-mismatch",
-				pointerUpdated: false,
-				detail: "The written bytes did not read back identically; the pointer was left unchanged.",
-			};
-		}
-
-		const digest = sha256(rendered);
-		const read = await readIndex(request.root);
-		if (read.kind !== "ok") {
-			// The canonical record is already written and verified, so the pointer is the
-			// only thing at risk. An unreadable registry here is an anomaly, never a cue to
-			// start a fresh one: rebuilding it would silently discard every other workstream.
-			return {
-				status: "partial",
-				workstream: entry.id,
-				path: target,
-				revision: nextMeta.revision,
-				sha256: digest,
-				pointerUpdated: false,
-				reason: "pointer-unreadable",
-				detail:
-					read.kind === "corrupt"
-						? read.detail
-						: `The workstream index at ${indexPath(request.root)} disappeared while saving.`,
-			};
-		}
-		const index: WorkstreamIndex = read.index;
-		const updated: WorkstreamIndex = {
-			version: 1,
-			workstreams: index.workstreams.map(candidate =>
-				candidate.id === entry.id
-					? {
-							...candidate,
-							revision: nextMeta.revision,
-							updatedAt: nextMeta.updated,
-							...(evidenceObserved ? { evidenceObservedAt: evidenceObserved } : {}),
-							...(sourceSessions ? { sourceSessions } : {}),
+				if (
+					parsed &&
+					contentSignature(parsed.meta, parsed.sections) === contentSignature(nextMeta, request.sections)
+				)
+					return { status: "unchanged", workstream, path: target.path, revision, sha256: sha256(existing ?? "") };
+				if (existing !== undefined && parsed) {
+					try {
+						if (target.store === "repo") await retainRevision(request.root, workstream, revision, existing);
+						else {
+							const retained = await resolveWithinRoot(
+								target.root,
+								path.join(
+									path.dirname(target.path),
+									".ompk-continuity",
+									path.basename(target.path),
+									`r${revision}.md`,
+								),
+							);
+							await retainFile(retained, existing);
 						}
-					: candidate,
-			),
-		};
-		try {
-			await writeIndex(request.root, updated);
-		} catch (error) {
+					} catch (error) {
+						return {
+							status: "write_failed",
+							workstream,
+							path: target.path,
+							reason: "retention-failed",
+							pointerUpdated: false,
+							detail: error instanceof Error ? error.message : String(error),
+						};
+					}
+				}
+				const rendered = renderHandoff(nextMeta, request.sections);
+				// Detect non-cooperating edits before replacing bytes. Cooperative writers share the record lock.
+				if ((await readTextIfPresent(target.path)) !== existing)
+					return {
+						status: "rejected",
+						workstream,
+						reason: "content-changed",
+						detail: "The record changed during save; retry from a fresh resume.",
+					};
+				await writeFileAtomic(target.path, rendered);
+				if ((await readTextIfPresent(target.path)) !== rendered)
+					return {
+						status: "write_failed",
+						workstream,
+						path: target.path,
+						reason: "verification-mismatch",
+						pointerUpdated: false,
+						detail: "Written bytes did not verify; the index was left unchanged.",
+					};
+				const digest = sha256(rendered);
+				const read = await readIndex(request.root);
+				if (
+					read.kind !== "ok" ||
+					!read.index.workstreams.some(
+						value =>
+							value.id === current.id &&
+							value.canonical === current.canonical &&
+							value.authority === "canonical",
+					)
+				)
+					return {
+						status: "partial",
+						workstream,
+						path: target.path,
+						revision: nextMeta.revision,
+						sha256: digest,
+						pointerUpdated: false,
+						reason: "pointer-unreadable",
+						detail:
+							"The canonical record was written, but the registry is unreadable or changed. It was left untouched.",
+					};
+				const updated: WorkstreamIndex = {
+					version: 1,
+					workstreams: read.index.workstreams.map(value =>
+						value.id === workstream
+							? {
+									...value,
+									canonical: target.canonical,
+									store: target.store,
+									...(target.vault ? { vault: target.vault } : {}),
+									revision: nextMeta.revision,
+									updatedAt: nextMeta.updated,
+									sha256: digest,
+									...(evidenceObserved ? { evidenceObservedAt: evidenceObserved } : {}),
+									...(sourceSessions ? { sourceSessions } : {}),
+								}
+							: value,
+					),
+				};
+				try {
+					await writeIndex(request.root, updated);
+				} catch (error) {
+					return {
+						status: "partial",
+						workstream,
+						path: target.path,
+						revision: nextMeta.revision,
+						sha256: digest,
+						pointerUpdated: false,
+						reason: "pointer-write-failed",
+						detail: error instanceof Error ? error.message : String(error),
+					};
+				}
+				return {
+					status: "saved",
+					workstream,
+					path: target.path,
+					revision: nextMeta.revision,
+					sha256: digest,
+					bytes: Buffer.byteLength(rendered, "utf-8"),
+					...(parsed ? { priorRevision: revision } : {}),
+					pointerUpdated: true,
+				};
+			});
+		});
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		if (error instanceof ContinuityLocationError)
 			return {
-				status: "partial",
-				workstream: entry.id,
-				path: target,
-				revision: nextMeta.revision,
-				sha256: digest,
-				pointerUpdated: false,
-				reason: "pointer-write-failed",
-				detail: error instanceof Error ? error.message : String(error),
+				status: error.reason === "canonical-outside-root" ? "rejected" : "backend_unavailable",
+				workstream,
+				reason: error.reason,
+				detail,
 			};
-		}
-
 		return {
-			status: "saved",
-			workstream: entry.id,
-			path: target,
-			revision: nextMeta.revision,
-			sha256: digest,
-			bytes: Buffer.byteLength(rendered, "utf-8"),
-			...(parsed ? { priorRevision: parsed.meta.revision } : {}),
-			pointerUpdated: true,
+			status: "write_failed",
+			workstream,
+			path: location?.path ?? "",
+			reason: "canonical-write-failed",
+			pointerUpdated: false,
+			detail,
 		};
 	}
 }
@@ -387,21 +499,23 @@ export async function resumeHandoff(request: ResumeRequest): Promise<ResumeOutco
 	const resolution = await resolveWorkstream(request.root, request.intent, request.workstreamId);
 	if (resolution.status !== "resolved") return resolution;
 	const entry = resolution.entry;
+	let location: RecordLocation;
+	let text: string | undefined;
 	try {
-		assertWithinRoot(request.root, entry.canonical);
+		location = await resolveRecord(request.root, entry);
+		text = await readTextIfPresent(location.path);
 	} catch (error) {
 		return {
 			status: "backend_unavailable",
-			reason: "canonical-outside-root",
+			reason: error instanceof ContinuityLocationError ? error.reason : "canonical-unavailable",
 			detail: error instanceof Error ? error.message : String(error),
 		};
 	}
-	const text = await readTextIfPresent(entry.canonical);
 	if (text === undefined) {
 		return {
 			status: "missing",
 			workstream: entry.id,
-			path: entry.canonical,
+			path: location.canonical,
 			detail: "The index references this record but the file is absent.",
 		};
 	}
@@ -413,16 +527,24 @@ export async function resumeHandoff(request: ResumeRequest): Promise<ResumeOutco
 			detail: `${entry.canonical} does not contain a tagged six-section handoff.`,
 		};
 	}
+	if (parsed.meta.workstream !== entry.id || parsed.meta.authority !== entry.authority) {
+		return {
+			status: "backend_unavailable",
+			reason: "canonical-identity-mismatch",
+			detail: "The record's workstream or authority does not match its registration.",
+		};
+	}
 	const observed = parsed.meta.evidenceObserved ?? entry.evidenceObservedAt;
 	const { stale, detail } = staleness(observed, request.now ?? new Date(), request.staleAfterDays ?? 30);
 	return {
 		status: "resumed",
 		workstream: entry.id,
 		title: parsed.meta.title || entry.title,
-		path: entry.canonical,
+		path: location.store === "repo" ? location.path : location.canonical,
 		authority: parsed.meta.authority,
 		revision: parsed.meta.revision,
 		updatedAt: parsed.meta.updated || entry.updatedAt,
+		sha256: sha256(text),
 		...(observed ? { evidenceObservedAt: observed } : {}),
 		stale,
 		...(stale
@@ -461,16 +583,33 @@ export async function exportHandoff(request: {
 > {
 	const resolution = await resolveWorkstream(request.root, request.intent, request.workstreamId);
 	if (resolution.status !== "resolved") return resolution;
-	const text = await readTextIfPresent(resolution.entry.canonical);
+	let location: RecordLocation;
+	let destination: string;
+	let text: string | undefined;
+	try {
+		location = await resolveRecord(request.root, resolution.entry);
+		destination = await resolveWithinRoot(request.root, path.resolve(request.root, request.destination));
+		text = await readTextIfPresent(location.path);
+	} catch (error) {
+		return {
+			status: "rejected",
+			reason: error instanceof ContinuityLocationError ? error.reason : "export-path-unavailable",
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
 	const parsed = text === undefined ? undefined : parseHandoff(text);
-	if (!parsed) {
+	if (
+		!parsed ||
+		parsed.meta.workstream !== resolution.entry.id ||
+		parsed.meta.authority !== resolution.entry.authority
+	) {
 		return {
 			status: "rejected",
 			reason: "canonical-unavailable",
 			detail: "No readable canonical handoff to export.",
 		};
 	}
-	if (request.destination === resolution.entry.canonical) {
+	if (destination === location.path) {
 		return {
 			status: "rejected",
 			reason: "destination-is-canonical",
@@ -487,7 +626,7 @@ export async function exportHandoff(request: {
 		parsed.sections,
 	);
 	try {
-		await writeFileAtomic(request.destination, snapshot);
+		await writeFileAtomic(destination, snapshot);
 	} catch (error) {
 		return {
 			status: "write_failed",

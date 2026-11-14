@@ -56,7 +56,9 @@ async function manifest(directory: string): Promise<Record<string, string>> {
 				await walk(target);
 				continue;
 			}
-			found[path.relative(directory, target)] = String((await fs.stat(target)).size);
+			found[path.relative(directory, target)] = new Bun.CryptoHasher("sha256")
+				.update(await fs.readFile(target))
+				.digest("hex");
 		}
 	}
 	await walk(directory);
@@ -166,7 +168,7 @@ describe("failures leave prior work intact", () => {
 		]);
 
 		// The lock serializes them, so both writes land and the pointer names the later one.
-		expect(results.every(result => result.status === "saved")).toBe(true);
+		expect(results.map(result => ("reason" in result ? result.reason : result.status))).toEqual(["saved", "saved"]);
 		const revisions = results.flatMap(result => (result.status === "saved" ? [result.revision] : []));
 		expect(revisions.sort()).toEqual([1, 2]);
 		const written = await fs.readFile(canonical, "utf-8");
