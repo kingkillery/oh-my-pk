@@ -13,6 +13,7 @@ import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model
 import { applyNineRouterRouting, type NineRouterRoutingResult } from "../config/nine-router-controller";
 import type { SettingPath, Settings, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
+import { autoContinuityIndicator, describeAutoContinuity, readAutoContinuity } from "../continuity/auto-toggle";
 import {
 	clearPluginRootsAndCaches,
 	resolveActiveProjectRegistryPath,
@@ -136,7 +137,7 @@ async function handleSimpleSlashCommand(
 	const unavailable = enabled && count > 0 && !runtime.session.getActiveToolNames().includes("task");
 	await runtime.output(
 		enabled
-			? `Simple mode on; ${count === 0 ? "subagents off (running agents continue)" : `up to ${count} general subagent${count === 1 ? "" : "s"} at once`}.${unavailable ? " Task was excluded at launch; start a new session to make it available." : ""}`
+			? `Simple mode on; ${count === 0 ? "subagents off (running agents continue)" : `up to ${count} general subagent${count === 1 ? "" : "s"} at once`}.${unavailable ? " Task was excluded at launch; start a new session to make it available." : ""} Automatic continuity stays off in simple mode.`
 			: "Simple mode off; full agent routing restored.",
 	);
 	return commandConsumed();
@@ -3028,6 +3029,53 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => handleRouteSlashCommand(command, runtime),
+	},
+	{
+		name: "auto-handoffs",
+		aliases: ["notebook"],
+		description: "Configure automatic end-of-turn project-notebook handoffs",
+		acpDescription: "Configure automatic end-of-turn handoffs",
+		inlineHint: "[off|changed|always|save on|save off|status]",
+		subcommands: [
+			{ name: "off", description: "Only write a handoff when asked" },
+			{ name: "changed", description: "Write one after a turn that edited files" },
+			{ name: "always", description: "Write one after every completed turn" },
+			{ name: "save", description: "Toggle saving handoffs to the notebook", usage: "<on|off>" },
+			{ name: "status", description: "Show the current handoff mode" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const args = command.args.trim().toLowerCase();
+			const set = async <P extends "continuity.endOfTurnHandoff" | "continuity.autoSave">(
+				path: P,
+				value: SettingValue<P>,
+			): Promise<void> => {
+				runtime.settings.set(path, value);
+				if (runtime.settings.get(path) !== value) runtime.settings.override(path, value);
+			};
+			if (args === "off") {
+				await set("continuity.endOfTurnHandoff", "off");
+				await set("continuity.autoSave", false);
+			} else if (args === "changed" || args === "on") {
+				await set("continuity.endOfTurnHandoff", "changed");
+			} else if (args === "always") {
+				await set("continuity.endOfTurnHandoff", "always");
+			} else if (args === "save on" || args === "save") {
+				await set("continuity.autoSave", true);
+			} else if (args === "save off" || args === "nosave") {
+				await set("continuity.autoSave", false);
+			} else if (args && args !== "status") {
+				await runtime.output("Usage: /auto-handoffs [off|on|changed|always|save on|save off|status]");
+				return commandConsumed();
+			}
+			if (args && args !== "status") await runtime.notifyConfigChanged?.();
+			const state = readAutoContinuity(runtime.settings);
+			const indicator = autoContinuityIndicator(runtime.settings);
+			await runtime.output(
+				`${describeAutoContinuity(runtime.settings)}${indicator ? ` Footer: ${indicator}.` : ""} Configured: ${state.configured}${state.autoSave ? ", auto-save on" : ""}.`,
+			);
+			return commandConsumed();
+		},
 	},
 	{
 		name: "inference-provider",

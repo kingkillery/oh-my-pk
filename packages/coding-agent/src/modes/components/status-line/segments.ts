@@ -9,6 +9,7 @@ import {
 	pathIsWithin,
 	relativePathWithinRoot,
 } from "@pk-nerdsaver-ai/pi-utils";
+import { autoContinuityIndicator } from "../../../continuity/auto-toggle";
 import { type ThemeColor, theme } from "../../../modes/theme/theme";
 import { computeFusionTokenSplit } from "../../../session/fusion-usage";
 import { shortenPath } from "../../../tools/render-utils";
@@ -205,6 +206,15 @@ const modeSegment: StatusLineSegment = {
 		if (loop?.enabled) {
 			const content = withIcon(theme.icon.loop, "Loop");
 			return { content: theme.fg("customMessageLabel", content), visible: true };
+		}
+
+		const continuity = autoContinuityIndicator(ctx.session.settings);
+		if (continuity) {
+			const suppressed = continuity.includes("off");
+			return {
+				content: theme.fg(suppressed ? "warning" : "accent", continuity),
+				visible: true,
+			};
 		}
 
 		return { content: "", visible: false };

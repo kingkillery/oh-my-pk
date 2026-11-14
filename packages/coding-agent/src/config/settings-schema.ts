@@ -5709,6 +5709,72 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	/** End-of-turn project-notebook handoff mode; `off` changes nothing unless asked. */
+	"continuity.endOfTurnHandoff": {
+		type: "enum",
+		values: ["off", "changed", "always"] as const,
+		default: "off",
+		ui: {
+			tab: "context",
+			group: "Continuity",
+			label: "End-of-Turn Handoff",
+			description:
+				"Emit a six-section handoff when a turn settles: off (only when asked), changed (after a turn that edited files), or always (every completed turn). Showing a handoff never saves it.",
+			options: [
+				{ value: "off", label: "Off", description: "Only when explicitly asked" },
+				{ value: "changed", label: "When changed", description: "After a turn that edited files" },
+				{ value: "always", label: "Every turn", description: "After every completed turn" },
+			],
+		},
+	},
+
+	/** Persist emitted handoffs canonically; separate from emission and default off. */
+	"continuity.autoSave": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "context",
+			group: "Continuity",
+			label: "Save Handoffs Automatically",
+			description:
+				"Write emitted handoffs to the project notebook. Requires a verified canonical writer and never changes session or job state.",
+		},
+	},
+
+	/**
+	 * Where a new workstream's handoff is written. `repo` is a file inside the
+	 * project, so a clone can resume it. `vault` points at an Obsidian note and
+	 * requires `continuity.vault`.
+	 */
+	"continuity.store": {
+		type: "enum",
+		values: ["repo", "vault"] as const,
+		default: "repo",
+		ui: {
+			tab: "context",
+			group: "Continuity",
+			label: "Handoff Store",
+			description:
+				"Where a new workstream's handoff is written. Repo keeps the note in the project so a clone can resume it. Vault points at an Obsidian note and does not travel with the repo.",
+			options: [
+				{ value: "repo", label: "Repository", description: "A file inside the project" },
+				{ value: "vault", label: "Obsidian vault", description: "A pointer at a vault note" },
+			],
+		},
+	},
+
+	/** Obsidian vault name used when continuity.store is vault. Empty means unset. */
+	"continuity.vault": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "context",
+			group: "Continuity",
+			label: "Handoff Vault",
+			description:
+				"Obsidian vault name for handoffs when the store is vault. The note is written under Continuity/ in that vault. The workstream index stays in the repository.",
+		},
+	},
 	"thinkingBudgets.minimal": { type: "number", default: 1024 },
 
 	"thinkingBudgets.low": { type: "number", default: 2048 },

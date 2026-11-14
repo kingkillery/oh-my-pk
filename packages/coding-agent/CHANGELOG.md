@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/auto-handoffs` (alias `/notebook`) sets `continuity.endOfTurnHandoff` to `off`, `changed`, or `always`. `changed` emits a six-section handoff only after a turn that mutated the workspace; `continuity.autoSave` is a separate flag and stays off, because there is no verified notebook writer to store it.
+- `/auto-handoffs status` reports whether automatic injection is active. The status line shows `continuity auto on` only while it can inject, and simple mode forces the effective mode off even if the setting is `always`.
+
+### Fixed
+
+- Continuity saves and resumes refuse a canonical path that resolves outside the injected project root, and a retained revision refuses a workstream id that is not a single path segment. A save that cannot re-read the workstream index leaves the pointer untouched instead of rebuilding an empty registry.
+- Continuity saves take an exclusive lock on the project index, so two overlapping saves serialize instead of both reading the same revision. A lock older than 30 seconds is treated as abandoned.
+- A save re-reads the workstream registry after taking the lock and refuses to write if the registered path or authority changed while it was waiting.
+
 ## [16.4.36] - 2026-11-12
 
 ### Added

@@ -177,6 +177,8 @@ import { MODEL_ROLE_IDS, MODEL_ROLES } from "../config/model-roles";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import type { Settings, SkillsSettings } from "../config/settings";
 import { onAppendOnlyModeChanged } from "../config/settings";
+import { handoffDirective, shouldEmitHandoff } from "../continuity/auto-handoff";
+import { readAutoContinuity } from "../continuity/auto-toggle";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { loadCapability } from "../discovery";
 import { expandApplyPatchToEntries, normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
@@ -1602,6 +1604,7 @@ export class AgentSession {
 		| undefined = undefined;
 	#sessionStopContinuationCount = 0;
 	#sessionStopHookActive = false;
+	#autoHandoffTurnId: number | undefined = undefined;
 	// Bumped whenever the pending in-flight snapshot is set/cleared. The
 	// status-line context memo includes this so clearing the snapshot on
 	// turn-end/abort invalidates the cache even though the message list is
@@ -4349,10 +4352,31 @@ export class AgentSession {
 		await this.#extensionRunner?.emit({ type: "agent_end", messages });
 	}
 
+	/**
+	 * Built-in end-of-turn handoff, gated by `continuity.endOfTurnHandoff`.
+	 * Requesting one queues a single continuation turn; it never switches
+	 * sessions, cancels jobs, or writes to a vault.
+	 */
+	#autoHandoffContext(messages: AgentMessage[], turnId: number): string | undefined {
+		const mode = readAutoContinuity(this.settings).effective;
+		if (mode === "off") return undefined;
+		const emit = shouldEmitHandoff({
+			mode,
+			stopHookActive: this.#sessionStopHookActive,
+			turnId,
+			lastEmittedTurnId: this.#autoHandoffTurnId,
+			messages,
+		});
+		if (!emit) return undefined;
+		this.#autoHandoffTurnId = turnId;
+		return handoffDirective(mode);
+	}
 	async #emitSessionStopEvent(messages: AgentMessage[]): Promise<void> {
-		if (this.#agentKind === "sub" || !this.#extensionRunner?.hasHandlers("session_stop")) return;
+		if (this.#agentKind === "sub") return;
+		const autoHandoffMode = readAutoContinuity(this.settings).effective;
+		if (!this.#extensionRunner?.hasHandlers("session_stop") && autoHandoffMode === "off") return;
 		const generation = this.#promptGeneration;
-		const result = await this.#extensionRunner.emitSessionStop({
+		const result = await this.#extensionRunner?.emitSessionStop({
 			messages,
 			turn_id: Math.max(0, this.#turnIndex - 1),
 			last_assistant_message: this.getLastAssistantMessage(),
@@ -4364,7 +4388,8 @@ export class AgentSession {
 			this.#resetSessionStopContinuationState();
 			return;
 		}
-		const additionalContext = this.#sessionStopContinuationContext(result);
+		const autoHandoff = this.#autoHandoffContext(messages, Math.max(0, this.#turnIndex - 1));
+		const additionalContext = this.#sessionStopContinuationContext(result) ?? autoHandoff;
 		if (!additionalContext) {
 			this.#resetSessionStopContinuationState();
 			return;
