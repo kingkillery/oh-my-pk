@@ -1,0 +1,14 @@
+{
+  "name": "integralist-agent-skills",
+  "version": "1.0.0",
+  "description": "Nine requested agent skills with their required dependencies from Integralist/agent-skills.",
+  "private": true,
+  "homepage": "https://github.com/Integralist/agent-skills",
+  "keywords": [
+    "ompk",
+    "agent-skills",
+    "planning",
+    "clarification"
+  ],
+  "omp": {}
+}

@@ -1,0 +1,7 @@
+{
+  "name": "integralist-agent-skills",
+  "description": "Nine requested agent skills with their required dependencies from Integralist/agent-skills.",
+  "version": "1.0.0",
+  "homepage": "https://github.com/Integralist/agent-skills",
+  "skills": "./skills"
+}

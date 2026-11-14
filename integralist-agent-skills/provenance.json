@@ -1,0 +1,31 @@
+{
+  "sourceRepository": "https://github.com/Integralist/agent-skills",
+  "sourceCommit": "35ce39c1c507d2917175aa1badc501043f7339bd",
+  "requestedSkills": [
+    { "name": "next-task", "sourcePath": ".agents/skills/next-task" },
+    { "name": "next-slice", "sourcePath": ".agents/skills/next-slice" },
+    { "name": "grill-with-docs", "sourcePath": ".agents/skills/grill-with-docs" },
+    { "name": "grill-me", "sourcePath": ".agents/skills/grill-me" },
+    { "name": "grilling", "sourcePath": ".agents/skills/grilling" },
+    { "name": "agents-md", "sourcePath": ".agents/skills/agents-md" },
+    { "name": "clarify", "sourcePath": ".agents/skills/clarify" },
+    { "name": "acp", "sourcePath": ".agents/skills/acp" },
+    { "name": "explain-code", "sourcePath": ".agents/skills/explain-code" }
+  ],
+  "dependencySkills": [
+    "branch",
+    "code-module-design",
+    "code-review",
+    "conventions-acceptance-tests",
+    "conventions-go",
+    "conventions-markdown",
+    "conventions-mermaid",
+    "conventions-python",
+    "conventions-sql",
+    "domain-modeling",
+    "go-testing",
+    "voice-adhd",
+    "voice-integralist",
+    "voice-product"
+  ]
+}
