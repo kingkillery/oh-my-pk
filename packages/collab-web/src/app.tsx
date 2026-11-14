@@ -20,6 +20,8 @@ import {
 	readRememberedLink,
 	rememberLink,
 } from "./lib/remember-link";
+import { sessionSignals } from "./lib/session-signals";
+import { androidRemembered, isAndroidShell, nativeShell } from "./lib/shell";
 import { setThemePreference } from "./lib/theme";
 import { useGuestSnapshot } from "./lib/use-guest";
 import { useNow } from "./lib/use-now";
@@ -117,8 +119,12 @@ export function PreviewApp({ scenario }: { scenario: PreviewScenario }): ReactNo
 function LiveApp(): ReactNode {
 	const [client, setClient] = useState<GuestClient | null>(null);
 	const [connectError, setConnectError] = useState<string | null>(null);
-	const [remembered, setRemembered] = useState(false);
-	const [savedAvailable, setSavedAvailable] = useState(() => readRememberedLink(localRememberStore()) !== null);
+	const [remembered, setRemembered] = useState(() => androidRemembered(window.location));
+	const [savedAvailable, setSavedAvailable] = useState(() =>
+		isAndroidShell(window.location)
+			? androidRemembered(window.location)
+			: readRememberedLink(localRememberStore()) !== null,
+	);
 	const credsRef = useRef<Creds | null>(null);
 
 	const connect = useCallback((link: string, name: string, source: ConnectSource, remember = false): void => {
@@ -136,8 +142,22 @@ function LiveApp(): ReactNode {
 		} catch {
 			// storage unavailable (private mode) — non-fatal
 		}
+		const android = isAndroidShell(window.location);
+		const shell = android ? nativeShell() : null;
 		const store = localRememberStore();
-		if (source === "form") {
+		if (shell) {
+			// The link stays in the keystore. localStorage would keep it in plaintext.
+			if (source === "form") {
+				if (remember) shell.remember(trimmed);
+				else shell.forget();
+				setRemembered(remember);
+				setSavedAvailable(remember);
+			} else {
+				const flagged = androidRemembered(window.location);
+				setRemembered(flagged);
+				setSavedAvailable(flagged);
+			}
+		} else if (source === "form") {
 			if (remember) {
 				const ok = rememberLink(store, trimmed);
 				setRemembered(ok);
@@ -160,6 +180,11 @@ function LiveApp(): ReactNode {
 	}, []);
 
 	const leave = useCallback((): void => {
+		const shell = nativeShell();
+		if (shell && isAndroidShell(window.location)) {
+			shell.leave();
+			return;
+		}
 		setClient(prev => {
 			prev?.close();
 			return null;
@@ -175,6 +200,7 @@ function LiveApp(): ReactNode {
 	}, [connect]);
 
 	const continueSaved = useCallback((): void => {
+		if (isAndroidShell(window.location)) return;
 		const saved = readRememberedLink(localRememberStore());
 		if (!saved) {
 			setSavedAvailable(false);
@@ -184,6 +210,14 @@ function LiveApp(): ReactNode {
 	}, [connect]);
 
 	const forgetSaved = useCallback((): void => {
+		const shell = nativeShell();
+		if (shell && isAndroidShell(window.location)) {
+			shell.forget();
+			setRemembered(false);
+			setSavedAvailable(false);
+			setConnectError(null);
+			return;
+		}
 		forgetLink(localRememberStore());
 		setRemembered(false);
 		setSavedAvailable(false);
@@ -193,6 +227,13 @@ function LiveApp(): ReactNode {
 	const rememberCurrent = useCallback((): void => {
 		const link = credsRef.current?.link;
 		if (!link) return;
+		const shell = nativeShell();
+		if (shell && isAndroidShell(window.location)) {
+			shell.remember(link);
+			setRemembered(true);
+			setSavedAvailable(true);
+			return;
+		}
 		const ok = rememberLink(localRememberStore(), link);
 		setRemembered(ok);
 		if (ok) setSavedAvailable(true);
@@ -223,6 +264,8 @@ function LiveApp(): ReactNode {
 			connect(link, storedName(), "hash");
 			return;
 		}
+		// The Android shell owns the saved link. Do not read plaintext localStorage.
+		if (isAndroidShell(window.location)) return;
 		const saved = readRememberedLink(localRememberStore());
 		if (saved) connect(saved, storedName(), "saved");
 	}, [connect]);
@@ -302,6 +345,11 @@ export function Session({ client, remembered, onLeave, onRejoin, onRemember, onF
 		}
 	}, [subCount]);
 
+	const signals = sessionSignals({
+		working: snap.working,
+		streaming: snap.state?.isStreaming === true,
+		activeToolNames: [...snap.activeTools.values()].map(tool => tool.toolName),
+	});
 	const title = snap.header?.title ?? snap.state?.sessionName ?? "session";
 	useEffect(() => {
 		document.title = `${title} · oh-my-pk`;
@@ -314,6 +362,8 @@ export function Session({ client, remembered, onLeave, onRejoin, onRemember, onF
 			className="sh-app"
 			data-sidebar={railOpen ? "open" : "closed"}
 			data-connection={view.kind}
+			data-working={signals.working ? "true" : "false"}
+			data-needs-input={signals.needsInput ? "true" : "false"}
 			data-readonly={snap.readOnly ? "true" : "false"}
 		>
 			{railOpen && (

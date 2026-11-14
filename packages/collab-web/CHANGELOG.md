@@ -4,6 +4,7 @@
 
 ### Added
 
+- Android shell (`?shell=android`) keeps the session link out of local storage and routes Remember, Forget, and Leave to the native bridge. The session root exposes `data-working` and `data-needs-input` from the existing guest snapshot. Screenshot previews also load on the bundled app origin.
 - Phone layout for the browser guest: the transcript uses the screen width, the composer stays above the keyboard (visual viewport and safe-area insets), and Stop is a labeled control in the thumb zone.
 - Connection status is words plus an icon: Connecting, Joining, Live, Host away with the relay hold countdown, Reconnecting, Room closed, and Read-only. Room closed asks you to rescan the QR on your computer.
 - Waking the page or coming back online reconnects immediately, including when the socket drops a few seconds after the phone wakes.

@@ -1,5 +1,7 @@
 /**
- * Localhost-only snapshots for phone screenshots.
+ * Snapshots for phone screenshots.
+ * Allowed on localhost and on the Android wrapper's asset origin
+ * (`appassets.androidplatform.net`), which is not a public host.
  * The preview link is a fixed zero key. It is never rendered and never dialed.
  */
 
@@ -21,15 +23,16 @@ export type PreviewScenario = (typeof PREVIEW_SCENARIOS)[number];
 /** Room id used only to satisfy the link parser. Must not appear in the UI. */
 export const PREVIEW_LINK_MARKER = "previewroom1";
 
-const LOCAL_HOSTS: Record<string, true> = {
+const PREVIEW_HOSTS: Record<string, true> = {
 	localhost: true,
 	"127.0.0.1": true,
 	"::1": true,
 	"[::1]": true,
+	"appassets.androidplatform.net": true,
 };
 
 export function readPreviewScenario(loc: { hostname: string; search: string }): PreviewScenario | null {
-	if (!LOCAL_HOSTS[loc.hostname]) return null;
+	if (!PREVIEW_HOSTS[loc.hostname]) return null;
 	const value = new URLSearchParams(loc.search).get("preview");
 	if (
 		value === "live" ||

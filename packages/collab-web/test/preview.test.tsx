@@ -20,9 +20,10 @@ function render(scenario: PreviewScenario): string {
 }
 
 describe("localhost preview", () => {
-	it("only enables preview on a local host", () => {
+	it("only enables preview on a local or bundled-app host", () => {
 		expect(readPreviewScenario({ hostname: "localhost", search: "?preview=live" })).toBe("live");
 		expect(readPreviewScenario({ hostname: "127.0.0.1", search: "?preview=read-only" })).toBe("read-only");
+		expect(readPreviewScenario({ hostname: "appassets.androidplatform.net", search: "?preview=live" })).toBe("live");
 		expect(readPreviewScenario({ hostname: "oh-my-pk.pkking.computer", search: "?preview=live" })).toBeNull();
 		expect(readPreviewScenario({ hostname: "localhost", search: "?preview=other" })).toBeNull();
 	});
@@ -32,6 +33,8 @@ describe("localhost preview", () => {
 		expect(live).toContain("Login form");
 		expect(live).toContain("Stop");
 		expect(live).toContain('data-connection="live"');
+		expect(live).toContain('data-working="true"');
+		expect(live).toContain('data-needs-input="false"');
 		expect(live).not.toContain(PREVIEW_LINK_MARKER);
 		expect(live).not.toContain(ZERO_KEY);
 
