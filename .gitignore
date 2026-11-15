@@ -135,6 +135,7 @@ packages/coding-agent/runtime-cli-state-*/
 # Local agent and generated evaluation artifacts
 .omx/
 evals/agent-gui/reports/
+evals/edit-tool-matrix/.out/
 mcps/
 # Wrangler local secret store (per-machine dev secrets)
 .dev.vars
