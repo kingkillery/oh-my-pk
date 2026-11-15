@@ -622,7 +622,79 @@ export class Settings {
 	/**
 	 * Set a model role (helper for modelRoles record).
 	 */
+	#setFusionSettingWithOverride<
+		P extends "fusion.compactModel" | "fusion.sidekickModel" | "fusion.sidekickStrongModel" | "fusion.modelPool",
+	>(path: P, value: SettingValue<P>): void {
+		const segments = path.split(".");
+		const hasOverride = getByPath(this.#overrides, segments) !== undefined;
+		this.set(path, value);
+		if (hasOverride) {
+			this.override(path, value);
+		}
+	}
+
+	#parseFusionTierRole(role: string): number | null {
+		const match = /^fusion-tier-([1-5])$/.exec(role);
+		return match ? Number.parseInt(match[1], 10) : null;
+	}
+
+	#readFusionPoolTier(targetTier: number): string | undefined {
+		const entries = this.get("fusion.modelPool") ?? [];
+		let found: string | undefined;
+		for (const entry of entries) {
+			const eq = entry.indexOf("=");
+			if (eq <= 0) continue;
+			const tier = Number.parseInt(entry.slice(0, eq).trim(), 10);
+			const selector = entry.slice(eq + 1).trim();
+			if (tier === targetTier && selector) {
+				found = selector;
+			}
+		}
+		return found;
+	}
+
+	#writeFusionPoolTier(targetTier: number, selector: string): void {
+		const entries = this.get("fusion.modelPool") ?? [];
+		const byTier = new Map<number, string>();
+		for (const entry of entries) {
+			const eq = entry.indexOf("=");
+			if (eq <= 0) continue;
+			const tier = Number.parseInt(entry.slice(0, eq).trim(), 10);
+			const existing = entry.slice(eq + 1).trim();
+			if (Number.isInteger(tier) && tier >= 1 && tier <= 5 && existing) {
+				byTier.set(tier, existing);
+			}
+		}
+		const trimmed = selector.trim();
+		if (trimmed) {
+			byTier.set(targetTier, trimmed);
+		} else {
+			byTier.delete(targetTier);
+		}
+		const next = Array.from(byTier.entries())
+			.sort((a, b) => a[0] - b[0])
+			.map(([tier, sel]) => `${tier}=${sel}`);
+		this.#setFusionSettingWithOverride("fusion.modelPool", next);
+	}
+
 	setModelRole(role: ModelRole | string, modelId: string): void {
+		if (role === "fusion-compact") {
+			this.#setFusionSettingWithOverride("fusion.compactModel", modelId);
+			return;
+		}
+		if (role === "fusion-sidekick") {
+			this.#setFusionSettingWithOverride("fusion.sidekickModel", modelId);
+			return;
+		}
+		if (role === "fusion-strong") {
+			this.#setFusionSettingWithOverride("fusion.sidekickStrongModel", modelId);
+			return;
+		}
+		const fusionTier = this.#parseFusionTierRole(role);
+		if (fusionTier !== null) {
+			this.#writeFusionPoolTier(fusionTier, modelId);
+			return;
+		}
 		const current = shallowStringRecord(getByPath(this.#global, ["modelRoles"]));
 		const runtimeOverrides = getByPath(this.#overrides, ["modelRoles"]);
 		const updateRuntimeOverride =
@@ -680,6 +752,24 @@ export class Settings {
 	 * retarget every role-resolving agent slot at once.
 	 */
 	getModelRole(role: ModelRole | string): string | undefined {
+		if (role === "fusion-compact") {
+			const compact = this.get("fusion.compactModel")?.trim();
+			if (compact) return compact;
+		} else if (role === "fusion-sidekick") {
+			if (this.isConfigured("fusion.sidekickModel") || this.get("fusion.enabled") === true) {
+				const sidekick = this.get("fusion.sidekickModel")?.trim();
+				if (sidekick) return sidekick;
+			}
+		} else if (role === "fusion-strong") {
+			const strong = this.get("fusion.sidekickStrongModel")?.trim();
+			if (strong) return strong;
+		} else {
+			const fusionTier = this.#parseFusionTierRole(role);
+			if (fusionTier !== null) {
+				const tierSelector = this.#readFusionPoolTier(fusionTier);
+				if (tierSelector) return tierSelector;
+			}
+		}
 		const explicit = this.get("modelRoles")[role];
 		if (explicit) return explicit;
 		return this.#getActiveProfileRoles()[role];

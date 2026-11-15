@@ -11,12 +11,14 @@
 - `/auto-handoffs` (alias `/notebook`) sets `continuity.endOfTurnHandoff` to `off`, `changed`, or `always`. `changed` emits a six-section handoff only after a turn that mutated the workspace; `continuity.autoSave` is a separate flag and stays off, because there is no verified notebook writer to store it.
 - `/auto-handoffs status` reports whether automatic injection is active. The status line shows `continuity auto on` only while it can inject, and simple mode forces the effective mode off even if the setting is `always`.
 - Continuity workstreams register repository-relative notes by default, so the note and index can travel in a Git clone. `/auto-handoffs store repo` or `store vault <name>` selects defaults for new registrations; named `vault://` pointers keep note bodies and revision history in the existing vault without mirroring it into the repository. Explicit repointing never moves or deletes either note.
+- `/model` (and `Alt+M`) now lists Fusion model roles (`Fusion Compact`, `Fusion Sidekick`, `Fusion Strong Sidekick`, and `Fusion Pool Tier 1`–`5`) and displays their badges directly in the model selector.
 
 ### Fixed
 
 - Continuity records resolve inside the project or an explicitly named Obsidian vault, with traversal and symlink checks. Unavailable vaults fail closed without creating a repository fallback; existing untagged notes are not overwritten.
 - Continuity saves share index and physical-record locks, and check revisions and content hashes before replacing bytes. Lock waits are bounded; age alone never authorizes stealing a live lock. Unreadable indexes remain untouched.
 - A save re-reads the workstream registry after taking the lock and refuses to write if the registered path or authority changed while it was waiting.
+- Fusion failure-streak escalation (`fusion.escalateFailureStreak`) no longer resets on passive inspection, edit, or bookkeeping calls (`read`, `grep`, `edit`, `write`, `todo`, etc.) between failing verification commands; only a passing verification/execution tool (`bash`, `eval`, etc.) or clean turn completion resets the streak.
 
 ## [16.4.36] - 2026-11-12
 

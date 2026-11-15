@@ -24,7 +24,15 @@ export type ModelRole =
 	| "budget"
 	| "balanced"
 	| "max-intelligence"
-	| "free";
+	| "free"
+	| "fusion-compact"
+	| "fusion-sidekick"
+	| "fusion-strong"
+	| "fusion-tier-1"
+	| "fusion-tier-2"
+	| "fusion-tier-3"
+	| "fusion-tier-4"
+	| "fusion-tier-5";
 
 export interface ModelRoleInfo {
 	tag?: string;
@@ -54,6 +62,14 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 	balanced: { tag: "BALANCED", name: "Balanced", color: "accent" },
 	"max-intelligence": { tag: "MAXINT", name: "Max Intelligence", color: "success" },
 	free: { tag: "FREE", name: "Free", color: "dim" },
+	"fusion-compact": { tag: "FUSION COMPACT", name: "Fusion Compact", color: "accent" },
+	"fusion-sidekick": { tag: "FUSION SIDEKICK", name: "Fusion Sidekick", color: "warning" },
+	"fusion-strong": { tag: "FUSION STRONG", name: "Fusion Strong Sidekick", color: "success" },
+	"fusion-tier-1": { tag: "FUSION T1", name: "Fusion Pool Tier 1", color: "success" },
+	"fusion-tier-2": { tag: "FUSION T2", name: "Fusion Pool Tier 2", color: "accent" },
+	"fusion-tier-3": { tag: "FUSION T3", name: "Fusion Pool Tier 3", color: "accent" },
+	"fusion-tier-4": { tag: "FUSION T4", name: "Fusion Pool Tier 4", color: "warning" },
+	"fusion-tier-5": { tag: "FUSION T5", name: "Fusion Pool Tier 5", color: "muted" },
 };
 
 export const MODEL_ROLE_IDS: ModelRole[] = [
@@ -76,6 +92,14 @@ export const MODEL_ROLE_IDS: ModelRole[] = [
 	"balanced",
 	"max-intelligence",
 	"free",
+	"fusion-compact",
+	"fusion-sidekick",
+	"fusion-strong",
+	"fusion-tier-1",
+	"fusion-tier-2",
+	"fusion-tier-3",
+	"fusion-tier-4",
+	"fusion-tier-5",
 ];
 
 export type RoleInfo = ModelRoleInfo;

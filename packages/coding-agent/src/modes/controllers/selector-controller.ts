@@ -583,6 +583,17 @@ export class SelectorController {
 							if (isAuto) {
 								this.ctx.session.setThinkingLevel(AUTO_THINKING, true);
 							}
+							if (
+								role === "fusion-sidekick" &&
+								this.ctx.settings.get("fusion.enabled") === true &&
+								this.ctx.settings.get("fusion.mode") !== "off"
+							) {
+								await this.ctx.reconcileFusionSidekickModel();
+							}
+							if (role.startsWith("fusion-")) {
+								this.ctx.statusLine.invalidate();
+								this.ctx.updateEditorTopBorder();
+							}
 							const roleInfo = getRoleInfo(role, settings);
 							const roleLabel = roleInfo?.name ?? role;
 							this.ctx.showStatus(`${roleLabel} model: ${selector ?? model.id}`);

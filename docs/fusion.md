@@ -96,6 +96,8 @@ Use `/fusion` inside any interactive session to inspect, configure, and toggle F
 /fusion pool clear
 ```
 
+You can also assign `Fusion Compact`, `Fusion Sidekick`, `Fusion Strong Sidekick`, and `Fusion Pool Tier 1`–`5` interactively from the `/model` (or `Alt+M`) menu.
+
 ---
 
 ## Configuration Settings (`config.yml`)
@@ -112,5 +114,5 @@ All Fusion settings can be configured globally in `~/.ompk/agent/config.yml` or 
 | `fusion.compactModel` | `string` | `""` | Cheaper main-model tier switched in at compaction when not using pool mode. |
 | `fusion.sidekickModel` | `string` | `"pi/smol"` | Model selector used for persistent sidekick tasks. |
 | `fusion.sidekickStrongModel`| `string` | `""` | Stronger model tier for sidekick tasks during difficult stretches. |
-| `fusion.escalateFailureStreak`| `number`| `3` | Number of consecutive tool failures that trigger auto-escalation back to Tier 1. |
+| `fusion.escalateFailureStreak`| `number`| `3` | Number of failed tool/verification cycles on an auto-downgraded model that trigger auto-escalation back to Tier 1 (passive `read`/`grep`/`edit` calls preserve the streak until a verification command passes or the turn finishes). |
 | `fusion.decisionWindowPercent`| `number`| `25` | Percentage of trailing conversation history evaluated by the decision router (default 25%). |

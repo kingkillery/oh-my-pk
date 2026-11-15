@@ -465,4 +465,40 @@ describe("ModelSelector role badge thinking display", () => {
 		expect(finalRendered).toContain("deepseek-v4-pro");
 		expect(finalRendered).not.toContain("Refreshing OLLAMA CLOUD in background");
 	});
+
+	test("displays Fusion model role badges and persists Fusion settings via setModelRole", async () => {
+		installTestTheme();
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected bundled model anthropic/claude-sonnet-4-5");
+		const selectorValue = `${model.provider}/${model.id}`;
+
+		const settings = Settings.isolated({
+			"fusion.compactModel": selectorValue,
+			"fusion.sidekickModel": `${selectorValue}:low`,
+			"fusion.modelPool": [`1=${selectorValue}:high`],
+		});
+
+		const selector = createSelector(model, settings);
+		await Bun.sleep(0);
+		installTestTheme();
+
+		const rendered = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(rendered).toContain("FUSION COMPACT (inherit)");
+		expect(rendered).toContain("FUSION SIDEKICK (low)");
+		expect(rendered).toContain("FUSION T1 (high)");
+
+		selector.handleInput("\n");
+		installTestTheme();
+		const menuRendered = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(menuRendered).toContain("Set as FUSION COMPACT (Fusion Compact)");
+		expect(menuRendered).toContain("Set as FUSION SIDEKICK (Fusion Sidekick)");
+		expect(menuRendered).toContain("Set as FUSION STRONG (Fusion Strong Sidekick)");
+		expect(menuRendered).toContain("Set as FUSION T1 (Fusion Pool Tier 1)");
+		expect(menuRendered).toContain("Set as FUSION T5 (Fusion Pool Tier 5)");
+
+		settings.setModelRole("fusion-strong", `${selectorValue}:medium`);
+		settings.setModelRole("fusion-tier-3", selectorValue);
+		expect(settings.get("fusion.sidekickStrongModel")).toBe(`${selectorValue}:medium`);
+		expect(settings.get("fusion.modelPool")).toEqual([`1=${selectorValue}:high`, `3=${selectorValue}`]);
+	});
 });
