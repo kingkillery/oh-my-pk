@@ -120,6 +120,7 @@ repository:
 **new registrations only**: `continuity.store` (`repo` by default) and
 `continuity.vault` (empty by default). They do not move existing records, enable
 automatic saving, or enable vault access. `vault.enabled` must be enabled separately.
+Vault names must be visible, named vaults; invisible or control characters are rejected and no settings are written.
 With vault defaults, a new note is addressed as
 `vault://<name>/Continuity/<project-directory-name>/<workstream-id>.md`.
 

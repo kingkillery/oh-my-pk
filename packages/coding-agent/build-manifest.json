@@ -1,0 +1,13 @@
+{
+  "version": "16.4.36",
+  "buildLabel": "",
+  "builtAtUtc": "2026-11-15T04:46:06.843Z",
+  "gitCommit": "1d34a6ad507d9751a3f2d7b599d318d63bcaa52b",
+  "sourceIndexHash": "7129512c698b025225f1a5d2dc60840e5bb621140e72628016fcb323d2c4d424",
+  "sourcePaths": [
+    "packages/*/src",
+    "packages/*/package.json",
+    "package.json",
+    "bun.lock"
+  ]
+}

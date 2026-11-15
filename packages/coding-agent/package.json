@@ -42,6 +42,7 @@
 		"gen:mupdf:reset": "bun scripts/embed-mupdf-wasm.ts --reset",
 		"check": "biome check . && bun run check:types",
 		"check:types": "tsgo -p tsconfig.json --noEmit",
+		"check:dist": "bun scripts/check-dist-freshness.ts",
 		"lint": "biome lint .",
 		"test": "bun test --parallel=4 test src",
 		"fix": "biome check --write --unsafe . && bun run format-prompts",

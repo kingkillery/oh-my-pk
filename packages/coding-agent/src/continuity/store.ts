@@ -43,6 +43,12 @@ export function isMissingFile(error: unknown): boolean {
 	return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
+export function isTransientWindowsReplace(error: unknown): boolean {
+	if (process.platform !== "win32") return false;
+	if (!(error instanceof Error) || !("code" in error)) return false;
+	return error.code === "EPERM" || error.code === "EACCES" || error.code === "EBUSY";
+}
+
 /** Bounded cooperative lock. Never steal an old lock: age does not prove its owner has stopped. */
 export async function withFileLock<T>(target: string, body: () => Promise<T>, timeoutMs = 30_000): Promise<T> {
 	await fs.mkdir(path.dirname(target), { recursive: true });
@@ -54,9 +60,7 @@ export async function withFileLock<T>(target: string, body: () => Promise<T>, ti
 			handle = await fs.open(target, "wx");
 		} catch (error) {
 			if (!(error instanceof Error) || !("code" in error)) throw error;
-			const transientWindowsLock =
-				process.platform === "win32" &&
-				(error.code === "EPERM" || error.code === "EACCES" || error.code === "EBUSY");
+			const transientWindowsLock = isTransientWindowsReplace(error);
 			if (error.code !== "EEXIST" && !transientWindowsLock) throw error;
 			if (Date.now() >= deadline) {
 				throw new Error(`Continuity lock busy: ${target}. Confirm its owner has stopped before removing it.`);
@@ -149,17 +153,34 @@ function validateIndex(parsed: unknown): IndexRead {
 	return { kind: "ok", index: { version: 1, workstreams } };
 }
 
-/** Atomic replace: a temp file in the same directory, then a rename. */
-export async function writeFileAtomic(target: string, text: string): Promise<void> {
+export type AtomicWriteOperations = {
+	rename?: (from: string, to: string) => Promise<void>;
+	retryTimeoutMs?: number;
+};
+
+/** Atomic replace: a temp file in the same directory, then a bounded retrying rename. */
+export async function writeFileAtomic(
+	target: string,
+	text: string,
+	operations: AtomicWriteOperations = {},
+): Promise<void> {
 	const directory = path.dirname(target);
 	await fs.mkdir(directory, { recursive: true });
 	const temporary = path.join(directory, `.${path.basename(target)}.tmp-${randomUUID()}`);
 	await fs.writeFile(temporary, text, "utf-8");
-	try {
-		await fs.rename(temporary, target);
-	} catch (error) {
-		await fs.rm(temporary, { force: true }).catch(() => undefined);
-		throw error;
+	const rename = operations.rename ?? fs.rename;
+	const deadline = Date.now() + (operations.retryTimeoutMs ?? 5_000);
+	for (;;) {
+		try {
+			await rename(temporary, target);
+			return;
+		} catch (error) {
+			if (!isTransientWindowsReplace(error) || Date.now() >= deadline) {
+				await fs.rm(temporary, { force: true }).catch(() => undefined);
+				throw error;
+			}
+			await Bun.sleep(25);
+		}
 	}
 }
 

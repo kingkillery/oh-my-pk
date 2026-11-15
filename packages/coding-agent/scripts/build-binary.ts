@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
@@ -57,6 +58,58 @@ async function runCommand(
 	if (exitCode !== 0) {
 		throw new Error(`Command failed with exit code ${exitCode}: ${command.join(" ")}`);
 	}
+}
+
+const SOURCE_PATHSPEC = ["packages/*/src", "packages/*/package.json", "package.json", "bun.lock"];
+
+async function gitOutput(args: string[]): Promise<string> {
+	const proc = Bun.spawn(["git", ...args], { cwd: repoRoot, stdout: "pipe", stderr: "pipe" });
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout as ReadableStream<Uint8Array>).text(),
+		new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${stderr.trim()}`);
+	return stdout;
+}
+
+async function sourceIndexHash(pathspec: string[]): Promise<string> {
+	const gitPathspec = pathspec.map(entry => (entry.endsWith("/src") ? `${entry}/**` : entry));
+	const raw = await gitOutput(["ls-files", "-s", "-z", "--", ...gitPathspec]);
+	const records = await Promise.all(
+		raw
+			.split("\0")
+			.filter(Boolean)
+			.map(async record => {
+				const [meta, filePath] = record.split("\t");
+				const [mode] = meta.split(" ");
+				return {
+					filePath,
+					mode,
+					bytes: new Uint8Array(await Bun.file(path.join(repoRoot, filePath)).arrayBuffer()),
+				};
+			}),
+	);
+	records.sort((left, right) => (left.filePath < right.filePath ? -1 : left.filePath > right.filePath ? 1 : 0));
+	const hash = createHash("sha256");
+	for (const record of records) hash.update(`${record.mode} ${record.filePath}\n`).update(record.bytes);
+	return hash.digest("hex");
+}
+
+async function writeBuildManifest(): Promise<void> {
+	const manifest = {
+		version: (createRequire(import.meta.url)("../package.json") as { version: string }).version,
+		buildLabel,
+		builtAtUtc: new Date().toISOString(),
+		gitCommit: (await gitOutput(["rev-parse", "HEAD"])).trim(),
+		sourceIndexHash: await sourceIndexHash(SOURCE_PATHSPEC),
+		sourcePaths: SOURCE_PATHSPEC,
+	};
+	await fs.promises.writeFile(
+		path.join(packageDir, "build-manifest.json"),
+		`${JSON.stringify(manifest, null, 2)}\n`,
+		"utf-8",
+	);
 }
 
 async function main(): Promise<void> {
@@ -178,6 +231,7 @@ async function main(): Promise<void> {
 		await runCommand(["bun", "--cwd=../stats", "run", "gen:stats:reset"]);
 		await runCommand(["bun", "run", "gen:docs:reset"]);
 	}
+	await writeBuildManifest();
 }
 
 await main();

@@ -379,6 +379,7 @@ ${chalk.bold("Available Tools (default-enabled unless noted):")}
   todo          - Manage todo/task lists
   web_search    - Search the web
   ask           - Ask user questions (interactive mode only)
+  continuity    - Save and resume project handoffs (repo or named vault)
 
 ${chalk.bold("Plugin Options:")}
   --plugin-dir <path>        Load plugin from directory (repeatable)

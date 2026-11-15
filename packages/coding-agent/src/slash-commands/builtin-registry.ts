@@ -3066,7 +3066,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				await set("continuity.store", "repo");
 			} else if (vaultMatch) {
 				const name = vaultMatch[1].trim();
-				if (name === "_" || /[\\/?#\r\n]/.test(name)) {
+				const usableName = name === "_" ? "" : name;
+				if (!usableName || /[\p{Cc}\p{Cf}\\/?#]/u.test(usableName) || !/[\p{L}\p{N}]/u.test(usableName)) {
 					await runtime.output(
 						"Choose a named Obsidian vault, not an active-vault alias, path, or URL. Settings were not changed.",
 					);

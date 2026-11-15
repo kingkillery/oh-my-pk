@@ -73,3 +73,4 @@ When using Bend:
 
 - Add package entries only under `## [Unreleased]`; released sections are immutable.
 - Never create GitHub issues/comments or run release/commit commands unless the user asks.
+- `packages/coding-agent/dist/*.exe` must be rebuilt and `build-manifest.json` refreshed in the same commit as the final source change; `bun run check:dist` in `packages/coding-agent` fails otherwise.

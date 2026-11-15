@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "../src/config/settings";
 import { registerWorkstream, resumeHandoff, saveHandoff } from "../src/continuity/service";
-import { indexPath, readIndex, sha256, withFileLock } from "../src/continuity/store";
+import { indexPath, readIndex, sha256, withFileLock, writeFileAtomic } from "../src/continuity/store";
 import type { HandoffSections, WorkstreamIndex } from "../src/continuity/types";
 import * as vaultProtocol from "../src/internal-urls/vault-protocol";
 import { BUILTIN_SLASH_COMMANDS_INTERNAL } from "../src/slash-commands/builtin-registry";
@@ -393,4 +393,40 @@ describe("malformed pointers", () => {
 		// An untyped escape reports write_failed/canonical-write-failed with an empty path; the typed
 		// ContinuityLocationError branch above is what keeps malformed pointers classified.
 	});
+});
+
+describe("atomic writes", () => {
+	test.skipIf(process.platform !== "win32")(
+		"retries a transient Windows replace error and keeps the new bytes",
+		async () => {
+			const target = path.join(repo, "atomic.md");
+			await fs.writeFile(target, "first", "utf-8");
+			let calls = 0;
+			const rename = async (from: string, to: string): Promise<void> => {
+				calls++;
+				if (calls <= 2) {
+					throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+				}
+				await fs.rename(from, to);
+			};
+			await expect(writeFileAtomic(target, "second", { rename })).resolves.toBeUndefined();
+			expect(calls).toBe(3);
+			expect(await fs.readFile(target, "utf-8")).toBe("second");
+			expect((await fs.readdir(path.dirname(target))).filter(entry => entry.includes(".tmp-"))).toEqual([]);
+		},
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"gives up on a persistent replace error and cleans the temp file",
+		async () => {
+			const target = path.join(repo, "atomic.md");
+			const rename = async (): Promise<void> => {
+				throw Object.assign(new Error("EBUSY: resource busy or locked, rename"), { code: "EBUSY" });
+			};
+			await expect(writeFileAtomic(target, "second", { rename, retryTimeoutMs: 50 })).rejects.toThrow(
+				"EBUSY: resource busy or locked, rename",
+			);
+			expect((await fs.readdir(path.dirname(target))).filter(entry => entry.includes(".tmp-"))).toEqual([]);
+		},
+	);
 });
