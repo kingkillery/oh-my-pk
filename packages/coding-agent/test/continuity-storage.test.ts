@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { Settings } from "../src/config/settings";
 import { registerWorkstream, resumeHandoff, saveHandoff } from "../src/continuity/service";
 import { indexPath, readIndex, sha256, withFileLock } from "../src/continuity/store";
-import type { HandoffSections } from "../src/continuity/types";
+import type { HandoffSections, WorkstreamIndex } from "../src/continuity/types";
 import * as vaultProtocol from "../src/internal-urls/vault-protocol";
 import { BUILTIN_SLASH_COMMANDS_INTERNAL } from "../src/slash-commands/builtin-registry";
 import type { SlashCommandRuntime } from "../src/slash-commands/types";
@@ -368,5 +368,29 @@ describe("tool and user controls", () => {
 		expect(settings.get("continuity.store")).toBe("repo");
 		expect(output.join("\n")).toContain("Existing notes and pointers are unchanged");
 		expect(await fs.readdir(repo)).toEqual([]);
+	});
+});
+
+describe("malformed pointers", () => {
+	test("malformed vault pointers surface a typed location error instead of a generic failure", async () => {
+		expect((await registerWorkstream({ root: repo, workstreamId: id, canonical: uri })).status).toBe("registered");
+		const index = JSON.parse(await fs.readFile(indexPath(repo), "utf-8")) as WorkstreamIndex;
+		const entry = index.workstreams.find(candidate => candidate.id === id);
+		if (!entry) throw new Error("Registered workstream is missing from the index");
+		const malformed = "vault://Scratch%20Vault/../escape.md";
+		entry.canonical = malformed;
+		await fs.writeFile(indexPath(repo), JSON.stringify(index));
+		const resumed = await resumeHandoff({ root: repo, workstreamId: id });
+		expect(resumed.status).toBe("backend_unavailable");
+		if (resumed.status !== "backend_unavailable") throw new Error("Resume did not report a typed backend failure");
+		expect(resumed.reason).toBe("invalid-vault-pointer");
+		expect(resumed.detail.length).toBeGreaterThan(0);
+		const saved = await saveHandoff({ root: repo, workstreamId: id, sections });
+		expect(saved.status).toBe("backend_unavailable");
+		if (saved.status !== "backend_unavailable") throw new Error("Save did not report a typed backend failure");
+		expect(saved.reason).toBe("invalid-vault-pointer");
+		expect(saved.detail.length).toBeGreaterThan(0);
+		// An untyped escape reports write_failed/canonical-write-failed with an empty path; the typed
+		// ContinuityLocationError branch above is what keeps malformed pointers classified.
 	});
 });
