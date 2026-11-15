@@ -313,11 +313,11 @@ describeIfKey("Fusion failure-streak escalation", () => {
 		await closeHarness(h);
 	});
 
-	function emitToolResult(isError: boolean): void {
+	function emitToolResult(isError: boolean, toolName = "bash"): void {
 		const toolResultMessage = {
 			role: "toolResult",
 			toolCallId: "test-call-id",
-			toolName: "test-tool",
+			toolName,
 			content: [],
 			isError,
 			timestamp: Date.now(),
@@ -350,18 +350,36 @@ describeIfKey("Fusion failure-streak escalation", () => {
 		expect(h.session.model?.id).toBe(COMPACT_ID);
 	});
 
-	it("resets streak on a successful tool call", async () => {
+	it("resets streak when a verification tool call (bash/eval) succeeds", async () => {
 		await primeSession(h.session);
 		await h.session.compact();
 		expect(h.session.model?.id).toBe(COMPACT_ID);
 
-		emitToolResult(true);
-		emitToolResult(true);
-		emitToolResult(false); // reset
-		emitToolResult(true);
-		emitToolResult(true);
+		emitToolResult(true, "bash");
+		emitToolResult(true, "bash");
+		emitToolResult(false, "bash"); // passing verification resets streak
+		emitToolResult(true, "bash");
+		emitToolResult(true, "bash");
 
 		expect(h.session.model?.id).toBe(COMPACT_ID);
+	});
+
+	it("does not reset streak on intermediate read/grep/edit calls between failing tests", async () => {
+		await primeSession(h.session);
+		await h.session.compact();
+		expect(h.session.model?.id).toBe(COMPACT_ID);
+
+		emitToolResult(true, "bash");
+		emitToolResult(false, "read");
+		emitToolResult(false, "edit");
+		emitToolResult(true, "bash");
+		emitToolResult(false, "grep");
+		emitToolResult(false, "write");
+		emitToolResult(false, "todo");
+		expect(h.session.model?.id).toBe(COMPACT_ID);
+
+		emitToolResult(true, "bash");
+		expect(h.session.model?.id).toBe(FRONTIER_ID);
 	});
 
 	it("respects routing latch: does not escalate after manual switch", async () => {

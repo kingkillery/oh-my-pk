@@ -7,6 +7,8 @@ import {
 	decisionRouteQuestion,
 	formatFusionPoolEntries,
 	isFusionAutoDowngradedRoute,
+	isFusionStreakNeutralToolSuccess,
+	nextFusionToolFailureStreak,
 	parseDecisionRouteAnswer,
 	parseFusionPoolEntries,
 	parseFusionRoute,
@@ -31,6 +33,55 @@ describe("isFusionAutoDowngradedRoute", () => {
 		expect(isFusionAutoDowngradedRoute({ ...active, baseModel: undefined })).toBe(false);
 		expect(isFusionAutoDowngradedRoute({ ...active, lastAutoModel: undefined })).toBe(false);
 		expect(isFusionAutoDowngradedRoute({ ...active, currentModel: undefined })).toBe(false);
+	});
+});
+
+describe("nextFusionToolFailureStreak", () => {
+	it("treats inspection, edit, and bookkeeping tools as streak-neutral on success", () => {
+		for (const toolName of ["read", "grep", "glob", "ast_grep", "lsp", "edit", "write", "ast_edit", "todo", "goal"]) {
+			expect(isFusionStreakNeutralToolSuccess(toolName)).toBe(true);
+			expect(
+				nextFusionToolFailureStreak({
+					currentStreak: 2,
+					isError: false,
+					toolName,
+					autoDowngradedRoute: true,
+				}),
+			).toBe(2);
+		}
+	});
+
+	it("resets streak to 0 when a verification or execution tool succeeds", () => {
+		for (const toolName of ["bash", "eval", "debug", "task", undefined]) {
+			expect(isFusionStreakNeutralToolSuccess(toolName)).toBe(false);
+			expect(
+				nextFusionToolFailureStreak({
+					currentStreak: 2,
+					isError: false,
+					toolName,
+					autoDowngradedRoute: true,
+				}),
+			).toBe(0);
+		}
+	});
+
+	it("increments streak on any tool error while on an auto-downgraded route and zeroes outside it", () => {
+		expect(
+			nextFusionToolFailureStreak({
+				currentStreak: 1,
+				isError: true,
+				toolName: "read",
+				autoDowngradedRoute: true,
+			}),
+		).toBe(2);
+		expect(
+			nextFusionToolFailureStreak({
+				currentStreak: 2,
+				isError: true,
+				toolName: "bash",
+				autoDowngradedRoute: false,
+			}),
+		).toBe(0);
 	});
 });
 

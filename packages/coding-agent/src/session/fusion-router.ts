@@ -57,6 +57,75 @@ export function isFusionAutoDowngradedRoute(state: FusionAutoRouteState): boolea
 	return !modelsAreEqual(baseModel, currentModel) && modelsAreEqual(lastAutoModel, currentModel);
 }
 
+/**
+ * Tools that only inspect, search, edit files, or update session bookkeeping.
+ * When one of these tools succeeds (`isError === false`) in the middle of a
+ * failure streak (e.g. `bash` test fails -> `read` -> `edit` -> `bash` test fails),
+ * it does not prove that the prior verification failure was resolved and must
+ * not reset `#fusionToolFailureStreak`. Only a passing verification/execution
+ * tool (`bash`, `eval`, etc.) or clean turn completion resets the streak.
+ */
+const FUSION_STREAK_NEUTRAL_SUCCESS_TOOLS: ReadonlySet<string> = new Set([
+	"read",
+	"grep",
+	"glob",
+	"ast_grep",
+	"lsp",
+	"search_tool_bm25",
+	"context_oracle",
+	"work_context",
+	"edit",
+	"write",
+	"ast_edit",
+	"notebook_edit",
+	"resolve",
+	"todo",
+	"goal",
+	"recall",
+	"retain",
+	"reflect",
+	"session_memory",
+	"memory_edit",
+	"continuity",
+	"activity",
+]);
+
+/**
+ * Whether a successful (`isError: false`) tool result is streak-neutral —
+ * i.e. an intermediate inspection, edit, or bookkeeping step that preserves
+ * an active failure streak rather than resetting it to zero.
+ * Pure — exported for tests.
+ */
+export function isFusionStreakNeutralToolSuccess(toolName: string | undefined): boolean {
+	if (!toolName) return false;
+	return FUSION_STREAK_NEUTRAL_SUCCESS_TOOLS.has(toolName);
+}
+
+/**
+ * Compute the next `#fusionToolFailureStreak` value after a `toolResult`
+ * message completes.
+ * - Outside an auto-downgraded Fusion route, the streak is always `0`.
+ * - On an auto-downgraded route:
+ *   - Any tool error (`isError === true`) increments the streak.
+ *   - A passing verification/execution tool (`!isFusionStreakNeutralToolSuccess(toolName)`)
+ *     resets the streak to `0`.
+ *   - A passing inspection/edit/bookkeeping tool (`read`, `grep`, `edit`, etc.)
+ *     preserves the current streak so `bash (fail) -> read (ok) -> edit (ok) -> bash (fail)`
+ *     accumulates across failed verification cycles.
+ * Pure — exported for tests.
+ */
+export function nextFusionToolFailureStreak(options: {
+	currentStreak: number;
+	isError: boolean;
+	toolName?: string;
+	autoDowngradedRoute: boolean;
+}): number {
+	if (!options.autoDowngradedRoute) return 0;
+	if (options.isError) return options.currentStreak + 1;
+	if (isFusionStreakNeutralToolSuccess(options.toolName)) return options.currentStreak;
+	return 0;
+}
+
 /** One tier of the routing pool. Tier 1 = most powerful … 5 = least intelligent. */
 export interface FusionPoolTier {
 	tier: number;

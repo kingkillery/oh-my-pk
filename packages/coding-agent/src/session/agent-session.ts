@@ -374,6 +374,7 @@ import {
 	type FusionRoute,
 	isFusionAutoDowngradedRoute,
 	isTokenSavingsFusionMode,
+	nextFusionToolFailureStreak,
 	parseFusionPoolEntries,
 	resolveEffectiveFusionRoute,
 	resolveSidekickRoute,
@@ -3108,24 +3109,27 @@ export class AgentSession {
 				// is allowed to escalate to the next reminder if todos remain incomplete.
 				this.#todoReminderAwaitingProgress = false;
 				this.#completionGateAwaitingProgress = false;
-				// Fusion failure-streak escalation: consecutive failed tool calls on a
+				// Fusion failure-streak escalation: failed verification/tool cycles on a
 				// downgraded main model force an early tier-up back to the frontier
-				// baseline without waiting for the next compaction boundary. Only
-				// failures on the auto-selected cheaper route count; anything else
-				// ends the streak.
-				if (
-					isError &&
-					isFusionAutoDowngradedRoute({
-						routingDisabled: this.#fusionRoutingDisabled,
-						baseModel: this.#fusionBaseModel,
-						lastAutoModel: this.#fusionLastAutoModel,
-						currentModel: this.model,
-					})
-				) {
-					this.#fusionToolFailureStreak++;
+				// baseline without waiting for the next compaction boundary. Passive
+				// inspection, edit, and bookkeeping successes (`read`, `grep`, `edit`,
+				// `todo`, etc.) preserve an active streak so `bash (fail) -> read -> edit
+				// -> bash (fail)` escalates; only a passing verification/execution tool
+				// or clean turn completion resets the streak.
+				const autoDowngradedRoute = isFusionAutoDowngradedRoute({
+					routingDisabled: this.#fusionRoutingDisabled,
+					baseModel: this.#fusionBaseModel,
+					lastAutoModel: this.#fusionLastAutoModel,
+					currentModel: this.model,
+				});
+				this.#fusionToolFailureStreak = nextFusionToolFailureStreak({
+					currentStreak: this.#fusionToolFailureStreak,
+					isError: Boolean(isError),
+					toolName,
+					autoDowngradedRoute,
+				});
+				if (isError && autoDowngradedRoute) {
 					await this.#maybeEscalateFusionOnFailureStreak();
-				} else {
-					this.#fusionToolFailureStreak = 0;
 				}
 				// Invalidate streaming edit cache when edit tool completes to prevent stale data
 				if (toolName === "edit" && details?.path) {
@@ -3342,6 +3346,7 @@ export class AgentSession {
 					await emitAgentEndNotification();
 					return;
 				}
+				this.#fusionToolFailureStreak = 0;
 			}
 			await this.#emitSessionStopEvent(event.messages);
 			await emitAgentEndNotification();
@@ -6832,6 +6837,7 @@ export class AgentSession {
 				this.#fusionTokenSavingsSavedModel = undefined;
 			}
 			this.#fusionTokenSavingsDefaultCalls = 0;
+			this.#fusionToolFailureStreak = 0;
 		}
 		// Handle extension commands first (execute immediately, even during streaming)
 		if (expandPromptTemplates && text.startsWith("/")) {

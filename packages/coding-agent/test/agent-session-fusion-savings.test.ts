@@ -314,3 +314,100 @@ describe("AgentSession — Fusion Token Savings Mode call limit", () => {
 		unsubscribe();
 	});
 });
+describe("AgentSession Fusion failure-streak escalation across tool cycles", () => {
+	function emitToolResultEvent(agent: Agent, toolName: string, isError: boolean): void {
+		const toolResultMessage: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: `call-${toolName}-${Date.now()}`,
+			toolName,
+			content: [{ type: "text", text: isError ? "failed" : "ok" }],
+			isError,
+			timestamp: Date.now(),
+		};
+		agent.emitExternalEvent({ type: "message_end", message: toolResultMessage });
+	}
+
+	it("escalates back to frontier across intermediate read/edit/grep calls between failing tests", async () => {
+		const harness = await createSavingsHarness({ "fusion.escalateFailureStreak": 3 });
+		cleanups.push(harness.cleanup);
+
+		const context = makeContinuingContext();
+		await harness.onTurnEndFn([context.message], undefined, context);
+		await harness.onTurnEndFn([context.message], undefined, context);
+		expect(harness.session.model?.id).toBe(taskModel.id);
+
+		emitToolResultEvent(harness.agent, "bash", true);
+		await Bun.sleep(0);
+		emitToolResultEvent(harness.agent, "read", false);
+		emitToolResultEvent(harness.agent, "edit", false);
+		emitToolResultEvent(harness.agent, "bash", true);
+		await Bun.sleep(0);
+		emitToolResultEvent(harness.agent, "grep", false);
+		emitToolResultEvent(harness.agent, "write", false);
+		emitToolResultEvent(harness.agent, "todo", false);
+		await Bun.sleep(0);
+		expect(harness.session.model?.id).toBe(taskModel.id);
+
+		emitToolResultEvent(harness.agent, "bash", true);
+		await Bun.sleep(0);
+		expect(harness.session.model?.id).toBe(defaultModel.id);
+	});
+
+	it("resets the failure streak when a verification command (bash/eval) succeeds", async () => {
+		const harness = await createSavingsHarness({ "fusion.escalateFailureStreak": 3 });
+		cleanups.push(harness.cleanup);
+
+		const context = makeContinuingContext();
+		await harness.onTurnEndFn([context.message], undefined, context);
+		await harness.onTurnEndFn([context.message], undefined, context);
+		expect(harness.session.model?.id).toBe(taskModel.id);
+
+		emitToolResultEvent(harness.agent, "bash", true);
+		emitToolResultEvent(harness.agent, "bash", true);
+		emitToolResultEvent(harness.agent, "bash", false);
+		emitToolResultEvent(harness.agent, "bash", true);
+		emitToolResultEvent(harness.agent, "bash", true);
+		await Bun.sleep(0);
+
+		expect(harness.session.model?.id).toBe(taskModel.id);
+	});
+
+	it("resets the failure streak when a turn settles cleanly on agent_end", async () => {
+		const harness = await createSavingsHarness({ "fusion.escalateFailureStreak": 3 });
+		cleanups.push(harness.cleanup);
+
+		const context = makeContinuingContext();
+		await harness.onTurnEndFn([context.message], undefined, context);
+		await harness.onTurnEndFn([context.message], undefined, context);
+		expect(harness.session.model?.id).toBe(taskModel.id);
+
+		emitToolResultEvent(harness.agent, "bash", true);
+		emitToolResultEvent(harness.agent, "bash", true);
+		await Bun.sleep(0);
+
+		const settledAssistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "Completed step." }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: taskModel.id,
+			stopReason: "stop",
+			usage: {
+				input: 10,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 20,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		};
+		harness.agent.emitExternalEvent({ type: "agent_end", messages: [settledAssistant] });
+		await Bun.sleep(0);
+
+		emitToolResultEvent(harness.agent, "bash", true);
+		emitToolResultEvent(harness.agent, "bash", true);
+		await Bun.sleep(0);
+		expect(harness.session.model?.id).toBe(taskModel.id);
+	});
+});

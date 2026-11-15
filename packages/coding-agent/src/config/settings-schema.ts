@@ -1013,7 +1013,7 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Between compactions, a streak of consecutive failed tool calls on a
+	// Between compactions, a streak of failed verification/tool cycles on a
 	// downgraded main model is the cheapest reliable "this stretch turned hard"
 	// signal — force an early tier-up instead of waiting for the next boundary.
 	"fusion.escalateFailureStreak": {
@@ -1024,7 +1024,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Fusion",
 			label: "Failure-Streak Escalation",
 			description:
-				"Consecutive failed tool calls on a Fusion-downgraded main model that force an early switch back to the frontier model, without waiting for the next compaction (0 = disabled).",
+				"Failed tool/verification cycles on a Fusion-downgraded main model that force an early switch back to the frontier model, without waiting for the next compaction (passive read/search/edit successes preserve the streak until verification passes or the turn completes; 0 = disabled).",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "2", label: "2 failures" },

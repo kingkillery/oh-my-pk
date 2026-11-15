@@ -440,7 +440,7 @@ Fusion (`fusion.*`) implements Devin-Fusion style paired agent execution and dyn
 | `fusion.compactModel` | `string` | `""` | Cheaper main-model tier switched in at compaction when not in pool mode. |
 | `fusion.sidekickModel` | `string` | `"pi/smol"` | Model selector used for persistent sidekick tasks. |
 | `fusion.sidekickStrongModel` | `string` | `""` | Stronger model tier for sidekick tasks during difficult stretches. |
-| `fusion.escalateFailureStreak` | `number` | `3` | Consecutive tool failures before auto-escalating back to Tier 1. |
+| `fusion.escalateFailureStreak` | `number` | `3` | Failed tool/verification cycles on a downgraded model before auto-escalating back to Tier 1 (passive `read`/`grep`/`edit` steps preserve the streak until verification passes or the turn finishes). |
 | `fusion.decisionWindowPercent` | `number` | `25` | Percentage of trailing conversation history evaluated by the decision router. |
 
 For detailed usage, see [Fusion mode and decision routing](./fusion.md).
