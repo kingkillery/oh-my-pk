@@ -1139,6 +1139,27 @@ describe("Tool argument coercion", () => {
 		expect(result).toEqual({ path: "null" });
 	});
 
+	it("names an empty argument payload instead of implying a schema mistake", () => {
+		const tool: Tool = {
+			name: "empty-args-tool",
+			description: "",
+			parameters: z.object({ path: z.string() }),
+		};
+
+		// An empty object and an all-null object both mean the payload never
+		// arrived; neither is a schema mistake the caller can fix by editing fields.
+		for (const args of [{}, { input: null, _input: null }]) {
+			const toolCall: ToolCall = {
+				type: "toolCall",
+				id: "call-empty",
+				name: "empty-args-tool",
+				arguments: args,
+			};
+
+			expect(() => validateToolArguments(tool, toolCall)).toThrow(/no usable argument values/);
+		}
+	});
+
 	it("strips string 'null' and actual null on multiple optional fields", () => {
 		const tool: Tool = {
 			name: "multi-optional",

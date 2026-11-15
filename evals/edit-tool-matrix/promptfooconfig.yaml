@@ -1,0 +1,55 @@
+description: "Live-provider edit tool-call matrix (normalizeTools + hashline)"
+
+prompts:
+  - "{{caseId}}"
+
+providers:
+  - id: file://provider.mjs
+    label: google-antigravity:gemini-3.6-flash-high
+    config:
+      provider: google-antigravity
+      modelId: gemini-3.6-flash-high
+      temperature: 0
+      maxTokens: 2048
+  - id: file://provider.mjs
+    label: anthropic:claude-sonnet-4-5
+    config:
+      provider: anthropic
+      modelId: claude-sonnet-4-5
+      temperature: 0
+      maxTokens: 2048
+  - id: file://provider.mjs
+    label: openai-codex:gpt-5.3-codex
+    config:
+      provider: openai-codex
+      modelId: gpt-5.3-codex
+      temperature: 0
+      maxTokens: 2048
+
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://assert-edit.mjs
+
+tests:
+  - description: "1. bare-plus-blank-line: Bare + blank-line insertion"
+    vars:
+      caseId: bare-plus-blank-line
+  - description: "2. literal-plus-minus-prefix: Literal leading + and - body rows"
+    vars:
+      caseId: literal-plus-minus-prefix
+  - description: "3. multi-hunk-single-file: Multi-hunk single-file (SWAP + DEL + INS.POST)"
+    vars:
+      caseId: multi-hunk-single-file
+  - description: "4. multi-file-single-call: Multi-file single edit call"
+    vars:
+      caseId: multi-file-single-call
+  - description: "5. indented-escapes: Tab-indented template/regex/quote escapes"
+    vars:
+      caseId: indented-escapes
+  - description: "6. block-anchor-decorator: Block-anchor SWAP.BLK + INS.BLK.POST"
+    vars:
+      caseId: block-anchor-decorator
+  - description: "7. tight-single-line-swap-and-mv: Tight single-line SWAP + MV"
+    vars:
+      caseId: tight-single-line-swap-and-mv

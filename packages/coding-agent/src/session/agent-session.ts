@@ -370,8 +370,16 @@ import { getAutonomousRootToolBlockReason, isAutonomousRoot, resolveFusionIoMinL
 import {
 	classifyFusionRoute,
 	classifyFusionRouteViaDecision,
+	DEFAULT_FUSION_TOKEN_SAVINGS_AMORTIZATION_CALLS,
+	DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS,
+	DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS,
+	DEFAULT_FUSION_TOKEN_SAVINGS_STICKY_MAX_CALLS,
+	decideFusionTokenSavingsSwitch,
+	decideFusionTokenSavingsTurnStart,
+	type FusionModelPrefixWatermark,
 	type FusionPoolTier,
 	type FusionRoute,
+	getFusionModelWatermarkKey,
 	isFusionAutoDowngradedRoute,
 	isTokenSavingsFusionMode,
 	nextFusionToolFailureStreak,
@@ -1340,6 +1348,10 @@ export class AgentSession {
 	#fusionTokenSavingsDefaultCalls = 0;
 	/** Model saved before an automated token-savings switch, restored on the next root prompt. */
 	#fusionTokenSavingsSavedModel: Model | undefined;
+	#fusionModelWatermarks = new Map<string, FusionModelPrefixWatermark>();
+	#fusionTokenSavingsLastContextTokens = 0;
+	#fusionTokenSavingsTaskCallsSinceSwitch = 0;
+	#fusionTokenSavingsLastSwitchAt: number | undefined;
 	#advisorRuntime?: AdvisorRuntime;
 	#cacheAttribution = new CacheAttributionTracker({
 		onTrace: trace => {
@@ -2144,6 +2156,10 @@ export class AgentSession {
 		this.#fusionToolFailureStreak = 0;
 		this.#fusionTokenSavingsDefaultCalls = 0;
 		this.#fusionTokenSavingsSavedModel = undefined;
+		this.#fusionModelWatermarks.clear();
+		this.#fusionTokenSavingsLastContextTokens = 0;
+		this.#fusionTokenSavingsTaskCallsSinceSwitch = 0;
+		this.#fusionTokenSavingsLastSwitchAt = undefined;
 	}
 
 	#buildAdvisorRuntime(seedToCurrent = false): boolean {
@@ -4814,6 +4830,12 @@ export class AgentSession {
 			this.#unsubscribeAppendOnly = undefined;
 		}
 		this.#eventListeners = [];
+		this.#fusionTokenSavingsDefaultCalls = 0;
+		this.#fusionTokenSavingsSavedModel = undefined;
+		this.#fusionModelWatermarks.clear();
+		this.#fusionTokenSavingsLastContextTokens = 0;
+		this.#fusionTokenSavingsTaskCallsSinceSwitch = 0;
+		this.#fusionTokenSavingsLastSwitchAt = undefined;
 	}
 
 	async #closeAllProviderSessions(reason: string): Promise<void> {
@@ -6063,6 +6085,12 @@ export class AgentSession {
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 		this.#pendingIrcAsides = [];
 		this.#fusionToolFailureStreak = 0;
+		this.#fusionTokenSavingsDefaultCalls = 0;
+		this.#fusionTokenSavingsSavedModel = undefined;
+		this.#fusionModelWatermarks.clear();
+		this.#fusionTokenSavingsLastContextTokens = 0;
+		this.#fusionTokenSavingsTaskCallsSinceSwitch = 0;
+		this.#fusionTokenSavingsLastSwitchAt = undefined;
 		this.#todoReminderCount = 0;
 		this.#todoReminderAwaitingProgress = false;
 		this.#retryAttempt = 0;
@@ -6826,17 +6854,11 @@ export class AgentSession {
 		const userInitiated = options?.userInitiated ?? !options?.synthetic;
 		if (!this.isStreaming && userInitiated) {
 			await this.#resetTurnDiscoveredTools();
-			if (this.#fusionTokenSavingsSavedModel && this.#agentKind === "main") {
-				const current = this.model;
-				if (current && this.#fusionLastAutoModel && modelsAreEqual(current, this.#fusionLastAutoModel)) {
-					await this.setModelTemporary(this.#fusionTokenSavingsSavedModel, undefined, { ephemeral: true });
-					// Restoration is another automatic switch, not a manual override.
-					this.#fusionLastAutoModel = this.model ?? this.#fusionTokenSavingsSavedModel;
-					this.#fusionToolFailureStreak = 0;
-				}
-				this.#fusionTokenSavingsSavedModel = undefined;
+			if (this.#agentKind === "main") {
+				await this.#resetFusionTokenSavingsTurn();
+			} else {
+				this.#fusionTokenSavingsDefaultCalls = 0;
 			}
-			this.#fusionTokenSavingsDefaultCalls = 0;
 			this.#fusionToolFailureStreak = 0;
 		}
 		// Handle extension commands first (execute immediately, even during streaming)
@@ -8076,6 +8098,12 @@ export class AgentSession {
 		this.setActiveTaskContract(undefined);
 		this.#activateCompiledTaskContract(undefined);
 		this.#resetAdvisorSessionState();
+		this.#fusionTokenSavingsDefaultCalls = 0;
+		this.#fusionTokenSavingsSavedModel = undefined;
+		this.#fusionModelWatermarks.clear();
+		this.#fusionTokenSavingsLastContextTokens = 0;
+		this.#fusionTokenSavingsTaskCallsSinceSwitch = 0;
+		this.#fusionTokenSavingsLastSwitchAt = undefined;
 		this.#reconnectToAgent();
 
 		// Emit session_switch event with reason "new" to hooks
@@ -10761,6 +10789,12 @@ export class AgentSession {
 	async #applyFusionCompactionSwitch(summary?: string, recentMessages: readonly AgentMessage[] = []): Promise<void> {
 		// Compaction starts a fresh routing epoch; earlier failures no longer count.
 		this.#fusionToolFailureStreak = 0;
+		// Compaction rewrites message history into a summary, invalidating prior
+		// per-model message prefix watermarks across all Fusion submodes.
+		this.#fusionModelWatermarks.clear();
+		this.#fusionTokenSavingsLastContextTokens = 0;
+		this.#fusionTokenSavingsTaskCallsSinceSwitch = 0;
+		this.#fusionTokenSavingsLastSwitchAt = undefined;
 		// Whole body guarded: this runs inside the compaction commit path, so an
 		// unexpected throw from model resolution/auth lookup must never mark a
 		// committed compaction as failed or stall auto-continue.
@@ -10953,6 +10987,8 @@ export class AgentSession {
 			if (!this.#modelRegistry.hasConfiguredAuth(baseModel)) return;
 			this.#fusionToolFailureStreak = 0;
 			await this.setModelTemporary(baseModel, undefined, { ephemeral: true });
+			this.#fusionTokenSavingsTaskCallsSinceSwitch = 0;
+			this.#fusionTokenSavingsLastSwitchAt = undefined;
 			this.#fusionLastAutoModel = this.model ?? baseModel;
 			logger.debug("Fusion failure-streak escalation", {
 				threshold,
@@ -10969,6 +11005,117 @@ export class AgentSession {
 	 * If the turn is continuing past that limit (tools executed, willContinue, or queued messages),
 	 * automatically transition to the task model (pi/task) and steer remaining work.
 	 */
+	#resolveFusionStepContextTokens(context?: AgentTurnEndContext): number {
+		const message = context?.message;
+		const usage = message && "usage" in message ? message.usage : undefined;
+		const stepTokens = usage ? calculatePromptTokens(usage) + (usage.output || 0) : 0;
+		const sessionTokens = this.getContextUsage()?.tokens ?? 0;
+		return Math.max(0, stepTokens, sessionTokens);
+	}
+
+	#countOpenTodosForFusion(): number {
+		let count = 0;
+		for (const phase of this.#todoPhases) {
+			for (const task of phase.tasks) {
+				if (task.status === "pending" || task.status === "in_progress") {
+					count += 1;
+				}
+			}
+		}
+		return count;
+	}
+
+	#recordFusionModelWatermark(model: Model | undefined, contextTokens: number, now: number): void {
+		if (!model) return;
+		this.#fusionModelWatermarks.set(getFusionModelWatermarkKey(model), {
+			cachedTokens: Math.max(0, Math.floor(contextTokens)),
+			lastUsedAt: now,
+		});
+	}
+
+	#resolveFusionTokenSavingsCacheTtlMs(): number {
+		const configuredSeconds = this.settings.get("fusion.tokenSavingsCacheTtlSeconds");
+		if (typeof configuredSeconds === "number" && Number.isFinite(configuredSeconds)) {
+			return Math.max(0, Math.floor(configuredSeconds * 1000));
+		}
+		return DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS;
+	}
+
+	async #resetFusionTokenSavingsTurn(): Promise<void> {
+		const now = Date.now();
+		const currentContextTokens = Math.max(
+			this.#fusionTokenSavingsLastContextTokens,
+			this.getContextUsage()?.tokens ?? 0,
+		);
+		const configuredMinTokens = this.settings.get("fusion.tokenSavingsMinCacheContextTokens");
+		const minCacheContextTokens =
+			typeof configuredMinTokens === "number" && Number.isFinite(configuredMinTokens) && configuredMinTokens >= 0
+				? Math.floor(configuredMinTokens)
+				: DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS;
+		const configuredStickyMax = this.settings.get("fusion.tokenSavingsStickyMaxCalls");
+		const stickyMaxCalls =
+			typeof configuredStickyMax === "number" && Number.isFinite(configuredStickyMax) && configuredStickyMax >= 0
+				? Math.floor(configuredStickyMax)
+				: DEFAULT_FUSION_TOKEN_SAVINGS_STICKY_MAX_CALLS;
+		const configuredAmortization = this.settings.get("fusion.tokenSavingsAmortizationCalls");
+		const amortizationCalls =
+			typeof configuredAmortization === "number" &&
+			Number.isFinite(configuredAmortization) &&
+			configuredAmortization >= 1
+				? Math.floor(configuredAmortization)
+				: DEFAULT_FUSION_TOKEN_SAVINGS_AMORTIZATION_CALLS;
+		const cacheTtlMs = this.#resolveFusionTokenSavingsCacheTtlMs();
+
+		const savedModel = this.#fusionTokenSavingsSavedModel;
+		const decision = decideFusionTokenSavingsTurnStart({
+			fusionEnabled: Boolean(this.settings.get("fusion.enabled")),
+			fusionMode: this.settings.get("fusion.mode") ?? "escalate",
+			routingDisabled: this.#fusionRoutingDisabled,
+			switchedInPriorTurn: savedModel !== undefined,
+			baseModel: savedModel,
+			lastAutoModel: this.#fusionLastAutoModel,
+			currentModel: this.model,
+			currentContextTokens,
+			taskCallsSinceSwitch: this.#fusionTokenSavingsTaskCallsSinceSwitch,
+			stickyMaxCalls,
+			amortizationCalls,
+			minCacheContextTokens,
+			defaultWatermark: savedModel
+				? this.#fusionModelWatermarks.get(getFusionModelWatermarkKey(savedModel))
+				: undefined,
+			taskWatermark: this.#fusionLastAutoModel
+				? this.#fusionModelWatermarks.get(getFusionModelWatermarkKey(this.#fusionLastAutoModel))
+				: undefined,
+			lastSwitchAt: this.#fusionTokenSavingsLastSwitchAt,
+			cacheTtlMs,
+			now,
+		});
+
+		if (decision.action === "keep-sticky-task") {
+			this.#fusionTokenSavingsDefaultCalls = 0;
+			logger.debug("Fusion token savings kept sticky task model on follow-up prompt", {
+				reason: decision.reason,
+				currentContextTokens,
+				taskCallsSinceSwitch: this.#fusionTokenSavingsTaskCallsSinceSwitch,
+			});
+			return;
+		}
+
+		if (decision.action === "manual-override") {
+			this.#fusionRoutingDisabled = true;
+		} else if (decision.action === "restore-default" && savedModel) {
+			if (!modelsAreEqual(this.model, savedModel) && this.#modelRegistry.hasConfiguredAuth(savedModel)) {
+				await this.setModelTemporary(savedModel, undefined, { ephemeral: true });
+				this.#fusionLastAutoModel = this.model ?? savedModel;
+			}
+		}
+
+		this.#fusionTokenSavingsSavedModel = undefined;
+		this.#fusionTokenSavingsDefaultCalls = 0;
+		this.#fusionTokenSavingsTaskCallsSinceSwitch = 0;
+		this.#fusionTokenSavingsLastSwitchAt = undefined;
+	}
+
 	async #maybeApplyFusionTokenSavingsLimit(
 		messages: AgentMessage[],
 		signal?: AbortSignal,
@@ -10980,14 +11127,36 @@ export class AgentSession {
 			if (this.settings.get("task.simpleMode")) return;
 			if (this.settings.get("fusion.enabled") !== true) return;
 			if (!isTokenSavingsFusionMode(this.settings.get("fusion.mode"))) return;
-			if (this.#fusionRoutingDisabled) return;
 
 			const currentModel = this.model;
 			if (!currentModel) return;
 
-			if (this.#fusionLastAutoModel && !modelsAreEqual(this.#fusionLastAutoModel, currentModel)) {
+			const now = Date.now();
+			const currentContextTokens = this.#resolveFusionStepContextTokens(context);
+			if (currentContextTokens > 0) {
+				this.#fusionTokenSavingsLastContextTokens = currentContextTokens;
+			}
+			const stopReason =
+				context?.message && "stopReason" in context.message ? context.message.stopReason : undefined;
+			if (stopReason !== "aborted" && stopReason !== "error") {
+				this.#recordFusionModelWatermark(currentModel, currentContextTokens, now);
+			}
+
+			if (this.#fusionRoutingDisabled) return;
+			if (this.#fusionLastAutoModel && !modelsAreEqual(currentModel, this.#fusionLastAutoModel)) {
 				this.#fusionRoutingDisabled = true;
 				logger.debug("Fusion token savings dynamic routing disabled after manual model switch");
+				return;
+			}
+
+			if (this.#fusionTokenSavingsSavedModel) {
+				if (
+					!modelsAreEqual(currentModel, this.#fusionTokenSavingsSavedModel) &&
+					stopReason !== "aborted" &&
+					stopReason !== "error"
+				) {
+					this.#fusionTokenSavingsTaskCallsSinceSwitch += 1;
+				}
 				return;
 			}
 
@@ -11037,7 +11206,7 @@ export class AgentSession {
 
 			if (!isContinuing) return;
 
-			// Default model call limit reached on a continuing step: switch to task model
+			// Default model call limit reached on a continuing step: evaluate switch to task model
 			const taskSelector = this.settings.getModelRole("task") || "pi/task";
 			const taskModel = resolveSelector(taskSelector);
 
@@ -11046,16 +11215,60 @@ export class AgentSession {
 				!modelsAreEqual(taskModel, currentModel) &&
 				this.#modelRegistry.hasConfiguredAuth(taskModel)
 			) {
+				const configuredMinTokens = this.settings.get("fusion.tokenSavingsMinCacheContextTokens");
+				const minCacheContextTokens =
+					typeof configuredMinTokens === "number" &&
+					Number.isFinite(configuredMinTokens) &&
+					configuredMinTokens >= 0
+						? Math.floor(configuredMinTokens)
+						: DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS;
+				const configuredAmortization = this.settings.get("fusion.tokenSavingsAmortizationCalls");
+				const amortizationCalls =
+					typeof configuredAmortization === "number" &&
+					Number.isFinite(configuredAmortization) &&
+					configuredAmortization >= 1
+						? Math.floor(configuredAmortization)
+						: DEFAULT_FUSION_TOKEN_SAVINGS_AMORTIZATION_CALLS;
+				const cacheTtlMs = this.#resolveFusionTokenSavingsCacheTtlMs();
+				const openTodoCount = this.#countOpenTodosForFusion();
+
+				const switchDecision = decideFusionTokenSavingsSwitch({
+					defaultModel: currentModel,
+					taskModel,
+					currentContextTokens,
+					defaultWatermark: this.#fusionModelWatermarks.get(getFusionModelWatermarkKey(currentModel)),
+					taskWatermark: this.#fusionModelWatermarks.get(getFusionModelWatermarkKey(taskModel)),
+					openTodoCount,
+					amortizationCalls,
+					minCacheContextTokens,
+					cacheTtlMs,
+					now,
+				});
+				if (!switchDecision.shouldSwitch) {
+					logger.debug("Fusion token savings skipped unprofitable mid-turn switch", {
+						reason: switchDecision.reason,
+						currentContextTokens,
+						horizonCalls: switchDecision.horizonCalls,
+						defaultHorizonCostUsd: switchDecision.defaultHorizonCostUsd,
+						taskHorizonCostUsd: switchDecision.taskHorizonCostUsd,
+					});
+					return;
+				}
+
 				this.#fusionTokenSavingsSavedModel ??= currentModel;
 				this.#fusionBaseModel ??= currentModel;
 				await this.setModelTemporary(taskModel, undefined, { ephemeral: true });
 				this.#fusionLastAutoModel = this.model ?? taskModel;
+				this.#fusionTokenSavingsTaskCallsSinceSwitch = 0;
+				this.#fusionTokenSavingsLastSwitchAt = now;
 				this.#fusionToolFailureStreak = 0;
 				logger.debug("Fusion token savings limit reached; switched to task model", {
 					from: `${currentModel.provider}/${currentModel.id}`,
 					to: `${taskModel.provider}/${taskModel.id}`,
 					calls: this.#fusionTokenSavingsDefaultCalls,
 					limit,
+					reason: switchDecision.reason,
+					currentContextTokens,
 				});
 
 				const reminder = [
@@ -11068,7 +11281,7 @@ export class AgentSession {
 				this.agent.steer({
 					role: "user",
 					content: reminder,
-					timestamp: Date.now(),
+					timestamp: now,
 				});
 			} else {
 				const reminder = [
@@ -11080,7 +11293,7 @@ export class AgentSession {
 				this.agent.steer({
 					role: "user",
 					content: reminder,
-					timestamp: Date.now(),
+					timestamp: now,
 				});
 			}
 		} catch (error) {

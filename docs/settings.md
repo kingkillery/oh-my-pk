@@ -443,6 +443,11 @@ Fusion (`fusion.*`) implements Devin-Fusion style paired agent execution and dyn
 | `fusion.sidekickStrongModel` | `string` | `""` | Stronger model tier for sidekick tasks during difficult stretches. |
 | `fusion.escalateFailureStreak` | `number` | `3` | Failed tool/verification cycles on a downgraded model before auto-escalating back to Tier 1 (passive `read`/`grep`/`edit` steps preserve the streak until verification passes or the turn finishes). |
 | `fusion.decisionWindowPercent` | `number` | `25` | Percentage of trailing conversation history evaluated by the decision router. |
+| `fusion.tokenSavingsDefaultCallLimit` | `number` | `2` | Maximum consecutive `default`-model calls per continuing turn in `token-savings` mode before evaluating a switch to `pi/task`. |
+| `fusion.tokenSavingsMinCacheContextTokens` | `number` | `16000` | Minimum context token count before `token-savings` gates `default -> pi/task` switches on prompt-cache break-even math and keeps `pi/task` sticky across rapid follow-ups (`0` = always apply cache gating). |
+| `fusion.tokenSavingsCacheTtlSeconds` | `number` | `300` | Provider prompt-cache TTL window in seconds (`300` = 5 minutes) for warm prefix watermarks and sticky `pi/task` expiry (`0` = disable TTL stickiness). |
+| `fusion.tokenSavingsAmortizationCalls` | `number` | `2` | Minimum expected remaining tool-loop calls (combined with open `todo` items) used to evaluate `default -> pi/task` cache break-even on deep contexts. |
+| `fusion.tokenSavingsStickyMaxCalls` | `number` | `2` | Maximum `pi/task` calls since switching within which rapid follow-up prompts on deep contexts stay sticky on `pi/task` inside the cache TTL window (`0` = always restore `default` on next prompt). |
 
 For detailed usage, see [Fusion mode and decision routing](./fusion.md).
 

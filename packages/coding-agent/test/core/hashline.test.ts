@@ -7,6 +7,9 @@ import {
 	formatHashlineHeader,
 	MismatchError as HashlineMismatchError,
 } from "@pk-nerdsaver-ai/hashline";
+import type { Tool } from "@pk-nerdsaver-ai/pi-ai/types";
+import { normalizeSchemaForCCA, toolWireSchema } from "@pk-nerdsaver-ai/pi-ai/utils/schema";
+import { validateToolArguments } from "@pk-nerdsaver-ai/pi-ai/utils/validation";
 import { resetSettingsForTest, Settings } from "@pk-nerdsaver-ai/pi-coding-agent/config/settings";
 import {
 	canonicalSnapshotKey,
@@ -295,23 +298,56 @@ describe("hashlineEditParamsSchema — payload shape", () => {
 		return { success: true as const, data: result as S["infer"], error: undefined };
 	}
 
-	// Helper to get JSON schema from arktype schema
-	function getJsonSchema(schema: Type) {
-		return schema.toJsonSchema() ?? {};
-	}
+	const editTool: Tool = {
+		name: "edit",
+		description: "hashline edit",
+		parameters: hashlineEditParamsSchema,
+	};
 
-	it("declares only `input` as the model-facing field", () => {
-		// Create an arktype schema that mirrors hashlineEditParamsSchema structure
-		const testSchema = type({
-			input: "string",
-		});
-		const jsonSchema = getJsonSchema(testSchema) as {
-			properties?: Record<string, unknown>;
+	it("declares only required non-nullable `input` on the wire (never leaking `_input`)", () => {
+		const wire = toolWireSchema(editTool) as {
+			properties?: Record<string, Record<string, unknown>>;
 			required?: string[];
+			additionalProperties?: boolean;
 		};
 
-		expect(Object.keys(jsonSchema.properties ?? {})).toEqual(["input"]);
-		expect(jsonSchema.required).toEqual(["input"]);
+		expect(Object.keys(wire.properties ?? {})).toEqual(["input"]);
+		expect(wire.required).toEqual(["input"]);
+		expect(wire.additionalProperties).toBe(false);
+		expect(wire.properties?.input).toEqual({
+			type: "string",
+			description: "hashline patch text",
+		});
+
+		const ccaWire = normalizeSchemaForCCA(wire) as {
+			properties?: Record<string, Record<string, unknown>>;
+			required?: string[];
+		};
+		expect(Object.keys(ccaWire.properties ?? {})).toEqual(["input"]);
+		expect(ccaWire.required).toEqual(["input"]);
+		expect(ccaWire.properties?.input?.nullable).toBeUndefined();
+	});
+
+	it("recovers `_input` through full validateToolArguments dispatch while rejecting all-null calls", () => {
+		const payload = `[x.ts]\nINS.HEAD:\n${repl("x")}`;
+		for (const args of [{ input: payload }, { _input: payload }, { input: null, _input: payload }]) {
+			const validated = validateToolArguments(editTool, {
+				type: "toolCall",
+				id: "call-edit",
+				name: "edit",
+				arguments: args,
+			}) as Record<string, unknown>;
+			expect(validated.input).toBe(payload);
+		}
+
+		expect(() =>
+			validateToolArguments(editTool, {
+				type: "toolCall",
+				id: "call-edit-null",
+				name: "edit",
+				arguments: { input: null, _input: null },
+			}),
+		).toThrow(/no usable argument values/);
 	});
 
 	it("tolerates provider extra fields without declaring `path`", () => {
@@ -328,6 +364,20 @@ describe("hashlineEditParamsSchema — payload shape", () => {
 		});
 		expect(result.success).toBe(true);
 		if (result.success) expect(result.data.input).toBe(`[x.ts]\nINS.HEAD:\n${repl("x")}`);
+	});
+
+	it("recovers `input` from `_input` when the canonical key carries no text", () => {
+		const payload = `[x.ts]\nINS.HEAD:\n${repl("x")}`;
+		for (const input of [null, ""]) {
+			const result = arkSafeParse(hashlineEditParamsSchema, { input, _input: payload });
+			expect(result.success).toBe(true);
+			if (result.success) expect(result.data.input).toBe(payload);
+		}
+	});
+
+	it("rejects payloads where neither `input` nor `_input` carries text", () => {
+		const result = arkSafeParse(hashlineEditParamsSchema, { input: null, _input: null });
+		expect(result.success).toBe(false);
 	});
 
 	it("still requires `input`", () => {

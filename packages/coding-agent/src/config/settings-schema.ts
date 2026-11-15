@@ -1129,6 +1129,54 @@ export const SETTINGS_SCHEMA = {
 			condition: "fusionEnabled",
 		},
 	},
+	"fusion.tokenSavingsMinCacheContextTokens": {
+		type: "number",
+		default: 16000,
+		ui: {
+			tab: "interaction",
+			group: "Fusion",
+			label: "Token Savings Cache Gate Min Tokens",
+			description:
+				"Minimum context token count before Token Savings mode gates default -> task switches on prompt-cache break-even math and keeps task sticky across short follow-ups (default 16000; 0 = always apply cache gating).",
+			condition: "fusionEnabled",
+		},
+	},
+	"fusion.tokenSavingsCacheTtlSeconds": {
+		type: "number",
+		default: 300,
+		ui: {
+			tab: "interaction",
+			group: "Fusion",
+			label: "Token Savings Cache TTL (Seconds)",
+			description:
+				"Provider prompt-cache TTL window in seconds used to track warm model prefixes and expire sticky task retention after idle pauses (default 300 = 5 minutes; 0 = disable TTL stickiness).",
+			condition: "fusionEnabled",
+		},
+	},
+	"fusion.tokenSavingsAmortizationCalls": {
+		type: "number",
+		default: 2,
+		ui: {
+			tab: "interaction",
+			group: "Fusion",
+			label: "Token Savings Amortization Calls",
+			description:
+				"Minimum expected remaining tool-loop calls (combined with open todo items) used to evaluate default -> task prompt-cache break-even on deep contexts (default 2).",
+			condition: "fusionEnabled",
+		},
+	},
+	"fusion.tokenSavingsStickyMaxCalls": {
+		type: "number",
+		default: 2,
+		ui: {
+			tab: "interaction",
+			group: "Fusion",
+			label: "Token Savings Sticky Max Task Calls",
+			description:
+				"Maximum task-model calls since switching within which rapid follow-up prompts on deep contexts stay sticky on pi/task inside the cache TTL window (default 2; 0 = always restore default on next prompt).",
+			condition: "fusionEnabled",
+		},
+	},
 
 	// Images and terminal
 	"terminal.launchBackend": {

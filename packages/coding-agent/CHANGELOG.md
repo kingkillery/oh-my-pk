@@ -5,6 +5,7 @@
 ### Changed
 
 - Routing pools now fail over on a `402` payment-required rejection. A depleted prepaid balance is definitive for the API-key provider that returned it, but a pooled equivalent on a subscription transport — a Gemini model on `google-antigravity` instead of `google` — still serves the turn. See `docs/models.md`.
+- Fusion `token-savings` mode now tracks per-model prompt-prefix watermarks (cleared on compaction) to gate `default -> pi/task` transitions on deep contexts (`>= 16,000` tokens) using catalog `input`/`cacheRead`/`cacheWrite` delta-prefill math (with a `$0`-catalog fallback for subscription/local models) and keeps `pi/task` sticky across rapid short-tail follow-up prompts within the 5-minute cache TTL instead of ping-ponging `default <-> pi/task`. See `docs/fusion.md`.
 
 ### Added
 

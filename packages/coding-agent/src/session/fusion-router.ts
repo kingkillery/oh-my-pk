@@ -431,3 +431,311 @@ export async function classifyFusionRouteViaDecision(
 		return null;
 	}
 }
+export const DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS = 16_000;
+export const DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS = 5 * 60 * 1000;
+export const DEFAULT_FUSION_TOKEN_SAVINGS_AMORTIZATION_CALLS = 2;
+export const DEFAULT_FUSION_TOKEN_SAVINGS_STICKY_MAX_CALLS = 2;
+
+/**
+ * Per-model prompt prefix watermark used to estimate warm vs. uncached delta
+ * tokens across intra-turn and inter-turn `token-savings` transitions.
+ */
+export interface FusionModelPrefixWatermark {
+	cachedTokens: number;
+	lastUsedAt: number;
+}
+
+export interface FusionWarmPrefixEstimate {
+	withinTtl: boolean;
+	warmTokens: number;
+	uncachedDeltaTokens: number;
+}
+
+export interface FusionTokenSavingsSwitchDecision {
+	shouldSwitch: boolean;
+	reason: "small-context" | "zero-cost-fallback" | "cache-break-even-met" | "cache-break-even-not-met";
+	horizonCalls: number;
+	defaultHorizonCostUsd?: number;
+	taskHorizonCostUsd?: number;
+	defaultUncachedDeltaTokens: number;
+	taskUncachedDeltaTokens: number;
+}
+
+export interface FusionTokenSavingsTurnStartDecision {
+	action: "noop" | "manual-override" | "already-default" | "restore-default" | "keep-sticky-task";
+	reason:
+		| "not-switched"
+		| "routing-disabled"
+		| "manual-override"
+		| "escalated-or-already-default"
+		| "mode-inactive"
+		| "ttl-expired"
+		| "small-context"
+		| "sticky-short-tail"
+		| "tail-amortized"
+		| "sticky-default-cold";
+}
+
+export function getFusionModelWatermarkKey(model: Pick<Model<Api>, "provider" | "id">): string {
+	return `${model.provider}/${model.id}`;
+}
+
+/**
+ * Compute how many tokens of `currentContextTokens` are still warm in a
+ * model's provider prefix cache vs. must be cold-prefilled as an unseen delta.
+ * Pure — exported for tests.
+ */
+export function computeFusionWarmPrefixTokens(options: {
+	currentContextTokens: number;
+	watermark?: FusionModelPrefixWatermark;
+	now: number;
+	cacheTtlMs?: number;
+}): FusionWarmPrefixEstimate {
+	const total = Math.max(0, Math.floor(options.currentContextTokens));
+	const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS;
+	const watermark = options.watermark;
+	const withinTtl =
+		watermark !== undefined &&
+		cacheTtlMs > 0 &&
+		options.now >= watermark.lastUsedAt &&
+		options.now - watermark.lastUsedAt < cacheTtlMs;
+	const warmTokens = withinTtl ? Math.min(total, Math.max(0, Math.floor(watermark.cachedTokens))) : 0;
+	return {
+		withinTtl,
+		warmTokens,
+		uncachedDeltaTokens: Math.max(0, total - warmTokens),
+	};
+}
+
+/**
+ * Estimate input + prompt-cache USD cost across `horizonCalls` steps starting
+ * at `currentContextTokens` when `warmTokens` are already cached:
+ * - Call 1 pays `cacheRead` on `warmTokens` and `cacheWrite` (if > 0, else
+ *   `input`) on the unseen `uncachedDeltaTokens`.
+ * - Calls `2..horizonCalls` pay `cacheRead` (if prompt caching is supported,
+ *   else `input`) on `currentContextTokens`.
+ * Pure — exported for tests.
+ */
+export function estimateFusionPrefixHorizonCostUsd(options: {
+	cost: Model<Api>["cost"];
+	currentContextTokens: number;
+	warmTokens: number;
+	horizonCalls: number;
+}): number {
+	const total = Math.max(0, Math.floor(options.currentContextTokens));
+	const warm = Math.min(total, Math.max(0, Math.floor(options.warmTokens)));
+	const uncachedDelta = Math.max(0, total - warm);
+	const calls = Math.max(1, Math.floor(options.horizonCalls));
+	const { input, cacheRead, cacheWrite } = options.cost;
+	const supportsPromptCache = cacheRead > 0 || cacheWrite > 0;
+	const warmReadRate = supportsPromptCache ? (cacheRead > 0 ? cacheRead : input) : input;
+	const uncachedPrefillRate = cacheWrite > 0 ? cacheWrite : input;
+
+	const firstCallCostPerMillion = warm * warmReadRate + uncachedDelta * uncachedPrefillRate;
+	const subsequentCallsCostPerMillion = (calls - 1) * total * warmReadRate;
+	return (firstCallCostPerMillion + subsequentCallsCostPerMillion) / 1_000_000;
+}
+
+/**
+ * Decide whether `token-savings` should switch from `defaultModel` to
+ * `taskModel` once `tokenSavingsDefaultCallLimit` is reached.
+ * - Below `minCacheContextTokens`, switches immediately (`small-context`).
+ * - When either model reports `cost.input <= 0` (subscription/OAuth/local),
+ *   avoids `0 < 0` disabling savings (`zero-cost-fallback`).
+ * - On deep contexts with paid catalog pricing, compares expected prefix cost
+ *   over `max(amortizationCalls, openTodoCount)` steps using each model's
+ *   cached prefix watermark and TTL.
+ * Pure — exported for tests.
+ */
+export function decideFusionTokenSavingsSwitch(options: {
+	defaultModel: Pick<Model<Api>, "provider" | "id" | "cost">;
+	taskModel: Pick<Model<Api>, "provider" | "id" | "cost">;
+	currentContextTokens: number;
+	defaultWatermark?: FusionModelPrefixWatermark;
+	taskWatermark?: FusionModelPrefixWatermark;
+	openTodoCount?: number;
+	amortizationCalls?: number;
+	minCacheContextTokens?: number;
+	cacheTtlMs?: number;
+	now: number;
+}): FusionTokenSavingsSwitchDecision {
+	const minCacheContextTokens = options.minCacheContextTokens ?? DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS;
+	const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS;
+	const baseAmortization = Math.max(
+		1,
+		Math.floor(options.amortizationCalls ?? DEFAULT_FUSION_TOKEN_SAVINGS_AMORTIZATION_CALLS),
+	);
+	const openTodoCount = Math.max(0, Math.floor(options.openTodoCount ?? 0));
+	const horizonCalls = Math.max(1, baseAmortization, openTodoCount);
+
+	const defaultPrefix = computeFusionWarmPrefixTokens({
+		currentContextTokens: options.currentContextTokens,
+		watermark: options.defaultWatermark,
+		now: options.now,
+		cacheTtlMs,
+	});
+	const taskPrefix = computeFusionWarmPrefixTokens({
+		currentContextTokens: options.currentContextTokens,
+		watermark: options.taskWatermark,
+		now: options.now,
+		cacheTtlMs,
+	});
+
+	if (minCacheContextTokens > 0 && options.currentContextTokens < minCacheContextTokens) {
+		return {
+			shouldSwitch: true,
+			reason: "small-context",
+			horizonCalls,
+			defaultUncachedDeltaTokens: defaultPrefix.uncachedDeltaTokens,
+			taskUncachedDeltaTokens: taskPrefix.uncachedDeltaTokens,
+		};
+	}
+
+	if (options.defaultModel.cost.input <= 0 || options.taskModel.cost.input <= 0) {
+		return {
+			shouldSwitch: true,
+			reason: "zero-cost-fallback",
+			horizonCalls,
+			defaultUncachedDeltaTokens: defaultPrefix.uncachedDeltaTokens,
+			taskUncachedDeltaTokens: taskPrefix.uncachedDeltaTokens,
+		};
+	}
+
+	const defaultHorizonCostUsd = estimateFusionPrefixHorizonCostUsd({
+		cost: options.defaultModel.cost,
+		currentContextTokens: options.currentContextTokens,
+		warmTokens: defaultPrefix.warmTokens,
+		horizonCalls,
+	});
+	const taskHorizonCostUsd = estimateFusionPrefixHorizonCostUsd({
+		cost: options.taskModel.cost,
+		currentContextTokens: options.currentContextTokens,
+		warmTokens: taskPrefix.warmTokens,
+		horizonCalls,
+	});
+	const shouldSwitch = taskHorizonCostUsd < defaultHorizonCostUsd;
+	return {
+		shouldSwitch,
+		reason: shouldSwitch ? "cache-break-even-met" : "cache-break-even-not-met",
+		horizonCalls,
+		defaultHorizonCostUsd,
+		taskHorizonCostUsd,
+		defaultUncachedDeltaTokens: defaultPrefix.uncachedDeltaTokens,
+		taskUncachedDeltaTokens: taskPrefix.uncachedDeltaTokens,
+	};
+}
+
+/**
+ * Policy decision at the start of a new user prompt in `token-savings` mode:
+ * decides whether to restore `baseModel` (`default`) or keep `pi/task` sticky
+ * across rapid follow-up turns on deep contexts within the cache TTL window.
+ * Pure — exported for tests.
+ */
+export function decideFusionTokenSavingsTurnStart(options: {
+	fusionEnabled: boolean;
+	fusionMode?: string;
+	routingDisabled: boolean;
+	switchedInPriorTurn: boolean;
+	baseModel?: Model<Api>;
+	lastAutoModel?: Model<Api>;
+	currentModel?: Model<Api>;
+	currentContextTokens: number;
+	taskCallsSinceSwitch: number;
+	stickyMaxCalls?: number;
+	amortizationCalls?: number;
+	minCacheContextTokens?: number;
+	defaultWatermark?: FusionModelPrefixWatermark;
+	taskWatermark?: FusionModelPrefixWatermark;
+	lastSwitchAt?: number;
+	cacheTtlMs?: number;
+	now: number;
+}): FusionTokenSavingsTurnStartDecision {
+	if (!options.switchedInPriorTurn || !options.baseModel) {
+		return { action: "noop", reason: "not-switched" };
+	}
+	if (options.routingDisabled) {
+		return { action: "noop", reason: "routing-disabled" };
+	}
+	if (
+		options.lastAutoModel !== undefined &&
+		options.currentModel !== undefined &&
+		!modelsAreEqual(options.currentModel, options.lastAutoModel)
+	) {
+		return { action: "manual-override", reason: "manual-override" };
+	}
+	if (options.currentModel !== undefined && modelsAreEqual(options.currentModel, options.baseModel)) {
+		return { action: "already-default", reason: "escalated-or-already-default" };
+	}
+	if (!options.fusionEnabled || (options.fusionMode !== "token-savings" && options.fusionMode !== "savings")) {
+		return { action: "restore-default", reason: "mode-inactive" };
+	}
+
+	const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS;
+	const lastActiveAt = Math.max(
+		options.taskWatermark?.lastUsedAt ?? 0,
+		options.lastSwitchAt ?? 0,
+		options.defaultWatermark?.lastUsedAt ?? 0,
+	);
+	if (cacheTtlMs <= 0 || lastActiveAt <= 0 || options.now - lastActiveAt >= cacheTtlMs) {
+		return { action: "restore-default", reason: "ttl-expired" };
+	}
+
+	const minCacheContextTokens = options.minCacheContextTokens ?? DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS;
+	if (minCacheContextTokens > 0 && options.currentContextTokens < minCacheContextTokens) {
+		return { action: "restore-default", reason: "small-context" };
+	}
+
+	const stickyMaxCalls = Math.max(
+		0,
+		Math.floor(options.stickyMaxCalls ?? DEFAULT_FUSION_TOKEN_SAVINGS_STICKY_MAX_CALLS),
+	);
+	if (stickyMaxCalls > 0 && options.taskCallsSinceSwitch <= stickyMaxCalls) {
+		return { action: "keep-sticky-task", reason: "sticky-short-tail" };
+	}
+	if (stickyMaxCalls <= 0) {
+		// `0` disables sticky retention outright, including the cold-default gate below.
+		return { action: "restore-default", reason: "tail-amortized" };
+	}
+
+	const baseModel = options.baseModel;
+	const taskModel = options.lastAutoModel;
+	if (!baseModel || !taskModel) {
+		return { action: "restore-default", reason: "tail-amortized" };
+	}
+	// Subscription/local models have no dollar cost; prefer frontier quality.
+	if (baseModel.cost.input <= 0 || taskModel.cost.input <= 0) {
+		return { action: "restore-default", reason: "tail-amortized" };
+	}
+	const horizonCalls = Math.max(
+		1,
+		Math.floor(options.amortizationCalls ?? DEFAULT_FUSION_TOKEN_SAVINGS_AMORTIZATION_CALLS),
+	);
+	const basePrefix = computeFusionWarmPrefixTokens({
+		currentContextTokens: options.currentContextTokens,
+		watermark: options.defaultWatermark,
+		now: options.now,
+		cacheTtlMs,
+	});
+	const taskPrefix = computeFusionWarmPrefixTokens({
+		currentContextTokens: options.currentContextTokens,
+		watermark: options.taskWatermark,
+		now: options.now,
+		cacheTtlMs,
+	});
+	const restoreCostUsd = estimateFusionPrefixHorizonCostUsd({
+		cost: baseModel.cost,
+		currentContextTokens: options.currentContextTokens,
+		warmTokens: basePrefix.warmTokens,
+		horizonCalls,
+	});
+	const stayCostUsd = estimateFusionPrefixHorizonCostUsd({
+		cost: taskModel.cost,
+		currentContextTokens: options.currentContextTokens,
+		warmTokens: taskPrefix.warmTokens,
+		horizonCalls,
+	});
+	if (restoreCostUsd <= stayCostUsd) {
+		return { action: "restore-default", reason: "tail-amortized" };
+	}
+	return { action: "keep-sticky-task", reason: "sticky-default-cold" };
+}

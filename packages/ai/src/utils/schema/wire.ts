@@ -663,6 +663,26 @@ function pruneArkUndefinedUnionBranches(node: unknown): void {
 	}
 }
 
+const explicitArkWireSchemas = new WeakMap<Type, Type>();
+
+/**
+ * Pin the model-facing wire schema for an ArkType runtime schema whose `.in`
+ * side accepts inbound compatibility aliases (the ArkType analogue of
+ * `z.preprocess(fn, wireSchema)`).
+ *
+ * `arkToWireSchema` normally emits the `.in` side of a morph so parse pipes
+ * (`string -> number`) advertise the wire type they actually accept. When a
+ * preprocess pipe widens `.in` to tolerate undocumented aliases (such as
+ * `_input` alongside `input`), emitting `.in` leaks those aliases onto the
+ * wire and drops `required` constraints. Associating `wireSchema` keeps the
+ * model-facing schema strict and canonical while runtime validation still
+ * runs the full preprocess pipe.
+ */
+export function withArkWireSchema<T extends Type>(schema: T, wireSchema: Type): T {
+	explicitArkWireSchemas.set(schema, wireSchema);
+	return schema;
+}
+
 /**
  * Convert an ArkType schema into the JSON Schema shape providers consume.
  *
@@ -675,6 +695,8 @@ function pruneArkUndefinedUnionBranches(node: unknown): void {
  * whose `.refine()`/`.transform()` likewise never appear in the wire schema.
  */
 export function arkToWireSchema(schema: Type): Record<string, unknown> {
+	const explicit = explicitArkWireSchemas.get(schema);
+	if (explicit && explicit !== schema) return arkToWireSchema(explicit);
 	return stamp(schema, kArkWireSchema, s => {
 		const raw = s.toJsonSchema({ target: "draft-2020-12", fallback: ctx => ctx.base }) as Record<string, unknown>;
 		delete raw.$schema;

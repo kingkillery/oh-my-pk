@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { Tool } from "@pk-nerdsaver-ai/pi-ai/types";
-import { isArkSchema, toolWireSchema } from "@pk-nerdsaver-ai/pi-ai/utils/schema";
+import { isArkSchema, toolWireSchema, withArkWireSchema } from "@pk-nerdsaver-ai/pi-ai/utils/schema";
 import { validateToolArguments } from "@pk-nerdsaver-ai/pi-ai/utils/validation";
 import { type } from "arktype";
 import { z } from "zod/v4";
@@ -175,5 +175,45 @@ describe("validateToolArguments — ArkType contracts", () => {
 		expect(arkResult).toEqual(zodResult);
 		expect((arkResult as Record<string, unknown>).count).toBe(300);
 		expect((arkResult as Record<string, unknown>).extraRoot).toBe(1);
+	});
+});
+
+describe("withArkWireSchema — preprocess alias pinning", () => {
+	const canonical = type({
+		input: type("string").describe("patch payload"),
+	});
+	const preprocess = withArkWireSchema(
+		type({ "input?": "string | null", "_input?": "string | null" })
+			.pipe(raw => {
+				if (typeof raw.input === "string" && raw.input.length > 0) return raw;
+				if (typeof raw._input !== "string") return raw;
+				return { ...raw, input: raw._input };
+			})
+			.pipe(canonical),
+		canonical,
+	);
+	const tool: Tool = { name: "ark-preprocess", description: "", parameters: preprocess };
+
+	it("emits the pinned canonical wire schema without leaking inbound alias keys", () => {
+		const wire = toolWireSchema(tool);
+		expect(wire).toEqual({
+			type: "object",
+			properties: {
+				input: { type: "string", description: "patch payload" },
+			},
+			required: ["input"],
+			additionalProperties: false,
+		});
+	});
+
+	it("still executes the runtime preprocess pipe through validateToolArguments", () => {
+		const fromAlias = validateToolArguments(tool, {
+			type: "toolCall",
+			id: "p1",
+			name: "ark-preprocess",
+			arguments: { input: null, _input: "hello", extraKey: 42 },
+		}) as Record<string, unknown>;
+		expect(fromAlias.input).toBe("hello");
+		expect(fromAlias.extraKey).toBe(42);
 	});
 });

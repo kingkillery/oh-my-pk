@@ -4,7 +4,14 @@ import type { TypeSafeAnswer } from "@pk-nerdsaver-ai/pi-coding-agent/lib/typesa
 import {
 	buildDecisionRouteState,
 	classifyFusionRouteViaDecision,
+	computeFusionWarmPrefixTokens,
+	DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS,
+	DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS,
+	DEFAULT_FUSION_TOKEN_SAVINGS_STICKY_MAX_CALLS,
+	decideFusionTokenSavingsSwitch,
+	decideFusionTokenSavingsTurnStart,
 	decisionRouteQuestion,
+	estimateFusionPrefixHorizonCostUsd,
 	formatFusionPoolEntries,
 	isFusionAutoDowngradedRoute,
 	isFusionStreakNeutralToolSuccess,
@@ -282,5 +289,280 @@ describe("decision-model fusion routing", () => {
 			},
 		};
 		expect(await classifyFusionRouteViaDecision("summary", messages, pool, 25, { client })).toBeNull();
+	});
+});
+describe("Fusion token-savings cache break-even & TTL stickiness helpers", () => {
+	const paidFrontier = {
+		provider: "anthropic",
+		id: "claude-sonnet-4-5",
+		cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+	} as Model;
+	const paidMidTask = {
+		provider: "anthropic",
+		id: "claude-mid-task",
+		cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+	} as Model;
+	const paidFlashTask = {
+		provider: "google",
+		id: "gemini-flash",
+		cost: { input: 0.15, output: 0.6, cacheRead: 0.015, cacheWrite: 0 },
+	} as Model;
+	const subscriptionFrontier = {
+		provider: "claude-code",
+		id: "sonnet-sub",
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	} as Model;
+	const subscriptionTask = {
+		provider: "antigravity",
+		id: "hydrogen-sub",
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	} as Model;
+	const cheapDefaultModel = {
+		provider: "google",
+		id: "gemini-flash-default",
+		cost: { input: 0.15, output: 0.6, cacheRead: 0.015, cacheWrite: 0 },
+	} as Model;
+
+	it("computes warm prefix tokens within TTL and resets to full cold delta once TTL expires", () => {
+		const now = 1_000_000;
+		const warm = computeFusionWarmPrefixTokens({
+			currentContextTokens: 60_000,
+			watermark: { cachedTokens: 52_000, lastUsedAt: now - 60_000 },
+			now,
+		});
+		expect(warm).toEqual({
+			withinTtl: true,
+			warmTokens: 52_000,
+			uncachedDeltaTokens: 8_000,
+		});
+
+		const expired = computeFusionWarmPrefixTokens({
+			currentContextTokens: 60_000,
+			watermark: { cachedTokens: 52_000, lastUsedAt: now - DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS },
+			now,
+		});
+		expect(expired).toEqual({
+			withinTtl: false,
+			warmTokens: 0,
+			uncachedDeltaTokens: 60_000,
+		});
+	});
+
+	it("accounts for cacheRead, cacheWrite, and non-caching rates across horizonCalls", () => {
+		const anthropicCost = estimateFusionPrefixHorizonCostUsd({
+			cost: paidFrontier.cost,
+			currentContextTokens: 60_000,
+			warmTokens: 50_000,
+			horizonCalls: 2,
+		});
+		expect(anthropicCost).toBeCloseTo((50_000 * 0.3 + 10_000 * 3.75 + 60_000 * 0.3) / 1_000_000, 8);
+
+		const googleCost = estimateFusionPrefixHorizonCostUsd({
+			cost: paidFlashTask.cost,
+			currentContextTokens: 60_000,
+			warmTokens: 0,
+			horizonCalls: 2,
+		});
+		expect(googleCost).toBeCloseTo((60_000 * 0.15 + 60_000 * 0.015) / 1_000_000, 8);
+	});
+
+	it("bypasses cache gating below the small-context floor (< 16,000 tokens)", () => {
+		const now = 500_000;
+		const decision = decideFusionTokenSavingsSwitch({
+			defaultModel: paidFrontier,
+			taskModel: paidMidTask,
+			currentContextTokens: DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS - 1,
+			defaultWatermark: {
+				cachedTokens: DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS - 1,
+				lastUsedAt: now,
+			},
+			amortizationCalls: 1,
+			now,
+		});
+		expect(decision.shouldSwitch).toBe(true);
+		expect(decision.reason).toBe("small-context");
+	});
+
+	it("blocks unprofitable short switches on deep paid contexts until todos or warm deltas justify switching", () => {
+		const now = 500_000;
+		const blocked = decideFusionTokenSavingsSwitch({
+			defaultModel: paidFrontier,
+			taskModel: paidMidTask,
+			currentContextTokens: 60_000,
+			defaultWatermark: { cachedTokens: 60_000, lastUsedAt: now },
+			amortizationCalls: 2,
+			openTodoCount: 0,
+			now,
+		});
+		expect(blocked.shouldSwitch).toBe(false);
+		expect(blocked.reason).toBe("cache-break-even-not-met");
+
+		const justifiedByTodos = decideFusionTokenSavingsSwitch({
+			defaultModel: paidFrontier,
+			taskModel: paidMidTask,
+			currentContextTokens: 60_000,
+			defaultWatermark: { cachedTokens: 60_000, lastUsedAt: now },
+			amortizationCalls: 2,
+			openTodoCount: 7,
+			now,
+		});
+		expect(justifiedByTodos.shouldSwitch).toBe(true);
+		expect(justifiedByTodos.reason).toBe("cache-break-even-met");
+
+		const justifiedByDelta = decideFusionTokenSavingsSwitch({
+			defaultModel: paidFrontier,
+			taskModel: paidMidTask,
+			currentContextTokens: 60_000,
+			defaultWatermark: { cachedTokens: 60_000, lastUsedAt: now },
+			taskWatermark: { cachedTokens: 54_000, lastUsedAt: now - 30_000 },
+			amortizationCalls: 1,
+			now,
+		});
+		expect(justifiedByDelta.shouldSwitch).toBe(true);
+		expect(justifiedByDelta.reason).toBe("cache-break-even-met");
+	});
+
+	it("uses zero-cost-fallback when either model reports $0 catalog pricing (subscriptions/local)", () => {
+		const now = 500_000;
+		const subDecision = decideFusionTokenSavingsSwitch({
+			defaultModel: subscriptionFrontier,
+			taskModel: subscriptionTask,
+			currentContextTokens: 70_000,
+			defaultWatermark: { cachedTokens: 70_000, lastUsedAt: now },
+			now,
+		});
+		expect(subDecision.shouldSwitch).toBe(true);
+		expect(subDecision.reason).toBe("zero-cost-fallback");
+	});
+
+	it("keeps pi/task sticky on deep contexts within TTL for short tails and restores default on TTL expiry, small context, or escalation", () => {
+		const now = 1_000_000;
+		const baseArgs = {
+			fusionEnabled: true,
+			fusionMode: "token-savings",
+			routingDisabled: false,
+			switchedInPriorTurn: true,
+			baseModel: cheapDefaultModel,
+			lastAutoModel: paidMidTask,
+			currentModel: paidMidTask,
+			currentContextTokens: 60_000,
+			taskCallsSinceSwitch: DEFAULT_FUSION_TOKEN_SAVINGS_STICKY_MAX_CALLS,
+			amortizationCalls: 2,
+			taskWatermark: { cachedTokens: 60_000, lastUsedAt: now - 20_000 },
+			now,
+		};
+
+		expect(decideFusionTokenSavingsTurnStart(baseArgs)).toEqual({
+			action: "keep-sticky-task",
+			reason: "sticky-short-tail",
+		});
+
+		expect(
+			decideFusionTokenSavingsTurnStart({
+				...baseArgs,
+				taskWatermark: { cachedTokens: 60_000, lastUsedAt: now - DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS },
+			}),
+		).toEqual({
+			action: "restore-default",
+			reason: "ttl-expired",
+		});
+
+		expect(
+			decideFusionTokenSavingsTurnStart({
+				...baseArgs,
+				currentContextTokens: 10_000,
+			}),
+		).toEqual({
+			action: "restore-default",
+			reason: "small-context",
+		});
+
+		expect(
+			decideFusionTokenSavingsTurnStart({
+				...baseArgs,
+				taskCallsSinceSwitch: DEFAULT_FUSION_TOKEN_SAVINGS_STICKY_MAX_CALLS + 1,
+			}),
+		).toEqual({
+			action: "restore-default",
+			reason: "tail-amortized",
+		});
+
+		// `0` disables sticky retention: restore even though the default prefix is cold.
+		expect(
+			decideFusionTokenSavingsTurnStart({
+				...baseArgs,
+				stickyMaxCalls: 0,
+				defaultWatermark: {
+					cachedTokens: 60_000,
+					lastUsedAt: now - DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS,
+				},
+			}),
+		).toEqual({
+			action: "restore-default",
+			reason: "tail-amortized",
+		});
+
+		expect(
+			decideFusionTokenSavingsTurnStart({
+				...baseArgs,
+				lastAutoModel: cheapDefaultModel,
+				currentModel: cheapDefaultModel,
+			}),
+		).toEqual({
+			action: "already-default",
+			reason: "escalated-or-already-default",
+		});
+
+		expect(
+			decideFusionTokenSavingsTurnStart({
+				...baseArgs,
+				currentModel: paidFlashTask,
+			}),
+		).toEqual({
+			action: "manual-override",
+			reason: "manual-override",
+		});
+	});
+
+	it("keeps pi/task sticky when restoring a cold default would cost more over the amortization horizon", () => {
+		const now = 1_000_000;
+		const decision = decideFusionTokenSavingsTurnStart({
+			fusionEnabled: true,
+			fusionMode: "token-savings",
+			routingDisabled: false,
+			switchedInPriorTurn: true,
+			baseModel: paidFrontier,
+			lastAutoModel: paidMidTask,
+			currentModel: paidMidTask,
+			currentContextTokens: 60_000,
+			taskCallsSinceSwitch: DEFAULT_FUSION_TOKEN_SAVINGS_STICKY_MAX_CALLS + 1,
+			amortizationCalls: 2,
+			defaultWatermark: {
+				cachedTokens: 60_000,
+				lastUsedAt: now - DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS,
+			},
+			taskWatermark: { cachedTokens: 60_000, lastUsedAt: now - 20_000 },
+			now,
+		});
+		expect(decision).toEqual({ action: "keep-sticky-task", reason: "sticky-default-cold" });
+	});
+
+	it("restores default on tail amortization for zero-cost subscription models", () => {
+		const now = 1_000_000;
+		const decision = decideFusionTokenSavingsTurnStart({
+			fusionEnabled: true,
+			fusionMode: "token-savings",
+			routingDisabled: false,
+			switchedInPriorTurn: true,
+			baseModel: subscriptionFrontier,
+			lastAutoModel: subscriptionTask,
+			currentModel: subscriptionTask,
+			currentContextTokens: 60_000,
+			taskCallsSinceSwitch: DEFAULT_FUSION_TOKEN_SAVINGS_STICKY_MAX_CALLS + 1,
+			amortizationCalls: 2,
+			taskWatermark: { cachedTokens: 60_000, lastUsedAt: now - 20_000 },
+			now,
+		});
+		expect(decision).toEqual({ action: "restore-default", reason: "tail-amortized" });
 	});
 });

@@ -1498,9 +1498,22 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 			}
 		: truncateArgsForError(originalArgs);
 
+	// When every provided value is null/undefined (or the argument object is
+	// empty), point the retry at populating the required fields rather than
+	// hunting for a structural mismatch.
+	const emptyArgumentPayload =
+		originalArgs !== null &&
+		typeof originalArgs === "object" &&
+		!Array.isArray(originalArgs) &&
+		Object.values(originalArgs).every(value => value === null || value === undefined);
+
 	const errorMessage = `Validation failed for tool "${
 		toolCall.name
-	}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(receivedArgs, null, 2)}`;
+	}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(receivedArgs, null, 2)}${
+		emptyArgumentPayload
+			? "\n\nHint: no usable argument values arrived (the payload was empty or all null). Re-issue the call with the required fields populated; if a very large payload was dropped, split it into smaller calls."
+			: ""
+	}`;
 
 	throw new AIError.ValidationError(errorMessage);
 }
