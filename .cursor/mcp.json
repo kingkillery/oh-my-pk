@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "ompk-tools": {
+      "args": [
+        "scripts/mcp-tool-server.ts"
+      ],
+      "command": "bun",
+      "env": {
+        "OMPK_MCP_TOOLS": "read,grep,glob,ast_grep,lsp"
+      },
+      "type": "stdio"
+    }
+  }
+}

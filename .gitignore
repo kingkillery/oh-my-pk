@@ -19,7 +19,10 @@ target/
 .local/
 
 # Editors
-.vscode/
+.vscode/*
+!.vscode/mcp.json
+.claude/*
+!.claude/settings.json
 .zed/
 .idea/
 *.swp

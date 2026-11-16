@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "loop_limit": 1,
+        "command": ".agents/scripts/run_packman_python.cmd .agents/hooks/run_stop_checks.py --agent cursor"
+      }
+    ]
+  }
+}

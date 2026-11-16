@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ompk-tools": {
+      "type": "stdio",
+      "command": "bun",
+      "args": [
+        "scripts/mcp-tool-server.ts"
+      ],
+      "enabled": false
+    }
+  }
+}

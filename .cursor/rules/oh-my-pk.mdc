@@ -1,0 +1,6 @@
+---
+description: oh-my-pk canonical rules (SSOT .agents/instructions.md)
+globs: ["**/*"]
+alwaysApply: false
+---
+@.agents/instructions.md

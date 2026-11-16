@@ -1,0 +1,175 @@
+# .tokf -- output token filtering configuration for oh-my-pk.
+#
+# Purpose: compress noisy build and test streams while retaining the
+# failure stack traces, file:line anchors, and exit summaries needed to
+# debug. Supports ALL required targets:
+#   make, build.bat, build_docs.bat, format_code.bat, lint_code.bat,
+#   repo.bat subcommands (repo.bat build, repo.bat test, repo.bat lint,
+#   repo.bat format, repo.bat docs), Kit tests, Toolkit app BAT launches,
+#   plus oh-my-pk native commands (bun test, bun check, cargo test, pytest).
+#
+# Rules:
+#   - Strip repetitive compiler warnings, progress bars, ANSI spinners,
+#     and passing test listings.
+#   - Retain failure stack traces, file:line anchors, and exit summaries
+#     intact.
+#   - Redact credentials before external log sharing (see [scrub]).
+#   - Recovery: run `tokf raw last` to view the unfiltered raw output
+#     for the most recent filtered command.
+
+version = 1
+description = "Output stream compression for make, build.bat, build_docs.bat, format_code.bat, lint_code.bat, repo.bat (repo.bat build, repo.bat test, repo.bat lint, repo.bat format, repo.bat docs), Kit tests, Toolkit app BAT launches, bun test, bun check, cargo test, pytest; strips warnings, progress bars, spinners, and passing listings; retains failures, file:line anchors, and exit summaries"
+recovery_command = "tokf raw last"
+recovery_note = "Run tokf raw last to recover the last raw unfiltered output"
+
+[filters]
+default_mode = "compress"
+retain_failures = true
+retain_file_line_anchors = true
+retain_exit_summaries = true
+
+[strip]
+compiler_warnings = "Strip repetitive compiler warnings"
+progress_bars = "Strip progress bars"
+ansi_spinners = "Strip ANSI spinners"
+passing_test_listings = "Strip passing test listings"
+notes = "Keep failure stack traces, file:line anchors, and exit summaries intact"
+
+[retain]
+failure_stack_traces = true
+file_line_anchors = true
+exit_summaries = true
+
+[filters."make"]
+command = "make"
+description = "GNU make build output"
+strip = ["progress bars", "ANSI spinners", "repetitive compiler warnings"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."build.bat"]
+command = "build.bat"
+description = "Windows build.bat output"
+strip = ["progress bars", "ANSI spinners", "passing test listings"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."build_docs.bat"]
+command = "build_docs.bat"
+description = "Windows build_docs.bat output"
+strip = ["progress bars", "ANSI spinners", "passing test listings"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."format_code.bat"]
+command = "format_code.bat"
+description = "Windows format_code.bat output"
+strip = ["progress bars", "ANSI spinners"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."lint_code.bat"]
+command = "lint_code.bat"
+description = "Windows lint_code.bat output"
+strip = ["progress bars", "ANSI spinners", "repetitive compiler warnings"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."repo.bat build"]
+command = "repo.bat build"
+description = "repo.bat build subcommand"
+strip = ["progress bars", "ANSI spinners"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."repo.bat test"]
+command = "repo.bat test"
+description = "repo.bat test subcommand"
+strip = ["passing test listings", "progress bars", "ANSI spinners"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries with counts"]
+
+[filters."repo.bat lint"]
+command = "repo.bat lint"
+description = "repo.bat lint subcommand"
+strip = ["progress bars", "ANSI spinners"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."repo.bat format"]
+command = "repo.bat format"
+description = "repo.bat format subcommand"
+strip = ["progress bars", "ANSI spinners"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."repo.bat docs"]
+command = "repo.bat docs"
+description = "repo.bat docs subcommand"
+strip = ["progress bars", "ANSI spinners"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."kit-tests"]
+command = "Kit tests"
+description = "Kit tests runner output"
+strip = ["passing test listings", "progress bars", "ANSI spinners"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."toolkit-app-bat"]
+command = "Toolkit app BAT launches"
+description = "Toolkit app BAT launches output"
+strip = ["progress bars", "ANSI spinners"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."bun test"]
+command = "bun test"
+description = "oh-my-pk native bun test output"
+strip = ["passing test listings", "progress bars", "ANSI spinners"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."bun check"]
+command = "bun check"
+description = "oh-my-pk native bun check output"
+strip = ["progress bars", "ANSI spinners"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."cargo test"]
+command = "cargo test"
+description = "oh-my-pk native cargo test output"
+strip = ["passing test listings", "progress bars", "ANSI spinners", "repetitive compiler warnings"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[filters."pytest"]
+command = "pytest"
+description = "oh-my-pk native pytest output"
+strip = ["passing test listings", "progress bars", "ANSI spinners"]
+retain = ["failure stack traces", "file:line anchors", "exit summaries"]
+
+[recovery]
+raw_last = "tokf raw last"
+description = "Run tokf raw last to view the last raw unfiltered output"
+
+[[scrub.patterns]]
+name = "bearer_token"
+description = "Bearer tokens (Authorization: Bearer <token>); affects bearer tokens"
+pattern = "Bearer\\s+[A-Za-z0-9\\-._~+/]+=*"
+replacement = "Bearer [REDACTED]"
+
+[[scrub.patterns]]
+name = "api_key"
+description = "API keys and api key assignments; affects API keys"
+pattern = "(?i)(api[_-]?key|apikey|api[_-]?secret|access[_-]?token|auth[_-]?token)\\s*[:=]\\s*[\"']?[^\\s\"',;]+"
+replacement = "$1=[REDACTED]"
+
+[[scrub.patterns]]
+name = "user_pass_url"
+description = "Redact user:pass@ credentials in URLs; affects user:pass@ URLs"
+pattern = "://[^/@\\s]+:[^/@\\s]+@"
+replacement = "://[REDACTED]@"
+
+[[scrub.patterns]]
+name = "auth_flags"
+description = "Auth flags carrying secrets; affects auth flags such as --password, --token, --secret, --api-key"
+pattern = "--(password|passwd|pwd|token|secret|api-key|apikey|auth-token|authorization)\\s*(=|:)?\\s*\\S+"
+replacement = "--$1=[REDACTED]"
+
+[[scrub.patterns]]
+name = "private_key"
+description = "Private key blocks; affects API keys and credentials"
+pattern = "-----BEGIN (RSA )?PRIVATE KEY-----[\\s\\S]*?-----END (RSA )?PRIVATE KEY-----"
+replacement = "[REDACTED PRIVATE KEY]"
+
+[scrub.default]
+redact_before_share = true
+note = "Scrub bearer tokens, API keys, user:pass@ URLs, and auth flags before external log sharing; recover with tokf raw last locally only"

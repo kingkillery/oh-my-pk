@@ -1,0 +1,29 @@
+{
+  "enableAllProjectMcpServers": true,
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Glob(**)",
+      "Grep(**)",
+      "Bash(bun check:*)",
+      "Bash(bun run check:dist:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ],
+    "deny": []
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".agents/scripts/run_packman_python.cmd .agents/hooks/run_stop_checks.py --agent claude"
+          }
+        ]
+      }
+    ]
+  }
+}

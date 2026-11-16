@@ -1,5 +1,9 @@
-# Claude Code instructions
+# Claude Code Entry Point
 
-All development rules live in [AGENTS.md](AGENTS.md) — read and follow it in full.
+Thin entry. Canonical rules SSOT: `.agents/instructions.md` (imported below). Settings: `.claude/settings.json` (80% auto-compact ceiling; proactive compaction protocol at 50-75% context). Keep stable prompt prefix byte-stable; append dynamic context late.
 
-@AGENTS.md
+@.agents/instructions.md
+
+!git status -sb
+!git diff --name-only
+!git log --oneline -5

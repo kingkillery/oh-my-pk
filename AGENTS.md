@@ -1,76 +1,11 @@
-# Development Rules
+# oh-my-pk Agent Entry Point
 
-## Scope
+Canonical root entry for Pi, OMP/OMPK, Codex, and compatible agents. Full rules SSOT: `.agents/instructions.md` (imported below). Deeper package rules: `packages/coding-agent/AGENTS.md`, `packages/catalog/AGENTS.md`, `python/robomp/AGENTS.md`. Read the package `AGENTS.md` before editing that directory.
 
-- Primary package: `packages/coding-agent/`; “agent” normally means this implementation.
-- Other packages: `ai`, `catalog`, `agent`, `tui`, `natives`, `stats`, `utils`, `llm-router-agent`, and `crates/pi-natives`.
-- Import catalog values from `@pk-nerdsaver-ai/pi-catalog/<module>`, never `pi-ai`. Type-only `Model`, `Api`, `ThinkingConfig`, and `Effort` imports from `pi-ai` are allowed.
-- Keep changes scoped; review logical clusters before staging. Never commit unless asked.
-- Collaboration rules: [docs/multi-agent-fork-collaboration.md](docs/multi-agent-fork-collaboration.md). Surface boundaries: [docs/fork-boundaries.md](docs/fork-boundaries.md).
-- Deeper `AGENTS.md` files contain package-specific rules; read them before editing those directories.
-- Before editing `packages/coding-agent/` or `packages/catalog/`, read that package's `AGENTS.md`.
+## Map
 
-- Colab is general compute by default; `/colab-model` or explicit inference establishes model intent.
-- Fresh agents MUST inspect existing sessions first, offer connection when compatible, and provision only when requested.
-- Treat runtime, served model, bridge, provider registration, and harness generation as separate evidence gates.
+- SSOT: `.agents/instructions.md` | Context: `.agents/context/` | Rules: `.agents/rules/`
+- Commands: `.agents/commands/` | Skills: `.agents/skills/` | Subagents: `.agents/subagents/`
+- Hooks: `.agents/hooks/` | Scripts: `.agents/scripts/` | MCP sync: `.agents/scripts/sync_mcp_configs.py`
 
-## When a single-agent loop is desired
-
-Apply this guidance when the user requests a single-agent loop or explicitly selects a solo-first workflow; it is not a blanket change to OMPK's defaults.
-
-- Reuse OMPK's existing Simple Mode (`task.simpleMode`, `/simple`); do not build another single-agent mode, orchestrator, or supervisor.
-- Keep reasoning, planning, implementation, and final accountability with the primary agent. Load specialized knowledge through skills and tools rather than spawning an agent merely to hold instructions.
-- Preserve optional multi-agent capability: bounded general helpers in Simple Mode, and full specialist/parallel workflows when deliberately selected and authorized. Do not remove full routing or cancel running agents as part of simplification.
-- Integrate `work_context` as a scoped, read-only tool used by the primary agent—not another agent or orchestration layer. Verify its native availability rather than assuming a candidate implementation is installed.
-- Preserve lifecycle authority, permissions, isolation, auditing, and evidence-backed completion. Confirm installed behavior and effective settings; evaluate solo versus assisted workflows before proposing default changes.
-
-## PR 45 convergence policy
-
-- Treat `main` as the production baseline. PR 45 and `codex/pr45-minimal-reconciliation` are donor branches, not merge bases.
-- Do not merge or rebase the full PR 45 history into `main`. Port one coherent behavior lane at a time from a named donor commit, adapting it to current `main` architecture.
-- Pull only items marked **Pull into main** in the Design-and-Building vault's `oh-my-pk Wiki/concepts/pr45-convergence.md`. Items marked **Already in main** are verification anchors, not work to replay.
-- Before editing, prove that `main` does not already provide the behavior or a newer equivalent. Prefer the current `main` design when both exist.
-- Each port requires an observable contract, focused tests, package typecheck/lint, and a final union check after integration. Harness-only success does not make a source branch merge-ready.
-- Preserve the fork boundaries in `docs/fork-boundaries.md`. In particular, CoLab, Hub/IRC, pk-speak `/remote`, SSH, and remote-workspace transports have distinct lifetimes and API contracts.
-- Optimize provider caching by keeping stable prompt prefixes byte-stable and appending dynamic context late. Never trade away required instructions, tool schemas, or safety context merely to increase cache hits.
-- The durable rationale and lane order live in the Design-and-Building vault's `oh-my-pk Wiki/concepts/pr45-convergence.md`.
-
-## Kade context
-
-- Use `C:\Users\prest\.agents\kade.md` and `human.md` as the minimal machine-level bootstrap; load the `kade-hq` skill for detailed rules.
-- Unqualified “update the wiki” requests route to `C:\dev\Vaults\Design-and-Building\oh-my-pk Wiki\`; the external Kade vault (`C:\dev\Vaults\Kade`) remains an explicit Kade destination.
-- The `pk-has-adhd` reference is supplemental and does not override repository-local instructions.
-
-## Machine & compute context (pk)
-
-- This machine runs parallel agent sessions (e.g. pr-45 verification) with their own `bun`/`node` processes. Never taskkill `bun.exe`/`node.exe` broadly — kill only processes whose CommandLine matches your own script (filter `Get-CimInstance Win32_Process` on CommandLine).
-- Heavy verification (full test suites, binary builds) may be offloaded to the `msi` peer via `cd C:/dev/Infra/ompk-remote && bun run remote.mjs auto --bg -- bun test <file>`; test-class commands route to msi by policy, light commands stay local. See that script's header for the full surface.
-
-## Code
-
-- Avoid `any` and `ReturnType<>`; use ES `#private` fields and methods.
-- Use `Promise.withResolvers()`, not the constructor pattern.
-- Prefer Bun APIs; use `node:*` only where Bun lacks coverage.
-- In async flows avoid sync I/O, unnecessary copies, and repeated `Bun.file()` calls.
-- Never run `tsc` or `npx tsc`; use `bun check`.
-
-## Bend
-
-When using Bend:
-- Run `bend guide` to learn it.
-- Use `LAWS.bend` to keep important rules.
-- Run `bend PROOF.bend` before committing.
-- Parallelize the code whenever possible.
-
-## Testing
-
-- Test externally observable behavior: output, transitions, errors, and regression-prone boundaries.
-- Prefer focused contract or integration tests. Do not add placeholders, tautologies, mocks, or source-text assertions.
-- Keep tests full-suite safe: restore spies per test and never use `mock.module()`.
-- Exercise real lifecycle transitions and failures. Skip tests only for tiny edits without contract impact.
-
-## Changelog and release
-
-- Add package entries only under `## [Unreleased]`; released sections are immutable.
-- Never create GitHub issues/comments or run release/commit commands unless the user asks.
-- `packages/coding-agent/dist/*.exe` must be rebuilt and `build-manifest.json` refreshed in the same commit as the final source change; `bun run check:dist` in `packages/coding-agent` fails otherwise.
+@.agents/instructions.md

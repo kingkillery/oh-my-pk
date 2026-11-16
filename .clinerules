@@ -1,0 +1,5 @@
+# Cline Rules Entry
+
+!include .agents/instructions.md
+
+Notes: deep procedures in `.agents/rules/`; context in `.agents/context/`; commands in `.agents/commands/`; skills in `.agents/skills/`; hooks in `.agents/hooks/`; scripts in `.agents/scripts/`. Root map: `AGENTS.md`.

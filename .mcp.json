@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "ompk-tools": {
+      "type": "stdio",
+      "command": "bun",
+      "args": [
+        "scripts/mcp-tool-server.ts"
+      ],
+      "env": {
+        "OMPK_MCP_TOOLS": "read,grep,glob,ast_grep,lsp"
+      }
+    }
+  },
+  "_fallback": {
+    "protocol": "graceful offline/corporate-network fallback: bypass unreachable external MCP endpoints and continue with local repo work instead of blocking or erroring",
+    "rely_on": [
+      "local repo patterns",
+      "docs_dev/",
+      "docs/",
+      ".agents/context/"
+    ],
+    "note": "Sync IDE targets deterministically with python .agents/scripts/sync_mcp_configs.py (see .agents/commands/sync-mcp.md)."
+  }
+}
