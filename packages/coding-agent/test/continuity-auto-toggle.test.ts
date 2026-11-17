@@ -53,4 +53,17 @@ describe("automatic continuity toggle", () => {
 		expect(readAutoContinuity(current).suppressedBySimpleMode).toBe(false);
 		expect(autoContinuityIndicator(current)).toBeUndefined();
 	});
+
+	it("fails closed when settings return uninitialized or non-mode values", () => {
+		for (const fallback of [undefined, false]) {
+			const stub = { get: () => fallback } as unknown as Settings;
+			const state = readAutoContinuity(stub);
+			expect(state.configured).toBe("off");
+			expect(state.effective).toBe("off");
+			expect(state.autoSave).toBe(false);
+			expect(state.suppressedBySimpleMode).toBe(false);
+			expect(automaticContinuityActive(stub)).toBe(false);
+			expect(autoContinuityIndicator(stub)).toBeUndefined();
+		}
+	});
 });

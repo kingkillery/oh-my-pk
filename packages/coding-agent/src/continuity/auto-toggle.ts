@@ -23,15 +23,18 @@ export interface AutoContinuityState {
 }
 
 export function readAutoContinuity(settings: Settings): AutoContinuityState {
-	const configured = settings.get("continuity.endOfTurnHandoff");
-	const simpleMode = settings.get("task.simpleMode");
-	const autoSave = settings.get("continuity.autoSave") && !simpleMode;
+	const rawConfigured: unknown = settings.get("continuity.endOfTurnHandoff");
+	const configured: AutoContinuityMode =
+		rawConfigured === "changed" || rawConfigured === "always" ? rawConfigured : "off";
+	const simpleMode = settings.get("task.simpleMode") === true;
+	const rawAutoSave = settings.get("continuity.autoSave") === true;
+	const autoSave = rawAutoSave && !simpleMode;
 	return {
 		configured,
 		effective: simpleMode ? "off" : configured,
 		autoSave,
 		simpleMode,
-		suppressedBySimpleMode: simpleMode && (configured !== "off" || settings.get("continuity.autoSave")),
+		suppressedBySimpleMode: simpleMode && (configured !== "off" || rawAutoSave),
 	};
 }
 
