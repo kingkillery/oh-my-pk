@@ -40,7 +40,7 @@ describe("ci.yml merge gate", () => {
 		expect(needsOf(gate!)).toEqual(["check", "test_coding_agent_native"]);
 		expect(gate!.if).toContain("always()");
 		expect(gate!.if).toContain("!cancelled()");
-		expect(gate!.steps?.map((step) => step.name)).toEqual(["Require lint and coding-agent native/unit"]);
+		expect(gate!.steps?.map(step => step.name)).toEqual(["Require lint and coding-agent native/unit"]);
 		const script = gate!.steps?.[0]?.run ?? "";
 		expect(script).toContain('test "$lint" = "success"');
 		expect(script).toContain('test "$native" = "success"');
@@ -52,9 +52,9 @@ describe("ci.yml merge gate", () => {
 		const lint = jobs.check;
 		expect(lint?.name).toBe("Lint, type check & web build");
 		expect(needsOf(lint!)).toEqual([]);
-		const uses = (lint?.steps ?? []).map((step) => step.uses ?? "");
-		expect(uses.some((use) => use.includes("download-artifact"))).toBe(false);
-		expect(uses.some((use) => use.includes("natives"))).toBe(false);
+		const uses = (lint?.steps ?? []).map(step => step.uses ?? "");
+		expect(uses.some(use => use.includes("download-artifact"))).toBe(false);
+		expect(uses.some(use => use.includes("natives"))).toBe(false);
 
 		const release = jobs.release_binary;
 		expect(release?.if).toContain("needs.test_coding_agent_native.result == 'success'");
@@ -77,9 +77,11 @@ describe("ci.yml merge gate", () => {
 		];
 		for (const [lint, native, accepted] of cases) {
 			const body = script
-				.replace("${{ needs.check.result }}", lint)
-				.replace("${{ needs.test_coding_agent_native.result }}", native);
-			const result = Bun.spawnSync(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-s"], { stdin: Buffer.from(body) });
+				.replace(/\$\{\{\s*needs\.check\.result\s*\}\}/, lint)
+				.replace(/\$\{\{\s*needs\.test_coding_agent_native\.result\s*\}\}/, native);
+			const result = Bun.spawnSync(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-s"], {
+				stdin: Buffer.from(body),
+			});
 			expect(result.exitCode === 0).toBe(accepted);
 		}
 	});
