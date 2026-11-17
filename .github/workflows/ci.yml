@@ -212,6 +212,27 @@ jobs:
          - name: Build collab relay client assets
            run: bun --cwd=packages/collab-relay run build:client
 
+   # Merge-facing status. GitHub branch protection matches the job `name`, not
+   # the job id, and `main` requires `check` with `enforce_admins: false` (so PR
+   # merges block until `check` succeeds while admin direct pushes / release.ts
+   # still work). This job does not rerun tests or fetch natives. `skipped` is
+   # not success: a native/unit skip must fail the aggregate.
+   gate:
+      name: check
+      runs-on: ubuntu-22.04
+      needs: [check, test_coding_agent_native]
+      if: always() && !cancelled()
+      steps:
+         - name: Require lint and coding-agent native/unit
+           shell: bash
+           run: |
+              set -euo pipefail
+              lint="${{ needs.check.result }}"
+              native="${{ needs.test_coding_agent_native.result }}"
+              echo "lint=$lint native=$native"
+              test "$lint" = "success"
+              test "$native" = "success"
+
    # Linux x64 baseline + modern: required by `test`, so it runs on every PR
    # unless native_artifact_lookup found a cached run. Release runs always
    # rebuild for fresh artifacts.

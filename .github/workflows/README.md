@@ -19,6 +19,16 @@ The CI/release pipeline lives in a single workflow, `ci.yml`, which handles thre
   (it would duplicate the release run).
 - **Manual dispatch** — `workflow_dispatch` with the **`publish_npm`** input.
 
+The merge-facing job is `gate`, displayed as **`check`**. GitHub required
+status checks match that display name, not the job id. The lint job keeps id
+`check` and display name `Lint, type check & web build`, and it stays
+native-free. `gate` needs that lint job and `test_coding_agent_native`, and it
+passes only when both results are `success` (`skipped` fails it). It does not
+rerun tests. Branch protection on `main` requires `check` (`enforce_admins:
+false`, force-push/deletion disabled), blocking PR merges until `check`
+passes while allowing admin direct pushes and `scripts/release.ts`.
+`ci.yml.disabled` is a stale parked copy and does not carry this gate.
+
 ## Release flow (automatic)
 
 When `release.ts` pushes the atomic commit + tag, the main-branch run resolves
