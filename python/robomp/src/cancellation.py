@@ -13,11 +13,8 @@ dispatcher already imports `tasks`, which imports `worker` — a cycle).
 from __future__ import annotations
 
 import contextvars
-import logging
 from collections.abc import Callable
 from typing import Protocol
-
-log = logging.getLogger(__name__)
 
 
 class _CancelSink(Protocol):

@@ -7,10 +7,6 @@
  * `toWinPath()` normalizes any path to the forward-slash form OpenSSH accepts,
  * and `sshArgv()` returns the full argv to launch ssh with a mesh node
  * (BatchMode=yes so an unkeyed host fails fast instead of hanging on a prompt).
- *
- * The bodies here are copied (not imported) from scripts/codespace-sync.ts to
- * keep that file's verified working path untouched. If/when a shared package
- * becomes practical, hoist these into it and update both call sites.
  */
 
 export interface ExecResult {

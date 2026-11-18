@@ -87,22 +87,12 @@ function parseResetHeader(value: string | undefined, unit: "ms" | "s"): number |
 	const nowMs = Date.now();
 	let targetMs: number | undefined;
 
-	if (unit === "ms") {
-		if (numeric > 1e12) {
-			targetMs = numeric;
-		} else if (numeric > 1e9) {
-			targetMs = numeric * 1000;
-		} else {
-			return Math.ceil(numeric);
-		}
+	if (numeric > 1e12) {
+		targetMs = numeric;
+	} else if (numeric > 1e9) {
+		targetMs = numeric * 1000;
 	} else {
-		if (numeric > 1e12) {
-			targetMs = numeric;
-		} else if (numeric > 1e9) {
-			targetMs = numeric * 1000;
-		} else {
-			return Math.ceil(numeric * 1000);
-		}
+		return Math.ceil(unit === "ms" ? numeric : numeric * 1000);
 	}
 
 	if (targetMs <= nowMs) return undefined;

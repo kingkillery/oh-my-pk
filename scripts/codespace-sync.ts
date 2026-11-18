@@ -27,6 +27,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { direct, type ExecResult as SpawnResult, toWinPath } from "./lib/ssh-exec";
 
 type Direction = "push" | "pull" | "status" | "handoff";
 
@@ -56,12 +57,6 @@ interface BundleResult {
 	bytes: number;
 }
 
-interface SpawnResult {
-	code: number;
-	stdout: string;
-	stderr: string;
-}
-
 const STASH_BUNDLE_NAME = ".codespace-sync-stash.bundle";
 
 function parseArgs(argv: string[]): SyncOptions {
@@ -89,22 +84,6 @@ function parseArgs(argv: string[]): SyncOptions {
 	return { direction, sshTarget, remoteDir, launch };
 }
 
-// Direct argv spawn. Use for git / ssh / scp / tar where Windows OpenSSH or
-// git get confused by paths delivered through a shell.
-async function direct(argv: string[], opts: { cwd?: string } = {}): Promise<SpawnResult> {
-	const proc = Bun.spawn({
-		cmd: argv,
-		cwd: opts.cwd ?? process.cwd(),
-		stdout: "pipe",
-		stderr: "pipe",
-		env: process.env,
-	});
-	const stdout = proc.stdout ? await new Response(proc.stdout).text() : "";
-	const stderr = proc.stderr ? await new Response(proc.stderr).text() : "";
-	const code = await proc.exited;
-	return { code, stdout, stderr };
-}
-
 // SSH argv builder. Honors CODESPACE_SYNC_KEY (Windows-style path) and
 // CODESPACE_SYNC_PORT.
 function sshArgv(): string[] {
@@ -115,16 +94,6 @@ function sshArgv(): string[] {
 	if (process.env.CODESPACE_SYNC_PORT) parts.push("-p", process.env.CODESPACE_SYNC_PORT);
 	parts.push("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=NUL");
 	return parts;
-}
-
-// cygpath -m gives a mixed form on this box; we always normalize to forward
-// slashes because Windows OpenSSH ssh/scp reject backslash paths delivered
-// through shell pipelines.
-function toWinPath(p: string): string {
-	const r = Bun.spawnSync(["cygpath", "-m", p], { stdout: "pipe", stderr: "pipe" });
-	if (r.exitCode !== 0) return p.replace(/\\/g, "/");
-	const out = r.stdout ? new TextDecoder().decode(r.stdout).trim() : "";
-	return (out || p).replace(/\\/g, "/");
 }
 
 async function gitCurrentBranch(cwd: string): Promise<string> {

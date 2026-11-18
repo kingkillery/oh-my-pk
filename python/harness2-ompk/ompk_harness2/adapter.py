@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -51,7 +50,6 @@ BASE = {
     "LongTermMEMORY.md": "",
     "tool_descriptions/tool_guidance.md": "There are no tools in this rollout.\n",
 }
-ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def _digest(data: object) -> str:
