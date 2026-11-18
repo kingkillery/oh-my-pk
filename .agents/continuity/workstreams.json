@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "workstreams": [
+    {
+      "id": "simple-mode-config-verification",
+      "title": "Simple Mode config verification",
+      "aliases": [
+        "simple mode",
+        "single agent",
+        "task.simpleMode"
+      ],
+      "canonical": ".agents/continuity/notes/simple-mode-config-verification.md",
+      "store": "repo",
+      "authority": "canonical",
+      "revision": 1,
+      "updatedAt": "2026-11-17T18:58:56.633Z",
+      "sha256": "b3d9cf4c578e1f80dcc3f596634d7358697fa67c8d77208096c3a3b7f47c6e1e",
+      "evidenceObservedAt": "2026-11-17",
+      "sourceSessions": [
+        "current"
+      ]
+    }
+  ]
+}
