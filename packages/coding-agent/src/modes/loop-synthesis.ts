@@ -85,6 +85,38 @@ function buildTranscript(session: AgentSession, charBudget: number): string {
 	return `[... earlier transcript truncated]\n${tail}`;
 }
 
+export interface LoopVerifierResolution {
+	role: "plan" | "slow" | "session";
+	resolved: ReturnType<AgentSession["resolveRoleModelWithThinking"]>;
+}
+
+export function resolveLoopVerifier(session: AgentSession): LoopVerifierResolution | undefined {
+	const plan = session.resolveRoleModelWithThinking("plan");
+	if (plan.model) return { role: "plan", resolved: plan };
+	const slow = session.resolveRoleModelWithThinking("slow");
+	if (slow.model) return { role: "slow", resolved: slow };
+	if (!session.model) return undefined;
+	return {
+		role: "session",
+		resolved: {
+			model: session.model,
+			thinkingLevel: session.thinkingLevel,
+			explicitThinkingLevel: false,
+			warning: undefined,
+		},
+	};
+}
+
+export function formatLoopVerifierLabel(verifier: LoopVerifierResolution): string {
+	const model = verifier.resolved.model;
+	if (!model) return verifier.role;
+	const thinkingSuffix =
+		verifier.resolved.explicitThinkingLevel && verifier.resolved.thinkingLevel !== "off"
+			? `:${verifier.resolved.thinkingLevel}`
+			: "";
+	return `${verifier.role}: ${model.provider}/${model.id}${thinkingSuffix}`;
+}
+
 /**
  * Run one verifier/synthesis pass. Returns `{ complete, reflection }`. When the
  * transcript is empty (nothing to grade), returns a no-op result so the caller
@@ -97,17 +129,9 @@ export async function runLoopSynthesis(
 	const transcript = buildTranscript(session, options.transcriptCharBudget ?? LOOP_SPIRAL_TRANSCRIPT_CHAR_BUDGET);
 	if (!transcript) return { complete: false, reflection: "" };
 
-	const plan = session.resolveRoleModelWithThinking("plan");
-	const slow = plan.model ? plan : session.resolveRoleModelWithThinking("slow");
-	const resolved = slow.model
-		? slow
-		: {
-				model: session.model,
-				thinkingLevel: session.thinkingLevel,
-				explicitThinkingLevel: false,
-				warning: undefined,
-			};
-	if (!resolved.model) {
+	const verifier = resolveLoopVerifier(session);
+	const resolved = verifier?.resolved;
+	if (!resolved?.model) {
 		throw new Error("No plan, slow, or current session model is available for loop synthesis.");
 	}
 

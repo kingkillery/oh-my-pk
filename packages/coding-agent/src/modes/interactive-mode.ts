@@ -1388,11 +1388,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 		const mode = this.loopActionOverride ?? settings.get("loop.mode");
 		const modeSuffix = parsed.mode ? ` Mode: ${describeLoopAction(mode)}.` : "";
+		const verifier = mode === "spiral" ? loopSynthesis.resolveLoopVerifier(this.session) : undefined;
+		const verifierSuffix = verifier ? ` Verifier (${loopSynthesis.formatLoopVerifierLabel(verifier)}).` : "";
 		const limitSuffix = parsed.limit ? ` Limited to ${describeLoopLimit(parsed.limit)}.` : "";
 		const remainingSuffix = this.loopLimit ? ` ${describeLoopLimitRuntime(this.loopLimit)}.` : "";
 		const tail = parsed.prompt ? "Repeating it after each turn." : "Your next prompt will repeat after each turn.";
 		this.showStatus(
-			`Loop mode enabled.${modeSuffix}${limitSuffix}${remainingSuffix} ${tail} Esc cancels the current iteration; /loop again to disable.`,
+			`Loop mode enabled.${modeSuffix}${verifierSuffix}${limitSuffix}${remainingSuffix} ${tail} Esc cancels the current iteration; /loop again to disable.`,
 		);
 		// Hand any inline prompt back to the dispatcher so the normal submit flow
 		// runs the first iteration — it records the text as the loop prompt and

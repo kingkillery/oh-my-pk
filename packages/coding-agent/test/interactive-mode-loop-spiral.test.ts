@@ -172,6 +172,19 @@ describe("InteractiveMode spiral loop mode", () => {
 		expect(submitted?.text).toBe("Keep going.");
 		expect(mode.loopModeEnabled).toBe(true);
 	});
+
+	it("shows the resolved spiral verifier model in status without adding it to context", async () => {
+		const showStatus = vi.spyOn(mode, "showStatus");
+		const addMessageToChat = mode.addMessageToChat as ReturnType<typeof vi.fn>;
+		addMessageToChat.mockClear();
+
+		await mode.handleLoopCommand("--mode spiral");
+
+		expect(showStatus).toHaveBeenCalledTimes(1);
+		expect(showStatus.mock.calls[0]?.[0]).toContain("Verifier (session: anthropic/claude-sonnet-4-5).");
+		expect(session.messages).toHaveLength(0);
+		expect(addMessageToChat).not.toHaveBeenCalled();
+	});
 });
 
 describe("composeSpiralPrompt", () => {
