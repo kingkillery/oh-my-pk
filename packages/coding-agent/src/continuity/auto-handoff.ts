@@ -32,6 +32,29 @@ export const HANDOFF_SECTIONS = [
 	"Blockers",
 ] as const;
 
+/**
+ * Skill names accepted as a handoff trailer.
+ *
+ * The trailer is a bare skill reference emitted as text, so it must not be able
+ * to smuggle a URL, a path, or a second directive into the turn.
+ */
+const TRAILER_SKILL_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/**
+ * Normalize a configured trailer skill into the text the model should emit.
+ *
+ * Accepts a bare name (`explain-simply`) or a full `skill://` URI, and returns
+ * the `skill://<name>` form. Returns an empty string when the value is unusable,
+ * so a bad setting degrades to "no trailer" instead of injecting stray text.
+ */
+export function normalizeTrailerSkill(raw: string): string {
+	const trimmed = raw.trim();
+	if (!trimmed) return "";
+	const name = trimmed.startsWith("skill://") ? trimmed.slice("skill://".length) : trimmed;
+	if (!TRAILER_SKILL_PATTERN.test(name)) return "";
+	return `skill://${name}`;
+}
+
 export interface HandoffEmissionInput {
 	/** Configured mode; `off` disables automatic handoffs entirely. */
 	readonly mode: EndOfTurnHandoffMode;
@@ -77,12 +100,12 @@ export function turnChangedWorkspace(messages: readonly AgentMessage[]): boolean
  * It is a request for text, not a write: nothing here touches a vault, a session,
  * or a running job.
  */
-export function handoffDirective(mode: EndOfTurnHandoffMode): string {
+export function handoffDirective(mode: EndOfTurnHandoffMode, trailerSkill = ""): string {
 	const scope =
 		mode === "changed"
 			? "Focus on what changed since the previous handoff."
 			: "Cover the work so far in this session.";
-	return [
+	const lines = [
 		"Close this turn with a project-notebook handoff so the work can be resumed without this transcript.",
 		scope,
 		"Wrap it in exactly one <handoff-prompt> ... </handoff-prompt> block and use these six sections,",
@@ -91,5 +114,13 @@ export function handoffDirective(mode: EndOfTurnHandoffMode): string {
 		'Write "none known" for a section with nothing to report.',
 		"Record only what is verifiable now, and label anything recalled from earlier notes as historical.",
 		"Do not start new work, do not write to a vault, and do not change settings.",
-	].join("\n");
+	];
+	const trailer = normalizeTrailerSkill(trailerSkill);
+	if (trailer) {
+		lines.push(
+			`After the closing </handoff-prompt> tag, emit the line \`${trailer}\` and nothing else on it.`,
+			"The trailer sits outside the handoff block and is not part of the record.",
+		);
+	}
+	return lines.join("\n");
 }

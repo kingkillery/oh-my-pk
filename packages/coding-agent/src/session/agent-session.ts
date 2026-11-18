@@ -4390,7 +4390,8 @@ export class AgentSession {
 		});
 		if (!emit) return undefined;
 		this.#autoHandoffTurnId = turnId;
-		return handoffDirective(mode);
+		const trailer = this.settings.get("continuity.handoffTrailerSkill");
+		return handoffDirective(mode, trailer);
 	}
 	async #emitSessionStopEvent(messages: AgentMessage[]): Promise<void> {
 		if (this.#agentKind === "sub") return;

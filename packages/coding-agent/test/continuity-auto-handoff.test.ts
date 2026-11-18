@@ -6,9 +6,12 @@ import {
 	END_OF_TURN_HANDOFF_MODES,
 	HANDOFF_SECTIONS,
 	handoffDirective,
+	normalizeTrailerSkill,
 	shouldEmitHandoff,
 	turnChangedWorkspace,
 } from "../src/continuity/auto-handoff";
+import { parseHandoff, renderHandoff } from "../src/continuity/render";
+import type { HandoffSections } from "../src/continuity/types";
 import {
 	BUILTIN_SLASH_COMMAND_RESERVED_NAMES,
 	BUILTIN_SLASH_COMMANDS,
@@ -121,6 +124,102 @@ describe("/auto-handoffs command", () => {
 
 	it("exposes the documented modes plus a separate save toggle", () => {
 		const names = command?.subcommands?.map(subcommand => subcommand.name) ?? [];
-		expect(names).toEqual(["off", "changed", "always", "save", "store", "status"]);
+		expect(names).toEqual(["off", "changed", "always", "save", "store", "trailer", "status"]);
+	});
+});
+
+describe("handoff trailer skill", () => {
+	it("normalizes a bare skill name into a skill URI", () => {
+		expect(normalizeTrailerSkill("explain-simply")).toBe("skill://explain-simply");
+		expect(normalizeTrailerSkill("  explain-simply  ")).toBe("skill://explain-simply");
+	});
+
+	it("accepts an already-qualified skill URI unchanged", () => {
+		expect(normalizeTrailerSkill("skill://explain-simply")).toBe("skill://explain-simply");
+	});
+
+	it("rejects values that are not plain skill names", () => {
+		expect(normalizeTrailerSkill("")).toBe("");
+		expect(normalizeTrailerSkill("   ")).toBe("");
+		expect(normalizeTrailerSkill("not a skill")).toBe("");
+		expect(normalizeTrailerSkill("../../etc/passwd")).toBe("");
+		expect(normalizeTrailerSkill("https://example.com/x")).toBe("");
+		expect(normalizeTrailerSkill("skill://a/b")).toBe("");
+		expect(normalizeTrailerSkill("Uppercase")).toBe("");
+		expect(normalizeTrailerSkill("-leading-dash")).toBe("");
+	});
+
+	it("adds no trailer instruction when unset", () => {
+		expect(handoffDirective("always")).not.toContain("skill://");
+		expect(handoffDirective("always", "")).not.toContain("skill://");
+	});
+
+	it("asks for the trailer on the line after the closing tag", () => {
+		const directive = handoffDirective("always", "explain-simply");
+		expect(directive).toContain("skill://explain-simply");
+		expect(directive).toContain("</handoff-prompt> tag");
+	});
+
+	it("drops an unusable trailer instead of injecting stray text", () => {
+		const directive = handoffDirective("always", "../../etc/passwd");
+		expect(directive).not.toContain("skill://");
+		expect(directive).not.toContain("etc/passwd");
+	});
+
+	it("leaves the six-section contract untouched", () => {
+		const directive = handoffDirective("always", "explain-simply");
+		const positions = HANDOFF_SECTIONS.map(section => directive.indexOf(section));
+		expect(positions.every(position => position >= 0)).toBe(true);
+		expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+	});
+});
+
+describe("handoff trailer setting", () => {
+	it("defaults to no trailer", () => {
+		expect(getDefault("continuity.handoffTrailerSkill")).toBe("");
+	});
+
+	it("is a free-text setting, not an enum", () => {
+		expect(getEnumValues("continuity.handoffTrailerSkill")).toBeUndefined();
+	});
+});
+
+describe("trailer stays out of the saved record", () => {
+	const SECTIONS: HandoffSections = {
+		objective: "Keep the review traceable.",
+		currentState: "Verified: brief compiled.",
+		keyContext: "Operational record.",
+		nextSteps: "1. Confirm dispatcher notes.",
+		validation: "Checked source counts.",
+		blockers: "none known",
+	};
+
+	it("keeps the record byte-identical whether or not a trailer is configured", () => {
+		const meta = {
+			workstream: "trailer-isolation",
+			title: "Trailer isolation",
+			authority: "canonical" as const,
+			revision: 1,
+			updated: "2026-11-17",
+		};
+		const withoutTrailer = renderHandoff(meta, SECTIONS);
+		const withTrailer = renderHandoff(meta, SECTIONS);
+		expect(withTrailer).toBe(withoutTrailer);
+		expect(withTrailer).not.toContain("skill://");
+	});
+
+	it("leaves a trailer outside the closing tag unparsed by the record reader", () => {
+		const meta = {
+			workstream: "trailer-isolation",
+			title: "Trailer isolation",
+			authority: "canonical" as const,
+			revision: 1,
+			updated: "2026-11-17",
+		};
+		const record = `${renderHandoff(meta, SECTIONS)}\nskill://explain-simply\n`;
+		const parsed = parseHandoff(record);
+		expect(parsed).toBeDefined();
+		expect(parsed?.body).not.toContain("skill://");
+		expect(parsed?.body.endsWith("</handoff-prompt>")).toBe(true);
 	});
 });

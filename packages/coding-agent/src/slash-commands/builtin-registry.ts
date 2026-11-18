@@ -13,6 +13,7 @@ import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model
 import { applyNineRouterRouting, type NineRouterRoutingResult } from "../config/nine-router-controller";
 import type { SettingPath, Settings, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
+import { normalizeTrailerSkill } from "../continuity/auto-handoff";
 import { autoContinuityIndicator, describeAutoContinuity, readAutoContinuity } from "../continuity/auto-toggle";
 import {
 	clearPluginRootsAndCaches,
@@ -3035,7 +3036,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		aliases: ["notebook"],
 		description: "Configure automatic end-of-turn project-notebook handoffs",
 		acpDescription: "Configure automatic end-of-turn handoffs",
-		inlineHint: "[off|changed|always|save on|save off|store repo|store vault <name>|status]",
+		inlineHint: "[off|changed|always|save on|save off|store repo|store vault <name>|trailer <skill|off>|status]",
 		subcommands: [
 			{ name: "off", description: "Only write a handoff when asked" },
 			{ name: "changed", description: "Write one after a turn that edited files" },
@@ -3046,6 +3047,11 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				description: "Choose storage for new workstreams; existing pointers stay unchanged",
 				usage: "<status|repo|vault name>",
 			},
+			{
+				name: "trailer",
+				description: "Emit a skill URI right after the handoff block closes",
+				usage: "<skill-name|off>",
+			},
 			{ name: "status", description: "Show the current handoff mode" },
 		],
 		allowArgs: true,
@@ -3053,7 +3059,12 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			const rawArgs = command.args.trim();
 			const args = rawArgs.toLowerCase();
 			const set = async <
-				P extends "continuity.endOfTurnHandoff" | "continuity.autoSave" | "continuity.store" | "continuity.vault",
+				P extends
+					| "continuity.endOfTurnHandoff"
+					| "continuity.autoSave"
+					| "continuity.store"
+					| "continuity.vault"
+					| "continuity.handoffTrailerSkill",
 			>(
 				path: P,
 				value: SettingValue<P>,
@@ -3062,6 +3073,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				if (runtime.settings.get(path) !== value) runtime.settings.override(path, value);
 			};
 			const vaultMatch = /^store\s+vault\s+(.+)$/i.exec(rawArgs);
+			const trailerMatch = /^trailer\b\s*(.*)$/i.exec(rawArgs);
 			if (args === "store repo") {
 				await set("continuity.store", "repo");
 			} else if (vaultMatch) {
@@ -3075,6 +3087,20 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				}
 				await set("continuity.vault", name);
 				await set("continuity.store", "vault");
+			} else if (trailerMatch) {
+				const requested = trailerMatch[1].trim();
+				if (!requested || requested === "off" || requested === "none") {
+					await set("continuity.handoffTrailerSkill", "");
+				} else {
+					const normalized = normalizeTrailerSkill(requested);
+					if (!normalized) {
+						await runtime.output(
+							"A trailer must be a skill name like explain-simply. Settings were not changed.",
+						);
+						return commandConsumed();
+					}
+					await set("continuity.handoffTrailerSkill", normalized);
+				}
 			} else if (args === "store" || args === "store status") {
 				// Read-only status; do not persist settings.
 			} else if (args === "off") {
@@ -3090,7 +3116,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				await set("continuity.autoSave", false);
 			} else if (args && args !== "status") {
 				await runtime.output(
-					"Usage: /auto-handoffs [off|on|changed|always|save on|save off|store repo|store vault <name>|store status|status]",
+					"Usage: /auto-handoffs [off|on|changed|always|save on|save off|store repo|store vault <name>|store status|trailer <skill|off>|status]",
 				);
 				return commandConsumed();
 			}
@@ -3105,6 +3131,12 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			const vault = runtime.settings.get("continuity.vault") || "(unset)";
 			await runtime.output(
 				`New workstream storage: ${store}${store === "vault" ? ` (${vault})` : ""}. Existing notes and pointers are unchanged. Vault unavailability never creates a repository fallback.${store === "vault" && !runtime.settings.get("vault.enabled") ? " vault.enabled is off; vault access must be enabled separately." : ""}`,
+			);
+			const trailer = runtime.settings.get("continuity.handoffTrailerSkill");
+			await runtime.output(
+				trailer
+					? `Handoff trailer: ${trailer}, emitted on the line after the handoff block closes. It stays outside the saved record.`
+					: "Handoff trailer: none.",
 			);
 			return commandConsumed();
 		},

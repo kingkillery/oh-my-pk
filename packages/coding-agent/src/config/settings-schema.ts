@@ -5798,6 +5798,23 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	/**
+	 * Skill appended immediately after the handoff block closes. Empty means no
+	 * trailer. The trailer sits outside `<handoff-prompt>`, so it never reaches
+	 * the canonical record and cannot change a saved note's signature.
+	 */
+	"continuity.handoffTrailerSkill": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "context",
+			group: "Continuity",
+			label: "Handoff Trailer Skill",
+			description:
+				"Skill URI to emit on the line right after the handoff block closes, for example explain-simply. The trailer stays outside the saved record. Leave empty for no trailer.",
+		},
+	},
+
+	/**
 	 * Where a new workstream's handoff is written. `repo` is a file inside the
 	 * project, so a clone can resume it. `vault` points at an Obsidian note and
 	 * requires `continuity.vault`.
