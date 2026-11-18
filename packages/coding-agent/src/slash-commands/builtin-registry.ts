@@ -511,6 +511,25 @@ const FUSION_SUBCOMMANDS: SubcommandDef[] = [
 	{ name: "stop", description: "Cancel this session's durable tasks", usage: "[job]" },
 ];
 
+/** Declarative subcommands for `/auto-handoffs`, shared by the registry spec and its argument completion. */
+const AUTO_HANDOFFS_SUBCOMMANDS: SubcommandDef[] = [
+	{ name: "off", description: "Only write a handoff when asked" },
+	{ name: "changed", description: "Write one after a turn that edited files" },
+	{ name: "always", description: "Write one after every completed turn" },
+	{ name: "save", description: "Toggle saving handoffs to the notebook", usage: "<on|off>" },
+	{
+		name: "store",
+		description: "Choose storage for new workstreams; existing pointers stay unchanged",
+		usage: "<status|repo|vault name>",
+	},
+	{
+		name: "trailer",
+		description: "Emit a skill URI right after the handoff block closes",
+		usage: "<explain-simply|skill-name|off>",
+	},
+	{ name: "status", description: "Show the current handoff mode" },
+];
+
 const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "pk-speak",
@@ -3033,27 +3052,13 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "auto-handoffs",
-		aliases: ["notebook"],
+		aliases: ["auto-handoff", "notebook"],
 		description: "Configure automatic end-of-turn project-notebook handoffs",
 		acpDescription: "Configure automatic end-of-turn handoffs",
-		inlineHint: "[off|changed|always|save on|save off|store repo|store vault <name>|trailer <skill|off>|status]",
-		subcommands: [
-			{ name: "off", description: "Only write a handoff when asked" },
-			{ name: "changed", description: "Write one after a turn that edited files" },
-			{ name: "always", description: "Write one after every completed turn" },
-			{ name: "save", description: "Toggle saving handoffs to the notebook", usage: "<on|off>" },
-			{
-				name: "store",
-				description: "Choose storage for new workstreams; existing pointers stay unchanged",
-				usage: "<status|repo|vault name>",
-			},
-			{
-				name: "trailer",
-				description: "Emit a skill URI right after the handoff block closes",
-				usage: "<skill-name|off>",
-			},
-			{ name: "status", description: "Show the current handoff mode" },
-		],
+		inlineHint:
+			"[off|changed|always|explain-simply|save on|save off|store repo|store vault <name>|trailer <explain-simply|skill|off>|status]",
+		subcommands: AUTO_HANDOFFS_SUBCOMMANDS,
+		getArgumentCompletions: completeAutoHandoffsArguments,
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			const rawArgs = command.args.trim();
@@ -3101,6 +3106,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 					}
 					await set("continuity.handoffTrailerSkill", normalized);
 				}
+			} else if (args === "explain-simply" || args === "skill://explain-simply") {
+				await set("continuity.handoffTrailerSkill", "skill://explain-simply");
 			} else if (args === "store" || args === "store status") {
 				// Read-only status; do not persist settings.
 			} else if (args === "off") {
@@ -3116,7 +3123,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				await set("continuity.autoSave", false);
 			} else if (args && args !== "status") {
 				await runtime.output(
-					"Usage: /auto-handoffs [off|on|changed|always|save on|save off|store repo|store vault <name>|store status|trailer <skill|off>|status]",
+					"Usage: /auto-handoffs [off|on|changed|always|explain-simply|save on|save off|store repo|store vault <name>|store status|trailer <explain-simply|skill|off>|status]",
 				);
 				return commandConsumed();
 			}
@@ -3223,6 +3230,44 @@ function completeFusionArguments(argumentPrefix: string): AutocompleteItem[] | n
 	}
 	if ("token-savings".startsWith(argumentPrefix.toLowerCase())) {
 		items.unshift(FUSION_TOKEN_SAVINGS_COMPLETION);
+	}
+	return items.length > 0 ? items : null;
+}
+
+/** Direct `/auto-handoffs` menu choice that completes to the full `trailer explain-simply` command. */
+const AUTO_HANDOFFS_EXPLAIN_SIMPLY_COMPLETION: AutocompleteItem = {
+	value: "trailer explain-simply ",
+	label: "explain-simply",
+	description: "Emit skill://explain-simply right after each handoff block",
+};
+
+/** Nested `/auto-handoffs trailer ` menu choices. */
+const AUTO_HANDOFFS_TRAILER_COMPLETIONS: readonly AutocompleteItem[] = [
+	AUTO_HANDOFFS_EXPLAIN_SIMPLY_COMPLETION,
+	{
+		value: "trailer off ",
+		label: "off",
+		description: "Clear the handoff trailer skill",
+	},
+];
+
+function completeAutoHandoffsArguments(argumentPrefix: string): AutocompleteItem[] | null {
+	const trailerMatch = /^trailer\s+([^\s]*)$/i.exec(argumentPrefix);
+	if (trailerMatch) {
+		const subPrefix = trailerMatch[1].toLowerCase();
+		const matches = AUTO_HANDOFFS_TRAILER_COMPLETIONS.filter(item => item.label.startsWith(subPrefix));
+		return matches.length > 0 ? matches : null;
+	}
+	if (argumentPrefix.includes(" ")) return null;
+	const lower = argumentPrefix.toLowerCase();
+	const items = buildArgumentCompletions(AUTO_HANDOFFS_SUBCOMMANDS)(argumentPrefix) ?? [];
+	if ("explain-simply".startsWith(lower)) {
+		const alwaysIndex = items.findIndex(item => item.label === "always");
+		if (alwaysIndex === -1) {
+			items.unshift(AUTO_HANDOFFS_EXPLAIN_SIMPLY_COMPLETION);
+		} else {
+			items.splice(alwaysIndex + 1, 0, AUTO_HANDOFFS_EXPLAIN_SIMPLY_COMPLETION);
+		}
 	}
 	return items.length > 0 ? items : null;
 }

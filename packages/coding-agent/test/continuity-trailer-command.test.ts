@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { CombinedAutocompleteProvider } from "@pk-nerdsaver-ai/pi-tui";
 import { Settings } from "../src/config/settings";
-import { BUILTIN_SLASH_COMMANDS_INTERNAL } from "../src/slash-commands/builtin-registry";
+import { BUILTIN_SLASH_COMMANDS, BUILTIN_SLASH_COMMANDS_INTERNAL } from "../src/slash-commands/builtin-registry";
 import type { SlashCommandRuntime } from "../src/slash-commands/types";
 
 function runtimeFor(settings: Settings, output: string[]): SlashCommandRuntime {
@@ -93,5 +94,66 @@ describe("/auto-handoffs trailer command", () => {
 		await handler()({ name: "auto-handoffs", args: "status", text: "" }, runtimeFor(settings, output));
 
 		expect(output.join("\n")).toContain("Handoff trailer: none.");
+	});
+});
+
+describe("/auto-handoffs explain-simply slash command menu", () => {
+	const autoHandoffs = BUILTIN_SLASH_COMMANDS.find(command => command.name === "auto-handoffs");
+
+	test("registers singular /auto-handoff alias alongside /notebook", () => {
+		expect(autoHandoffs?.aliases).toEqual(["auto-handoff", "notebook"]);
+	});
+
+	test("shows explain-simply in the initial 5-row /auto-handoffs menu without scrolling", async () => {
+		const items = await autoHandoffs?.getArgumentCompletions?.("");
+		expect(items?.map(item => item.label)).toEqual([
+			"off",
+			"changed",
+			"always",
+			"explain-simply",
+			"save",
+			"store",
+			"trailer",
+			"status",
+		]);
+		const direct = items?.find(item => item.label === "explain-simply");
+		expect(direct?.value).toBe("trailer explain-simply ");
+	});
+
+	test("inserts valid trailer explain-simply command from both /auto-handoffs and /auto-handoff", async () => {
+		const provider = new CombinedAutocompleteProvider([autoHandoffs!]);
+		for (const line of ["/auto-handoffs ", "/auto-handoff "]) {
+			const suggestions = await provider.getSuggestions([line], 0, line.length);
+			expect(suggestions).not.toBeNull();
+			const direct = suggestions!.items.find(item => item.label === "explain-simply");
+			expect(direct).toBeDefined();
+			const applied = provider.applyCompletion([line], 0, line.length, direct!, suggestions!.prefix);
+			expect(applied.lines[0]).toBe(`${line}trailer explain-simply `);
+		}
+	});
+
+	test("completes explain-simply and off under /auto-handoffs trailer ", async () => {
+		const provider = new CombinedAutocompleteProvider([autoHandoffs!]);
+		const line = "/auto-handoffs trailer ";
+		const suggestions = await provider.getSuggestions([line], 0, line.length);
+		expect(suggestions?.items.map(item => item.label)).toEqual(["explain-simply", "off"]);
+
+		const explainItem = suggestions!.items[0]!;
+		const applied = provider.applyCompletion([line], 0, line.length, explainItem, suggestions!.prefix);
+		expect(applied.lines[0]).toBe("/auto-handoffs trailer explain-simply ");
+
+		const filtered = await autoHandoffs?.getArgumentCompletions?.("trailer ex");
+		expect(filtered?.map(item => item.label)).toEqual(["explain-simply"]);
+	});
+
+	test("accepts direct /auto-handoffs explain-simply shorthand", async () => {
+		const settings = Settings.isolated({});
+		const output: string[] = [];
+		await handler()(
+			{ name: "auto-handoffs", args: "explain-simply", text: "/auto-handoffs explain-simply" },
+			runtimeFor(settings, output),
+		);
+		expect(settings.get("continuity.handoffTrailerSkill")).toBe("skill://explain-simply");
+		expect(output.join("\n")).toContain("Handoff trailer: skill://explain-simply");
 	});
 });
