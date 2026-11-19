@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Updated the Anthropic OAuth Claude Code identity to 2.1.328 (Agent SDK 0.3.328) so Claude Fable 5.2 no longer fails with `400 Claude Code 2.1.280 does not support…`.
+
 ## [16.4.36] - 2026-11-12
 
 ### Changed
