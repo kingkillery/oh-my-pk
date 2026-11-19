@@ -32,8 +32,8 @@ import {
 	toJsonRpcError,
 	validateMCPSubscriptionAcknowledgement,
 } from "../../mcp/types";
-import { isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
 import { isThenable } from "../../utils/ipc";
+import { isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
 
 /** Subprocess argv and platform-derived spawn flags for an MCP stdio server. */
 export interface StdioSpawnCommand {

@@ -60,6 +60,7 @@ describe("AgentSession steer idle drain", () => {
 	let tempDir: TempDir;
 	let session: AgentSession;
 	let authStorage: AuthStorage;
+	let continueSpy: { mockRestore: () => void } | undefined;
 
 	async function createSession(messages: Parameters<typeof Agent.prototype.appendMessage>[0][]): Promise<void> {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
@@ -89,12 +90,13 @@ describe("AgentSession steer idle drain", () => {
 		authStorage.close();
 		tempDir.removeSync();
 		vi.useRealTimers();
-		vi.restoreAllMocks();
+		continueSpy?.mockRestore();
+		continueSpy = undefined;
 	});
 
 	it("delivers a steer queued on an idle resumable session via continue()", async () => {
 		await createSession([{ role: "user", content: "hello", timestamp: Date.now() }, createAssistantMessage()]);
-		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
+		continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
 			session.agent.clearAllQueues();
 		});
 
@@ -112,7 +114,7 @@ describe("AgentSession steer idle drain", () => {
 			createAssistantMessage(),
 			createToolResultMessage(),
 		]);
-		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
+		continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
 			session.agent.clearAllQueues();
 		});
 
