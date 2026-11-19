@@ -35,13 +35,13 @@ export const HANDOFF_SECTIONS = [
 /**
  * Skill names accepted as a handoff trailer.
  *
- * The trailer is a bare skill reference emitted as text, so it must not be able
- * to smuggle a URL, a path, or a second directive into the turn.
+ * The trailer names a skill the model is told to read and follow, so it must not
+ * be able to smuggle a URL, a path, or a second directive into the turn.
  */
 const TRAILER_SKILL_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /**
- * Normalize a configured trailer skill into the text the model should emit.
+ * Normalize a configured trailer skill into the URI the model is told to apply.
  *
  * Accepts a bare name (`explain-simply`) or a full `skill://` URI, and returns
  * the `skill://<name>` form. Returns an empty string when the value is unusable,
@@ -118,8 +118,9 @@ export function handoffDirective(mode: EndOfTurnHandoffMode, trailerSkill = ""):
 	const trailer = normalizeTrailerSkill(trailerSkill);
 	if (trailer) {
 		lines.push(
-			`After the closing </handoff-prompt> tag, emit the line \`${trailer}\` and nothing else on it.`,
-			"The trailer sits outside the handoff block and is not part of the record.",
+			`After the closing </handoff-prompt> tag, apply the \`${trailer}\` skill to this turn: read it with the read tool unless you already read it in this session, then follow it and write what it produces below the block.`,
+			"Reading that skill is allowed here. Never print the skill URI on its own in place of the skill's output.",
+			"That output sits outside the handoff block and is not part of the record.",
 		);
 	}
 	return lines.join("\n");
