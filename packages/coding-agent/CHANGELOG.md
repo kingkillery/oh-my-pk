@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A handoff trailer skill (`/auto-handoffs trailer explain-simply`) is now applied instead of printed. The end-of-turn directive told the model to emit the bare `skill://explain-simply` line and nothing else, so the turn ended with the URI and no explanation; it now tells the model to read the skill and write its output below the handoff block.
+
 ## [16.4.37] - 2026-11-19
 
 ### Added

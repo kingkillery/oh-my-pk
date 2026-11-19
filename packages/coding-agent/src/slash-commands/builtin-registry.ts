@@ -3142,7 +3142,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			const trailer = runtime.settings.get("continuity.handoffTrailerSkill");
 			await runtime.output(
 				trailer
-					? `Handoff trailer: ${trailer}, emitted on the line after the handoff block closes. It stays outside the saved record.`
+					? `Handoff trailer: ${trailer}, applied after the handoff block closes. Its output stays outside the saved record.`
 					: "Handoff trailer: none.",
 			);
 			return commandConsumed();
@@ -3238,7 +3238,7 @@ function completeFusionArguments(argumentPrefix: string): AutocompleteItem[] | n
 const AUTO_HANDOFFS_EXPLAIN_SIMPLY_COMPLETION: AutocompleteItem = {
 	value: "trailer explain-simply ",
 	label: "explain-simply",
-	description: "Emit skill://explain-simply right after each handoff block",
+	description: "Apply skill://explain-simply right after each handoff block",
 };
 
 /** Nested `/auto-handoffs trailer ` menu choices. */

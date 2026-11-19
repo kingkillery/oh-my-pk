@@ -154,10 +154,12 @@ describe("handoff trailer skill", () => {
 		expect(handoffDirective("always", "")).not.toContain("skill://");
 	});
 
-	it("asks for the trailer on the line after the closing tag", () => {
+	it("asks the model to read and follow the trailer skill after the closing tag", () => {
 		const directive = handoffDirective("always", "explain-simply");
 		expect(directive).toContain("skill://explain-simply");
 		expect(directive).toContain("</handoff-prompt> tag");
+		expect(directive).toContain("follow it");
+		expect(directive).not.toContain("nothing else");
 	});
 
 	it("drops an unusable trailer instead of injecting stray text", () => {

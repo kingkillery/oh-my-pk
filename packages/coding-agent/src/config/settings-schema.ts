@@ -5810,7 +5810,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Continuity",
 			label: "Handoff Trailer Skill",
 			description:
-				"Skill URI to emit on the line right after the handoff block closes, for example explain-simply. The trailer stays outside the saved record. Leave empty for no trailer.",
+				"Skill to apply right after the handoff block closes, for example explain-simply. Its output stays outside the saved record. Leave empty for no trailer.",
 		},
 	},
 
