@@ -10,6 +10,7 @@ routes = [
 	{ pattern = "pkking.computer/*", zone_name = "pkking.computer" },
 	{ pattern = "oh-my-pk.pkking.computer", custom_domain = true },
 	{ pattern = "oh-my-pi.pkking.computer", custom_domain = true },
+	{ pattern = "oh-my-pk.gopk.xyz", custom_domain = true },
 ]
 
 [assets]
