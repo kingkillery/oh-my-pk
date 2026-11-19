@@ -23,12 +23,14 @@ import {
 
 export const TYPESAFE_DEFAULT_BASE_URL = "https://api.typesafe.ai/v1";
 export const TYPESAFE_DEFAULT_MODEL_ID = "jev-1.13.0";
-export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-// OpenRouter serves the same /v1/systemone route but names the model without the patch version.
-export const OPENROUTER_MODEL_ID = "jev-1.13";
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/alpha";
+export const OPENROUTER_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions";
+// OpenRouter serves native decision models at POST /api/alpha/decisions using provider/model slugs.
+export const OPENROUTER_MODEL_ID = "typesafe/jev-1.14";
+export const OPENROUTER_FALLBACK_MODEL_ID = "perplexity/pplx-decider-flash-v1.3:free";
 export const TYPESAFE_USER_AGENT = `${APP_NAME}/typesafe`;
 
-const RETRYABLE_STATUSES: Record<number, true> = { 429: true, 529: true };
+const RETRYABLE_STATUSES: Record<number, true> = { 408: true, 429: true, 500: true, 502: true, 503: true, 504: true, 529: true };
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 250;
 
@@ -116,11 +118,22 @@ function usesOpenRouter(): boolean {
 }
 
 export function resolveTypeSafeBaseUrl(): string {
-	return $env.TYPESAFE_BASE_URL || (usesOpenRouter() ? OPENROUTER_BASE_URL : TYPESAFE_DEFAULT_BASE_URL);
+	return $env.TYPESAFE_BASE_URL || (usesOpenRouter() ? OPENROUTER_DECISIONS_URL : TYPESAFE_DEFAULT_BASE_URL);
+}
+
+export function resolveTypeSafeEndpointUrl(baseUrl: string = resolveTypeSafeBaseUrl()): string {
+	const trimmed = baseUrl.replace(/\/+$/, "");
+	if (trimmed.endsWith("/decisions") || trimmed.endsWith("/systemone")) {
+		return trimmed;
+	}
+	return `${trimmed}/systemone`;
 }
 
 export function resolveTypeSafeModelId(): string {
-	return usesOpenRouter() ? OPENROUTER_MODEL_ID : TYPESAFE_DEFAULT_MODEL_ID;
+	if (usesOpenRouter()) {
+		return $env.OMP_OPENROUTER_DECISION_MODEL || OPENROUTER_MODEL_ID;
+	}
+	return TYPESAFE_DEFAULT_MODEL_ID;
 }
 
 async function waitForRetry(signal: AbortSignal, milliseconds: number): Promise<void> {
@@ -204,7 +217,7 @@ async function requestSystemOneTarget(
 		"User-Agent": TYPESAFE_USER_AGENT,
 	};
 	if (target.apiKey) headers.Authorization = `Bearer ${target.apiKey}`;
-	const response = await fetch(`${target.baseUrl}/systemone`, {
+	const response = await fetch(resolveTypeSafeEndpointUrl(target.baseUrl), {
 		method: "POST",
 		headers,
 		body: JSON.stringify({ state, model, questions }),

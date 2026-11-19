@@ -123,7 +123,7 @@ describe("Jev gate HTTP contracts", () => {
 		expect(getBashJudgmentCacheKey("git status", "workspace")).not.toBe(originalKey);
 		await judgeAll(rows, cachePath);
 		expect(requests).toHaveLength(4);
-		expect(requests.slice(2).every(request => request.model === "jev-1.13")).toBe(true);
+		expect(requests.slice(2).every(request => request.model === "typesafe/jev-1.14")).toBe(true);
 	});
 
 	it("retries failed and previously cached null verdicts", async () => {

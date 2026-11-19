@@ -57,9 +57,9 @@ describe("systemOne", () => {
 		await systemOne("s", { q: { type: "noul", instructions: "?" } });
 
 		const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-		expect(url).toBe("https://openrouter.ai/api/v1/systemone");
+		expect(url).toBe("https://openrouter.ai/api/alpha/decisions");
 		expect((init.headers as Record<string, string>).Authorization).toBe("Bearer or-key");
-		expect(JSON.parse(init.body as string).model).toBe("jev-1.13");
+		expect(JSON.parse(init.body as string).model).toBe("typesafe/jev-1.14");
 	});
 
 	it("prefers TYPESAFE_API_KEY over OPENROUTER_API_KEY", async () => {
