@@ -66,18 +66,18 @@ describe("evaluateAgentTelemetry", () => {
 		expect(fetchSpy).toHaveBeenCalled();
 	});
 
-	test("catches non-200 HTTP response gracefully without throwing", async () => {
+	test("retries a 500 response, then gives up gracefully without throwing", async () => {
 		process.env.TYPESAFE_API_KEY = "test-key";
 		fetchSpy.mockResolvedValue(new Response("Internal Server Error", { status: 500 }));
 
 		const result = await evaluateAgentTelemetry("Agent state snippet");
 		expect(result).toBeUndefined();
-		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(fetchSpy).toHaveBeenCalledTimes(3);
 	});
 
 	test.each([
 		["TYPESAFE_API_KEY", "https://api.typesafe.ai/v1/systemone", "jev-1.13.0"],
-		["OPENROUTER_API_KEY", "https://openrouter.ai/api/v1/systemone", "jev-1.13"],
+		["OPENROUTER_API_KEY", "https://openrouter.ai/api/alpha/decisions", "typesafe/jev-1.14"],
 	] as const)(
 		"parses valid Jev response using %s after earlier tests restore the environment",
 		async (key, endpoint, model) => {

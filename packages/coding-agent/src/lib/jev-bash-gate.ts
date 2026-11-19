@@ -122,8 +122,7 @@ export const BASH_GATE_SCREEN_QUESTIONS: Record<string, TypeSafeNoulQuestion> = 
 	},
 	has_system_or_process_kill: {
 		type: "noul",
-		instructions:
-			"Does any command alter system privileges/services/registry/boot, or terminate processes?",
+		instructions: "Does any command alter system privileges/services/registry/boot, or terminate processes?",
 		criteria: {
 			true: "Invokes sudo, chmod 777, chown -R /, shutdown/reboot, reg delete, sc stop/delete, taskkill, kill, pkill, or killall.",
 			false: "Normal unprivileged user-space development command.",
@@ -404,7 +403,9 @@ export async function replayBashGateTrace(
 	};
 }
 
-export function createSystemOneSwitchDecider(options: { model?: string; timeoutMs?: number; signal?: AbortSignal } = {}): BashSwitchDecider {
+export function createSystemOneSwitchDecider(
+	options: { model?: string; timeoutMs?: number; signal?: AbortSignal } = {},
+): BashSwitchDecider {
 	return async (view, questions) => {
 		const response = await systemOne(view, questions, {
 			model: options.model,
@@ -414,7 +415,7 @@ export function createSystemOneSwitchDecider(options: { model?: string; timeoutM
 		const out: Record<string, number> = {};
 		for (const key of Object.keys(questions)) {
 			const ans = response.answers[key];
-			if (!ans || ans.type !== "noul") {
+			if (ans?.type !== "noul") {
 				throw new Error(`Expected noul answer for ${key}`);
 			}
 			out[key] = ans.noul;
@@ -535,7 +536,7 @@ export async function getJevBashBlockReason(
 			steps: verdict?.trace?.length ?? (verdict ? 1 : 0),
 			trace: scrubShadowTrace(verdict?.trace),
 		};
-		logger.info("[JevBashGate] shadow verdict", entry);
+		logger.info("[JevBashGate] shadow verdict", { ...entry });
 		appendBashShadowTelemetry(entry);
 		return undefined;
 	}
@@ -556,7 +557,7 @@ export interface BashShadowTelemetryEntry {
 	destructive: number | null;
 	latencyMs: number | null;
 	steps: number;
-	trace?: BashStepTrace[];
+	trace?: BashSwitchStepTrace[];
 }
 
 const SECRET_SCRUB_RE =
@@ -566,7 +567,7 @@ export function scrubCommandPreview(command: string, maxLen = 500): string {
 	return command.replace(SECRET_SCRUB_RE, "[REDACTED]").slice(0, maxLen);
 }
 
-function scrubShadowTrace(trace: BashStepTrace[] | undefined): BashStepTrace[] | undefined {
+function scrubShadowTrace(trace: BashSwitchStepTrace[] | undefined): BashSwitchStepTrace[] | undefined {
 	if (!trace) return undefined;
 	return trace.map(step => ({
 		...step,
