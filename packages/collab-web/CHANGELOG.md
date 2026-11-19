@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [16.4.37] - 2026-11-19
+
 ### Added
 
 - Phone layout for the browser guest: the transcript uses the screen width, the composer stays above the keyboard (visual viewport and safe-area insets), and Stop is a labeled control in the thumb zone.

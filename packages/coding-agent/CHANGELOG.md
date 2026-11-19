@@ -2,10 +2,7 @@
 
 ## [Unreleased]
 
-### Changed
-
-- Routing pools now fail over on a `402` payment-required rejection. A depleted prepaid balance is definitive for the API-key provider that returned it, but a pooled equivalent on a subscription transport — a Gemini model on `google-antigravity` instead of `google` — still serves the turn. See `docs/models.md`.
-- Fusion `token-savings` mode now tracks per-model prompt-prefix watermarks (cleared on compaction) to gate `default -> pi/task` transitions on deep contexts (`>= 16,000` tokens) using catalog `input`/`cacheRead`/`cacheWrite` delta-prefill math (with a `$0`-catalog fallback for subscription/local models) and keeps `pi/task` sticky across rapid short-tail follow-up prompts within the 5-minute cache TTL instead of ping-ponging `default <-> pi/task`. See `docs/fusion.md`.
+## [16.4.37] - 2026-11-19
 
 ### Added
 
@@ -14,6 +11,12 @@
 - `/auto-handoffs trailer <skill|off>` (and direct `/auto-handoffs explain-simply` or the `/auto-handoffs ` slash-command menu) emits a skill URI on the line right after the handoff block closes, for example `/auto-handoffs trailer explain-simply` to append `skill://explain-simply`. The trailer sits outside `<handoff-prompt>`, so it never reaches the canonical record and cannot change a saved note's signature or revision. The same option is available in the settings menu under Context -> Continuity as "Handoff Trailer Skill". An unusable value is rejected instead of being injected as text.
 - Continuity workstreams register repository-relative notes by default, so the note and index can travel in a Git clone. `/auto-handoffs store repo` or `store vault <name>` selects defaults for new registrations; named `vault://` pointers keep note bodies and revision history in the existing vault without mirroring it into the repository. Explicit repointing never moves or deletes either note.
 - `/model` (and `Alt+M`) now lists Fusion model roles (`Fusion Compact`, `Fusion Sidekick`, `Fusion Strong Sidekick`, and `Fusion Pool Tier 1`–`5`) and displays their badges directly in the model selector.
+- Self-Improvement Memory (SIM) tracks harness, prompt, hook, parser, and `pi-catalog` compatibility fixes in `.omp/sim.json` (schema v2) with SHA-256 pre-evaluation manifests (`sim:predict`), 16-case deterministic local replay (`sim:replay`), baseline-aware 8-state attribution (`sim:record`), cross-run carry-forward (`sim:carry`), and hardened untrusted-data injection into `buildSystemPrompt`.
+
+### Changed
+
+- Routing pools now fail over on a `402` payment-required rejection. A depleted prepaid balance is definitive for the API-key provider that returned it, but a pooled equivalent on a subscription transport — a Gemini model on `google-antigravity` instead of `google` — still serves the turn. See `docs/models.md`.
+- Fusion `token-savings` mode now tracks per-model prompt-prefix watermarks (cleared on compaction) to gate `default -> pi/task` transitions on deep contexts (`>= 16,000` tokens) using catalog `input`/`cacheRead`/`cacheWrite` delta-prefill math (with a `$0`-catalog fallback for subscription/local models) and keeps `pi/task` sticky across rapid short-tail follow-up prompts within the 5-minute cache TTL instead of ping-ponging `default <-> pi/task`. See `docs/fusion.md`.
 
 ### Fixed
 
