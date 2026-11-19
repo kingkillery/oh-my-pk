@@ -30,7 +30,15 @@ export const OPENROUTER_MODEL_ID = "typesafe/jev-1.14";
 export const OPENROUTER_FALLBACK_MODEL_ID = "perplexity/pplx-decider-flash-v1.3:free";
 export const TYPESAFE_USER_AGENT = `${APP_NAME}/typesafe`;
 
-const RETRYABLE_STATUSES: Record<number, true> = { 408: true, 429: true, 500: true, 502: true, 503: true, 504: true, 529: true };
+const RETRYABLE_STATUSES: Record<number, true> = {
+	408: true,
+	429: true,
+	500: true,
+	502: true,
+	503: true,
+	504: true,
+	529: true,
+};
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 250;
 

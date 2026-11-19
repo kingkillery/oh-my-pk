@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- The Jev bash gate has two new modes, `switch` and `switch-shadow`, which judge a command in two steps. `switch-shadow` only observes: it appends a JSONL record to `~/.ompk/agent/logs/jev-bash-shadow.jsonl` (or the path in `OMP_JEV_BASH_SHADOW_LOG`) comparing the model's verdict with the built-in heuristic, with secrets scrubbed from the command preview and trace.
+
+### Changed
+
+- With only an OpenRouter key set, decision-model requests now go to OpenRouter's Decisions endpoint (`/api/alpha/decisions`) with `typesafe/jev-1.14` instead of `/api/v1/systemone` with `jev-1.13`. `OMP_OPENROUTER_DECISION_MODEL` overrides the model. Requests are also retried on 408, 500, 502, 503 and 504, not only 429 and 529.
+
 ### Fixed
 
 - A handoff trailer skill (`/auto-handoffs trailer explain-simply`) is now applied instead of printed. The end-of-turn directive told the model to emit the bare `skill://explain-simply` line and nothing else, so the turn ended with the URI and no explanation; it now tells the model to read the skill and write its output below the handoff block.
