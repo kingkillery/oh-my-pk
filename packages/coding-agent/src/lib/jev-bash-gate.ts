@@ -8,6 +8,9 @@
 // adversarial resistance, so this is a second opinion layered on existing
 // policy, not a security boundary.
 
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { $env, logger } from "@pk-nerdsaver-ai/pi-utils";
 import bashGateQuestions from "../prompts/tools/jev-bash-gate.md" with { type: "text" };
 import { resolveToCwd } from "../tools/path-utils";
@@ -508,10 +511,148 @@ export async function getJevBashBlockReason(
 			: await judgeBashCommand(command, cwd, signal);
 	const reason = verdictBlockReason(verdict);
 	if (mode === "shadow" || mode === "switch-shadow") {
-		logger.info("[JevBashGate] shadow verdict", { command: command.slice(0, 500), verdict, wouldBlock: !!reason });
+		const preview = scrubCommandPreview(command);
+		const heuristicWouldBlock = heuristicBashWouldBlock(command);
+		const wouldBlock = !!reason;
+		const entry: BashShadowTelemetryEntry = {
+			timestamp: new Date().toISOString(),
+			mode,
+			cwd,
+			commandPreview: preview,
+			wouldBlock,
+			heuristicWouldBlock,
+			disagreement: wouldBlock !== heuristicWouldBlock,
+			disagreementKind:
+				wouldBlock === heuristicWouldBlock
+					? "none"
+					: wouldBlock
+						? "switch_blocks_heuristic_allows"
+						: "switch_allows_heuristic_blocks",
+			choice: verdict?.choice ?? null,
+			confidence: verdict?.confidence ?? null,
+			destructive: verdict?.destructive ?? null,
+			latencyMs: verdict?.latencyMs ?? null,
+			steps: verdict?.trace?.length ?? (verdict ? 1 : 0),
+			trace: scrubShadowTrace(verdict?.trace),
+		};
+		logger.info("[JevBashGate] shadow verdict", entry);
+		appendBashShadowTelemetry(entry);
 		return undefined;
 	}
 	return reason;
+}
+
+export interface BashShadowTelemetryEntry {
+	timestamp: string;
+	mode: "shadow" | "switch-shadow";
+	cwd: string;
+	commandPreview: string;
+	wouldBlock: boolean;
+	heuristicWouldBlock: boolean;
+	disagreement: boolean;
+	disagreementKind: "none" | "switch_blocks_heuristic_allows" | "switch_allows_heuristic_blocks";
+	choice: string | null;
+	confidence: number | null;
+	destructive: number | null;
+	latencyMs: number | null;
+	steps: number;
+	trace?: BashStepTrace[];
+}
+
+const SECRET_SCRUB_RE =
+	/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|Bearer\s+[A-Za-z0-9._~+/=-]{10,}|(?:[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD))\s*=\s*['"]?[^\s'";&|]+['"]?)/gi;
+
+export function scrubCommandPreview(command: string, maxLen = 500): string {
+	return command.replace(SECRET_SCRUB_RE, "[REDACTED]").slice(0, maxLen);
+}
+
+function scrubShadowTrace(trace: BashStepTrace[] | undefined): BashStepTrace[] | undefined {
+	if (!trace) return undefined;
+	return trace.map(step => ({
+		...step,
+		state: {
+			...step.state,
+			command: scrubCommandPreview(step.state.command, 2_000),
+		},
+		view:
+			typeof step.view.command === "string"
+				? { ...step.view, command: scrubCommandPreview(step.view.command, 2_000) }
+				: step.view,
+	}));
+}
+
+const HEURISTIC_DANGER_RE =
+	/(?:\brm\s+-[^\n;|&]*r[^\n;|&]*f\b|\bgit\s+(?:push\s+[^\n;|&]*--force\b|reset\s+--hard\b|clean\s+-[^\n;|&]*f)|\b(?:curl|wget|iwr|irm)\b[^\n|]*\|\s*(?:ba)?sh\b|\b(?:powershell|pwsh)\b[^\n;|&]*-(?:enc|encodedcommand)\b|\bdrop\s+(?:table|database|schema)\b|\bmkfs\b|\bdd\s+if=)/i;
+const HEURISTIC_EPHEMERAL_CLEAN_RE =
+	/^\s*rm\s+-rf\s+(?:\.\/)?(?:node_modules|dist|build|\.next|\.turbo|coverage|\.pytest_cache|__pycache__|target)(?:\s|$)/i;
+
+export function heuristicBashWouldBlock(command: string): boolean {
+	if (HEURISTIC_EPHEMERAL_CLEAN_RE.test(command)) return false;
+	return HEURISTIC_DANGER_RE.test(command);
+}
+
+export function resolveBashShadowLogPath(mode: "shadow" | "switch-shadow"): string | undefined {
+	const explicit = $env.OMP_JEV_BASH_SHADOW_LOG?.trim();
+	if (explicit === "off" || explicit === "0") return undefined;
+	if (explicit) return explicit;
+	if (mode === "switch-shadow") {
+		return path.join(os.homedir(), ".ompk", "agent", "logs", "jev-bash-shadow.jsonl");
+	}
+	return undefined;
+}
+
+export function appendBashShadowTelemetry(entry: BashShadowTelemetryEntry): void {
+	const logPath = resolveBashShadowLogPath(entry.mode);
+	if (!logPath) return;
+	try {
+		fs.mkdirSync(path.dirname(logPath), { recursive: true });
+		fs.appendFileSync(logPath, `${JSON.stringify(entry)}\n`, "utf8");
+	} catch {
+		// Shadow logging is strictly best-effort and must never affect tool execution.
+	}
+}
+
+export function summarizeBashShadowLog(logPath: string): {
+	total: number;
+	switchWouldBlock: number;
+	heuristicWouldBlock: number;
+	disagreements: number;
+	falseBlockCandidates: number;
+	missedByHeuristicCandidates: number;
+	meanLatencyMs: number;
+} {
+	const raw = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
+	const rows = raw
+		.split(/\r?\n/)
+		.filter(Boolean)
+		.map(line => JSON.parse(line) as BashShadowTelemetryEntry);
+	let switchWouldBlock = 0;
+	let heuristicWouldBlockCount = 0;
+	let disagreements = 0;
+	let falseBlockCandidates = 0;
+	let missedByHeuristicCandidates = 0;
+	let latencySum = 0;
+	let latencyCount = 0;
+	for (const row of rows) {
+		if (row.wouldBlock) switchWouldBlock++;
+		if (row.heuristicWouldBlock) heuristicWouldBlockCount++;
+		if (row.disagreement) disagreements++;
+		if (row.disagreementKind === "switch_blocks_heuristic_allows") missedByHeuristicCandidates++;
+		if (row.disagreementKind === "switch_allows_heuristic_blocks") falseBlockCandidates++;
+		if (typeof row.latencyMs === "number") {
+			latencySum += row.latencyMs;
+			latencyCount++;
+		}
+	}
+	return {
+		total: rows.length,
+		switchWouldBlock,
+		heuristicWouldBlock: heuristicWouldBlockCount,
+		disagreements,
+		falseBlockCandidates,
+		missedByHeuristicCandidates,
+		meanLatencyMs: latencyCount > 0 ? Math.round((latencySum / latencyCount) * 10) / 10 : 0,
+	};
 }
 
 /** Adapter shared by the SDK and contract tests; relative paths use BashTool's resolver. */
