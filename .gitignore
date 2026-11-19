@@ -160,3 +160,9 @@ packages/coding-agent/dist/
 /interconnection_dash_traces*.jsonl
 evals/typesafe-jev/corpus.jsonl
 packages/natives/native/*.node.previous-release-*
+
+# SIM runtime scratch & PRD temporary artifacts (keep .omp/sim.json, .omp/sim.schema.json, .omp/fixtures/ tracked)
+.omp/sim-manifest.json
+.omp/sim-rejected.jsonl
+.prd/findings-*.md
+.prd/baseline-gates.json

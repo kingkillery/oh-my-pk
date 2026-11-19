@@ -111,7 +111,7 @@
     "build:native": "bun --cwd=packages/natives run build",
     "test": "bun run --parallel test:ts test:rs",
     "test:ts": "GITHUB_ACTIONS= bun run --workspaces --if-present test -- --only-failures && bun run test:scripts",
-    "test:scripts": "bun test scripts/ci-concurrency.test.ts scripts/ci-release-notes.test.ts scripts/install-smoke.test.ts scripts/publish-binaries-hf.test.ts scripts/release-age-policy.test.ts scripts/release-lockfile.test.ts scripts/release-query.test.ts scripts/run-ts-check.test.ts scripts/sim/sim.test.ts",
+    "test:scripts": "bun test scripts/ci-concurrency.test.ts scripts/ci-release-notes.test.ts scripts/install-smoke.test.ts scripts/publish-binaries-hf.test.ts scripts/release-age-policy.test.ts scripts/release-lockfile.test.ts scripts/release-query.test.ts scripts/run-ts-check.test.ts scripts/sim/cli.test.ts scripts/sim/sim.test.ts scripts/sim/workflow.test.ts",
     "test:rs": "bun scripts/run-rs-task.ts test:rs",
     "check": "bun run check:ts && bun run check:rs",
     "check:ts": "bun scripts/run-ts-check.ts",
@@ -186,10 +186,12 @@
     "generate-docs-index": "bun --cwd=packages/coding-agent run generate-docs-index",
     "build-tool-views": "bun --cwd=packages/collab-web run gen:tool-views",
     "check-spoofed-versions": "bun scripts/check-spoofed-versions.ts",
+    "sim:predict": "bun scripts/sim/cli.ts predict",
     "sim:replay": "bun scripts/sim/cli.ts replay",
     "sim:validate": "bun scripts/sim/cli.ts validate",
     "sim:status": "bun scripts/sim/cli.ts status",
-    "sim:record": "bun scripts/sim/cli.ts record"
+    "sim:record": "bun scripts/sim/cli.ts record",
+    "sim:carry": "bun scripts/sim/cli.ts carry"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",

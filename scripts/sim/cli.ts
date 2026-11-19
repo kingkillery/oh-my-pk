@@ -1,346 +1,357 @@
 #!/usr/bin/env bun
 /**
- * Minimal deterministic CLI for `oh-my-pk` Self-Improvement Memory (SIM).
+ * Thin CLI adapter over `scripts/sim/workflow.ts`.
+ *
+ * Parses argv flags, invokes the deep in-process SIM workflow module, renders
+ * human or `--json` output, and maps outcomes/errors to exit codes `0` or `1`.
  *
  * Subcommands:
- *   replay   Run the fast local regression harness and emit passed/total + diffs.
- *   validate Validate `.omp/sim.json` against the Appendix D.3 schema and invariants.
- *   record   Append a verified attempt (backing predicted vs fixed/missed with replay evidence).
- *   merge    Deterministically merge duplicate exact-text problems into canonical IDs + aliases.
- *   status   Print a concise ledger summary (problems, provenance, unresolved predictions).
+ *   bun scripts/sim/cli.ts replay   [--json] [--model <id>] [--save <file>] [--baseline <file>]
+ *   bun scripts/sim/cli.ts predict  --problem <P#|new> [--name <text>] --predicted <id1,id2> [opts]
+ *   bun scripts/sim/cli.ts carry    --arm <src> --domain <d> --into <target> [opts]
+ *   bun scripts/sim/cli.ts validate [--ledger <path>]
+ *   bun scripts/sim/cli.ts status   [--ledger <path>] [--json]
+ *   bun scripts/sim/cli.ts merge    [--ledger <path>]
+ *   bun scripts/sim/cli.ts record   --what <desc> --files <a,b> --model <m> --domain <d> --benchmark <b> [opts]
+ *   bun scripts/sim/cli.ts cases
  */
-
 import * as path from "node:path";
-import { runSimReplay, SIM_REPLAY_CASES } from "./replay";
-import {
-	appendSimAttempt,
-	createEmptySimLedger,
-	evaluateReplayDiff,
-	mergeDuplicateProblems,
-	type SimLedger,
-	type SimReplayReport,
-	validateSimLedger,
-} from "./schema";
-
-const DEFAULT_LEDGER_PATH = path.resolve(import.meta.dir, "../../.omp/sim.json");
+import { createSimWorkflow, type SimWorkflow } from "./workflow.ts";
 
 interface ParsedArgs {
 	command: string;
-	flags: Record<string, string>;
-	booleans: Set<string>;
+	flags: Map<string, string | boolean>;
 }
 
-function parseCliArgs(argv: readonly string[]): ParsedArgs {
+function parseCliArgs(argv: string[]): ParsedArgs {
 	const [command = "help", ...rest] = argv;
-	const flags: Record<string, string> = {};
-	const booleans = new Set<string>();
-
+	const flags = new Map<string, string | boolean>();
 	for (let i = 0; i < rest.length; i++) {
 		const token = rest[i];
 		if (!token.startsWith("--")) continue;
 		const eqIdx = token.indexOf("=");
 		if (eqIdx !== -1) {
-			const key = token.slice(2, eqIdx);
-			flags[key] = token.slice(eqIdx + 1);
+			flags.set(token.slice(2, eqIdx), token.slice(eqIdx + 1));
 			continue;
 		}
 		const key = token.slice(2);
 		const next = rest[i + 1];
 		if (next !== undefined && !next.startsWith("--")) {
-			flags[key] = next;
+			flags.set(key, next);
 			i += 1;
 		} else {
-			booleans.add(key);
+			flags.set(key, true);
 		}
 	}
-
-	return { command, flags, booleans };
+	return { command, flags };
 }
 
-function splitCsv(raw: string | undefined): string[] {
-	if (!raw) return [];
-	return raw
+function getStringFlag(flags: Map<string, string | boolean>, name: string): string | undefined {
+	const value = flags.get(name);
+	return typeof value === "string" ? value : undefined;
+}
+
+function getBoolFlag(flags: Map<string, string | boolean>, name: string, fallback = false): boolean {
+	const value = flags.get(name);
+	if (value === undefined) return fallback;
+	if (typeof value === "boolean") return value;
+	const normalized = value.trim().toLowerCase();
+	if (normalized === "true" || normalized === "1" || normalized === "yes") return true;
+	if (normalized === "false" || normalized === "0" || normalized === "no") return false;
+	throw new Error(`Invalid boolean value for --${name}: "${value}"`);
+}
+
+function parsePositiveIntFlag(flags: Map<string, string | boolean>, name: string): number | undefined {
+	const raw = getStringFlag(flags, name);
+	if (raw === undefined) return undefined;
+	const trimmed = raw.trim();
+	if (!/^[1-9][0-9]*$/.test(trimmed)) {
+		throw new Error(`Invalid positive integer for --${name}: "${raw}"`);
+	}
+	return Number.parseInt(trimmed, 10);
+}
+
+function splitCsv(value: string | undefined): string[] {
+	if (!value) return [];
+	return value
 		.split(",")
 		.map(part => part.trim())
-		.filter(part => part.length > 0);
+		.filter(Boolean);
 }
 
-function parseBooleanFlag(value: string | undefined, fallback: boolean): boolean {
-	if (value === undefined) return fallback;
-	const lower = value.trim().toLowerCase();
-	if (lower === "true" || lower === "1" || lower === "yes") return true;
-	if (lower === "false" || lower === "0" || lower === "no") return false;
-	throw new Error(`Invalid boolean value: "${value}". Expected true or false.`);
-}
-
-async function readLedger(ledgerPath: string, createIfMissing = false): Promise<SimLedger> {
-	const file = Bun.file(ledgerPath);
-	if (!(await file.exists())) {
-		if (createIfMissing) return createEmptySimLedger();
-		throw new Error(`SIM ledger not found at ${ledgerPath}`);
-	}
-	const parsed: unknown = await file.json();
-	const check = validateSimLedger(parsed);
-	if (!check.ok) {
-		throw new Error(`Invalid SIM ledger at ${ledgerPath}:\n- ${check.errors.join("\n- ")}`);
-	}
-	return parsed as SimLedger;
-}
-
-async function writeLedger(ledgerPath: string, ledger: SimLedger): Promise<void> {
-	await Bun.write(ledgerPath, `${JSON.stringify(ledger, null, "\t")}\n`);
-}
-
-async function readReplayReport(filePath: string): Promise<SimReplayReport> {
-	const file = Bun.file(filePath);
-	if (!(await file.exists())) {
-		throw new Error(`Replay report file not found: ${filePath}`);
-	}
-	const parsed: unknown = await file.json();
-	if (
-		typeof parsed !== "object" ||
-		parsed === null ||
-		!("passed" in parsed) ||
-		!("total" in parsed) ||
-		!("passed_ids" in parsed) ||
-		!("failed_ids" in parsed) ||
-		!Array.isArray(parsed.passed_ids) ||
-		!Array.isArray(parsed.failed_ids)
-	) {
-		throw new Error(`Invalid replay report JSON at ${filePath}`);
-	}
-	return parsed as SimReplayReport;
-}
-
-function printHelp(): void {
-	process.stdout.write(
-		[
-			"Usage: bun scripts/sim/cli.ts <command> [options]",
-			"",
-			"Commands:",
-			"  replay    [--json] [--cases id1,id2] [--predicted id1,id2] [--baseline <file>] [--save <file>]",
-			"  validate  [--ledger <path>]",
-			"  status    [--ledger <path>] [--json]",
-			"  merge     [--ledger <path>]",
-			"  record    --what <text> --files <a,b> --model <model> --domain <domain>",
-			"            [--problem <P#|new>] [--name <hypothesis>] [--predicted <id1,id2>]",
-			"            [--accepted true|false] [--round <N>] [--replay | --replay-json <file>]",
-			"            [--baseline <file>] [--commit <sha>] [--ledger <path>]",
-			"  cases     List all replay case IDs",
-			"",
-		].join("\n"),
-	);
-}
-
-async function cmdReplay(args: ParsedArgs): Promise<number> {
-	const caseIds = splitCsv(args.flags.cases);
-	const predicted = splitCsv(args.flags.predicted);
-	const baseline = args.flags.baseline ? await readReplayReport(args.flags.baseline) : undefined;
-	const report = await runSimReplay({
-		caseIds: caseIds.length > 0 ? caseIds : undefined,
-		predicted: predicted.length > 0 ? predicted : undefined,
-		baseline,
+async function cmdReplay(workflow: SimWorkflow, flags: Map<string, string | boolean>): Promise<number> {
+	const asJson = getBoolFlag(flags, "json", false);
+	const { report, diff } = await workflow.replay({
+		model: getStringFlag(flags, "model"),
+		baselinePath: getStringFlag(flags, "baseline"),
+		savePath: getStringFlag(flags, "save"),
 	});
 
-	if (args.flags.save) {
-		await Bun.write(args.flags.save, `${JSON.stringify(report, null, "\t")}\n`);
-	}
-
-	if (args.booleans.has("json") || args.flags.json === "true") {
-		process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+	if (asJson) {
+		console.log(JSON.stringify(diff ? { ...report, diff } : report, null, 2));
 	} else {
+		console.log(`SIM Replay: ${report.passed}/${report.total} passed`);
 		for (const item of report.results) {
 			const status = item.passed ? "PASS" : "FAIL";
-			process.stdout.write(`[${status}] ${item.id} (${item.category}, ${item.durationMs}ms)\n`);
-			if (!item.passed && item.error) {
-				process.stdout.write(`       ${item.error}\n`);
+			console.log(`  [${status}] ${item.id} (${item.category}, ${item.duration_ms}ms)`);
+			if (item.error) {
+				console.log(`         ${item.error}`);
 			}
 		}
-		process.stdout.write(`\nReplay: ${report.passed}/${report.total} passed\n`);
-		if (report.diff) {
-			process.stdout.write(
-				`Predicted: ${report.diff.predicted.length} | Fixed: ${report.diff.fixed.length} | Missed: ${report.diff.missed.length}\n`,
+		if (diff) {
+			console.log(
+				`Baseline diff: newly_passing=[${diff.newly_passing.join(", ")}] regressed=[${diff.regressed.join(", ")}] unresolved=[${diff.unresolved.join(", ")}]`,
 			);
-			if (report.diff.regressed.length > 0) {
-				process.stdout.write(`Regressed: ${report.diff.regressed.join(", ")}\n`);
+			if (diff.model_mismatch) {
+				console.log(
+					`Model mismatch (RSI-21): baseline="${diff.model_mismatch.baselineModel}" != candidate="${diff.model_mismatch.candidateModel}"`,
+				);
 			}
 		}
 	}
 
-	return report.failed_ids.length === 0 ? 0 : 1;
+	return report.passed === report.total ? 0 : 1;
 }
 
-async function cmdValidate(args: ParsedArgs): Promise<number> {
-	const ledgerPath = path.resolve(args.flags.ledger ?? DEFAULT_LEDGER_PATH);
-	const file = Bun.file(ledgerPath);
-	if (!(await file.exists())) {
-		process.stderr.write(`SIM ledger not found: ${ledgerPath}\n`);
-		return 1;
+async function cmdPredict(workflow: SimWorkflow, flags: Map<string, string | boolean>): Promise<number> {
+	const asJson = getBoolFlag(flags, "json", false);
+	const backfilled = flags.has("backfilled") ? getBoolFlag(flags, "backfilled", false) : undefined;
+	const { manifestPath, manifest } = await workflow.predict({
+		problem: getStringFlag(flags, "problem") ?? "",
+		name: getStringFlag(flags, "name"),
+		predicted: splitCsv(getStringFlag(flags, "predicted")),
+		round: parsePositiveIntFlag(flags, "round"),
+		what: getStringFlag(flags, "what"),
+		files: splitCsv(getStringFlag(flags, "files")),
+		model: getStringFlag(flags, "model"),
+		domain: getStringFlag(flags, "domain"),
+		benchmark: getStringFlag(flags, "benchmark"),
+		sample: getStringFlag(flags, "sample"),
+		backfilled,
+		baselinePath: getStringFlag(flags, "baseline"),
+		force: getBoolFlag(flags, "force", false),
+		allowUnknownCases: getBoolFlag(flags, "allow-unknown-cases", false),
+		allowPreserved: getBoolFlag(flags, "allow-preserved", false),
+	});
+
+	if (asJson) {
+		console.log(JSON.stringify({ manifest_path: manifestPath, ...manifest }, null, 2));
+	} else {
+		console.log(
+			`Pre-eval manifest saved: ${manifestPath}\n` +
+				`  manifest_id: ${manifest.manifest_id}\n` +
+				`  problem: ${manifest.problem}${manifest.name ? ` ("${manifest.name}")` : ""}\n` +
+				`  predicted: [${manifest.predicted.join(", ")}]\n` +
+				`  prediction_hash: ${manifest.prediction_hash}`,
+		);
 	}
-	const parsed: unknown = await file.json();
-	const result = validateSimLedger(parsed);
-	if (!result.ok) {
-		process.stderr.write(`SIM validation failed (${ledgerPath}):\n`);
-		for (const err of result.errors) {
-			process.stderr.write(`- ${err}\n`);
+	return 0;
+}
+
+async function cmdCarry(workflow: SimWorkflow, flags: Map<string, string | boolean>): Promise<number> {
+	const asJson = getBoolFlag(flags, "json", false);
+	const arm = getStringFlag(flags, "arm") ?? "";
+	const domain = getStringFlag(flags, "domain") ?? "";
+	const into = getStringFlag(flags, "into") ?? "";
+	const benchmark = getStringFlag(flags, "benchmark");
+	const model = getStringFlag(flags, "model");
+
+	const outcome = await workflow.carry({ arm, domain, into, benchmark, model });
+	if (asJson) {
+		console.log(
+			JSON.stringify(
+				{
+					ledger: outcome.ledgerPath,
+					carried_from: outcome.carriedFrom,
+					next_round: outcome.nextRound,
+					problems: outcome.problemCount,
+				},
+				null,
+				2,
+			),
+		);
+	} else {
+		console.log(
+			`Carried SIM ledger forward -> ${into} (from arm=${arm}, domain=${domain}${benchmark ? `, benchmark=${benchmark}` : ""}${model ? `, model=${model}` : ""}); next round: ${outcome.nextRound}`,
+		);
+	}
+	return 0;
+}
+
+async function cmdValidate(workflow: SimWorkflow): Promise<number> {
+	const outcome = await workflow.validate();
+	if (!outcome.valid) {
+		if (outcome.missing) {
+			console.error(outcome.errors[0] ?? `SIM ledger not found: ${outcome.ledgerPath}`);
+			return 1;
+		}
+		console.error(`SIM ledger validation failed (${outcome.ledgerPath}):`);
+		for (const err of outcome.errors) {
+			console.error(`  - ${err}`);
 		}
 		return 1;
 	}
-	const ledger = parsed as SimLedger;
-	const attempts = ledger.problems.reduce((sum, p) => sum + p.attempts.length, 0);
-	process.stdout.write(
-		`SIM ledger valid: ${ledger.problems.length} problems, ${attempts} attempts, ${Object.keys(ledger.aliases).length} aliases (${ledgerPath})\n`,
+	console.log(
+		`SIM ledger valid: ${outcome.problemCount} problems, ${outcome.attemptCount} attempts, ${outcome.aliasCount} aliases (${outcome.ledgerPath})`,
 	);
 	return 0;
 }
 
-async function cmdStatus(args: ParsedArgs): Promise<number> {
-	const ledgerPath = path.resolve(args.flags.ledger ?? DEFAULT_LEDGER_PATH);
-	const ledger = await readLedger(ledgerPath);
-	const summary = ledger.problems.map(problem => {
-		const latest = problem.attempts.at(-1);
-		const models = [...new Set(problem.attempts.map(a => a.model))];
-		const domains = [...new Set(problem.attempts.map(a => a.domain))];
-		return {
-			id: problem.id,
-			name: problem.name,
-			opened_round: problem.opened_round,
-			attempts: problem.attempts.length,
-			models,
-			domains,
-			latest_score: latest ? `${latest.passed}/${latest.total}` : "0/0",
-			latest_missed: latest?.missed ?? [],
-		};
+async function cmdStatus(workflow: SimWorkflow, flags: Map<string, string | boolean>): Promise<number> {
+	const asJson = getBoolFlag(flags, "json", false);
+	const summary = await workflow.status();
+	if (asJson) {
+		console.log(JSON.stringify(summary, null, 2));
+		return 0;
+	}
+
+	console.log(
+		`SIM Status (v${summary.schema_version}, ${summary.problem_count} problems, ${summary.attempt_count} attempts, next_id=${summary.next_id})`,
+	);
+	if (summary.carried_from) {
+		const cf = summary.carried_from;
+		console.log(
+			`Carried from: arm=${cf.arm}, domain=${cf.domain}, into=${cf.into}${cf.benchmark ? `, benchmark=${cf.benchmark}` : ""}${cf.model ? `, model=${cf.model}` : ""}${cf.carried_at ? `, carried_at=${cf.carried_at}` : ""}`,
+		);
+	}
+	if (Object.keys(summary.aliases).length > 0) {
+		console.log(`Aliases: ${JSON.stringify(summary.aliases)}`);
+	}
+	for (const p of summary.problems) {
+		const bucketParts: string[] = [];
+		if (p.missed.length > 0) bucketParts.push(`missed=[${p.missed.join(", ")}]`);
+		if (p.regressed.length > 0) bucketParts.push(`regressed=[${p.regressed.join(", ")}]`);
+		if (p.unresolved.length > 0) bucketParts.push(`unresolved=[${p.unresolved.join(", ")}]`);
+		if (p.unproven.length > 0) bucketParts.push(`unproven=[${p.unproven.join(", ")}]`);
+		if (p.incomplete.length > 0) bucketParts.push(`incomplete=[${p.incomplete.join(", ")}]`);
+		const bucketText = bucketParts.length > 0 ? ` ${bucketParts.join(" ")}` : "";
+		console.log(
+			`  ${p.id} (r${p.opened_round}, ${p.attempts} attempt${p.attempts === 1 ? "" : "s"}, ${p.latest_score}${bucketText}): ${p.name}`,
+		);
+		console.log(
+			`     domains=[${p.domains.join(", ")}] benchmarks=[${p.benchmarks.join(", ")}] models=[${p.models.join(", ")}]`,
+		);
+	}
+	return 0;
+}
+
+async function cmdMerge(workflow: SimWorkflow): Promise<number> {
+	const { merged } = await workflow.merge();
+	if (merged.length === 0) {
+		console.log("No exact-text duplicate problems found.");
+	} else {
+		console.log(`Merged ${merged.length} duplicate problem(s):`);
+		for (const item of merged) {
+			console.log(`  ${item.from} -> ${item.into} ("${item.name}")`);
+		}
+	}
+	return 0;
+}
+
+async function cmdRecord(workflow: SimWorkflow, flags: Map<string, string | boolean>): Promise<number> {
+	const noRejectedLog = getBoolFlag(flags, "no-rejected-log", false);
+	const backfilled = flags.has("backfilled") ? getBoolFlag(flags, "backfilled", false) : undefined;
+	const outcome = await workflow.record({
+		problem: getStringFlag(flags, "problem"),
+		name: getStringFlag(flags, "name"),
+		predicted: flags.has("predicted") ? splitCsv(getStringFlag(flags, "predicted")) : undefined,
+		what: getStringFlag(flags, "what"),
+		files: flags.has("files") ? splitCsv(getStringFlag(flags, "files")) : undefined,
+		model: getStringFlag(flags, "model"),
+		domain: getStringFlag(flags, "domain"),
+		benchmark: getStringFlag(flags, "benchmark"),
+		sample: getStringFlag(flags, "sample"),
+		accepted: getBoolFlag(flags, "accepted", true),
+		backfilled,
+		allowAdHoc: getBoolFlag(flags, "allow-ad-hoc", false),
+		round: parsePositiveIntFlag(flags, "round"),
+		run: getStringFlag(flags, "run"),
+		commit: getStringFlag(flags, "commit"),
+		baselinePath: getStringFlag(flags, "baseline"),
+		replayJsonPath: getStringFlag(flags, "replay-json"),
+		baselineRef: getStringFlag(flags, "baseline-ref"),
+		candidateRef: getStringFlag(flags, "candidate-ref"),
+		noRejectedLog,
 	});
 
-	if (args.booleans.has("json")) {
-		process.stdout.write(
-			`${JSON.stringify({ next_id: ledger.next_id, aliases: ledger.aliases, problems: summary }, null, 2)}\n`,
+	if (!outcome.recorded) {
+		console.log(
+			`[NO-OP §3.2] Rejected candidate not appended to ${outcome.ledgerPath}.` +
+				(outcome.rejectedLogPath ? ` Logged negative experience to ${outcome.rejectedLogPath}.` : ""),
 		);
 		return 0;
 	}
 
-	process.stdout.write(`SIM Ledger (${ledgerPath}) — next_id=${ledger.next_id}\n`);
-	for (const row of summary) {
-		const missedNote = row.latest_missed.length > 0 ? ` | missed: ${row.latest_missed.join(", ")}` : "";
-		process.stdout.write(
-			`- ${row.id} (r${row.opened_round}, ${row.attempts}x, ${row.latest_score}): ${row.name} [${row.models.join(", ")} | ${row.domains.join(", ")}]${missedNote}\n`,
-		);
-	}
-	return 0;
-}
-
-async function cmdMerge(args: ParsedArgs): Promise<number> {
-	const ledgerPath = path.resolve(args.flags.ledger ?? DEFAULT_LEDGER_PATH);
-	const file = Bun.file(ledgerPath);
-	if (!(await file.exists())) {
-		process.stderr.write(`SIM ledger not found: ${ledgerPath}\n`);
-		return 1;
-	}
-	const raw = (await file.json()) as SimLedger;
-	const { ledger, merged } = mergeDuplicateProblems(raw);
-	const check = validateSimLedger(ledger);
-	if (!check.ok) {
-		process.stderr.write(`Merged ledger failed validation:\n- ${check.errors.join("\n- ")}\n`);
-		return 1;
-	}
-	await writeLedger(ledgerPath, ledger);
-	if (merged.length === 0) {
-		process.stdout.write("No duplicate root-cause entries found.\n");
-	} else {
-		for (const [fromId, toId] of merged) {
-			process.stdout.write(`Merged ${fromId} -> ${toId}\n`);
-		}
-	}
-	return 0;
-}
-
-async function cmdRecord(args: ParsedArgs): Promise<number> {
-	const ledgerPath = path.resolve(args.flags.ledger ?? DEFAULT_LEDGER_PATH);
-	const ledger = await readLedger(ledgerPath, true);
-
-	const what = args.flags.what;
-	const files = splitCsv(args.flags.files);
-	const model = args.flags.model;
-	const domain = args.flags.domain;
-	const predicted = splitCsv(args.flags.predicted);
-
-	if (!what || files.length === 0 || !model || !domain) {
-		process.stderr.write("Missing required flags: --what, --files, --model, --domain\n");
-		return 1;
-	}
-
-	const accepted = args.booleans.has("accepted") ? true : parseBooleanFlag(args.flags.accepted, true);
-	const round = args.flags.round ? Number.parseInt(args.flags.round, 10) : undefined;
-	if (round !== undefined && (!Number.isInteger(round) || round < 1)) {
-		process.stderr.write(`Invalid --round value: "${args.flags.round}"\n`);
-		return 1;
-	}
-
-	let report: SimReplayReport;
-	if (args.flags["replay-json"]) {
-		report = await readReplayReport(args.flags["replay-json"]);
-	} else {
-		// Default to running the fast local replay harness so every recorded attempt
-		// is backed by observed execution evidence.
-		const baseline = args.flags.baseline ? await readReplayReport(args.flags.baseline) : undefined;
-		report = await runSimReplay({ predicted, baseline });
-	}
-
-	const diff = evaluateReplayDiff(report, predicted);
-	const appended = appendSimAttempt(ledger, {
-		problemId: args.flags.problem,
-		name: args.flags.name,
-		round,
-		accepted,
-		what,
-		files,
-		model,
-		domain,
-		predicted: diff.predicted,
-		fixed: diff.fixed,
-		missed: diff.missed,
-		passed: report.passed,
-		total: report.total,
-		commit: args.flags.commit,
-		timestamp: new Date().toISOString(),
-	});
-
-	await writeLedger(ledgerPath, appended.ledger);
-
-	const action = appended.createdProblem ? "Opened" : "Appended to";
-	const aliasNote = appended.mergedFromAlias ? ` (via alias ${appended.mergedFromAlias})` : "";
-	process.stdout.write(
-		`${action} ${appended.problemId}${aliasNote}: ${report.passed}/${report.total} passed | fixed=[${diff.fixed.join(", ")}] | missed=[${diff.missed.join(", ")}]\n`,
+	const aliasNote = outcome.mergedFromAlias ? ` (via alias ${outcome.mergedFromAlias})` : "";
+	const action = outcome.createdProblem ? "Opened" : "Updated";
+	console.log(
+		`${action} ${outcome.problemId}${aliasNote} round ${outcome.round}: ${outcome.report.passed}/${outcome.report.total} passed, ` +
+			`fixed=[${outcome.diff.fixed.join(", ")}], missed=[${outcome.diff.missed.join(", ")}], ` +
+			`preserved=[${outcome.diff.preserved.join(", ")}], regressed=[${outcome.diff.regressed.join(", ")}], ` +
+			`unproven=[${outcome.diff.unproven.join(", ")}], incomplete=[${outcome.diff.incomplete.join(", ")}]`,
 	);
 	return 0;
 }
 
-export async function runSimCli(argv: readonly string[]): Promise<number> {
-	const args = parseCliArgs(argv);
+function cmdCases(workflow: SimWorkflow): number {
+	const cases = workflow.cases();
+	console.log(`SIM Replay Cases (${cases.length}):`);
+	for (const item of cases) {
+		console.log(`  ${item.id.padEnd(48)} [${item.category}] ${item.description}`);
+	}
+	return 0;
+}
+
+function printHelp(): number {
+	console.log(
+		`SIM CLI (arXiv:2611.18856 Appendix D & OMPK-RSI §24.1)\n\n` +
+			`Commands:\n` +
+			`  replay   [--json] [--model <id>] [--save <file>] [--baseline <file>]\n` +
+			`  predict  --problem <P#|new> [--name <text>] --predicted <id1,id2> [--baseline <file>] [--allow-preserved] [--allow-unknown-cases] [--manifest <path>] [--force] [--json]\n` +
+			`  carry    --arm <src> --domain <domain> --into <target-run> [--benchmark <b>] [--model <m>] [--ledger <path>] [--json]\n` +
+			`  validate [--ledger <path>]\n` +
+			`  status   [--ledger <path>] [--json]\n` +
+			`  merge    [--ledger <path>]\n` +
+			`  record   --what <desc> --files <a,b> --model <m> --domain <d> --benchmark <b> [--accepted true|false] [--baseline <file>] [--replay-json <file>] [--manifest <path>] [--sample <id>] [--backfilled true|false] [--allow-ad-hoc] [--run <id>] [--baseline-ref <ref>] [--candidate-ref <ref>] [--rejected-log <path>] [--no-rejected-log] [--ledger <path>]\n` +
+			`  cases\n`,
+	);
+	return 0;
+}
+
+export async function runSimCli(argv: string[]): Promise<number> {
+	const { command, flags } = parseCliArgs(argv);
+	const ledgerFlag = getStringFlag(flags, "ledger");
+	const manifestFlag = getStringFlag(flags, "manifest");
+	const rejectedLogFlag = getStringFlag(flags, "rejected-log");
+	const workflow = createSimWorkflow({
+		...(ledgerFlag ? { ledgerPath: path.resolve(ledgerFlag) } : {}),
+		...(manifestFlag ? { manifestPath: path.resolve(manifestFlag) } : {}),
+		...(rejectedLogFlag ? { rejectedLogPath: path.resolve(rejectedLogFlag) } : {}),
+	});
+
 	try {
-		switch (args.command) {
+		switch (command) {
 			case "replay":
-				return await cmdReplay(args);
+				return await cmdReplay(workflow, flags);
+			case "predict":
+				return await cmdPredict(workflow, flags);
+			case "carry":
+				return await cmdCarry(workflow, flags);
 			case "validate":
-				return await cmdValidate(args);
+				return await cmdValidate(workflow);
 			case "status":
-				return await cmdStatus(args);
+				return await cmdStatus(workflow, flags);
 			case "merge":
-				return await cmdMerge(args);
+				return await cmdMerge(workflow);
 			case "record":
-				return await cmdRecord(args);
+				return await cmdRecord(workflow, flags);
 			case "cases":
-				for (const c of SIM_REPLAY_CASES) {
-					process.stdout.write(`${c.id}\t[${c.category}]\t${c.description}\n`);
-				}
-				return 0;
+				return cmdCases(workflow);
 			default:
-				printHelp();
-				return args.command === "help" || args.command === "--help" || args.command === "-h" ? 0 : 1;
+				return printHelp();
 		}
-	} catch (error) {
-		process.stderr.write(`SIM CLI error: ${error instanceof Error ? error.message : String(error)}\n`);
+	} catch (err) {
+		console.error(err instanceof Error ? err.message : String(err));
 		return 1;
 	}
 }

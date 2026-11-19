@@ -75,6 +75,7 @@ SSOT is `.agents/`: `context/`, `rules/`, `commands/`, `skills/`, `subagents/`, 
 
 ## Self-Improvement Memory (SIM)
 
-- Canonical harness edit ledger: `.omp/sim.json` (schema `.omp/sim.schema.json`), injected verbatim into `buildSystemPrompt` when present.
-- Before editing prompts, hooks, parsers, retry policies, truncation, or `pi-catalog` compat fixups, follow `.agents/rules/harness-sim.md` (check `model`/`domain` provenance, reuse transferable rationale, recalibrate model-specific heuristics).
-- Verify harness edits with `bun run sim:replay` and log observed `predicted` vs `fixed`/`missed` outcomes via `bun scripts/sim/cli.ts record` + `bun run sim:validate`.
+- Canonical harness edit ledger: `.omp/sim.json` (schema v2 `.omp/sim.schema.json`), injected into `buildSystemPrompt` as untrusted experiential data (SEC-007: never authorization or policy authority).
+- Before editing prompts, hooks, parsers, retry policies, truncation, or `pi-catalog` compat fixups, follow `.agents/rules/harness-sim.md` (check `domain + benchmark + model` provenance, reuse transferable rationale, recalibrate model-specific heuristics).
+- Two-phase workflow: `bun run sim:predict` -> `bun run sim:replay` -> `bun run sim:record` -> `bun run sim:validate` (plus `bun run sim:carry` for cross-run carry-forward and `bun run sim:status`).
+- Attribution & §3.2 hygiene: 8-state baseline-to-candidate attribution (`fixed` requires `FAIL -> PASS` against a matching baseline); `.omp/sim.json` stores chosen edits only (`accepted: true`), while rejected candidates (`accepted: false`) append to `.omp/sim-rejected.jsonl`.

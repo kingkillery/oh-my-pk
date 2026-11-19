@@ -341,6 +341,7 @@ export const SIM_REPLAY_CASES: readonly SimReplayCase[] = [
 				const simDir = path.join(tempDir, ".omp");
 				fs.mkdirSync(simDir, { recursive: true });
 				const sampleLedger = JSON.stringify({
+					schema_version: 2,
 					next_id: 2,
 					aliases: {},
 					problems: [
@@ -348,7 +349,24 @@ export const SIM_REPLAY_CASES: readonly SimReplayCase[] = [
 							id: "P1",
 							name: "sample replay hypothesis",
 							opened_round: 1,
-							attempts: [],
+							attempts: [
+								{
+									round: 1,
+									accepted: true,
+									what: "Verify SIM ledger injection and prefix stability",
+									files: ["packages/coding-agent/src/system-prompt.ts"],
+									model: "replay-fixture",
+									domain: "hooks-and-prompts",
+									benchmark: "sim-replay",
+									predicted: ["system-prompt-sim-and-prefix-stability"],
+									fixed: ["system-prompt-sim-and-prefix-stability"],
+									missed: [],
+									regressed: [],
+									passed: 16,
+									total: 16,
+									sample: "replay-fixture",
+								},
+							],
 						},
 					],
 				});
@@ -487,23 +505,23 @@ export async function runSimReplay(options: RunReplayOptions = {}): Promise<SimR
 		const start = performance.now();
 		try {
 			await testCase.run();
-			const durationMs = Math.round((performance.now() - start) * 100) / 100;
+			const duration_ms = Math.round((performance.now() - start) * 100) / 100;
 			results.push({
 				id: testCase.id,
 				category: testCase.category,
 				description: testCase.description,
 				passed: true,
-				durationMs,
+				duration_ms,
 			});
 			passedIds.push(testCase.id);
 		} catch (error) {
-			const durationMs = Math.round((performance.now() - start) * 100) / 100;
+			const duration_ms = Math.round((performance.now() - start) * 100) / 100;
 			results.push({
 				id: testCase.id,
 				category: testCase.category,
 				description: testCase.description,
 				passed: false,
-				durationMs,
+				duration_ms,
 				error: error instanceof Error ? error.message : String(error),
 			});
 			failedIds.push(testCase.id);
@@ -511,6 +529,7 @@ export async function runSimReplay(options: RunReplayOptions = {}): Promise<SimR
 	}
 
 	const report: SimReplayReport = {
+		timestamp: new Date().toISOString(),
 		passed: passedIds.length,
 		total: results.length,
 		passed_ids: passedIds,
@@ -533,7 +552,7 @@ if (import.meta.main) {
 	} else {
 		for (const item of report.results) {
 			const mark = item.passed ? "PASS" : "FAIL";
-			process.stdout.write(`[${mark}] ${item.id} (${item.category}, ${item.durationMs}ms)\n`);
+			process.stdout.write(`[${mark}] ${item.id} (${item.category}, ${item.duration_ms}ms)\n`);
 			if (!item.passed && item.error) {
 				process.stdout.write(`       ${item.error}\n`);
 			}

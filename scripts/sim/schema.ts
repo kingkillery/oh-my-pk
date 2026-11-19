@@ -1,175 +1,200 @@
 /**
- * Self-Improvement Memory (SIM) schema, deterministic matching/merging,
- * and runtime validation for `.omp/sim.json` (arXiv:2611.18856v1 Appendix D).
+ * Self-Improvement Memory (SIM) schema, strict validation, deterministic
+ * exact-text matching/merging, carry-forward, and 8-state baseline-to-candidate
+ * replay attribution.
+ *
+ * Implements arXiv:2611.18856 (Appendix D.1–D.3 & §3.2) and OMPK-RSI §24.1.
+ * Zero embeddings, zero similarity models, zero retrieval layers.
  */
+
+import {
+	SIM_SCHEMA_VERSION,
+	type SimAttempt,
+	type SimCarriedFrom,
+	type SimLedger,
+	type SimLedgerValidationResult,
+	type SimProblem,
+	validateSimLedgerShape,
+	verifySimJsonSchemaParity,
+} from "../../packages/coding-agent/src/utils/sim-ledger.ts";
+
+export {
+	SIM_SCHEMA_VERSION,
+	type SimAttempt,
+	type SimCarriedFrom,
+	type SimLedger,
+	type SimProblem,
+	verifySimJsonSchemaParity,
+};
 
 export const SIM_PROBLEM_ID_RE = /^P([1-9][0-9]*)$/;
 
-export interface SimCarriedFrom {
+function parseProblemNumber(id: string): number | null {
+	const match = SIM_PROBLEM_ID_RE.exec(id);
+	if (!match) return null;
+	return Number.parseInt(match[1], 10);
+}
+export type SimValidationResult = SimLedgerValidationResult;
+
+/**
+ * Validate a SIM ledger strictly against Appendix D.3 and `.omp/sim.schema.json`.
+ * Delegates directly to the canonical runtime validator in `sim-ledger.ts` so CLI
+ * and prompt-loader validation share a single source of truth.
+ */
+export const validateSimLedger: (raw: unknown) => SimValidationResult = validateSimLedgerShape;
+export interface SimReplayCaseResult {
+	id: string;
+	category: "parser" | "retry" | "truncation" | "hooks" | "compat";
+	description: string;
+	passed: boolean;
+	duration_ms: number;
+	error?: string;
+}
+
+export interface SimReplayBaselineMeta {
+	passed_ids: readonly string[];
+	failed_ids: readonly string[];
+	model?: string;
+	evaluator_id?: string;
+}
+
+export interface SimReplayReport {
+	timestamp: string;
+	passed: number;
+	total: number;
+	passed_ids: string[];
+	failed_ids: string[];
+	model?: string;
+	results: SimReplayCaseResult[];
+	diff?: SimReplayDiff;
+}
+
+export interface SimReplayDiff {
+	predicted: string[];
+	/** Predicted cases that transitioned FAIL -> PASS against baseline. */
+	fixed: string[];
+	/** Predicted cases with known baseline that ended in FAIL (unresolved ∪ regressed among predicted). */
+	missed: string[];
+	/** Predicted cases that were already PASS -> PASS (never counted as fixed). */
+	preserved: string[];
+	/** ALL suite cases that transitioned PASS -> FAIL against baseline. */
+	regressed: string[];
+	/** ALL suite cases that remained FAIL -> FAIL against baseline. */
+	unresolved: string[];
+	/** Predicted cases whose baseline outcome was unknown (or baseline missing / model mismatched). */
+	unproven: string[];
+	/** Predicted cases whose candidate outcome was missing from the replay report. */
+	incomplete: string[];
+	/** ALL suite cases that transitioned FAIL -> PASS against baseline. */
+	newly_passing: string[];
+	/** Set when both baseline.model and candidateModel are provided and differ (RSI-21). */
+	model_mismatch?: { baselineModel: string; candidateModel: string };
+}
+
+export interface SimRejectedCandidateLogEntry {
+	timestamp: string;
+	problem_id?: string;
+	name?: string;
+	round: number;
+	accepted: false;
+	what: string;
+	files: string[];
+	model: string;
+	domain: string;
+	benchmark: string;
+	sample?: string;
+	predicted: string[];
+	fixed: string[];
+	missed: string[];
+	regressed: string[];
+	preserved?: string[];
+	unresolved?: string[];
+	unproven?: string[];
+	incomplete?: string[];
+	passed: number;
+	total: number;
+	reason: string;
+	manifest_id?: string;
+	baseline_ref?: string;
+	candidate_ref?: string;
+}
+
+export interface CarryForwardInput {
 	arm: string;
 	domain: string;
 	into: string;
+	benchmark?: string;
+	model?: string;
+	carriedAt?: string;
 }
 
-export interface SimAttempt {
+export interface RoundScope {
+	run?: string;
+}
+
+export interface AppendAttemptInput {
+	/** Existing problem ID (or alias), OR `"new"` to open/exact-match by `name`. */
+	problem: string;
+	/** Required when `problem === "new"`. Exact normalized match reuses existing problem. */
+	name?: string;
 	round: number;
 	accepted: boolean;
 	what: string;
 	files: string[];
 	model: string;
 	domain: string;
+	benchmark: string;
 	predicted: string[];
 	fixed: string[];
 	missed: string[];
+	regressed?: string[];
+	preserved?: string[];
+	unresolved?: string[];
+	unproven?: string[];
+	incomplete?: string[];
 	passed: number;
 	total: number;
 	sample?: string;
 	backfilled?: boolean;
+	run?: string;
+	baseline_ref?: string;
+	candidate_ref?: string;
 	commit?: string;
 	timestamp?: string;
 }
 
-export interface SimProblem {
-	id: string;
-	name: string;
-	opened_round: number;
-	attempts: SimAttempt[];
-}
-
-export interface SimLedger {
-	$schema?: string;
-	next_id: number;
-	carried_from?: SimCarriedFrom;
-	aliases: Record<string, string>;
-	problems: SimProblem[];
-}
-
-export interface SimReplayCaseResult {
-	id: string;
-	category: "parser" | "retry" | "truncation" | "hooks" | "compat";
-	description: string;
-	passed: boolean;
-	durationMs: number;
-	error?: string;
-}
-
-export interface SimReplayReport {
-	passed: number;
-	total: number;
-	passed_ids: string[];
-	failed_ids: string[];
-	results: SimReplayCaseResult[];
-	/** Present when compared against a baseline replay report or predicted list. */
-	diff?: {
-		predicted: string[];
-		fixed: string[];
-		missed: string[];
-		regressed: string[];
-		newly_passing: string[];
-	};
-}
-
-export interface SimValidationResult {
-	ok: boolean;
-	errors: string[];
-}
-
-export interface AppendAttemptInput {
-	/** Existing problem ID (e.g. "P3", follows aliases) or "new" / omitted to match exact `name` or allocate a new ID. */
-	problemId?: string;
-	/** Recurring root-cause hypothesis. Required when creating a new problem; used for deterministic exact-text matching. */
-	name?: string;
-	round?: number;
-	accepted: boolean;
-	what: string;
-	files: string[];
-	model: string;
-	domain: string;
-	predicted: string[];
-	fixed: string[];
-	missed: string[];
-	passed: number;
-	total: number;
-	sample?: string;
-	backfilled?: boolean;
-	commit?: string;
-	timestamp?: string;
-}
-
-export interface AppendAttemptResult {
-	ledger: SimLedger;
-	problemId: string;
-	createdProblem: boolean;
-	mergedFromAlias?: string;
-}
-
-export function createEmptySimLedger(): SimLedger {
-	return {
-		$schema: "./sim.schema.json",
-		next_id: 1,
-		aliases: {},
-		problems: [],
-	};
-}
-
-export function parseProblemNumber(id: string): number | null {
-	const match = SIM_PROBLEM_ID_RE.exec(id);
-	if (!match?.[1]) return null;
-	const num = Number.parseInt(match[1], 10);
-	return Number.isSafeInteger(num) && num >= 1 ? num : null;
-}
+export type AppendAttemptResult =
+	| {
+			recorded: true;
+			ledger: SimLedger;
+			problemId: string;
+			createdProblem: boolean;
+			mergedFromAlias?: string;
+	  }
+	| {
+			recorded: false;
+			ledger: SimLedger;
+			createdProblem: false;
+			reason: string;
+	  };
 
 /**
- * Deterministic exact-text normalization for Appendix D.1 matching:
- * trims outer whitespace and collapses internal runs of whitespace to single spaces.
+ * Normalize a root-cause name for deterministic exact-text matching (trim +
+ * collapse internal whitespace, case-sensitive to match arXiv:2611.18856 D.1).
  */
 export function normalizeRootCauseName(name: string): string {
 	return name.trim().replace(/\s+/g, " ");
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-	return typeof value === "string" && value.trim().length > 0;
-}
-
-function isNonNegativeInt(value: unknown): value is number {
-	return typeof value === "number" && Number.isInteger(value) && value >= 0;
-}
-
-function isPositiveInt(value: unknown): value is number {
-	return typeof value === "number" && Number.isInteger(value) && value >= 1;
-}
-
-function isStringArray(value: unknown, allowEmpty: boolean): value is string[] {
-	if (!Array.isArray(value)) return false;
-	if (!allowEmpty && value.length === 0) return false;
-	return value.every(item => isNonEmptyString(item));
-}
-
-function dedupePreserveOrder(items: readonly string[]): string[] {
-	const seen = new Set<string>();
-	const out: string[] = [];
-	for (const raw of items) {
-		const trimmed = raw.trim();
-		if (trimmed.length === 0 || seen.has(trimmed)) continue;
-		seen.add(trimmed);
-		out.push(trimmed);
-	}
-	return out;
-}
-
 /**
- * Resolve a problem ID through the `aliases` table deterministically, detecting cycles.
+ * Follow alias chains to the canonical problem ID, detecting cycles.
  */
 export function resolveProblemId(ledger: Pick<SimLedger, "aliases">, id: string): string {
-	let current = id.trim();
+	let current = id;
 	const visited = new Set<string>();
 	while (Object.hasOwn(ledger.aliases, current)) {
 		if (visited.has(current)) {
-			throw new Error(`Alias cycle detected while resolving problem ID "${id}" at "${current}"`);
+			throw new Error(`Alias cycle detected involving ${current}`);
 		}
 		visited.add(current);
 		current = ledger.aliases[current];
@@ -177,391 +202,348 @@ export function resolveProblemId(ledger: Pick<SimLedger, "aliases">, id: string)
 	return current;
 }
 
-/**
- * Compute observed `fixed`, `missed`, `regressed`, and `newly_passing` from
- * replay results and pre-run `predicted` case IDs.
- */
-export function evaluateReplayDiff(
-	report: Pick<SimReplayReport, "passed_ids" | "failed_ids" | "results">,
-	predicted: readonly string[],
-	baseline?: Pick<SimReplayReport, "passed_ids" | "failed_ids">,
-): NonNullable<SimReplayReport["diff"]> {
-	const cleanPredicted = dedupePreserveOrder(predicted);
-	const passedSet = new Set(report.passed_ids);
-	const failedSet = new Set(report.failed_ids);
-
-	const fixed: string[] = [];
-	const missed: string[] = [];
-	for (const caseId of cleanPredicted) {
-		if (passedSet.has(caseId)) {
-			fixed.push(caseId);
-		} else {
-			missed.push(caseId);
-		}
-	}
-
-	const baselinePassed = new Set(baseline?.passed_ids ?? []);
-	const baselineFailed = new Set(baseline?.failed_ids ?? []);
-
-	const regressed = baseline ? [...baselinePassed].filter(id => failedSet.has(id)) : [];
-	const newlyPassing = baseline ? [...baselineFailed].filter(id => passedSet.has(id)) : [];
-
+export function createEmptySimLedger(): SimLedger {
 	return {
-		predicted: cleanPredicted,
-		fixed,
-		missed,
-		regressed,
-		newly_passing: newlyPassing,
+		$schema: "./sim.schema.json",
+		schema_version: SIM_SCHEMA_VERSION,
+		next_id: 1,
+		aliases: {},
+		problems: [],
 	};
 }
 
 /**
- * Deterministically merge problems with identical normalized root-cause text,
- * preserving all attempts and recording retired IDs in `aliases`.
+ * Compute strict 8-state baseline-to-candidate attribution (OMPK-RSI §24.1 &
+ * arXiv:2611.18856 D.3):
+ *
+ * | Baseline | Candidate | Classification              |
+ * | -------- | --------- | --------------------------- |
+ * | FAIL     | PASS      | fixed (+ newly_passing)     |
+ * | PASS     | PASS      | preserved (NEVER fixed)     |
+ * | PASS     | FAIL      | regressed (+ missed if pred)|
+ * | FAIL     | FAIL      | unresolved (+ missed if pred)|
+ * | UNKNOWN  | PASS/FAIL | unproven (NEVER fixed)      |
+ * | PASS/FAIL| UNKNOWN   | incomplete                  |
+ *
+ * Predicted partition invariant:
+ *   fixed ⊔ missed ⊔ preserved ⊔ unproven ⊔ incomplete === predicted
  */
-export function mergeDuplicateProblems(ledger: SimLedger): { ledger: SimLedger; merged: Array<[string, string]> } {
-	const byName = new Map<string, SimProblem>();
-	const nextProblems: SimProblem[] = [];
-	const nextAliases: Record<string, string> = { ...ledger.aliases };
-	const merged: Array<[string, string]> = [];
+export function evaluateReplayDiff(
+	report: Pick<SimReplayReport, "passed_ids" | "failed_ids" | "model">,
+	predicted: readonly string[],
+	baseline?: SimReplayBaselineMeta,
+	options?: { candidateModel?: string },
+): SimReplayDiff {
+	const uniquePredicted = [...new Set(predicted.map(id => id.trim()).filter(Boolean))];
+	const passedSet = new Set(report.passed_ids);
+	const failedSet = new Set(report.failed_ids);
 
-	// Sort by numeric ID so the earliest problem ID is always canonical.
-	const sorted = [...ledger.problems].sort((a, b) => {
+	const candidateModel = options?.candidateModel ?? report.model;
+	if (baseline?.model && candidateModel && baseline.model !== candidateModel) {
+		return {
+			predicted: uniquePredicted,
+			fixed: [],
+			missed: [],
+			preserved: [],
+			regressed: [],
+			unresolved: [],
+			unproven: [...uniquePredicted],
+			incomplete: [],
+			newly_passing: [],
+			model_mismatch: {
+				baselineModel: baseline.model,
+				candidateModel,
+			},
+		};
+	}
+
+	// Missing baseline cannot demonstrate a fix (OMPK-RSI §24.1 / RSI-03).
+	if (!baseline) {
+		const incomplete: string[] = [];
+		const unproven: string[] = [];
+		for (const id of uniquePredicted) {
+			if (!passedSet.has(id) && !failedSet.has(id)) {
+				incomplete.push(id);
+			} else {
+				unproven.push(id);
+			}
+		}
+		return {
+			predicted: uniquePredicted,
+			fixed: [],
+			missed: [],
+			preserved: [],
+			regressed: [],
+			unresolved: [],
+			unproven,
+			incomplete,
+			newly_passing: [],
+		};
+	}
+
+	const baselinePassSet = new Set(baseline.passed_ids);
+	const baselineFailSet = new Set(baseline.failed_ids);
+
+	const regressed: string[] = [];
+	const unresolved: string[] = [];
+	const newly_passing: string[] = [];
+
+	for (const id of report.failed_ids) {
+		if (baselinePassSet.has(id)) {
+			regressed.push(id);
+		} else if (baselineFailSet.has(id)) {
+			unresolved.push(id);
+		}
+	}
+	for (const id of report.passed_ids) {
+		if (baselineFailSet.has(id)) {
+			newly_passing.push(id);
+		}
+	}
+
+	const fixed: string[] = [];
+	const missed: string[] = [];
+	const preserved: string[] = [];
+	const unproven: string[] = [];
+	const incomplete: string[] = [];
+
+	for (const id of uniquePredicted) {
+		const candidatePass = passedSet.has(id);
+		const candidateFail = failedSet.has(id);
+		const baselinePass = baselinePassSet.has(id);
+		const baselineFail = baselineFailSet.has(id);
+
+		if (!candidatePass && !candidateFail) {
+			incomplete.push(id);
+		} else if (!baselinePass && !baselineFail) {
+			unproven.push(id);
+		} else if (baselineFail && candidatePass) {
+			fixed.push(id);
+		} else if (baselinePass && candidatePass) {
+			preserved.push(id);
+		} else {
+			// Known baseline (PASS or FAIL) and candidate FAIL -> missed
+			missed.push(id);
+		}
+	}
+
+	return {
+		predicted: uniquePredicted,
+		fixed,
+		missed,
+		preserved,
+		regressed,
+		unresolved,
+		unproven,
+		incomplete,
+		newly_passing,
+	};
+}
+
+/**
+ * Deterministic exact-text duplicate merger (Appendix D.1):
+ * merges problems with identical normalized `name` into the lowest numeric ID,
+ * preserves all attempts in chronological order, and records retired IDs in `aliases`.
+ */
+export function mergeDuplicateProblems(ledger: SimLedger): {
+	ledger: SimLedger;
+	merged: Array<{ from: string; into: string; name: string }>;
+} {
+	const merged: Array<{ from: string; into: string; name: string }> = [];
+	const aliases: Record<string, string> = { ...ledger.aliases };
+	const byNormalizedName = new Map<string, SimProblem>();
+
+	const sortedProblems = [...ledger.problems].sort((a, b) => {
 		const numA = parseProblemNumber(a.id) ?? Number.MAX_SAFE_INTEGER;
 		const numB = parseProblemNumber(b.id) ?? Number.MAX_SAFE_INTEGER;
 		return numA - numB;
 	});
 
-	for (const problem of sorted) {
-		const normalized = normalizeRootCauseName(problem.name);
-		const existing = byName.get(normalized);
+	for (const problem of sortedProblems) {
+		const key = normalizeRootCauseName(problem.name);
+		const existing = byNormalizedName.get(key);
 		if (!existing) {
-			const copy: SimProblem = {
-				id: problem.id,
-				name: normalized,
-				opened_round: problem.opened_round,
+			byNormalizedName.set(key, {
+				...problem,
+				name: key,
 				attempts: [...problem.attempts],
-			};
-			byName.set(normalized, copy);
-			nextProblems.push(copy);
+			});
 			continue;
 		}
+
 		existing.opened_round = Math.min(existing.opened_round, problem.opened_round);
-		existing.attempts.push(...problem.attempts);
-		existing.attempts.sort((a, b) => a.round - b.round);
-		nextAliases[problem.id] = existing.id;
-		merged.push([problem.id, existing.id]);
+		existing.attempts = [...existing.attempts, ...problem.attempts].sort((a, b) => a.round - b.round);
+		aliases[problem.id] = existing.id;
+		merged.push({ from: problem.id, into: existing.id, name: key });
 	}
 
-	// Flatten transitive alias chains so every alias points directly to its canonical target.
-	for (const aliasKey of Object.keys(nextAliases)) {
-		const target = resolveProblemId({ aliases: nextAliases }, aliasKey);
-		nextAliases[aliasKey] = target;
+	// Flatten transitive alias targets so aliases always point to the final canonical ID.
+	for (const aliasKey of Object.keys(aliases)) {
+		aliases[aliasKey] = resolveProblemId({ aliases }, aliasKey);
 	}
+
+	const nextLedger: SimLedger = {
+		...ledger,
+		aliases,
+		problems: [...byNormalizedName.values()],
+	};
+
+	return { ledger: nextLedger, merged };
+}
+
+/**
+ * Mark a ledger as carried forward into a new run/domain/model (arXiv:2611.18856 §3.3 & D.3).
+ * Preserves all existing problems, aliases, and `next_id`.
+ */
+export function carryForwardSimLedger(ledger: SimLedger, input: CarryForwardInput): SimLedger {
+	const arm = input.arm.trim();
+	const domain = input.domain.trim();
+	const into = input.into.trim();
+	if (!arm) throw new Error("carryForwardSimLedger requires a non-empty arm");
+	if (!domain) throw new Error("carryForwardSimLedger requires a non-empty domain");
+	if (!into) throw new Error("carryForwardSimLedger requires a non-empty into target run");
+
+	const carriedFrom: SimCarriedFrom = {
+		arm,
+		domain,
+		into,
+		...(input.benchmark?.trim() ? { benchmark: input.benchmark.trim() } : {}),
+		...(input.model?.trim() ? { model: input.model.trim() } : {}),
+		carried_at: input.carriedAt?.trim() || new Date().toISOString(),
+	};
 
 	return {
-		ledger: {
-			...(ledger.$schema ? { $schema: ledger.$schema } : {}),
-			next_id: ledger.next_id,
-			...(ledger.carried_from ? { carried_from: { ...ledger.carried_from } } : {}),
-			aliases: nextAliases,
-			problems: nextProblems,
-		},
-		merged,
+		...ledger,
+		schema_version: SIM_SCHEMA_VERSION,
+		carried_from: carriedFrom,
+		aliases: { ...ledger.aliases },
+		problems: ledger.problems.map(p => ({ ...p, attempts: [...p.attempts] })),
 	};
 }
 
 /**
- * Compute the next global round number across all recorded attempts (max round + 1, or 1 when empty).
+ * Append an attempt to an existing problem (resolving aliases), exact-text-matched
+ * problem, or a newly allocated `P<next_id>` problem.
+ *
+ * Enforces arXiv:2611.18856 §3.2: if `input.accepted === false`, returns
+ * `{ recorded: false }` without modifying the ledger (`U(M_t, ∅) = M_t`).
  */
-export function computeNextRound(ledger: SimLedger): number {
+export function appendSimAttempt(ledger: SimLedger, input: AppendAttemptInput): AppendAttemptResult {
+	if (!input.accepted) {
+		return {
+			recorded: false,
+			ledger,
+			createdProblem: false,
+			reason: "Rejected candidate not appended to SIM ledger per arXiv:2611.18856 §3.2 (U(M_t, ∅) = M_t)",
+		};
+	}
+
+	const effectiveRun = input.run?.trim() || ledger.carried_from?.into;
+
+	const attempt: SimAttempt = {
+		round: input.round,
+		accepted: true,
+		what: input.what.trim(),
+		files: input.files.map(f => f.trim()).filter(Boolean),
+		model: input.model.trim(),
+		domain: input.domain.trim(),
+		benchmark: input.benchmark.trim(),
+		predicted: [...input.predicted],
+		fixed: [...input.fixed],
+		missed: [...input.missed],
+		regressed: [...(input.regressed ?? [])],
+		...(input.preserved && input.preserved.length > 0 ? { preserved: [...input.preserved] } : {}),
+		...(input.unresolved && input.unresolved.length > 0 ? { unresolved: [...input.unresolved] } : {}),
+		...(input.unproven && input.unproven.length > 0 ? { unproven: [...input.unproven] } : {}),
+		...(input.incomplete && input.incomplete.length > 0 ? { incomplete: [...input.incomplete] } : {}),
+		passed: input.passed,
+		total: input.total,
+		...(input.sample?.trim() ? { sample: input.sample.trim() } : {}),
+		...(input.backfilled !== undefined ? { backfilled: input.backfilled } : {}),
+		...(effectiveRun ? { run: effectiveRun } : {}),
+		...(input.baseline_ref?.trim() ? { baseline_ref: input.baseline_ref.trim() } : {}),
+		...(input.candidate_ref?.trim() ? { candidate_ref: input.candidate_ref.trim() } : {}),
+		...(input.commit?.trim() ? { commit: input.commit.trim() } : {}),
+		...(input.timestamp?.trim() ? { timestamp: input.timestamp.trim() } : {}),
+	};
+
+	const problems: SimProblem[] = ledger.problems.map(p => ({
+		...p,
+		attempts: [...p.attempts],
+	}));
+	const aliases: Record<string, string> = { ...ledger.aliases };
+	let nextId = ledger.next_id;
+
+	if (input.problem === "new") {
+		if (!input.name?.trim()) {
+			throw new Error("A non-empty problem --name is required when --problem is 'new'");
+		}
+		const normalizedName = normalizeRootCauseName(input.name);
+		const exactMatch = problems.find(p => normalizeRootCauseName(p.name) === normalizedName);
+		if (exactMatch) {
+			exactMatch.attempts.push(attempt);
+			return {
+				recorded: true,
+				ledger: { ...ledger, schema_version: SIM_SCHEMA_VERSION, next_id: nextId, aliases, problems },
+				problemId: exactMatch.id,
+				createdProblem: false,
+			};
+		}
+
+		const newId = `P${nextId}`;
+		nextId += 1;
+		problems.push({
+			id: newId,
+			name: normalizedName,
+			opened_round: input.round,
+			attempts: [attempt],
+		});
+		return {
+			recorded: true,
+			ledger: { ...ledger, schema_version: SIM_SCHEMA_VERSION, next_id: nextId, aliases, problems },
+			problemId: newId,
+			createdProblem: true,
+		};
+	}
+
+	const resolvedId = resolveProblemId({ aliases }, input.problem);
+	const mergedFromAlias = resolvedId !== input.problem ? input.problem : undefined;
+	const target = problems.find(p => p.id === resolvedId);
+	if (!target) {
+		throw new Error(`Problem "${input.problem}" (resolved: "${resolvedId}") does not exist in SIM ledger`);
+	}
+	target.attempts.push(attempt);
+	return {
+		recorded: true,
+		ledger: { ...ledger, schema_version: SIM_SCHEMA_VERSION, next_id: nextId, aliases, problems },
+		problemId: target.id,
+		createdProblem: false,
+		mergedFromAlias,
+	};
+}
+
+/**
+ * Compute the next round number.
+ *
+ * Per arXiv:2611.18856 Appendix D.3 & Appendix F: rounds are run-relative and
+ * restart at `1` when carried forward into a new `run` (`scope.run ?? ledger.carried_from?.into`).
+ * When no run scope is active, increments monotonically across all recorded attempts.
+ */
+export function computeNextRound(ledger: SimLedger, scope?: RoundScope): number {
+	const targetRun = scope?.run?.trim() || ledger.carried_from?.into;
 	let maxRound = 0;
 	for (const problem of ledger.problems) {
-		if (problem.opened_round > maxRound) maxRound = problem.opened_round;
+		if (!targetRun && problem.opened_round > maxRound) {
+			maxRound = problem.opened_round;
+		}
 		for (const attempt of problem.attempts) {
-			if (attempt.round > maxRound) maxRound = attempt.round;
+			if (targetRun && attempt.run !== targetRun) {
+				continue;
+			}
+			if (attempt.round > maxRound) {
+				maxRound = attempt.round;
+			}
 		}
 	}
 	return maxRound + 1;
-}
-
-/**
- * Append a verified attempt to the ledger:
- * 1. If `problemId` is given and not `"new"`, resolves through `aliases` and appends to that problem.
- * 2. Otherwise checks deterministic exact-text match against existing `problem.name`.
- * 3. Otherwise allocates `P<next_id>` and increments `next_id`.
- * Preserves all earlier attempts intact, including missed predictions.
- */
-export function appendSimAttempt(ledger: SimLedger, input: AppendAttemptInput): AppendAttemptResult {
-	const clone: SimLedger = {
-		...(ledger.$schema ? { $schema: ledger.$schema } : {}),
-		next_id: ledger.next_id,
-		...(ledger.carried_from ? { carried_from: { ...ledger.carried_from } } : {}),
-		aliases: { ...ledger.aliases },
-		problems: ledger.problems.map(problem => ({
-			...problem,
-			attempts: problem.attempts.map(attempt => ({
-				...attempt,
-				files: [...attempt.files],
-				predicted: [...attempt.predicted],
-				fixed: [...attempt.fixed],
-				missed: [...attempt.missed],
-			})),
-		})),
-	};
-
-	const round = input.round ?? computeNextRound(clone);
-	const attempt: SimAttempt = {
-		round,
-		accepted: input.accepted,
-		what: input.what.trim(),
-		files: dedupePreserveOrder(input.files),
-		model: input.model.trim(),
-		domain: input.domain.trim(),
-		predicted: dedupePreserveOrder(input.predicted),
-		fixed: dedupePreserveOrder(input.fixed),
-		missed: dedupePreserveOrder(input.missed),
-		passed: input.passed,
-		total: input.total,
-		...(input.sample ? { sample: input.sample.trim() } : {}),
-		...(input.backfilled !== undefined ? { backfilled: input.backfilled } : {}),
-		...(input.commit ? { commit: input.commit.trim() } : {}),
-		...(input.timestamp ? { timestamp: input.timestamp.trim() } : {}),
-	};
-
-	let targetProblem: SimProblem | undefined;
-	let mergedFromAlias: string | undefined;
-
-	const rawId = input.problemId?.trim();
-	if (rawId && rawId.toLowerCase() !== "new") {
-		const canonicalId = resolveProblemId(clone, rawId);
-		if (canonicalId !== rawId) {
-			mergedFromAlias = rawId;
-		}
-		targetProblem = clone.problems.find(problem => problem.id === canonicalId);
-		if (!targetProblem) {
-			throw new Error(`Problem ID "${rawId}" (resolved to "${canonicalId}") does not exist in SIM ledger.`);
-		}
-	}
-
-	if (!targetProblem && input.name) {
-		const normalizedName = normalizeRootCauseName(input.name);
-		targetProblem = clone.problems.find(problem => normalizeRootCauseName(problem.name) === normalizedName);
-	}
-
-	let createdProblem = false;
-	if (targetProblem) {
-		targetProblem.attempts.push(attempt);
-	} else {
-		if (!input.name || input.name.trim().length === 0) {
-			throw new Error("Opening a new SIM problem requires a non-empty root-cause `name`.");
-		}
-		const newId = `P${clone.next_id}`;
-		clone.next_id += 1;
-		targetProblem = {
-			id: newId,
-			name: normalizeRootCauseName(input.name),
-			opened_round: round,
-			attempts: [attempt],
-		};
-		clone.problems.push(targetProblem);
-		createdProblem = true;
-	}
-
-	const validation = validateSimLedger(clone);
-	if (!validation.ok) {
-		throw new Error(`SIM ledger invariant violation after append:\n- ${validation.errors.join("\n- ")}`);
-	}
-
-	return {
-		ledger: clone,
-		problemId: targetProblem.id,
-		createdProblem,
-		...(mergedFromAlias ? { mergedFromAlias } : {}),
-	};
-}
-
-/**
- * Validate an unknown parsed JSON value against the Appendix D.3 SIM ledger contract.
- */
-export function validateSimLedger(raw: unknown): SimValidationResult {
-	const errors: string[] = [];
-	if (!isPlainRecord(raw)) {
-		return { ok: false, errors: ["Ledger root must be a JSON object."] };
-	}
-
-	if (!isPositiveInt(raw.next_id)) {
-		errors.push("`next_id` must be a positive integer >= 1.");
-	}
-
-	if (raw.carried_from !== undefined) {
-		if (!isPlainRecord(raw.carried_from)) {
-			errors.push("`carried_from` must be an object when present.");
-		} else {
-			for (const field of ["arm", "domain", "into"] as const) {
-				if (!isNonEmptyString(raw.carried_from[field])) {
-					errors.push(`\`carried_from.${field}\` must be a non-empty string.`);
-				}
-			}
-		}
-	}
-
-	if (!isPlainRecord(raw.aliases)) {
-		errors.push("`aliases` must be an object mapping retired problem IDs to canonical IDs.");
-	}
-
-	if (!Array.isArray(raw.problems)) {
-		errors.push("`problems` must be an array.");
-	}
-
-	if (errors.length > 0) {
-		return { ok: false, errors };
-	}
-
-	const nextId = raw.next_id as number;
-	const aliases = raw.aliases as Record<string, unknown>;
-	const problems = raw.problems as unknown[];
-
-	const seenIds = new Set<string>();
-	const seenNames = new Map<string, string>();
-	let maxProblemNum = 0;
-
-	for (let pIndex = 0; pIndex < problems.length; pIndex++) {
-		const entry = problems[pIndex];
-		const prefix = `problems[${pIndex}]`;
-		if (!isPlainRecord(entry)) {
-			errors.push(`${prefix} must be an object.`);
-			continue;
-		}
-
-		const id = entry.id;
-		const idNum = typeof id === "string" ? parseProblemNumber(id) : null;
-		if (idNum === null || typeof id !== "string") {
-			errors.push(`${prefix}.id must match /^P[1-9][0-9]*$/.`);
-		} else {
-			if (seenIds.has(id)) {
-				errors.push(`${prefix}.id "${id}" is duplicated.`);
-			}
-			seenIds.add(id);
-			if (idNum > maxProblemNum) maxProblemNum = idNum;
-		}
-
-		if (!isNonEmptyString(entry.name)) {
-			errors.push(`${prefix}.name must be a non-empty string.`);
-		} else if (typeof id === "string") {
-			const normalized = normalizeRootCauseName(entry.name);
-			const existingId = seenNames.get(normalized);
-			if (existingId) {
-				errors.push(
-					`${prefix}.name duplicates "${existingId}" (${JSON.stringify(normalized)}); run \`sim merge\` to merge deterministically.`,
-				);
-			} else {
-				seenNames.set(normalized, id);
-			}
-		}
-
-		if (!isPositiveInt(entry.opened_round)) {
-			errors.push(`${prefix}.opened_round must be a positive integer >= 1.`);
-		}
-
-		if (!Array.isArray(entry.attempts) || entry.attempts.length === 0) {
-			errors.push(`${prefix}.attempts must be a non-empty array.`);
-			continue;
-		}
-
-		for (let aIndex = 0; aIndex < entry.attempts.length; aIndex++) {
-			const attempt = entry.attempts[aIndex];
-			const aPrefix = `${prefix}.attempts[${aIndex}]`;
-			if (!isPlainRecord(attempt)) {
-				errors.push(`${aPrefix} must be an object.`);
-				continue;
-			}
-			if (!isPositiveInt(attempt.round)) errors.push(`${aPrefix}.round must be an integer >= 1.`);
-			if (typeof attempt.accepted !== "boolean") errors.push(`${aPrefix}.accepted must be a boolean.`);
-			if (!isNonEmptyString(attempt.what)) errors.push(`${aPrefix}.what must be a non-empty string.`);
-			if (!isStringArray(attempt.files, false)) errors.push(`${aPrefix}.files must be a non-empty string array.`);
-			if (!isNonEmptyString(attempt.model)) errors.push(`${aPrefix}.model must be a non-empty string.`);
-			if (!isNonEmptyString(attempt.domain)) errors.push(`${aPrefix}.domain must be a non-empty string.`);
-			if (!isStringArray(attempt.predicted, true)) errors.push(`${aPrefix}.predicted must be a string array.`);
-			if (!isStringArray(attempt.fixed, true)) errors.push(`${aPrefix}.fixed must be a string array.`);
-			if (!isStringArray(attempt.missed, true)) errors.push(`${aPrefix}.missed must be a string array.`);
-			if (!isNonNegativeInt(attempt.passed)) errors.push(`${aPrefix}.passed must be an integer >= 0.`);
-			if (!isNonNegativeInt(attempt.total)) errors.push(`${aPrefix}.total must be an integer >= 0.`);
-
-			if (isNonNegativeInt(attempt.passed) && isNonNegativeInt(attempt.total) && attempt.passed > attempt.total) {
-				errors.push(`${aPrefix}.passed (${attempt.passed}) cannot exceed total (${attempt.total}).`);
-			}
-
-			if (
-				isStringArray(attempt.predicted, true) &&
-				isStringArray(attempt.fixed, true) &&
-				isStringArray(attempt.missed, true)
-			) {
-				const predictedSet = new Set(attempt.predicted);
-				const fixedSet = new Set(attempt.fixed);
-				const missedSet = new Set(attempt.missed);
-
-				for (const item of fixedSet) {
-					if (!predictedSet.has(item)) {
-						errors.push(`${aPrefix}.fixed contains "${item}" which is not in predicted.`);
-					}
-					if (missedSet.has(item)) {
-						errors.push(`${aPrefix} lists "${item}" in both fixed and missed.`);
-					}
-				}
-				for (const item of missedSet) {
-					if (!predictedSet.has(item)) {
-						errors.push(`${aPrefix}.missed contains "${item}" which is not in predicted.`);
-					}
-				}
-				for (const item of predictedSet) {
-					if (!fixedSet.has(item) && !missedSet.has(item)) {
-						errors.push(`${aPrefix}.predicted item "${item}" is missing from both fixed and missed.`);
-					}
-				}
-			}
-		}
-	}
-
-	// Validate aliases and monotonicity of next_id.
-	for (const [aliasFrom, aliasTo] of Object.entries(aliases)) {
-		const fromNum = parseProblemNumber(aliasFrom);
-		if (fromNum === null) {
-			errors.push(`aliases key "${aliasFrom}" must match /^P[1-9][0-9]*$/.`);
-		} else {
-			if (fromNum > maxProblemNum) maxProblemNum = fromNum;
-			if (seenIds.has(aliasFrom)) {
-				errors.push(`aliases key "${aliasFrom}" cannot also exist as an active problem ID.`);
-			}
-		}
-		if (typeof aliasTo !== "string" || parseProblemNumber(aliasTo) === null) {
-			errors.push(`aliases["${aliasFrom}"] target must match /^P[1-9][0-9]*$/.`);
-			continue;
-		}
-		if (!seenIds.has(aliasTo) && !Object.hasOwn(aliases, aliasTo)) {
-			errors.push(`aliases["${aliasFrom}"] points to unknown problem ID "${aliasTo}".`);
-		}
-	}
-
-	// Check alias cycle freedom.
-	const stringAliases: Record<string, string> = {};
-	for (const [k, v] of Object.entries(aliases)) {
-		if (typeof v === "string") stringAliases[k] = v;
-	}
-	for (const aliasKey of Object.keys(stringAliases)) {
-		try {
-			const resolved = resolveProblemId({ aliases: stringAliases }, aliasKey);
-			if (!seenIds.has(resolved)) {
-				errors.push(`aliases["${aliasKey}"] resolves to missing problem ID "${resolved}".`);
-			}
-		} catch (error) {
-			errors.push(String(error));
-		}
-	}
-
-	if (nextId <= maxProblemNum) {
-		errors.push(`next_id (${nextId}) must be strictly greater than highest problem/alias ID (P${maxProblemNum}).`);
-	}
-
-	return { ok: errors.length === 0, errors };
 }

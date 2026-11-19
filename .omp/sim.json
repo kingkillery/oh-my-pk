@@ -1,70 +1,74 @@
 {
 	"$schema": "./sim.schema.json",
+	"schema_version": 2,
 	"next_id": 7,
 	"aliases": {},
 	"problems": [
 		{
 			"id": "P1",
-			"name": "malformed tool-call JSON escapes and raw control characters",
+			"name": "Malformed JSON tool arguments with unescaped controls or Windows backslash escapes fail strict JSON.parse",
 			"opened_round": 1,
 			"attempts": [
 				{
 					"round": 1,
 					"accepted": true,
-					"backfilled": true,
-					"what": "Repair raw unescaped control chars and invalid backslash escapes (Windows paths, regex classes) inside JSON string literals via parseJsonWithRepair before failing tool-call decoding.",
+					"what": "Two-pass repairJson + parseJsonWithRepair handling raw control chars and invalid backslash escapes inside strings",
 					"files": ["packages/ai/src/utils/json-parse.ts"],
-					"model": "multi-model (openai-compat/gemini/claude)",
+					"model": "cross-model",
 					"domain": "parsers",
+					"benchmark": "json-parse-repair",
 					"predicted": ["parser-json-unescaped-controls", "parser-json-invalid-escapes"],
 					"fixed": ["parser-json-unescaped-controls", "parser-json-invalid-escapes"],
 					"missed": [],
+					"regressed": [],
 					"passed": 16,
-					"total": 16
+					"total": 16,
+					"sample": "seed-p1",
+					"backfilled": true
 				}
 			]
 		},
 		{
 			"id": "P2",
-			"name": "edit patch format contamination across apply_patch and hashline dialects",
+			"name": "Edit patch parsers fail on heredoc-wrapped apply_patch envelopes or model-emitted diff prefixes in hashline bodies",
 			"opened_round": 2,
 			"attempts": [
 				{
 					"round": 2,
 					"accepted": true,
-					"backfilled": true,
-					"what": "Strip lenient shell heredoc wrappers in apply_patch parser and reject apply_patch sentinels or unified-diff @@ headers inside hashline with explicit corrective errors.",
-					"files": [
-						"packages/coding-agent/src/edit/apply-patch/parser.ts",
-						"packages/hashline/src/parser.ts"
-					],
-					"model": "multi-model (codex/gpt-5/claude/gemini)",
+					"what": "Lenient heredoc stripping in apply-patch parser and contamination stripping / clean-block rejection in hashline parser",
+					"files": ["packages/coding-agent/src/edit/apply-patch/parser.ts", "packages/hashline/src/parser.ts"],
+					"model": "cross-model",
 					"domain": "parsers",
+					"benchmark": "patch-dialect-isolation",
 					"predicted": ["parser-apply-patch-heredoc", "parser-hashline-contamination"],
 					"fixed": ["parser-apply-patch-heredoc", "parser-hashline-contamination"],
 					"missed": [],
+					"regressed": [],
 					"passed": 16,
-					"total": 16
+					"total": 16,
+					"sample": "seed-p2",
+					"backfilled": true
 				}
 			]
 		},
 		{
 			"id": "P3",
-			"name": "silent empty completions and unpaced retry-after backoffs on flaky gateways",
+			"name": "Empty stop-reason completions and upstream Retry-After headers drop turns or use wrong backoff delays",
 			"opened_round": 3,
 			"attempts": [
 				{
 					"round": 3,
 					"accepted": true,
-					"backfilled": true,
-					"what": "Retry degenerate zero-output-token stop completions without retrying billed thinking turns, and derive max safe backoff from retry-after / x-ratelimit-reset-ms headers without duplicating retry-after-ms hints.",
+					"what": "Empty-completion retry loop preserving billed thinking-only responses and header-first Retry-After precedence over body text",
 					"files": [
 						"packages/ai/src/utils/empty-completion-retry.ts",
 						"packages/ai/src/utils/retry-after.ts",
 						"packages/ai/src/utils/retry.ts"
 					],
-					"model": "multi-model (openai-compat/anthropic-compat/copilot)",
+					"model": "cross-model",
 					"domain": "retry-policies",
+					"benchmark": "gateway-retry-resilience",
 					"predicted": [
 						"retry-empty-completion-recovers",
 						"retry-empty-completion-preserves-billed-thinking",
@@ -76,27 +80,27 @@
 						"retry-after-header-precedence"
 					],
 					"missed": [],
+					"regressed": [],
 					"passed": 16,
-					"total": 16
+					"total": 16,
+					"sample": "seed-p3",
+					"backfilled": true
 				}
 			]
 		},
 		{
 			"id": "P4",
-			"name": "oversized tool output and approval payloads corrupting UTF-8 bounds or hiding trailing errors",
+			"name": "Tool output and approval prompt truncation loses terminal error diagnostics or blows byte limits on multi-byte UTF-8",
 			"opened_round": 4,
 			"attempts": [
 				{
 					"round": 4,
 					"accepted": true,
-					"backfilled": true,
-					"what": "Enforce UTF-8 byte caps with firstLineExceedsLimit in truncateHead, preserve trailing failure lines in truncateTail, and cap oversized approval prompt arguments via truncateForPrompt.",
-					"files": [
-						"packages/coding-agent/src/session/streaming-output.ts",
-						"packages/coding-agent/src/tools/approval.ts"
-					],
-					"model": "model-agnostic",
+					"what": "Byte-bounded truncateHead/truncateTail preserving final stack errors and 4KB cap on approval dialog prompts",
+					"files": ["packages/coding-agent/src/session/streaming-output.ts", "packages/coding-agent/src/tools/approval.ts"],
+					"model": "cross-model",
 					"domain": "truncation",
+					"benchmark": "utf8-truncation-bounds",
 					"predicted": [
 						"truncation-head-byte-and-first-line",
 						"truncation-tail-preserves-end-error",
@@ -108,30 +112,32 @@
 						"truncation-approval-prompt-cap"
 					],
 					"missed": [],
+					"regressed": [],
 					"passed": 16,
-					"total": 16
+					"total": 16,
+					"sample": "seed-p4",
+					"backfilled": true
 				}
 			]
 		},
 		{
 			"id": "P5",
-			"name": "approval bypasses, unscoped rule triggers, and prompt-cache prefix churn on harness updates",
+			"name": "Approval gates, glob-scoped TTSR rules, and dynamic prompt context risk bypassing permissions or busting block-0 prompt caching",
 			"opened_round": 5,
 			"attempts": [
 				{
 					"round": 5,
 					"accepted": true,
-					"backfilled": true,
-					"what": "Keep explicit user deny authoritative even in yolo mode, scope TTSR rule triggers to matching globs, and inject full SIM context after project context while keeping block 0 byte-stable and Fusion policies terminal.",
+					"what": "Tiered approval gating, TTSR stream glob matching, and post-project/pre-Fusion SIM prompt block preserving static block 0",
 					"files": [
 						"packages/coding-agent/src/tools/approval.ts",
 						"packages/coding-agent/src/export/ttsr.ts",
 						"packages/coding-agent/src/system-prompt.ts",
-						"packages/coding-agent/src/utils/sim-ledger.ts",
-						"packages/coding-agent/src/prompts/system/sim-context.md"
+						"packages/coding-agent/src/utils/sim-ledger.ts"
 					],
-					"model": "model-agnostic",
+					"model": "cross-model",
 					"domain": "hooks-and-prompts",
+					"benchmark": "approval-ttsr-prompt-cache",
 					"predicted": [
 						"approval-mode-tier-gating",
 						"hook-ttsr-glob-scoping",
@@ -143,27 +149,27 @@
 						"system-prompt-sim-and-prefix-stability"
 					],
 					"missed": [],
+					"regressed": [],
 					"passed": 16,
-					"total": 16
+					"total": 16,
+					"sample": "seed-p5",
+					"backfilled": true
 				}
 			]
 		},
 		{
 			"id": "P6",
-			"name": "cross-model reasoning effort, thinking replay, and stream markup incompatibilities in pi-catalog",
+			"name": "Provider and model-family quirks in pi-catalog compat drop reasoning effort maps, replay invalid thinking, or leak markup tags",
 			"opened_round": 6,
 			"attempts": [
 				{
 					"round": 6,
 					"accepted": true,
-					"backfilled": true,
-					"what": "Map Ollama unsupported minimal/xhigh efforts to low/max without clobbering overrides, gate OpenCode reasoning_content replay inside whenThinking only, and route stream markup healing per model family (thinking/kimi/dsml/harmony).",
-					"files": [
-						"packages/catalog/src/compat/openai.ts",
-						"packages/catalog/src/compat/apply.ts"
-					],
-					"model": "ollama/opencode-go/minimax/kimi-k2/deepseek/gpt-oss",
+					"what": "Declarative pi-catalog OpenAI compat fixups for Ollama reasoningEffortMap, OpenCode replay gating, and stream markup healing",
+					"files": ["packages/catalog/src/compat/openai.ts", "packages/catalog/src/compat/apply.ts"],
+					"model": "pi-catalog-multi-provider",
 					"domain": "pi-catalog-compat",
+					"benchmark": "pi-catalog-compat",
 					"predicted": [
 						"compat-ollama-reasoning-effort-map",
 						"compat-opencode-thinking-replay-gating",
@@ -175,8 +181,11 @@
 						"compat-stream-markup-healing-routing"
 					],
 					"missed": [],
+					"regressed": [],
 					"passed": 16,
-					"total": 16
+					"total": 16,
+					"sample": "seed-p6",
+					"backfilled": true
 				}
 			]
 		}
