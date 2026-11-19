@@ -981,6 +981,7 @@ import * as bundledPiCodingAgentUtilsPromptPath from "@pk-nerdsaver-ai/pi-coding
 import * as bundledPiCodingAgentUtilsQrcode from "@pk-nerdsaver-ai/pi-coding-agent/utils/qrcode";
 import * as bundledPiCodingAgentUtilsSessionColor from "@pk-nerdsaver-ai/pi-coding-agent/utils/session-color";
 import * as bundledPiCodingAgentUtilsShellSnapshot from "@pk-nerdsaver-ai/pi-coding-agent/utils/shell-snapshot";
+import * as bundledPiCodingAgentUtilsSimLedger from "@pk-nerdsaver-ai/pi-coding-agent/utils/sim-ledger";
 import * as bundledPiCodingAgentUtilsSixel from "@pk-nerdsaver-ai/pi-coding-agent/utils/sixel";
 import * as bundledPiCodingAgentUtilsThinkingDisplay from "@pk-nerdsaver-ai/pi-coding-agent/utils/thinking-display";
 import * as bundledPiCodingAgentUtilsTitleGenerator from "@pk-nerdsaver-ai/pi-coding-agent/utils/title-generator";
@@ -3511,6 +3512,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	>,
 	"@pk-nerdsaver-ai/pi-coding-agent/utils/shell-snapshot":
 		bundledPiCodingAgentUtilsShellSnapshot as unknown as Readonly<Record<string, unknown>>,
+	"@pk-nerdsaver-ai/pi-coding-agent/utils/sim-ledger": bundledPiCodingAgentUtilsSimLedger as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@pk-nerdsaver-ai/pi-coding-agent/utils/sixel": bundledPiCodingAgentUtilsSixel as unknown as Readonly<
 		Record<string, unknown>
 	>,

@@ -23,10 +23,12 @@ import defaultPersonality from "./prompts/system/personalities/default.md" with 
 import friendlyPersonality from "./prompts/system/personalities/friendly.md" with { type: "text" };
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
+import simContextTemplate from "./prompts/system/sim-context.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import { shortenPath } from "./tools/render-utils";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
 import { normalizePromptPath } from "./utils/prompt-path";
+import { loadSimLedger, type SimLedgerContext } from "./utils/sim-ledger";
 import { AGENTS_MD_LIMIT, buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
 /** Bundled personality specs, keyed by the `personality` setting value. */
@@ -99,6 +101,16 @@ function renderActiveRepoContextPrompt(activeRepoContext: ActiveRepoContext | nu
 	return prompt
 		.render(activeRepoContextTemplate, {
 			relativeRepoRoot: normalizePromptPath(activeRepoContext.relativeRepoRoot),
+		})
+		.trim();
+}
+
+function renderSimContextPrompt(simLedger: SimLedgerContext | null): string {
+	if (!simLedger) return "";
+	return prompt
+		.render(simContextTemplate, {
+			path: normalizePromptPath(simLedger.path),
+			content: simLedger.content,
 		})
 		.trim();
 }
@@ -476,6 +488,8 @@ export interface BuildSystemPromptOptions {
 	renderMermaid?: boolean;
 	/** Pre-resolved nested active repo context. Undefined resolves from cwd. */
 	activeRepoContext?: ActiveRepoContext | null;
+	/** Pre-loaded Self-Improvement Memory ledger. Undefined discovers `.omp/sim.json` from cwd; null disables injection. */
+	simLedger?: SimLedgerContext | null;
 }
 
 /** Result of building provider-facing system prompt messages. */
@@ -530,6 +544,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		includeWorkspaceTree = false,
 		renderMermaid = true,
 		activeRepoContext: providedActiveRepoContext,
+		simLedger: providedSimLedger,
 	} = options;
 	const inlineToolDescriptors = providedInlineToolDescriptors ?? false;
 	const resolvedCwd = cwd ?? getProjectDir();
@@ -550,6 +565,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 			agentsMdFiles: [],
 		} satisfies WorkspaceTree,
 		activeRepoContext: null as ActiveRepoContext | null,
+		simLedger: null as SimLedgerContext | null,
 	};
 
 	const deadline = Bun.sleep(SYSTEM_PROMPT_PREP_TIMEOUT_MS).then(() => "__timeout__" as const);
@@ -616,6 +632,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		providedActiveRepoContext !== undefined
 			? Promise.resolve(providedActiveRepoContext)
 			: logger.time("resolveActiveRepoContext", () => resolveActiveRepoContext(resolvedCwd));
+	const simLedgerPromise =
+		providedSimLedger !== undefined
+			? Promise.resolve(providedSimLedger)
+			: logger.time("loadSimLedger", () => loadSimLedger(resolvedCwd));
 
 	const [
 		resolvedCustomPrompt,
@@ -625,6 +645,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		skills,
 		workspaceTree,
 		activeRepoContext,
+		simLedger,
 	] = await Promise.all([
 		withDeadline(
 			"customPrompt",
@@ -647,6 +668,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		withDeadline("loadSkills", skillsPromise, prepDefaults.skills),
 		withDeadline("buildWorkspaceTree", workspaceTreePromise, prepDefaults.workspaceTree),
 		withDeadline("resolveActiveRepoContext", activeRepoContextPromise, prepDefaults.activeRepoContext),
+		withDeadline("loadSimLedger", simLedgerPromise, prepDefaults.simLedger),
 	]);
 	const agentsMdFiles = Array.from(new Set(workspaceTree.agentsMdFiles)).sort().slice(0, AGENTS_MD_LIMIT);
 
@@ -688,6 +710,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const dateTime = date;
 	const promptCwd = shortenPath(normalizePromptPath(resolvedCwd));
 	const activeRepoContextPrompt = renderActiveRepoContextPrompt(activeRepoContext);
+	const simContextPrompt = renderSimContextPrompt(simLedger);
 
 	// Build tool metadata for system prompt rendering.
 	// Priority: explicit list > tools map > conservative SDK fallback.
@@ -836,6 +859,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	}
 	if (activeRepoContextPrompt) {
 		systemPrompt.push(activeRepoContextPrompt);
+	}
+	if (simContextPrompt) {
+		systemPrompt.push(simContextPrompt);
 	}
 
 	// Strip copied policy from every source before appending the current block once.

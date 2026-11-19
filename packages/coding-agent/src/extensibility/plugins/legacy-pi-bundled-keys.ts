@@ -989,6 +989,7 @@ export const BUNDLED_PI_REGISTRY_KEYS: ReadonlySet<string> = new Set([
 	"@pk-nerdsaver-ai/pi-coding-agent/utils/qrcode",
 	"@pk-nerdsaver-ai/pi-coding-agent/utils/session-color",
 	"@pk-nerdsaver-ai/pi-coding-agent/utils/shell-snapshot",
+	"@pk-nerdsaver-ai/pi-coding-agent/utils/sim-ledger",
 	"@pk-nerdsaver-ai/pi-coding-agent/utils/sixel",
 	"@pk-nerdsaver-ai/pi-coding-agent/utils/thinking-display",
 	"@pk-nerdsaver-ai/pi-coding-agent/utils/title-generator",

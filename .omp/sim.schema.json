@@ -1,0 +1,165 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/kingkillery/oh-my-pk/.omp/sim.schema.json",
+	"title": "oh-my-pk Self-Improvement Memory (SIM) Ledger",
+	"description": "Lightweight deterministic SIM ledger following arXiv:2611.18856v1 Appendix D.3, grouping harness edits by recurring root-cause hypothesis with model/domain provenance and predicted vs. observed replay outcomes.",
+	"type": "object",
+	"additionalProperties": false,
+	"required": ["next_id", "aliases", "problems"],
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"next_id": {
+			"type": "integer",
+			"minimum": 1,
+			"description": "Next numeric suffix allocated for new problem IDs (P<next_id>)."
+		},
+		"carried_from": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["arm", "domain", "into"],
+			"properties": {
+				"arm": { "type": "string", "minLength": 1 },
+				"domain": { "type": "string", "minLength": 1 },
+				"into": { "type": "string", "minLength": 1 }
+			}
+		},
+		"aliases": {
+			"type": "object",
+			"description": "Deterministic merge map from retired problem IDs to canonical problem IDs (e.g. P6 -> P5).",
+			"propertyNames": {
+				"pattern": "^P[1-9][0-9]*$"
+			},
+			"additionalProperties": {
+				"type": "string",
+				"pattern": "^P[1-9][0-9]*$"
+			}
+		},
+		"problems": {
+			"type": "array",
+			"items": {
+				"$ref": "#/$defs/problem"
+			}
+		}
+	},
+	"$defs": {
+		"problem": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["id", "name", "opened_round", "attempts"],
+			"properties": {
+				"id": {
+					"type": "string",
+					"pattern": "^P[1-9][0-9]*$"
+				},
+				"name": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Recurring root-cause hypothesis text; exact trimmed text is used for deterministic merging."
+				},
+				"opened_round": {
+					"type": "integer",
+					"minimum": 1
+				},
+				"attempts": {
+					"type": "array",
+					"minItems": 1,
+					"items": {
+						"$ref": "#/$defs/attempt"
+					}
+				}
+			}
+		},
+		"attempt": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"round",
+				"accepted",
+				"what",
+				"files",
+				"model",
+				"domain",
+				"predicted",
+				"fixed",
+				"missed",
+				"passed",
+				"total"
+			],
+			"properties": {
+				"round": {
+					"type": "integer",
+					"minimum": 1
+				},
+				"accepted": {
+					"type": "boolean"
+				},
+				"what": {
+					"type": "string",
+					"minLength": 1
+				},
+				"files": {
+					"type": "array",
+					"minItems": 1,
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"model": {
+					"type": "string",
+					"minLength": 1
+				},
+				"domain": {
+					"type": "string",
+					"minLength": 1
+				},
+				"predicted": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"fixed": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"missed": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"passed": {
+					"type": "integer",
+					"minimum": 0
+				},
+				"total": {
+					"type": "integer",
+					"minimum": 0
+				},
+				"sample": {
+					"type": "string",
+					"minLength": 1
+				},
+				"backfilled": {
+					"type": "boolean"
+				},
+				"commit": {
+					"type": "string",
+					"minLength": 1
+				},
+				"timestamp": {
+					"type": "string",
+					"minLength": 1
+				}
+			}
+		}
+	}
+}

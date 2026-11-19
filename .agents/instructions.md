@@ -72,3 +72,9 @@ SSOT is `.agents/`: `context/`, `rules/`, `commands/`, `skills/`, `subagents/`, 
 - After compaction verify session/header prefix before new tool calls. Mandatory 5-section compaction schema only.
 - Canonical `.mcp.json` sync: `.agents/scripts/run_packman_python.cmd .agents/scripts/sync_mcp_configs.py`. Offline fallback: `docs_dev/`, `docs/`, `.agents/context/`, local patterns.
 - Log filtering: `tokf raw last` with secret scrubbing. Stop-hook repair: 1-turn bounded via `.agents/scripts/run_packman_python.cmd .agents/hooks/run_stop_checks.py`.
+
+## Self-Improvement Memory (SIM)
+
+- Canonical harness edit ledger: `.omp/sim.json` (schema `.omp/sim.schema.json`), injected verbatim into `buildSystemPrompt` when present.
+- Before editing prompts, hooks, parsers, retry policies, truncation, or `pi-catalog` compat fixups, follow `.agents/rules/harness-sim.md` (check `model`/`domain` provenance, reuse transferable rationale, recalibrate model-specific heuristics).
+- Verify harness edits with `bun run sim:replay` and log observed `predicted` vs `fixed`/`missed` outcomes via `bun scripts/sim/cli.ts record` + `bun run sim:validate`.

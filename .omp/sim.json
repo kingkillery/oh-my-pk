@@ -1,0 +1,184 @@
+{
+	"$schema": "./sim.schema.json",
+	"next_id": 7,
+	"aliases": {},
+	"problems": [
+		{
+			"id": "P1",
+			"name": "malformed tool-call JSON escapes and raw control characters",
+			"opened_round": 1,
+			"attempts": [
+				{
+					"round": 1,
+					"accepted": true,
+					"backfilled": true,
+					"what": "Repair raw unescaped control chars and invalid backslash escapes (Windows paths, regex classes) inside JSON string literals via parseJsonWithRepair before failing tool-call decoding.",
+					"files": ["packages/ai/src/utils/json-parse.ts"],
+					"model": "multi-model (openai-compat/gemini/claude)",
+					"domain": "parsers",
+					"predicted": ["parser-json-unescaped-controls", "parser-json-invalid-escapes"],
+					"fixed": ["parser-json-unescaped-controls", "parser-json-invalid-escapes"],
+					"missed": [],
+					"passed": 16,
+					"total": 16
+				}
+			]
+		},
+		{
+			"id": "P2",
+			"name": "edit patch format contamination across apply_patch and hashline dialects",
+			"opened_round": 2,
+			"attempts": [
+				{
+					"round": 2,
+					"accepted": true,
+					"backfilled": true,
+					"what": "Strip lenient shell heredoc wrappers in apply_patch parser and reject apply_patch sentinels or unified-diff @@ headers inside hashline with explicit corrective errors.",
+					"files": [
+						"packages/coding-agent/src/edit/apply-patch/parser.ts",
+						"packages/hashline/src/parser.ts"
+					],
+					"model": "multi-model (codex/gpt-5/claude/gemini)",
+					"domain": "parsers",
+					"predicted": ["parser-apply-patch-heredoc", "parser-hashline-contamination"],
+					"fixed": ["parser-apply-patch-heredoc", "parser-hashline-contamination"],
+					"missed": [],
+					"passed": 16,
+					"total": 16
+				}
+			]
+		},
+		{
+			"id": "P3",
+			"name": "silent empty completions and unpaced retry-after backoffs on flaky gateways",
+			"opened_round": 3,
+			"attempts": [
+				{
+					"round": 3,
+					"accepted": true,
+					"backfilled": true,
+					"what": "Retry degenerate zero-output-token stop completions without retrying billed thinking turns, and derive max safe backoff from retry-after / x-ratelimit-reset-ms headers without duplicating retry-after-ms hints.",
+					"files": [
+						"packages/ai/src/utils/empty-completion-retry.ts",
+						"packages/ai/src/utils/retry-after.ts",
+						"packages/ai/src/utils/retry.ts"
+					],
+					"model": "multi-model (openai-compat/anthropic-compat/copilot)",
+					"domain": "retry-policies",
+					"predicted": [
+						"retry-empty-completion-recovers",
+						"retry-empty-completion-preserves-billed-thinking",
+						"retry-after-header-precedence"
+					],
+					"fixed": [
+						"retry-empty-completion-recovers",
+						"retry-empty-completion-preserves-billed-thinking",
+						"retry-after-header-precedence"
+					],
+					"missed": [],
+					"passed": 16,
+					"total": 16
+				}
+			]
+		},
+		{
+			"id": "P4",
+			"name": "oversized tool output and approval payloads corrupting UTF-8 bounds or hiding trailing errors",
+			"opened_round": 4,
+			"attempts": [
+				{
+					"round": 4,
+					"accepted": true,
+					"backfilled": true,
+					"what": "Enforce UTF-8 byte caps with firstLineExceedsLimit in truncateHead, preserve trailing failure lines in truncateTail, and cap oversized approval prompt arguments via truncateForPrompt.",
+					"files": [
+						"packages/coding-agent/src/session/streaming-output.ts",
+						"packages/coding-agent/src/tools/approval.ts"
+					],
+					"model": "model-agnostic",
+					"domain": "truncation",
+					"predicted": [
+						"truncation-head-byte-and-first-line",
+						"truncation-tail-preserves-end-error",
+						"truncation-approval-prompt-cap"
+					],
+					"fixed": [
+						"truncation-head-byte-and-first-line",
+						"truncation-tail-preserves-end-error",
+						"truncation-approval-prompt-cap"
+					],
+					"missed": [],
+					"passed": 16,
+					"total": 16
+				}
+			]
+		},
+		{
+			"id": "P5",
+			"name": "approval bypasses, unscoped rule triggers, and prompt-cache prefix churn on harness updates",
+			"opened_round": 5,
+			"attempts": [
+				{
+					"round": 5,
+					"accepted": true,
+					"backfilled": true,
+					"what": "Keep explicit user deny authoritative even in yolo mode, scope TTSR rule triggers to matching globs, and inject full SIM context after project context while keeping block 0 byte-stable and Fusion policies terminal.",
+					"files": [
+						"packages/coding-agent/src/tools/approval.ts",
+						"packages/coding-agent/src/export/ttsr.ts",
+						"packages/coding-agent/src/system-prompt.ts",
+						"packages/coding-agent/src/utils/sim-ledger.ts",
+						"packages/coding-agent/src/prompts/system/sim-context.md"
+					],
+					"model": "model-agnostic",
+					"domain": "hooks-and-prompts",
+					"predicted": [
+						"approval-mode-tier-gating",
+						"hook-ttsr-glob-scoping",
+						"system-prompt-sim-and-prefix-stability"
+					],
+					"fixed": [
+						"approval-mode-tier-gating",
+						"hook-ttsr-glob-scoping",
+						"system-prompt-sim-and-prefix-stability"
+					],
+					"missed": [],
+					"passed": 16,
+					"total": 16
+				}
+			]
+		},
+		{
+			"id": "P6",
+			"name": "cross-model reasoning effort, thinking replay, and stream markup incompatibilities in pi-catalog",
+			"opened_round": 6,
+			"attempts": [
+				{
+					"round": 6,
+					"accepted": true,
+					"backfilled": true,
+					"what": "Map Ollama unsupported minimal/xhigh efforts to low/max without clobbering overrides, gate OpenCode reasoning_content replay inside whenThinking only, and route stream markup healing per model family (thinking/kimi/dsml/harmony).",
+					"files": [
+						"packages/catalog/src/compat/openai.ts",
+						"packages/catalog/src/compat/apply.ts"
+					],
+					"model": "ollama/opencode-go/minimax/kimi-k2/deepseek/gpt-oss",
+					"domain": "pi-catalog-compat",
+					"predicted": [
+						"compat-ollama-reasoning-effort-map",
+						"compat-opencode-thinking-replay-gating",
+						"compat-stream-markup-healing-routing"
+					],
+					"fixed": [
+						"compat-ollama-reasoning-effort-map",
+						"compat-opencode-thinking-replay-gating",
+						"compat-stream-markup-healing-routing"
+					],
+					"missed": [],
+					"passed": 16,
+					"total": 16
+				}
+			]
+		}
+	]
+}
