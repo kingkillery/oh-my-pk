@@ -302,3 +302,60 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(session.getActiveTaskContract?.()).toBeUndefined();
 	});
 });
+
+describe("runSubprocess dry mode for Sol 6.2 / Astra 6.2", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const registryWith = (id: string) =>
+		({
+			refresh: async () => {},
+			getAvailable: () => [{ provider: "openai-codex", id, name: id }],
+		}) as unknown as ModelRegistry;
+	const preloadedExtensionPaths = ["/abs/parent/.ompk/extensions/foo.ts"];
+
+	for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
+		it(`strips extensions, custom tools, skills, MCP, browser, and image generation for ${id}`, async () => {
+			const spy = vi
+				.spyOn(sdkModule, "createAgentSession")
+				.mockResolvedValue(createSessionResult(yieldEmittingSession()));
+
+			await runSubprocess({
+				...baseOptions,
+				modelOverride: `openai-codex/${id}`,
+				modelRegistry: registryWith(id),
+				preloadedExtensionPaths,
+			});
+
+			const forwarded = spy.mock.calls[0]?.[0];
+			expect(forwarded?.model?.id).toBe(id);
+			expect(forwarded?.preloadedExtensionPaths).toEqual([]);
+			expect(forwarded?.preloadedCustomToolPaths).toEqual([]);
+			expect(forwarded?.disableExtensionDiscovery).toBe(true);
+			expect(forwarded?.skills).toEqual([]);
+			expect(forwarded?.enableMCP).toBe(false);
+			expect(forwarded?.enableImageGen).toBe(false);
+			expect(forwarded?.settings?.get("browser.enabled")).toBe(false);
+		});
+	}
+
+	it("leaves other models untouched", async () => {
+		const spy = vi
+			.spyOn(sdkModule, "createAgentSession")
+			.mockResolvedValue(createSessionResult(yieldEmittingSession()));
+
+		await runSubprocess({
+			...baseOptions,
+			modelOverride: "openai-codex/gpt-6.1-sol",
+			modelRegistry: registryWith("gpt-6.1-sol"),
+			preloadedExtensionPaths,
+		});
+
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.model?.id).toBe("gpt-6.1-sol");
+		expect(forwarded?.preloadedExtensionPaths).toBe(preloadedExtensionPaths);
+		expect(forwarded?.enableMCP).toBe(true);
+		expect(forwarded?.enableImageGen).toBe(true);
+	});
+});

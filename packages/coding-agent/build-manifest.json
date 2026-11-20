@@ -1,9 +1,9 @@
 {
   "version": "16.4.37",
   "buildLabel": "",
-  "builtAtUtc": "2026-11-19T20:57:35.971Z",
-  "gitCommit": "015ab017b050bf6cce780215f30f1f3fee1c7d4f",
-  "sourceIndexHash": "abdf781bd8de2f32b4bdfed4cdd34b5f655181b73c560fa7fb82cc427258c0ef",
+  "builtAtUtc": "2026-11-20T16:25:39.086Z",
+  "gitCommit": "fd2bbb9bc7259ffd5e82998c8c3a4d9b3bb557f8",
+  "sourceIndexHash": "1fec81c752b347798c1cd4d492da3b26f724b35834d7e2fcbeb769f32f44c570",
   "sourcePaths": [
     "packages/*/src",
     "packages/*/package.json",
