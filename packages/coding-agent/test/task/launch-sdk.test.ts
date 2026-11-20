@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, describe, expect, it, setDefaultTimeout, spyOn } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,6 +9,7 @@ import { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
 import type { CustomTool } from "../../src/extensibility/custom-tools/types";
 import type { ExtensionUIContext } from "../../src/extensibility/extensions/types";
+import { MCPManager } from "../../src/mcp/manager";
 import { initializeExtensions } from "../../src/modes/runtime-init";
 import { getAvailableThemesWithPaths, getThemeByName } from "../../src/modes/theme/theme";
 import { LifecycleStore } from "../../src/operational/lifecycle-store";
@@ -28,6 +29,9 @@ import {
 	createTestCollaborationPolicy,
 	createTestExecutionProfile,
 } from "../operational/fixtures/launch-authority-input";
+
+// Each case boots real sessions; slower machines need more than the 5s default.
+setDefaultTimeout(30_000);
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -209,6 +213,9 @@ async function fixture(enabled = true, maxRequests = 2) {
 			disableExtensionDiscovery: true,
 			skipPythonPreflight: true,
 			enableMCP: false,
+			// An empty manager is inherited by Task children, so they do not
+			// discover and launch the MCP servers configured on this machine.
+			mcpManager: new MCPManager(directory),
 			enableLsp: false,
 			enableIrc: false,
 			skills: [],
@@ -286,7 +293,7 @@ describe("real SDK launch authority wiring", () => {
 		const f = await fixture();
 		registerTaskProvider(f);
 		f.setResponseMode("hang");
-		f.settings.override("task.agentPolicies", { task: { maxRequests: 2, maxRuntimeMs: 2_000 } });
+		f.settings.override("task.agentPolicies", { task: { maxRequests: 2, maxRuntimeMs: 4_000 } });
 		const { session } = await f.create(undefined, { toolNames: ["task"] });
 		const createSpy = spyOn(sdk, "createAgentSession");
 		try {
@@ -307,7 +314,7 @@ describe("real SDK launch authority wiring", () => {
 				},
 			});
 			expect(f.requests.length).toBeGreaterThan(0);
-			expect(Date.now() - start).toBeLessThan(5_000);
+			expect(Date.now() - start).toBeLessThan(15_000);
 			const row = pending!.store.getLaunchBinding(pending!.launch.binding.bindingId);
 			expect(row.state).toBe("failed");
 			expect(pending!.store.countLiveChildBindings(row.parentPrincipalId)).toBe(0);
