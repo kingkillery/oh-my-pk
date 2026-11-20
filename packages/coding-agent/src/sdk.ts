@@ -630,6 +630,8 @@ export interface CreateAgentSessionOptions {
 
 	/** Enable MCP server discovery from .mcp.json files. Default: true */
 	enableMCP?: boolean;
+	/** Offer image generation tools when a provider supports them. Default: true */
+	enableImageGen?: boolean;
 	/** Enable local cross-process IRC discovery and delivery. Default: true. */
 	enableIrc?: boolean;
 	/** Existing MCP manager to reuse (skips discovery, propagates to toolSession). */
@@ -2108,7 +2110,10 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 		if (mcpManager && !options.parentTaskPrefix) MCPManager.setInstance(mcpManager);
 
 		// Add image tools when the active model or configured image providers can generate images.
-		const imageGenTools = await logger.time("getImageGenTools", () => getImageGenTools(modelRegistry, model));
+		const imageGenTools =
+			options.enableImageGen === false
+				? []
+				: await logger.time("getImageGenTools", () => getImageGenTools(modelRegistry, model));
 		if (imageGenTools.length > 0) {
 			customTools.push(...(imageGenTools as unknown as CustomTool[]));
 		}

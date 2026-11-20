@@ -952,6 +952,14 @@ export function createMCPProxyTools(mcpManager: MCPManager): CustomTool[] {
 	});
 }
 
+/**
+ * Models whose subagents run in dry mode: no MCP, extensions, custom tools,
+ * skills, browser, or image generation. Mirrors a stripped `codex exec`.
+ */
+export function isDryModeModel(model: { id: string } | undefined): boolean {
+	return model !== undefined && /^gpt-6\.2-(sol|astra)(-|$)/.test(model.id);
+}
+
 export function createSubagentSettings(
 	baseSettings: Settings,
 	overrides?: Partial<Record<SettingPath, unknown>>,
@@ -2925,12 +2933,18 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 			}
 			sessionOpenedAt = performance.now();
 
-			const mcpProxyTools = options.mcpManager
-				? createMCPProxyTools(options.mcpManager).filter(
+			// Fork mode keeps the parent's exact prefix for cache reuse, so it is never dry.
+			const dryMode = options.contextMode !== "fork" && isDryModeModel(model);
+			const sessionSettings = dryMode
+				? createSubagentSettings(subagentSettings, { "browser.enabled": false })
+				: subagentSettings;
+			const mcpManager = dryMode ? undefined : options.mcpManager;
+			const mcpProxyTools = mcpManager
+				? createMCPProxyTools(mcpManager).filter(
 						tool => !toolProfile || filterAutoToolNames(toolProfile, [tool.name], "mcp").length > 0,
 					)
 				: [];
-			const enableMCP = !options.mcpManager;
+			const enableMCP = !dryMode && !mcpManager;
 
 			// Derive subagent-scoped telemetry from the parent's config so the
 			// child loop's spans nest under the parent's active execute_tool span
@@ -3009,19 +3023,21 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 				delegatedIo: options.delegatedIo,
 				authStorage,
 				modelRegistry,
-				settings: subagentSettings,
+				settings: sessionSettings,
 				model: fork && !options.modelOverride ? (fork.model ?? model) : model,
 				thinkingLevel: effectiveThinkingLevel,
 				toolNames: fork ? fork.toolNames : toolNames,
 				outputSchema: fork ? undefined : outputSchema,
 				requireYieldTool: !fork,
 				contextFiles: options.contextFiles,
-				skills: options.skills,
+				skills: dryMode ? [] : options.skills,
 				promptTemplates: options.promptTemplates,
 				workspaceTree: options.workspaceTree,
 				rules: options.rules,
-				preloadedExtensionPaths: options.preloadedExtensionPaths,
-				preloadedCustomToolPaths: options.preloadedCustomToolPaths,
+				preloadedExtensionPaths: dryMode ? [] : options.preloadedExtensionPaths,
+				preloadedCustomToolPaths: dryMode ? [] : options.preloadedCustomToolPaths,
+				disableExtensionDiscovery: dryMode || undefined,
+				enableImageGen: !dryMode,
 				systemPrompt: defaultPrompt => {
 					if (fork) return fork.systemPrompt;
 					const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
@@ -3067,7 +3083,7 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 				enableLsp: lspEnabled,
 				skipPythonPreflight,
 				enableMCP,
-				mcpManager: options.mcpManager,
+				mcpManager,
 				customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
 				customToolSources:
 					mcpProxyTools.length > 0 ? new Map(mcpProxyTools.map(tool => [tool.name, "mcp" as const])) : undefined,
