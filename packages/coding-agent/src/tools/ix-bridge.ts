@@ -12,6 +12,9 @@
  *   - GET  /ix-bridge/guide   → live command guide
  *   - POST /ix-bridge/command → browser actions (snapshot/click/fill/...)
  */
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { AgentTool } from "@pk-nerdsaver-ai/pi-agent-core";
 import { logger } from "@pk-nerdsaver-ai/pi-utils";
 import { type } from "arktype";
@@ -80,6 +83,53 @@ function stringifyBody(value: unknown): string {
 	}
 }
 
+/**
+ * Resolve the local IX Bridge bearer token without ever throwing.
+ * Precedence: IX_BRIDGE_TOKEN env -> IX_BRIDGE_TOKEN_FILE env -> standard
+ * per-user daemon token file (%LOCALAPPDATA%/IX-Bridge/bridge-token on Windows,
+ * XDG/macOS Application Support fallbacks on POSIX).
+ */
+export function resolveIxBridgeToken(): string | null {
+	const envToken = process.env.IX_BRIDGE_TOKEN?.trim();
+	if (envToken) return envToken;
+
+	const candidates: string[] = [];
+	if (process.env.IX_BRIDGE_TOKEN_FILE?.trim()) {
+		candidates.push(process.env.IX_BRIDGE_TOKEN_FILE.trim());
+	}
+	if (process.env.LOCALAPPDATA?.trim()) {
+		candidates.push(path.join(process.env.LOCALAPPDATA.trim(), "IX-Bridge", "bridge-token"));
+	}
+	const home = os.homedir();
+	if (home) {
+		candidates.push(
+			path.join(home, "AppData", "Local", "IX-Bridge", "bridge-token"),
+			path.join(home, ".local", "share", "ix-bridge", "bridge-token"),
+			path.join(home, ".config", "ix-bridge", "bridge-token"),
+			path.join(home, "Library", "Application Support", "IX-Bridge", "bridge-token"),
+		);
+	}
+
+	for (const file of candidates) {
+		try {
+			const raw = fs.readFileSync(file, "utf8").trim();
+			if (raw) return raw;
+		} catch {
+			// Try next candidate
+		}
+	}
+	return null;
+}
+
+function buildIxBridgeHeaders(baseHeaders: Record<string, string> = {}): Record<string, string> | undefined {
+	const token = resolveIxBridgeToken();
+	if (!token && Object.keys(baseHeaders).length === 0) return undefined;
+	return {
+		...baseHeaders,
+		...(token ? { Authorization: `Bearer ${token}` } : {}),
+	};
+}
+
 export function createIxBridgeTool(session: ToolSession): AgentTool<typeof ixBridgeParams, IxBridgeToolDetails> {
 	const fetchImpl = (session.fetch ?? fetch) as typeof fetch;
 
@@ -114,8 +164,12 @@ export function createIxBridgeTool(session: ToolSession): AgentTool<typeof ixBri
 
 			try {
 				if (params.action === "status" || params.action === "guide") {
-					const path = params.action === "status" ? "/ix-bridge/status" : "/ix-bridge/guide";
-					const res = await fetchImpl(`${baseUrl}${path}`, { signal: controller.signal });
+					const endpoint = params.action === "status" ? "/ix-bridge/status" : "/ix-bridge/guide";
+					const authHeaders = buildIxBridgeHeaders();
+					const res = await fetchImpl(`${baseUrl}${endpoint}`, {
+						...(authHeaders ? { headers: authHeaders } : {}),
+						signal: controller.signal,
+					});
 					const bodyText = await res.text();
 					const ok = res.ok;
 					const text = ok
@@ -135,7 +189,7 @@ export function createIxBridgeTool(session: ToolSession): AgentTool<typeof ixBri
 					const lane = params.lane ?? IX_BRIDGE_DEFAULT_LANE;
 					const snapRes = await fetchImpl(`${baseUrl}/ix-bridge/command`, {
 						method: "POST",
-						headers: { "Content-Type": "application/json" },
+						headers: buildIxBridgeHeaders({ "Content-Type": "application/json" }),
 						body: JSON.stringify({ lane, action: "snapshot", args: {} }),
 						signal: controller.signal,
 					});
@@ -154,7 +208,7 @@ export function createIxBridgeTool(session: ToolSession): AgentTool<typeof ixBri
 					try {
 						const fieldsRes = await fetchImpl(`${baseUrl}/ix-bridge/command`, {
 							method: "POST",
-							headers: { "Content-Type": "application/json" },
+							headers: buildIxBridgeHeaders({ "Content-Type": "application/json" }),
 							body: JSON.stringify({
 								lane,
 								action: "browser_execute",
@@ -224,7 +278,7 @@ export function createIxBridgeTool(session: ToolSession): AgentTool<typeof ixBri
 
 				const res = await fetchImpl(`${baseUrl}/ix-bridge/command`, {
 					method: "POST",
-					headers: { "Content-Type": "application/json" },
+					headers: buildIxBridgeHeaders({ "Content-Type": "application/json" }),
 					body: JSON.stringify(body),
 					signal: controller.signal,
 				});

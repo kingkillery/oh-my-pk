@@ -98,4 +98,27 @@ describe("ix_bridge tool", () => {
 		expect(result.isError).toBe(true);
 		expect(getText(result)).toContain("404");
 	});
+
+	it("attaches Authorization Bearer token from IX_BRIDGE_TOKEN on status and command requests", async () => {
+		const prevToken = process.env.IX_BRIDGE_TOKEN;
+		process.env.IX_BRIDGE_TOKEN = "test-bridge-secret";
+		try {
+			const calls: FetchCall[] = [];
+			const fetchImpl = (async (url: string, init?: RequestInit) => {
+				calls.push({ url, init });
+				return new Response(JSON.stringify({ running: true, lanes: ["agent-a"] }), { status: 200 });
+			}) as unknown as typeof fetch;
+
+			const tool = createIxBridgeTool(createSession(fetchImpl));
+			await tool.execute("id-1", { action: "status" });
+			await tool.execute("id-2", { action: "command", command: "list_tabs" });
+
+			expect(calls).toHaveLength(2);
+			expect((calls[0].init?.headers as Record<string, string>)?.Authorization).toBe("Bearer test-bridge-secret");
+			expect((calls[1].init?.headers as Record<string, string>)?.Authorization).toBe("Bearer test-bridge-secret");
+		} finally {
+			if (prevToken === undefined) delete process.env.IX_BRIDGE_TOKEN;
+			else process.env.IX_BRIDGE_TOKEN = prevToken;
+		}
+	});
 });
