@@ -1,98 +1,93 @@
 ---
 name: promptbtw-handoff
-description: Use when the user says "use promptbtw for subagent handoff" or "/prompt-btw" (or asks for a prompt-optimized handoff) before spawning a subagent — converts a raw task into the standardized SUBAGENT HANDOFF PROMPT format and auto-applies Claude Fable 5.1 quirk patches via prompt-optimizer instead of executing the task directly.
+description: Use when the user says "use promptbtw for subagent handoff" or "/prompt-btw" (or asks for a prompt-optimized subagent handoff) - packages raw work into a self-contained SUBAGENT HANDOFF PROMPT with explicit boundaries and verifiable acceptance criteria, applying model-specific failure-mode patches only when warranted instead of executing the task directly.
 ---
 
 # PromptBTW Subagent Handoff
 
-When invoked as:
+> **Specify the result, the evidence, and the limits. Prescribe a method only when it is required or addresses a concrete failure the harness does not already prevent.**
 
-```text
-use promptbtw for subagent handoff:
-<raw task>
-```
+## Invocation and dispatch boundary
 
-or `/prompt-btw` / `/btw` with that invocation, you MUST: (1) treat `<raw task>` as optimization input, not work to execute; (2) rewrite it into the format below; (3) apply the Fable 5.1 auto-adaptation in this skill (same rules as `prompt-optimizer`); (4) spawn the subagent with the optimized handoff as its assignment; (5) preserve parent-level constraints in `# Context`, `# Constraints`, or `# Non-goals`; (6) not execute the raw task directly unless separately asked.
+- **Live handoff dispatch**: when invoked as `use promptbtw for subagent handoff: <raw task>` (or `/prompt-btw` explicitly asking to delegate/spawn in a tool-enabled turn), you MUST:
+  1. Treat `<raw task>` as optimization input, not work to execute directly.
+  2. Rewrite it into the `SUBAGENT HANDOFF PROMPT` contract below, preserving parent-session decisions, constraints, and exact identifiers in `# Context` or `# Boundaries`.
+  3. Route any model-specific adjustments for the **actual worker target model** (same routing rules as `skill://prompt-optimizer`; stay model-neutral when the worker model is unknown).
+  4. Spawn the subagent with a specific specialist `role` in the spawn metadata (for example `"Auth-flow security reviewer"`, never `"Researcher"`) and the optimized handoff as its `assignment`.
+  5. Not execute the raw task directly unless separately asked.
+- **Draft-only mode**: when the user asks only to draft or preview handoff text (or inside ephemeral `/btw` where tools are disabled), return ONLY the `SUBAGENT HANDOFF PROMPT` without spawning or executing.
 
 ## Required output format
 
 ```text
 SUBAGENT HANDOFF PROMPT
 
-# Role
-<specialist role — name the domain, subsystem, or question lens; never generic>
-
 # Task
-<one imperative sentence starting with a verb, stating the deliverable>
+<the outcome or deliverable this worker owns: one clear objective; split unrelated goals into separate handoffs>
 
 # Context
-<self-contained facts: parent objective, prior decisions, constraints, known paths/URLs/systems. Never assume parent conversation history is available>
+<self-contained facts: parent objective, settled decisions in the user's words, current state, and relevant paths/URLs/systems. Assume zero access to parent conversation history>
 
-# Scope
-<bulleted in-bounds work; exact files, symbols, URLs, or search territories when known>
-
-# Non-goals
-<out-of-scope topics, forbidden actions, safety and tool limits, tempting adjacent work>
-
-# Procedure
-1. <numbered, actionable steps — inspection before edits for code; source cross-checking for research>
+# Boundaries
+<owned paths/symbols/territories, permitted actions and tools, parent constraints, and explicit exclusions/non-goals>
 
 # Acceptance
-<testable completion criteria: minimum artifacts, counts, or checks — never "be thorough">
+<observable, independently verifiable completion criteria and required evidence; never "be thorough">
 
-# Reporting
-<exact final response shape: Markdown sections, JSON, table, or bullets; citations for research; changed-files + verification + residual risks for implementation>
+# Return
+<deliverable, verification performed and its actual result, and any unresolved items, residual risks, or blockers>
 ```
 
 ## Optional sections
 
 Add only when they earn their place:
 
-- `# Inputs` — explicit files, URLs, datasets, logs.
-- `# Tools` — mandated or forbidden tools.
-- `# Coordination` — cross-subagent reporting rules when siblings may overlap.
-- `# Constraints` — constraints weighty enough for their own section.
-- `# Fable 5.1` — selected quirk patches from the table below (preferred home when they would crowd Constraints).
+- `# Role`: include in the prompt body only when the specialist lens changes the deliverable itself; otherwise pass the specialist role on the `task` spawn parameter.
+- `# Inputs`: explicit files, `local://` artifacts, URLs, datasets, logs, or signal batches when substantial enough to separate from `# Context`.
+- `# Procedure`: include **only** when execution order or protocol is itself a requirement (for example: capture baseline before editing, pause at an approval gate, or leave project-wide integration checks to the parent). Do not emit generic "inspect, implement, test, report" checklists.
+- `# Coordination`: sibling ownership boundaries or `irc` handoff rules when parallel workers touch adjacent surfaces.
+- `# <model-id>`: prompt-level constraints for a known worker model when needed (for example `# claude-fable-5-1` or `# minimax-m3.1-flash`).
 
-## Fable 5.1 auto-adaptation
+## Worker model routing and Fable 5.1 failure-mode patches
 
-Claude Fable 5.1 / Mythos 5.1: existing Fable 5 wording can stay. Optimization is **patch selection**. You MUST classify the raw task and inject only the matching patches (typically 3–6) into `# Constraints`, `# Procedure`, or `# Fable 5.1`. NEVER paste the entire `prompt-optimizer` skill.
+Route against the **actual worker target model**, not the parent session's model and not a blanket Fable stack:
 
-Default stack for autonomous coding/implementation handoffs: **finish-the-task + deliver-scope + extras-only + targeted-edits + batch-tools**.
+- **Unspecified or unknown worker model**: keep the handoff model-neutral. Rely on explicit `# Boundaries` and `# Acceptance` rather than pasting model-specific quirk bundles.
+- **Named late-2026 worker model** (`DeepSeek-V4.1-Flash`, `MiniMax-M3.1-Flash`, `Kimi K3.1-Pro`, `GPT-6 Astra`, `GPT-6.1 Sol`, `GPT-6.1 Terra`, `GPT-6 Luna`, `Recursive Flint`): read `skill://prompt-optimizer` (`references/nov-2026-model-routes.md`, plus `references/gpt-6.1-terra.md` for Terra) when available and place under `# <model-id>` only prompt-level rules that govern worker execution (high-contrast anchors + compact state ledger for `MiniMax-M3.1-Flash`; explicit abstain/null rule for `GPT-6.1 Terra` and `GPT-6 Luna`; live task + schema in the final ~400 tokens + lexical anchors for `Recursive Flint`; hierarchy/autonomy override for `GPT-6 Astra` orchestrators when needed). Keep API/gateway config (`reasoning_effort`, sampling, parser flags) out of worker prose.
+- **Claude Fable 5.1 / Mythos 5.1 worker**: do **not** inject a default five-patch autonomous coding stack into every coding handoff. Select a patch **only** when Fable/Mythos is the worker target and the assignment exposes a concrete failure mode that `# Boundaries`, `# Acceptance`, and the harness do not already prevent. Never paste the entire `prompt-optimizer` skill.
 
-| If the task… | Inject (verbatim from `skill://prompt-optimizer`) |
+| Concrete Fable 5.1 failure mode | Targeted patch (use verbatim from `skill://prompt-optimizer` when available) |
 | --- | --- |
-| Autonomous coding, long horizon, "just do it" | Finish-the-task (keep "The user is not watching…" as written unless HITL) + deliver-scope |
-| Pair programming / user watching | Progress-updates; omit "user is not watching" |
-| Implementation / file edits | Extras-only + targeted-edits |
-| Agent loop, many implied tool calls | Batch-tools nudge |
-| Summarize / compare retrieved sources | Quoting-example (one marked phrase; rest indirect speech) |
-| User-facing prose | Mannered-prose ban |
-| Chat product with leftover anti-format rules | Formatting-when-needed |
-| Client compaction of long threads | Preserve-six |
-| Search/retrieval at low effort | Verify-names search |
-| Charts / dense images | Crop and zoom |
-| This worker will spawn subagents | Async subagents (start returns immediately; lead can keep working) |
-| Long deliverable at xhigh/max | No double-draft + room in `max_tokens` |
-| Compile-check phrasing, obscure languages, base64 tool output | Safeguard phrasing |
+| Stops after proposing a plan or asks permission mid-run without a completion gate | `Finish-the-task` + `Deliver-scope` (omit "The user is not watching..." in HITL) |
+| Pair programming / human watching long tool chains | `Progress-updates` |
+| Risk of unrequested cleanup, scope drift, or scratch checks committed as test files | `Extras-only` |
+| Risk of whole-file rewrites on small changes where edit tooling does not already prevent it | `Targeted-edits` |
+| Sequential read/search bottlenecks when parallel batching is not already in worker rules | `Batch-tools` |
+| Summarizing or comparing retrieved sources | `Quoting-example` (indirect synthesis; at most one short marked quote) |
+| User-facing prose deliverable | `Mannered-prose ban` (`Please remove all mannered prose.`) |
+| Chat surface carrying leftover anti-list/anti-bold rules | `Formatting-when-needed` |
+| Client-side compaction of long threads | `Preserve-six` |
+| Search/retrieval of fast-moving names at low effort | `Verify-names search` |
+| Dense charts or images | `Crop and zoom` |
+| Worker itself spawns subagents | `Async subagents` |
+| Long single-turn deliverable at `xhigh` / `max` | `No double-draft` + `max_tokens` headroom note |
+| Compile-check phrasing, undocumented obscure languages, or raw base64 tool dumps | `Safeguard phrasing` |
 
-Long-term (always, even when no extra patch applies):
+## Invariants (always)
 
-- The raw task (or the plan they approved) **is** the scope. Do not quietly narrow, widen, or swap it.
-- Preserve parent decisions and names in the user's words; condense only method.
-- NEVER add "hold all findings for the final response" — Fable 5.1 already under-narrates.
-- Do not add unrequested cleanup, extras, or permanent test files.
-- Acceptance stays observable; Reporting still pins the response shape.
-
-If you can read `skill://prompt-optimizer`, use its verbatim patch copy. If you cannot (ephemeral `/btw` has no tools), use the condensed snippets in the `/btw` wrapper.
+- The approved request sets the scope: do not quietly narrow, widen, or swap it.
+- Preserve parent decisions, constraints, and identifiers in the user's words; condense only explanation and unconstrained method.
+- NEVER add "hold all findings for the final response" or similar narration-suppressors.
+- Separate verified results from assumptions, unverified paths, and blocked items in `# Return`.
+- Do not use em-dashes in handoff prompts or chat output (exception: verbatim vendor patch text only when a Fable patch is explicitly selected).
 
 ## Quality bar
 
-- Role: "Auth-flow security reviewer", never "Researcher".
-- Task: one goal; split unrelated goals into separate handoffs.
-- Context is self-contained — the subagent sees none of the parent conversation.
-- Acceptance must be observable; Reporting must pin the exact response shape.
+- Specialist role (on `task.role` or `# Role`): `"Auth-flow security reviewer"`, never `"Researcher"`.
+- `# Task`: one clear objective; split unrelated goals into separate handoffs.
+- `# Context` and `# Boundaries`: fully self-contained with zero reliance on parent chat history.
+- `# Acceptance` and `# Return`: observable evidence and explicit status separation, with zero em-dashes.
 
 ## Interplay with other packs
 
-Map-phase assignments in `agentic-mapreduce` runs SHOULD use this format (Role = shard-specialist, Inputs = the signal batch, Acceptance = full signal accounting) and the Fable default stack when workers may edit. Any `task`/`tot-reasoner` spawn benefits from it when the raw request is loose. General prompt rewrites that are not handoffs use `prompt-optimizer` directly.
+Map-phase assignments in `agentic-mapreduce` runs SHOULD use this contract (`task.role` = shard-specialist, `# Inputs` = the signal batch, `# Boundaries` = read-only or worktree-scoped limits, `# Acceptance` = full signal accounting) and add model-specific patches only when the worker target warrants them. Any `task` or `tot-reasoner` spawn benefits from this structure when the raw request is loose. General prompt rewrites that are not handoffs use `prompt-optimizer` directly.

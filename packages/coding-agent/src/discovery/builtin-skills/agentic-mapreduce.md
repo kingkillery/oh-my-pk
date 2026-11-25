@@ -38,21 +38,21 @@ The finite batch queue IS the coverage guarantee: the run is complete when the q
 
 One `mr-worker` per batch, all in ONE `task` call (`tasks[]` array, shared `context`). For editing tasks (migrations), use `task` agents with worktree isolation instead of `mr-worker`.
 
-Format each assignment with the `promptbtw-handoff` skill's SUBAGENT HANDOFF PROMPT structure, applying that skill's Fable 5.1 default stack when workers may edit:
+Format each assignment with the `promptbtw-handoff` skill's `SUBAGENT HANDOFF PROMPT` contract (pass the shard-specialist `role` in the `task` spawn metadata, and add model-specific patches only when the worker target warrants them):
 
-```
-# Role
-<task-specific specialist, e.g. "Auth-boundary shard investigator">
+```text
 # Task
 Investigate every signal in your shard and return structured findings.
 # Context
-<the task's threat model / migration goal; selector rationale>
+<the task's threat model or migration goal; selector rationale>
 # Inputs
-<the batch: file, line, selector, evidence — inline or a scratch-file path>
-# Non-goals
-No edits. No findings outside your shard's signals.
+<the batch: file, line, selector, evidence - inline or a scratch-file path>
+# Boundaries
+No edits (unless migration mode explicitly authorizes worktree edits). No findings outside your shard's signals.
 # Acceptance
 Every signal accounted for: cleared or confirmed. signals_assigned == signals_cleared + signals_confirmed.
+# Return
+Structured findings for confirmed signals, shard accounting totals, and any unreadable/blocked locations.
 ```
 
 Workers run independently; each starts from a fresh, focused context.

@@ -215,8 +215,12 @@ describe("skill:// protocol for embedded skills", () => {
 			setActiveSkills(skills);
 
 			const skill = skills.find(s => s.name === "promptbtw-handoff");
+			expect(skill).toBeDefined();
 			expect(skill!.embeddedContent).toBeDefined();
-			expect(skill!.embeddedContent).toContain("Fable 5.1 auto-adaptation");
+			expect(skill!.embeddedContent).toContain("SUBAGENT HANDOFF PROMPT");
+			expect(skill!.embeddedContent).toContain("# Boundaries");
+			expect(skill!.embeddedContent).toContain("Fable 5.1 failure-mode patches");
+			expect(skill!.embeddedContent).not.toContain("—");
 			const resource = await InternalUrlRouter.instance().resolve("skill://promptbtw-handoff");
 			expect(resource.content).toBe(skill!.embeddedContent!);
 		} finally {
