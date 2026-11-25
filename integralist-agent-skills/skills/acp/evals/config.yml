@@ -1,0 +1,10 @@
+schema_version: 1
+harbor:
+  n_attempts: 1
+  pass_threshold: 0.5
+  n_concurrent: 2
+  timeout_multiplier: 1.5
+skill_workspace:
+  mode: isolated
+grading:
+  mode: default_plus_custom

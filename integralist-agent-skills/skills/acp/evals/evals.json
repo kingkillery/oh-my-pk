@@ -1,0 +1,104 @@
+{
+  "skill_name": "acp",
+  "evals": [
+    {
+      "id": "acp-001-explicit-slash",
+      "prompt": "First run `bash input/case-001/init_repo.sh ./work-repo` (or `bash ./files/case-001/init_repo.sh ./work-repo` if staged under `./files`) to initialize the `./work-repo` git repository on `main` with its `./work-repo-origin.git` remote, then inside `./work-repo`: /acp — ship the approved whitespace-stripping fix in `src/parser.py` to `origin/main` and leave `scratch/debug.txt` untouched.",
+      "expected_output": "Initializes ./work-repo, commits only src/parser.py on main with a Conventional Commit message, pushes main to ./work-repo-origin.git (origin/main), leaves scratch/debug.txt untracked/unstaged, and reports the pushed short SHA.",
+      "assertions": [
+        "Commits src/parser.py on main in ./work-repo without staging or committing scratch/debug.txt",
+        "Pushes the new commit to origin/main and reports the pushed short commit SHA"
+      ],
+      "expected_skill": "acp",
+      "files": [
+        "files/case-001"
+      ]
+    },
+    {
+      "id": "acp-002-explicit-command-multi-file",
+      "prompt": "/acp for src/client.py and tests/test_client.py.",
+      "expected_output": "Stages only src/client.py and tests/test_client.py by name, commits with a Conventional Commit message file, pushes to origin/main, and reports the commit SHA.",
+      "assertions": [
+        "Stages and commits both src/client.py and tests/test_client.py",
+        "Pushes main to origin/main and reports the short SHA and file list"
+      ],
+      "expected_skill": "acp"
+    },
+    {
+      "id": "acp-003-implicit-ship-main",
+      "prompt": "Stage, commit, and push the approved update in docs/runbook.md to origin/main now; keep local-notes.md unstaged.",
+      "expected_output": "Verifies no secrets are in docs/runbook.md, stages only docs/runbook.md, creates a Conventional Commit on main, pushes to origin/main, and leaves local-notes.md unstaged.",
+      "assertions": [
+        "Stages and commits only docs/runbook.md while leaving local-notes.md unstaged",
+        "Pushes main to origin/main and reports the commit SHA"
+      ],
+      "expected_skill": "acp"
+    },
+    {
+      "id": "acp-004-implicit-land-approved-edit",
+      "prompt": "Land the approved README.md wording update on origin/main right away.",
+      "expected_output": "Applies or stages README.md, commits on main with a Conventional Commit subject, pushes to origin/main, and confirms the pushed SHA.",
+      "assertions": [
+        "Commits README.md on main using a Conventional Commit subject",
+        "Pushes the commit to origin/main"
+      ],
+      "expected_skill": "acp"
+    },
+    {
+      "id": "acp-005-contextual-dirty-worktree",
+      "prompt": "/acp — commit and push scripts/sync.py; do not touch outputs/draft.csv or .env.local.",
+      "expected_output": "Stages only scripts/sync.py, leaves outputs/draft.csv and .env.local unstaged, commits with a temp message file, and pushes main to origin/main.",
+      "assertions": [
+        "Commits only scripts/sync.py while keeping outputs/draft.csv and .env.local unstaged",
+        "Pushes the commit to origin/main"
+      ],
+      "expected_skill": "acp"
+    },
+    {
+      "id": "acp-006-contextual-secret-stop",
+      "prompt": "/acp — push the pending config.py change to origin/main.",
+      "expected_output": "If config.py contains a hardcoded API key or secret token in the diff, stops before git add/commit/push and alerts the user instead of pushing credentials.",
+      "assertions": [
+        "Inspects the target diff before staging and refuses to commit or push hardcoded secrets",
+        "Reports which file contained the secret without pushing to origin/main"
+      ],
+      "expected_skill": "acp"
+    },
+    {
+      "id": "acp-007-contextual-non-main-branch-stop",
+      "prompt": "/acp — push the current fix in app/routes.py.",
+      "expected_output": "Checks current branch first; if HEAD is detached or checked out on a feature branch instead of main, stops and asks before committing to main.",
+      "assertions": [
+        "Checks HEAD branch before pushing to origin/main and stops to ask when not on main"
+      ],
+      "expected_skill": "acp"
+    },
+    {
+      "id": "acp-008-contextual-proposed-edit-and-push",
+      "prompt": "/acp — apply the one-line timeout bump from 10 to 30 in src/http.py and push it to main.",
+      "expected_output": "Writes the timeout update in src/http.py, stages src/http.py by name, commits with a Conventional Commit message, pushes to origin/main, and reports the SHA.",
+      "assertions": [
+        "Updates src/http.py timeout to 30, commits src/http.py on main, and pushes to origin/main"
+      ],
+      "expected_skill": "acp"
+    },
+    {
+      "id": "acp-009-negative-feature-pr",
+      "prompt": "Create a new branch feat/webhook-retry and open a pull request instead of pushing to main.",
+      "expected_output": "Uses a feature-branch pull-request workflow without pushing directly to origin/main.",
+      "assertions": [
+        "Does not push commits directly to origin/main"
+      ],
+      "expected_skill": null
+    },
+    {
+      "id": "acp-010-negative-readonly-diff",
+      "prompt": "Show me the git diff for src/parser.py and summarize what changed without committing anything.",
+      "expected_output": "Inspects and summarizes the diff for src/parser.py without running git add, git commit, or git push.",
+      "assertions": [
+        "Summarizes the diff without creating a commit or pushing to origin/main"
+      ],
+      "expected_skill": null
+    }
+  ]
+}
