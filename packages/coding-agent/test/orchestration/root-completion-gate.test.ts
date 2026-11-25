@@ -56,7 +56,7 @@ describe("root completion gate transcript", () => {
 	it("requires separate deliverable evidence when the contract names deliverables", () => {
 		const compiled = toActiveTaskContractSnapshot(compileTaskContractFromRequest("implement auth flow"));
 		const contract = { ...compiled, deliverables: ["auth implementation"] };
-		const input = buildCompletionGateInputFromTranscript(contract, [toolResult("read", 100)], 50);
+		const input = buildCompletionGateInputFromTranscript(contract, [toolResult("eval", 100)], 50);
 		const evaluation = evaluateCompletionGate(input);
 
 		expect(input.criteriaEvidence).toEqual({
@@ -65,6 +65,40 @@ describe("root completion gate transcript", () => {
 		});
 		expect(input.deliverablesPresent).toEqual([]);
 		expect(evaluation.outcome).toBe("recoverable");
+	});
+
+	it("does not treat read-only inspection tools (read/grep/search/find) as targeted verification", () => {
+		const contract = toActiveTaskContractSnapshot(compileTaskContractFromRequest("implement auth flow"));
+		const readOnlyMessages: Message[] = [
+			toolResult("read", 100),
+			toolResult("grep", 101),
+			toolResult("search", 102),
+			toolResult("find", 103),
+		];
+		const input = buildCompletionGateInputFromTranscript(contract, readOnlyMessages, 50);
+		const evaluation = evaluateCompletionGate(input);
+
+		expect(input.criteriaEvidence).toEqual({
+			targeted_verification: "unproven",
+			deliverables_present: "pass",
+		});
+		expect(input.requiredEvidencePresent).toBe(false);
+		expect(evaluation.outcome).toBe("recoverable");
+	});
+
+	it("accepts real verification command results (bash/eval) for targeted verification", () => {
+		const compiled = toActiveTaskContractSnapshot(compileTaskContractFromRequest("implement auth flow"));
+		const contract = { ...compiled, deliverables: ["auth implementation"] };
+		const messages: Message[] = [toolResult("edit", 100), toolResult("eval", 101)];
+		const input = buildCompletionGateInputFromTranscript(contract, messages, 50);
+		const evaluation = evaluateCompletionGate(input);
+
+		expect(input.criteriaEvidence).toEqual({
+			targeted_verification: "pass",
+			deliverables_present: "pass",
+		});
+		expect(input.requiredEvidencePresent).toBe(true);
+		expect(evaluation.outcome).toBe("pass");
 	});
 
 	it("does not accept failed or pre-activation tool results as evidence", () => {

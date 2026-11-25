@@ -50,6 +50,28 @@ const SIM_ATTEMPT_ALLOWED_KEYS: ReadonlySet<string> = new Set([
 	"candidate_ref",
 	"commit",
 	"timestamp",
+	"control_baseline",
+	"claim_evidence",
+]);
+
+const SIM_CONTROL_BASELINE_ALLOWED_KEYS: ReadonlySet<string> = new Set([
+	"baseline_type",
+	"baseline_score",
+	"candidate_score",
+	"delta",
+	"notes",
+]);
+const SIM_CONTROL_BASELINE_TYPES: ReadonlySet<string> = new Set([
+	"unchanged",
+	"heuristic",
+	"random",
+	"no_op",
+	"prior_arm",
+]);
+const SIM_CLAIM_EVIDENCE_ALLOWED_KEYS: ReadonlySet<string> = new Set([
+	"claims_verified",
+	"unsupported_claims",
+	"evidence_refs",
 ]);
 
 export interface SimLedgerContext {
@@ -74,6 +96,22 @@ export interface SimCarriedFrom {
 	benchmark?: string;
 	model?: string;
 	carried_at?: string;
+}
+
+export type SimControlBaselineType = "unchanged" | "heuristic" | "random" | "no_op" | "prior_arm";
+
+export interface SimControlBaseline {
+	baseline_type: SimControlBaselineType;
+	baseline_score: number;
+	candidate_score: number;
+	delta: number;
+	notes?: string;
+}
+
+export interface SimClaimEvidence {
+	claims_verified: number;
+	unsupported_claims: number;
+	evidence_refs: string[];
 }
 
 export interface SimAttempt {
@@ -101,6 +139,8 @@ export interface SimAttempt {
 	candidate_ref?: string;
 	commit?: string;
 	timestamp?: string;
+	control_baseline?: SimControlBaseline;
+	claim_evidence?: SimClaimEvidence;
 }
 
 export interface SimProblem {
@@ -455,6 +495,88 @@ function parseAndValidateSimLedger(raw: unknown): ParseSimLedgerOutcome {
 			const commit = parseOptionalNonEmptyString(attempt, "commit", aPrefix, errors);
 			const timestamp = parseOptionalNonEmptyString(attempt, "timestamp", aPrefix, errors);
 
+			let controlBaseline: SimControlBaseline | undefined;
+			if (attempt.control_baseline !== undefined) {
+				const cbPrefix = `${aPrefix}.control_baseline`;
+				if (!isRecord(attempt.control_baseline)) {
+					errors.push(`${cbPrefix} must be an object when provided`);
+				} else {
+					checkAllowedKeys(attempt.control_baseline, SIM_CONTROL_BASELINE_ALLOWED_KEYS, cbPrefix, errors);
+					const baselineType = attempt.control_baseline.baseline_type;
+					const baselineScore = attempt.control_baseline.baseline_score;
+					const candidateScore = attempt.control_baseline.candidate_score;
+					const delta = attempt.control_baseline.delta;
+					const notes = parseOptionalNonEmptyString(attempt.control_baseline, "notes", cbPrefix, errors);
+					if (typeof baselineType !== "string" || !SIM_CONTROL_BASELINE_TYPES.has(baselineType)) {
+						errors.push(`${cbPrefix}.baseline_type must be one of unchanged|heuristic|random|no_op|prior_arm`);
+					}
+					if (typeof baselineScore !== "number" || !Number.isFinite(baselineScore)) {
+						errors.push(`${cbPrefix}.baseline_score must be a finite number`);
+					}
+					if (typeof candidateScore !== "number" || !Number.isFinite(candidateScore)) {
+						errors.push(`${cbPrefix}.candidate_score must be a finite number`);
+					}
+					if (typeof delta !== "number" || !Number.isFinite(delta)) {
+						errors.push(`${cbPrefix}.delta must be a finite number`);
+					}
+					if (
+						typeof baselineScore === "number" &&
+						Number.isFinite(baselineScore) &&
+						typeof candidateScore === "number" &&
+						Number.isFinite(candidateScore) &&
+						typeof delta === "number" &&
+						Number.isFinite(delta)
+					) {
+						if (Math.abs(candidateScore - baselineScore - delta) > 1e-6) {
+							errors.push(`${cbPrefix}.delta (${delta}) must equal candidate_score - baseline_score`);
+						}
+						if (typeof baselineType === "string" && SIM_CONTROL_BASELINE_TYPES.has(baselineType)) {
+							controlBaseline = {
+								baseline_type: baselineType as SimControlBaselineType,
+								baseline_score: baselineScore,
+								candidate_score: candidateScore,
+								delta,
+								...(notes !== undefined ? { notes } : {}),
+							};
+						}
+					}
+				}
+			}
+
+			let claimEvidence: SimClaimEvidence | undefined;
+			if (attempt.claim_evidence !== undefined) {
+				const cePrefix = `${aPrefix}.claim_evidence`;
+				if (!isRecord(attempt.claim_evidence)) {
+					errors.push(`${cePrefix} must be an object when provided`);
+				} else {
+					checkAllowedKeys(attempt.claim_evidence, SIM_CLAIM_EVIDENCE_ALLOWED_KEYS, cePrefix, errors);
+					const claimsVerified = attempt.claim_evidence.claims_verified;
+					const unsupportedClaims = attempt.claim_evidence.unsupported_claims;
+					const evidenceRefs = parseUniqueStringArray(
+						attempt.claim_evidence.evidence_refs,
+						`${cePrefix}.evidence_refs`,
+						errors,
+					);
+					if (!isNonNegativeInt(claimsVerified)) {
+						errors.push(`${cePrefix}.claims_verified must be a non-negative integer`);
+					}
+					if (!isNonNegativeInt(unsupportedClaims)) {
+						errors.push(`${cePrefix}.unsupported_claims must be a non-negative integer`);
+					} else if (accepted === true && unsupportedClaims > 0) {
+						errors.push(
+							`${cePrefix}.unsupported_claims (${unsupportedClaims}) must be 0 on accepted SIM attempts`,
+						);
+					}
+					if (isNonNegativeInt(claimsVerified) && isNonNegativeInt(unsupportedClaims)) {
+						claimEvidence = {
+							claims_verified: claimsVerified,
+							unsupported_claims: unsupportedClaims,
+							evidence_refs: evidenceRefs,
+						};
+					}
+				}
+			}
+
 			if (
 				isPositiveInt(round) &&
 				accepted === true &&
@@ -491,6 +613,8 @@ function parseAndValidateSimLedger(raw: unknown): ParseSimLedgerOutcome {
 					...(candidateRef !== undefined ? { candidate_ref: candidateRef } : {}),
 					...(commit !== undefined ? { commit } : {}),
 					...(timestamp !== undefined ? { timestamp } : {}),
+					...(controlBaseline !== undefined ? { control_baseline: controlBaseline } : {}),
+					...(claimEvidence !== undefined ? { claim_evidence: claimEvidence } : {}),
 				});
 			}
 		}
@@ -660,6 +784,15 @@ function cloneLedger(ledger: SimLedger): SimLedger {
 				...(attempt.unresolved !== undefined ? { unresolved: [...attempt.unresolved] } : {}),
 				...(attempt.unproven !== undefined ? { unproven: [...attempt.unproven] } : {}),
 				...(attempt.incomplete !== undefined ? { incomplete: [...attempt.incomplete] } : {}),
+				...(attempt.control_baseline !== undefined ? { control_baseline: { ...attempt.control_baseline } } : {}),
+				...(attempt.claim_evidence !== undefined
+					? {
+							claim_evidence: {
+								...attempt.claim_evidence,
+								evidence_refs: [...attempt.claim_evidence.evidence_refs],
+							},
+						}
+					: {}),
 			})),
 		})),
 	};

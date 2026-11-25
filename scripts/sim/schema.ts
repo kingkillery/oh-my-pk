@@ -11,6 +11,9 @@ import {
 	SIM_SCHEMA_VERSION,
 	type SimAttempt,
 	type SimCarriedFrom,
+	type SimClaimEvidence,
+	type SimControlBaseline,
+	type SimControlBaselineType,
 	type SimLedger,
 	type SimLedgerValidationResult,
 	type SimProblem,
@@ -22,6 +25,9 @@ export {
 	SIM_SCHEMA_VERSION,
 	type SimAttempt,
 	type SimCarriedFrom,
+	type SimClaimEvidence,
+	type SimControlBaseline,
+	type SimControlBaselineType,
 	type SimLedger,
 	type SimProblem,
 	verifySimJsonSchemaParity,
@@ -117,6 +123,8 @@ export interface SimRejectedCandidateLogEntry {
 	manifest_id?: string;
 	baseline_ref?: string;
 	candidate_ref?: string;
+	control_baseline?: SimControlBaseline;
+	claim_evidence?: SimClaimEvidence;
 }
 
 export interface CarryForwardInput {
@@ -161,6 +169,8 @@ export interface AppendAttemptInput {
 	candidate_ref?: string;
 	commit?: string;
 	timestamp?: string;
+	control_baseline?: SimControlBaseline;
+	claim_evidence?: SimClaimEvidence;
 }
 
 export type AppendAttemptResult =
@@ -465,6 +475,15 @@ export function appendSimAttempt(ledger: SimLedger, input: AppendAttemptInput): 
 		...(input.candidate_ref?.trim() ? { candidate_ref: input.candidate_ref.trim() } : {}),
 		...(input.commit?.trim() ? { commit: input.commit.trim() } : {}),
 		...(input.timestamp?.trim() ? { timestamp: input.timestamp.trim() } : {}),
+		...(input.control_baseline !== undefined ? { control_baseline: { ...input.control_baseline } } : {}),
+		...(input.claim_evidence !== undefined
+			? {
+					claim_evidence: {
+						...input.claim_evidence,
+						evidence_refs: [...input.claim_evidence.evidence_refs],
+					},
+				}
+			: {}),
 	};
 
 	const problems: SimProblem[] = ledger.problems.map(p => ({

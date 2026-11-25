@@ -15,6 +15,9 @@ import type { ToolSession } from ".";
 const learnSchema = type({
 	memory: type("string").describe("the durable, self-contained lesson to remember (what, when, why)"),
 	"context?": type("string").describe("optional source context for the lesson"),
+	"evidenceRef?": type("string").describe(
+		"optional verified tool/test/artifact reference supporting this lesson; omit for inferred lessons",
+	),
 	"skill?": type({
 		action: "'create' | 'update'",
 		name: type("string").describe("kebab-case skill name"),
@@ -73,19 +76,23 @@ export class LearnTool implements AgentTool<typeof learnSchema> {
 				if (!state) {
 					throw new Error("Mnemopi backend is not initialised for this session.");
 				}
+				const evidenceRef = params.evidenceRef?.trim() || undefined;
 				const id = state.rememberScoped(params.memory, {
 					source: "coding-agent-learn",
-					importance: 0.8,
+					importance: evidenceRef ? 0.8 : 0.65,
 					metadata: {
 						session_id: state.sessionId,
 						cwd: state.session.sessionManager.getCwd(),
 						context: params.context ?? null,
+						evidence_ref: evidenceRef ?? null,
 						tool: "learn",
 					},
 					scope: "bank",
 					extract: true,
 					extractEntities: true,
-					veracity: "tool",
+					// Unverified LLM self-reports default to "inferred"; only lessons backed
+					// by an explicit observed evidence reference receive "tool" veracity.
+					veracity: evidenceRef ? "tool" : "inferred",
 					memoryType: "fact",
 				});
 				// rememberScoped returns undefined when the retain failed (closed DB /

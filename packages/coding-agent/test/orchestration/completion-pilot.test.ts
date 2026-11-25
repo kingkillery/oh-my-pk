@@ -136,4 +136,81 @@ describe("opt-in completion pilot", () => {
 		expect(result.checks.every(c => c.status === "unproven")).toBe(true);
 		expect(result.evaluation.outcome).toBe("recoverable");
 	}, 30_000);
+
+	it("supports opt-in allowDirtyTree with deterministic workingTreeDigest and still rejects dirty trees by default", async () => {
+		const input = await fixture();
+		// Dirty tracked file + new untracked deliverable.
+		await Bun.write(join(input.cwd, "artifact.txt"), "dirty tracked edit\n");
+		await Bun.write(join(input.cwd, "untracked.txt"), "new untracked artifact\n");
+		const untrackedSha = new Bun.CryptoHasher("sha256").update("new untracked artifact\n").digest("hex");
+		const dirtyInput: CompletionPilotInput = {
+			...input,
+			checks: [
+				input.checks[0]!,
+				{
+					criterionId: "artifact",
+					kind: "artifact",
+					path: "untracked.txt",
+					sha256: untrackedSha,
+					deliverable: "artifact",
+				},
+			],
+		};
+
+		// Default strict mode still refuses dirty trees.
+		const defaultRes = await runCompletionPilot(dirtyInput);
+		expect(defaultRes.checks.every(c => c.status === "unproven")).toBe(true);
+		expect(defaultRes.evaluation.outcome).toBe("recoverable");
+
+		// Opt-in dirty-tree mode passes with deterministic 64-hex workingTreeDigest.
+		const first = await runCompletionPilot({ ...dirtyInput, allowDirtyTree: true });
+		const second = await runCompletionPilot({ ...dirtyInput, allowDirtyTree: true });
+		expect(first.allowDirtyTree).toBe(true);
+		expect(first.workingTreeDigest).toMatch(/^[0-9a-f]{64}$/);
+		expect(first.workingTreeDigest).toBe(second.workingTreeDigest);
+		expect(first.checks.map(c => c.status)).toEqual(["pass", "pass"]);
+		expect(first.evaluation.outcome).toBe("pass");
+
+		// CLI --allow-dirty-tree flag also activates dirty-tree digest mode.
+		const manifestDir = await mkdtemp(join(tmpdir(), "ompk-dirty-manifest-"));
+		paths.push(manifestDir);
+		const manifest = join(manifestDir, "pilot.json");
+		await Bun.write(manifest, JSON.stringify(dirtyInput));
+		const cli = join(import.meta.dir, "../../src/orchestration/completion-pilot-cli.ts");
+		const child = Bun.spawn([process.execPath, cli, "--allow-dirty-tree", manifest], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [out, err, code] = await Promise.all([
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+			child.exited,
+		]);
+		expect(err).toBe("");
+		expect(code).toBe(0);
+		const parsed = JSON.parse(out);
+		expect(parsed.allowDirtyTree).toBe(true);
+		expect(parsed.workingTreeDigest).toBe(first.workingTreeDigest);
+		expect(parsed.evaluation.outcome).toBe("pass");
+	}, 30_000);
+
+	it("invalidates allowDirtyTree results if a check mutates a tracked or untracked file mid-run", async () => {
+		const input = await fixture();
+		await Bun.write(join(input.cwd, "artifact.txt"), "dirty tracked edit\n");
+		const dirtySha = new Bun.CryptoHasher("sha256").update("dirty tracked edit\n").digest("hex");
+		const result = await runCompletionPilot({
+			...input,
+			allowDirtyTree: true,
+			checks: [
+				{
+					criterionId: "test",
+					kind: "test",
+					command: [process.execPath, "-e", "require('fs').writeFileSync('midrun.tmp', 'mutated')"],
+				},
+				{ criterionId: "artifact", kind: "artifact", path: "artifact.txt", sha256: dirtySha, deliverable: "artifact" },
+			],
+		});
+		expect(result.checks.every(c => c.status === "unproven")).toBe(true);
+		expect(result.evaluation.outcome).toBe("recoverable");
+	}, 30_000);
 });

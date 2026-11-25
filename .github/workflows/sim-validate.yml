@@ -1,0 +1,41 @@
+name: SIM ledger & replay validation
+
+on:
+  pull_request:
+    paths:
+      - ".omp/sim.json"
+      - ".omp/sim.schema.json"
+      - "scripts/sim/**"
+      - "packages/coding-agent/src/system-prompt.ts"
+      - "packages/coding-agent/src/utils/sim-ledger.ts"
+      - ".agents/rules/harness-sim.md"
+      - ".github/workflows/sim-validate.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".omp/sim.json"
+      - ".omp/sim.schema.json"
+      - "scripts/sim/**"
+      - "packages/coding-agent/src/system-prompt.ts"
+      - "packages/coding-agent/src/utils/sim-ledger.ts"
+      - ".agents/rules/harness-sim.md"
+      - ".github/workflows/sim-validate.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  sim-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install frozen workspace dependencies
+        run: bun install --frozen-lockfile
+      - name: Validate SIM ledger & deterministic replay
+        run: bun run sim:validate && bun run sim:replay --json
+      - name: Run SIM unit tests
+        run: bun test scripts/sim/sim.test.ts scripts/sim/workflow.test.ts scripts/sim/cli.test.ts

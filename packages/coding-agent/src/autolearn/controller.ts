@@ -83,11 +83,11 @@ export class AutoLearnController {
 			return;
 		}
 		if (event.type === "agent_end") {
-			this.#onAgentEnd();
+			this.#onAgentEnd(event.messages);
 		}
 	}
 
-	#onAgentEnd(): void {
+	#onAgentEnd(messages: readonly unknown[] = []): void {
 		// Snapshot and reset every turn: the counters describe only the
 		// just-finished turn, so below-threshold, disabled, and plan-mode stops
 		// must not let tool calls accumulate into a later turn.
@@ -102,6 +102,8 @@ export class AutoLearnController {
 			this.#suppressNext = false;
 			return;
 		}
+		// Never nudge auto-learn after a failed or aborted turn.
+		if (hasFailedOrAbortedAssistantStop(messages)) return;
 		// Honor a live opt-out: the subscription outlives the setting, so re-check
 		// the current flag rather than trusting install-time state.
 		if (!this.#settings.get("autolearn.enabled")) return;
@@ -156,4 +158,15 @@ export class AutoLearnController {
 				logger.warn("auto-learn nudge delivery failed", { err });
 			});
 	}
+}
+
+function hasFailedOrAbortedAssistantStop(messages: readonly unknown[]): boolean {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (!message || typeof message !== "object") continue;
+		const record = message as { role?: unknown; stopReason?: unknown };
+		if (record.role !== "assistant") continue;
+		return record.stopReason === "error" || record.stopReason === "aborted";
+	}
+	return false;
 }

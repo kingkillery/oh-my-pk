@@ -116,7 +116,7 @@ export function createToolUseCaptureRecord(config: RouterConfig, input: ToolUseC
 		contextBudgetTokens: capture.contextBudgetTokens,
 	});
 	const trainingHint = capture.includeTrainingHints
-		? buildTrainingHint(toolName, namespace, phase, contextSummary, capture, Boolean(error))
+		? buildTrainingHint(toolName, namespace, phase, contextSummary, capture, Boolean(error), input.metadata)
 		: undefined;
 
 	return {
@@ -565,6 +565,15 @@ function buildContextSummary(input: {
 	};
 }
 
+function resolveDownstreamSuccess(metadata?: Record<string, unknown>): boolean | null {
+	if (!metadata) return null;
+	if (typeof metadata.downstreamSuccess === "boolean") return metadata.downstreamSuccess;
+	if (typeof metadata.verifierPassed === "boolean") return metadata.verifierPassed;
+	if (metadata.taskOutcome === "pass" || metadata.taskOutcome === "success") return true;
+	if (metadata.taskOutcome === "fail" || metadata.taskOutcome === "failure") return false;
+	return null;
+}
+
 function buildTrainingHint(
 	toolName: string,
 	namespace: string | undefined,
@@ -572,8 +581,10 @@ function buildTrainingHint(
 	contextSummary: ToolUseContextSummary,
 	capture: NormalizedToolCaptureConfig,
 	failed: boolean,
+	metadata?: Record<string, unknown>,
 ): ToolRoutingTrainingHint {
 	const success = phase === "failed" || failed ? false : phase === "completed" ? true : null;
+	const downstreamSuccess = resolveDownstreamSuccess(metadata);
 	const contextPolicy =
 		capture.captureResults === "none" || capture.captureResults === "metadata"
 			? "metadata_only"
@@ -582,15 +593,38 @@ function buildTrainingHint(
 				: capture.captureResults === "redacted"
 					? "redacted_preview"
 					: "full_payload";
+
+	let outcomeBasis: ToolRoutingTrainingHint["outcomeBasis"];
+	let confidence: number;
+	if (success === false) {
+		outcomeBasis = "tool_failed";
+		confidence = 0.35;
+	} else if (downstreamSuccess === true) {
+		outcomeBasis = "downstream_verified";
+		confidence = 0.85;
+	} else if (downstreamSuccess === false) {
+		outcomeBasis = "downstream_verified";
+		confidence = 0.25;
+	} else if (success === true) {
+		// Bare tool completion does not prove downstream task/fixer success.
+		outcomeBasis = "tool_completion_only";
+		confidence = 0.5;
+	} else {
+		outcomeBasis = "pending";
+		confidence = 0.45;
+	}
+
 	return {
 		useTool: phase !== "skipped",
 		toolName,
 		namespace,
 		phase,
 		success,
+		downstreamSuccess,
+		outcomeBasis,
 		contextPolicy,
 		expectedSavedContextTokens: contextSummary.savedContextTokensEstimate,
-		confidence: success === true ? 0.85 : success === false ? 0.35 : 0.55,
+		confidence,
 	};
 }
 

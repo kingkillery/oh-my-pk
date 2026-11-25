@@ -3,22 +3,42 @@ import { createHash } from "node:crypto";
 import { type DatabasePath, openDatabase } from "../db";
 
 export const VERACITY_WEIGHTS = Object.freeze({
-	stated: 1.0,
-	inferred: 0.7,
-	tool: 0.5,
-	imported: 0.6,
-	unknown: 0.8,
+	tool: 1.0,
+	stated: 0.9,
+	imported: 0.65,
+	inferred: 0.5,
+	unknown: 0.35,
+});
+
+export const VERACITY_CONFIDENCE_CAPS: Readonly<Record<Veracity, number>> = Object.freeze({
+	tool: 1.0,
+	stated: 0.95,
+	imported: 0.75,
+	inferred: 0.45,
+	unknown: 0.35,
 });
 
 export type Veracity = keyof typeof VERACITY_WEIGHTS;
 
 export const VERACITY_ALLOWED: Record<Veracity, true> = Object.freeze({
-	stated: true,
-	inferred: true,
 	tool: true,
+	stated: true,
 	imported: true,
+	inferred: true,
 	unknown: true,
 });
+
+const UNVERIFIED_VERACITIES: ReadonlySet<Veracity> = new Set(["inferred", "unknown"]);
+
+function veracityWeight(veracity: string): number {
+	return isVeracity(veracity) ? VERACITY_WEIGHTS[veracity] : VERACITY_WEIGHTS.unknown;
+}
+
+function higherVeracity(left: string, right: string): Veracity {
+	const leftNorm: Veracity = isVeracity(left) ? left : "unknown";
+	const rightNorm: Veracity = isVeracity(right) ? right : "unknown";
+	return VERACITY_WEIGHTS[rightNorm] > VERACITY_WEIGHTS[leftNorm] ? rightNorm : leftNorm;
+}
 
 const VERACITY_WARN_VALUE_CAP = 80;
 const TX_DEPTH = Symbol("mnemopi.veracity.txDepth");
@@ -245,9 +265,12 @@ export class VeracityConsolidator {
 	}
 
 	bayesianUpdate(currentConfidence: number, veracity: string): number {
-		const weight = isVeracity(veracity) ? VERACITY_WEIGHTS[veracity] : VERACITY_WEIGHTS.unknown;
-		const increment = (1.0 - currentConfidence) * weight * 0.3;
-		return Math.min(currentConfidence + increment, 1.0);
+		const norm: Veracity = isVeracity(veracity) ? veracity : "unknown";
+		const weight = VERACITY_WEIGHTS[norm];
+		const cap = VERACITY_CONFIDENCE_CAPS[norm];
+		if (currentConfidence >= cap) return Math.min(currentConfidence, 1.0);
+		const increment = (cap - currentConfidence) * weight * 0.3;
+		return Math.min(currentConfidence + increment, cap);
 	}
 
 	consolidateFact(
@@ -258,24 +281,51 @@ export class VeracityConsolidator {
 		source?: string | null,
 	): ConsolidatedFact {
 		return this.serializedWrite(() => {
+			const incomingVeracity: Veracity = isVeracity(veracity) ? veracity : "unknown";
 			const existing = this.conn
 				.query("SELECT * FROM consolidated_facts WHERE subject = ? AND predicate = ? AND object = ?")
 				.get(subject, predicate, object) as ConsolidatedFactRow | null;
 			const now = nowIso();
 
 			if (existing !== null) {
-				const newConfidence = this.bayesianUpdate(existing.confidence, veracity);
-				const newCount = existing.mention_count + 1;
 				const sources = parseSources(existing.sources_json);
 				if (source !== undefined && source !== null && source !== "" && !sources.includes(source))
 					sources.push(source);
+				const newCount = existing.mention_count + 1;
+				// Superseded/retracted facts remain quarantined: never silently restore
+				// or boost their confidence or overwrite their provenance.
+				if (existing.superseded_by !== null) {
+					this.conn
+						.query(`
+							UPDATE consolidated_facts
+							SET mention_count = ?, last_seen = ?, sources_json = ?, updated_at = ?
+							WHERE id = ?
+						`)
+						.run(newCount, now, JSON.stringify(sources), now, existing.id);
+					return {
+						subject,
+						predicate,
+						object,
+						confidence: existing.confidence,
+						mention_count: newCount,
+						first_seen: existing.first_seen,
+						last_seen: now,
+						sources,
+						veracity: existing.veracity,
+						superseded: true,
+						id: existing.id,
+					};
+				}
+				// Never downgrade higher-provenance veracity with a lower-provenance update.
+				const effectiveVeracity = higherVeracity(existing.veracity, incomingVeracity);
+				const newConfidence = Math.max(existing.confidence, this.bayesianUpdate(existing.confidence, incomingVeracity));
 				this.conn
 					.query(`
 						UPDATE consolidated_facts
 						SET confidence = ?, mention_count = ?, last_seen = ?, sources_json = ?, veracity = ?, updated_at = ?
 						WHERE id = ?
 					`)
-					.run(newConfidence, newCount, now, JSON.stringify(sources), veracity, now, existing.id);
+					.run(newConfidence, newCount, now, JSON.stringify(sources), effectiveVeracity, now, existing.id);
 				return {
 					subject,
 					predicate,
@@ -285,8 +335,8 @@ export class VeracityConsolidator {
 					first_seen: existing.first_seen,
 					last_seen: now,
 					sources,
-					veracity,
-					superseded: existing.superseded_by !== null,
+					veracity: effectiveVeracity,
+					superseded: false,
 					id: existing.id,
 				};
 			}
@@ -295,8 +345,8 @@ export class VeracityConsolidator {
 				.query("SELECT * FROM consolidated_facts WHERE subject = ? AND predicate = ? AND object != ?")
 				.all(subject, predicate, object) as ConsolidatedFactRow[];
 			const factId = computeFactId(subject, predicate, object);
-			const weight = isVeracity(veracity) ? VERACITY_WEIGHTS[veracity] : VERACITY_WEIGHTS.unknown;
-			const baseConfidence = weight * 0.5;
+			const weight = VERACITY_WEIGHTS[incomingVeracity];
+			const baseConfidence = Math.min(weight * 0.5, VERACITY_CONFIDENCE_CAPS[incomingVeracity]);
 			const sources = source !== undefined && source !== null && source !== "" ? [source] : [];
 			this.conn
 				.query(`
@@ -304,7 +354,18 @@ export class VeracityConsolidator {
 					(id, subject, predicate, object, confidence, mention_count, first_seen, last_seen, sources_json, veracity)
 					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				`)
-				.run(factId, subject, predicate, object, baseConfidence, 1, now, now, JSON.stringify(sources), veracity);
+				.run(
+					factId,
+					subject,
+					predicate,
+					object,
+					baseConfidence,
+					1,
+					now,
+					now,
+					JSON.stringify(sources),
+					incomingVeracity,
+				);
 			for (const conflict of conflicts) this.recordConflict(factId, conflict.id, "contradiction", false);
 			return {
 				subject,
@@ -315,7 +376,7 @@ export class VeracityConsolidator {
 				first_seen: now,
 				last_seen: now,
 				sources,
-				veracity,
+				veracity: incomingVeracity,
 				superseded: false,
 				id: factId,
 			};
@@ -425,6 +486,10 @@ export class VeracityConsolidator {
 				`)
 				.all() as ConsolidatedFactRow[];
 			for (const row of primaryRows) {
+				const rowVeracity: Veracity = isVeracity(row.veracity) ? row.veracity : "unknown";
+				// Repeated unverified/inferred claims must never auto-supersede conflicting facts.
+				if (UNVERIFIED_VERACITIES.has(rowVeracity)) continue;
+				const rowRank = veracityWeight(rowVeracity);
 				const conflicts = this.conn
 					.query(`
 						SELECT * FROM consolidated_facts
@@ -432,7 +497,10 @@ export class VeracityConsolidator {
 					`)
 					.all(row.subject, row.predicate, row.object) as ConsolidatedFactRow[];
 				for (const conflict of conflicts) {
-					if (row.confidence > conflict.confidence) this.resolveConflictByFacts(row.id, conflict.id);
+					const conflictRank = veracityWeight(conflict.veracity);
+					if (rowRank >= conflictRank && row.confidence > conflict.confidence) {
+						this.resolveConflictByFacts(row.id, conflict.id);
+					}
 				}
 			}
 		});

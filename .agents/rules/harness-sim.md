@@ -91,3 +91,10 @@ These rules define **experimental and evidence constraints** (pre-eval predictio
    bun run sim:carry --arm "<source arm>" --domain "<source domain>" --into "<target run>" --benchmark "<benchmark>" --model "<model>"
    ```
    Populates `carried_from` while preserving all existing problems, aliases, and `next_id`, and restarts per-run round numbers at `1` for the new `run`.
+
+## Canonical Improvement Backbone & Experimental Probes
+
+- **Single canonical backbone:** SIM (`.omp/sim.json` + `.omp/sim-rejected.jsonl` + `scripts/sim/*`) paired with `AssignmentContractV2` / `completion-pilot/v2` is the sole canonical improvement, attribution, and verification backbone for `oh-my-pk`. Do not introduce a parallel optimization framework.
+- **Control baselines & claim evidence:** Record `--control-baseline <json>` (`unchanged|heuristic|random|no_op|prior_arm` with `baseline_score`, `candidate_score`, `delta`) and `--claim-evidence <json>` (`claims_verified`, `unsupported_claims`, `evidence_refs`) on SIM attempts whenever available; accepted SIM attempts MUST have `unsupported_claims === 0`.
+- **Offline experimental probes:** `python/harness2-ompk`, `python/fugu`, and `packages/verifier-extension` remain strictly offline/opt-in experimental probes outside OMPK's runtime authority. Any finding from those probes MUST land in `oh-my-pk` exclusively through a SIM-verified edit receipt with explicit baseline comparison and human review.
+- **Managed skill evolution (`autolearn/evolution.ts`):** Candidate skills promoted via `manage_skill promote` must beat an explicit simple/control baseline (unchanged skill or no-skill baseline) on disjoint holdout cases with zero regressions and verified evidence provenance.

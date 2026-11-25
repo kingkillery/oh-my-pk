@@ -83,3 +83,45 @@ test('ToolUseCaptureLayer wraps tools and records completion', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('tool capture decouples trainingHint confidence from bare tool completion when downstream outcome is unknown', () => {
+  const config = cloneDefaultConfig();
+  const unobserved = createToolUseCaptureRecord(config, {
+    requestId: 'req_unobs',
+    toolCallId: 'tool_unobs',
+    toolName: 'file_search.msearch',
+    phase: 'completed',
+    args: { q: 'test' },
+    result: { hits: [] },
+  });
+  assert.equal(unobserved.trainingHint?.success, true);
+  assert.equal(unobserved.trainingHint?.downstreamSuccess, null);
+  assert.equal(unobserved.trainingHint?.outcomeBasis, 'tool_completion_only');
+  assert.ok((unobserved.trainingHint?.confidence ?? 1) <= 0.5);
+
+  const verifiedPass = createToolUseCaptureRecord(config, {
+    requestId: 'req_pass',
+    toolCallId: 'tool_pass',
+    toolName: 'file_search.msearch',
+    phase: 'completed',
+    args: { q: 'test' },
+    result: { hits: ['ok'] },
+    metadata: { downstreamSuccess: true },
+  });
+  assert.equal(verifiedPass.trainingHint?.downstreamSuccess, true);
+  assert.equal(verifiedPass.trainingHint?.outcomeBasis, 'downstream_verified');
+  assert.equal(verifiedPass.trainingHint?.confidence, 0.85);
+
+  const verifiedFail = createToolUseCaptureRecord(config, {
+    requestId: 'req_fail',
+    toolCallId: 'tool_fail',
+    toolName: 'file_search.msearch',
+    phase: 'completed',
+    args: { q: 'test' },
+    result: { hits: ['wrong'] },
+    metadata: { downstreamSuccess: false },
+  });
+  assert.equal(verifiedFail.trainingHint?.downstreamSuccess, false);
+  assert.equal(verifiedFail.trainingHint?.outcomeBasis, 'downstream_verified');
+  assert.ok((verifiedFail.trainingHint?.confidence ?? 1) < 0.35);
+});

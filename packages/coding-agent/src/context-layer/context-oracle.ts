@@ -8,6 +8,15 @@ import { queryTypedLspContext, type TypedLspQueryAction, type TypedLspQueryResul
 import type { DocumentSymbol } from "../lsp/types";
 import contextLayerCompressPrompt from "../prompts/system/context-layer-compress.md" with { type: "text" };
 import type { ToolSession } from "../tools";
+import {
+	type FixerContextPacket,
+	type FixerContextPacketOptions,
+	rankAndBudgetFixerSlices,
+	scanWorkspaceForTarget,
+} from "./fixer-packet";
+
+export type { FixerContextPacket, FixerContextPacketOptions, FixerContextSlice } from "./fixer-packet";
+export { estimateTokens, rankAndBudgetFixerSlices, scanWorkspaceForTarget } from "./fixer-packet";
 
 export type ContextEvidenceType = "lsp" | "file" | "diagnostic" | "summary" | "search" | "cache";
 export type ContextConfidence = "high" | "medium" | "low";
@@ -205,6 +214,34 @@ export class ContextOracle {
 				...new Set(result.evidence.map(item => item.file).filter((item): item is string => Boolean(item))),
 			],
 		};
+	}
+
+	/**
+	 * Build a compact, fixer-oriented context packet ranking minimal file+symbol
+	 * slices under an explicit `maxTokens` budget with `tokenEstimate` and
+	 * `droppedEvidenceCount` telemetry (arXiv:2611.12164).
+	 */
+	async buildFixerContextPacket(
+		target: string,
+		options: ContextOracleOptions & FixerContextPacketOptions = {},
+		signal?: AbortSignal,
+	): Promise<FixerContextPacket> {
+		const evidence: ContextEvidence[] = [];
+		const symbolResult = await this.getSymbolContext(target, options, signal);
+		evidence.push(...symbolResult.evidence);
+		if (options.file) {
+			const fileResult = await this.getFileContext(options.file, options, signal);
+			evidence.push(...fileResult.evidence);
+		}
+		// Ensure all lexical matches across workspace files are considered for ranking/budgeting.
+		const lexicalMatches = await scanWorkspaceForTarget(this.session.cwd, target);
+		evidence.push(...lexicalMatches);
+		return await rankAndBudgetFixerSlices(this.session.cwd, target, evidence, {
+			file: options.file,
+			maxTokens: options.maxTokens,
+			contextLines: options.contextLines,
+			maxSlices: options.maxSlices,
+		});
 	}
 
 	async #workspaceSymbolSearch(

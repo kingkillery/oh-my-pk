@@ -16,6 +16,7 @@
  *   bun scripts/sim/cli.ts cases
  */
 import * as path from "node:path";
+import type { SimClaimEvidence, SimControlBaseline } from "./schema.ts";
 import { createSimWorkflow, type SimWorkflow } from "./workflow.ts";
 
 interface ParsedArgs {
@@ -77,6 +78,16 @@ function splitCsv(value: string | undefined): string[] {
 		.split(",")
 		.map(part => part.trim())
 		.filter(Boolean);
+}
+
+function parseJsonFlag<T>(flags: Map<string, string | boolean>, name: string): T | undefined {
+	const raw = getStringFlag(flags, name);
+	if (raw === undefined) return undefined;
+	try {
+		return JSON.parse(raw) as T;
+	} catch (err) {
+		throw new Error(`Invalid JSON for --${name}: ${err instanceof Error ? err.message : String(err)}`);
+	}
 }
 
 async function cmdReplay(workflow: SimWorkflow, flags: Map<string, string | boolean>): Promise<number> {
@@ -272,6 +283,8 @@ async function cmdRecord(workflow: SimWorkflow, flags: Map<string, string | bool
 		baselineRef: getStringFlag(flags, "baseline-ref"),
 		candidateRef: getStringFlag(flags, "candidate-ref"),
 		noRejectedLog,
+		controlBaseline: parseJsonFlag<SimControlBaseline>(flags, "control-baseline"),
+		claimEvidence: parseJsonFlag<SimClaimEvidence>(flags, "claim-evidence"),
 	});
 
 	if (!outcome.recorded) {
@@ -312,7 +325,7 @@ function printHelp(): number {
 			`  validate [--ledger <path>]\n` +
 			`  status   [--ledger <path>] [--json]\n` +
 			`  merge    [--ledger <path>]\n` +
-			`  record   --what <desc> --files <a,b> --model <m> --domain <d> --benchmark <b> [--accepted true|false] [--baseline <file>] [--replay-json <file>] [--manifest <path>] [--sample <id>] [--backfilled true|false] [--allow-ad-hoc] [--run <id>] [--baseline-ref <ref>] [--candidate-ref <ref>] [--rejected-log <path>] [--no-rejected-log] [--ledger <path>]\n` +
+			`  record   --what <desc> --files <a,b> --model <m> --domain <d> --benchmark <b> [--accepted true|false] [--baseline <file>] [--replay-json <file>] [--manifest <path>] [--sample <id>] [--backfilled true|false] [--allow-ad-hoc] [--run <id>] [--baseline-ref <ref>] [--candidate-ref <ref>] [--control-baseline <json>] [--claim-evidence <json>] [--rejected-log <path>] [--no-rejected-log] [--ledger <path>]\n` +
 			`  cases\n`,
 	);
 	return 0;

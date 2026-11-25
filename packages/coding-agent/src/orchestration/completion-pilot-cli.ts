@@ -1,13 +1,17 @@
-/** Explicit opt-in entry point: bun completion-pilot-cli.ts <pilot.json>. */
+/** Explicit opt-in entry point: bun completion-pilot-cli.ts [--allow-dirty-tree] <pilot.json>. */
 import { type CompletionPilotInput, runCompletionPilot } from "./completion-pilot";
 
-const path = process.argv[2];
-if (!path || process.argv.length !== 3) {
-	process.stderr.write("Usage: bun completion-pilot-cli.ts <pilot.json>\n");
+const rawArgs = process.argv.slice(2);
+const allowDirtyTreeFlag = rawArgs.includes("--allow-dirty-tree");
+const positional = rawArgs.filter(arg => arg !== "--allow-dirty-tree");
+const path = positional[0];
+if (!path || positional.length !== 1) {
+	process.stderr.write("Usage: bun completion-pilot-cli.ts [--allow-dirty-tree] <pilot.json>\n");
 	process.exitCode = 2;
 } else {
 	try {
-		const input = (await Bun.file(path).json()) as CompletionPilotInput;
+		const loaded = (await Bun.file(path).json()) as CompletionPilotInput;
+		const input: CompletionPilotInput = allowDirtyTreeFlag ? { ...loaded, allowDirtyTree: true } : loaded;
 		const result = await runCompletionPilot(input);
 		process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 		process.exitCode = result.evaluation.outcome === "pass" ? 0 : 1;

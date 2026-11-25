@@ -154,7 +154,36 @@
 				"baseline_ref": { "type": "string", "minLength": 1 },
 				"candidate_ref": { "type": "string", "minLength": 1 },
 				"commit": { "type": "string", "minLength": 1 },
-				"timestamp": { "type": "string", "minLength": 1 }
+				"timestamp": { "type": "string", "minLength": 1 },
+				"control_baseline": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["baseline_type", "baseline_score", "candidate_score", "delta"],
+					"properties": {
+						"baseline_type": {
+							"type": "string",
+							"enum": ["unchanged", "heuristic", "random", "no_op", "prior_arm"]
+						},
+						"baseline_score": { "type": "number" },
+						"candidate_score": { "type": "number" },
+						"delta": { "type": "number" },
+						"notes": { "type": "string", "minLength": 1 }
+					}
+				},
+				"claim_evidence": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["claims_verified", "unsupported_claims", "evidence_refs"],
+					"properties": {
+						"claims_verified": { "type": "integer", "minimum": 0 },
+						"unsupported_claims": { "type": "integer", "minimum": 0 },
+						"evidence_refs": {
+							"type": "array",
+							"items": { "type": "string", "minLength": 1 },
+							"uniqueItems": true
+						}
+					}
+				}
 			}
 		}
 	}

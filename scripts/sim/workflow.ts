@@ -33,6 +33,9 @@ import {
 	evaluateReplayDiff,
 	mergeDuplicateProblems,
 	resolveProblemId,
+	type SimCarriedFrom,
+	type SimClaimEvidence,
+	type SimControlBaseline,
 	type SimLedger,
 	type SimRejectedCandidateLogEntry,
 	type SimReplayBaselineMeta,
@@ -145,6 +148,8 @@ export interface SimRecordInput {
 	baselineRef?: string;
 	candidateRef?: string;
 	noRejectedLog?: boolean;
+	controlBaseline?: SimControlBaseline;
+	claimEvidence?: SimClaimEvidence;
 }
 
 export type SimRecordResult =
@@ -842,6 +847,8 @@ export function createSimWorkflow(options?: SimWorkflowOptions): SimWorkflow {
 					candidate_ref: candidateRef,
 					commit,
 					timestamp: now(),
+					...(opts.controlBaseline ? { control_baseline: opts.controlBaseline } : {}),
+					...(opts.claimEvidence ? { claim_evidence: opts.claimEvidence } : {}),
 				});
 			} catch (err) {
 				throw new SimWorkflowError("usage", err instanceof Error ? err.message : String(err));
@@ -886,6 +893,8 @@ export function createSimWorkflow(options?: SimWorkflowOptions): SimWorkflow {
 						...(manifest ? { manifest_id: manifest.manifest_id } : {}),
 						...(baselineRef ? { baseline_ref: baselineRef } : {}),
 						...(candidateRef ? { candidate_ref: candidateRef } : {}),
+						...(opts.controlBaseline ? { control_baseline: opts.controlBaseline } : {}),
+						...(opts.claimEvidence ? { claim_evidence: opts.claimEvidence } : {}),
 					};
 					await store.appendText(paths.rejectedLogPath, `${JSON.stringify(rejectedEntry)}\n`);
 					rejectedLogAppended = true;

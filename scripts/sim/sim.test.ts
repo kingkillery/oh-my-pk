@@ -249,6 +249,18 @@ describe("Strict schema allowlist & parity vs .omp/sim.schema.json (G7)", () => 
 							candidate_ref: "cand-001",
 							commit: "abc1234",
 							timestamp: "2026-11-19T00:05:00.000Z",
+							control_baseline: {
+								baseline_type: "unchanged",
+								baseline_score: 0.75,
+								candidate_score: 0.875,
+								delta: 0.125,
+								notes: "full parity check",
+							},
+							claim_evidence: {
+								claims_verified: 2,
+								unsupported_claims: 0,
+								evidence_refs: ["test://sim-parity"],
+							},
 						},
 					],
 				},

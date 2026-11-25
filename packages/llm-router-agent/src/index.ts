@@ -31,6 +31,17 @@ export {
 	toolUseTelemetry,
 	writeToolUseCapture,
 } from "./tool-capture.js";
-export { parseTelemetryJsonl, trainRoutePredictorFromTelemetry } from "./training.js";
+export {
+	type BaselineComparisonSummary,
+	type CalibrationBin,
+	type CalibrationReport,
+	computeExpectedCalibrationError,
+	evaluateRoutePredictorVsBaseline,
+	parseTelemetryJsonl,
+	type RoutePredictorBaselineEvaluation,
+	type RoutePredictorTrainingOptions,
+	type RoutePredictorTrainingResult,
+	trainRoutePredictorFromTelemetry,
+} from "./training.js";
 export type * from "./types.js";
 export { validateOutput } from "./validation.js";

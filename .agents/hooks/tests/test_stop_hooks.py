@@ -366,3 +366,138 @@ def test_tokf_parses_and_covers_targets() -> None:
             f".tokf missing credential scrubbing for {token!r}"
         )
     assert "user:pass@" in text, ".tokf missing user:pass@ scrubbing rule"
+
+
+def test_memory_entry_requires_concrete_verification_command(tmp_path: Path) -> None:
+    """Promoted memory/*.md entries must include a concrete verification command."""
+    mem_dir = tmp_path / "memory"
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    missing = mem_dir / "missing.md"
+    missing.write_text("# Fact\n\nscope: tests\nfact: example\n", encoding="utf-8")
+    report = run_memory_promotion_check(tmp_path, files=["memory/missing.md"])
+    assert report.ok is False
+    assert any("verification:" in error for error in report.errors)
+
+    placeholder = mem_dir / "placeholder.md"
+    placeholder.write_text(
+        "# Fact\n\nverification: TBD\n", encoding="utf-8"
+    )
+    report_placeholder = run_memory_promotion_check(
+        tmp_path, files=["memory/placeholder.md"]
+    )
+    assert report_placeholder.ok is False
+    assert any("placeholder" in error for error in report_placeholder.errors)
+
+    good = mem_dir / "good.md"
+    good.write_text(
+        "# Fact\n\nscope: hooks\nfact: verified\nverification: `pytest .agents/hooks/tests/test_stop_hooks.py`\n",
+        encoding="utf-8",
+    )
+    report_good = run_memory_promotion_check(tmp_path, files=["memory/good.md"])
+    assert report_good.ok is True
+    assert report_good.errors == ()
+
+
+def test_memory_entry_rejects_secret_tokens(tmp_path: Path) -> None:
+    """Promoted memory/*.md entries must never include secret tokens."""
+    mem_dir = tmp_path / "memory"
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    leaked = mem_dir / "leaked.md"
+    leaked.write_text(
+        "# Fact\n\ntoken: sk-1234567890abcdef\nverification: `pytest`\n",
+        encoding="utf-8",
+    )
+    report = run_memory_promotion_check(tmp_path, files=["memory/leaked.md"])
+    assert report.ok is False
+    assert any("secret" in error for error in report.errors)
+
+
+def test_sim_ledger_repo_file_passes_stop_hook_check() -> None:
+    """The repository's live .omp/sim.json must pass pure-Python SIM validation."""
+    report = run_memory_promotion_check(REPO_ROOT, files=[".omp/sim.json"])
+    assert report.ok is True, report.errors
+
+
+def _sample_sim_ledger(attempt_extra: dict[str, object] | None = None) -> dict[str, object]:
+    attempt: dict[str, object] = {
+        "round": 1,
+        "accepted": True,
+        "what": "Fix veracity weight ordering",
+        "files": ["packages/mnemopi/src/core/veracity-consolidation.ts"],
+        "model": "cross-model",
+        "domain": "memory",
+        "benchmark": "veracity-hygiene",
+        "predicted": ["case-1"],
+        "fixed": ["case-1"],
+        "missed": [],
+        "regressed": [],
+        "passed": 1,
+        "total": 1,
+    }
+    if attempt_extra:
+        attempt.update(attempt_extra)
+    return {
+        "schema_version": 2,
+        "next_id": 2,
+        "aliases": {},
+        "problems": [
+            {
+                "id": "P1",
+                "name": "Inverted veracity weights",
+                "opened_round": 1,
+                "attempts": [attempt],
+            }
+        ],
+    }
+
+
+def test_sim_ledger_accepts_valid_control_baseline_and_claim_evidence(tmp_path: Path) -> None:
+    """Valid control_baseline and claim_evidence fields must pass validation."""
+    omp_dir = tmp_path / ".omp"
+    omp_dir.mkdir(parents=True, exist_ok=True)
+    ledger = _sample_sim_ledger(
+        {
+            "control_baseline": {
+                "baseline_type": "unchanged",
+                "baseline_score": 0.5,
+                "candidate_score": 1.0,
+                "delta": 0.5,
+                "notes": "Verified against unchanged baseline",
+            },
+            "claim_evidence": {
+                "claims_verified": 2,
+                "unsupported_claims": 0,
+                "evidence_refs": ["test://veracity-consolidation"],
+            },
+        }
+    )
+    (omp_dir / "sim.json").write_text(json.dumps(ledger), encoding="utf-8")
+    report = run_memory_promotion_check(tmp_path, files=[".omp/sim.json"])
+    assert report.ok is True, report.errors
+
+
+def test_sim_ledger_rejects_mismatched_delta_and_unsupported_claims(tmp_path: Path) -> None:
+    """Stop hook must reject inconsistent control_baseline deltas and unsupported accepted claims."""
+    omp_dir = tmp_path / ".omp"
+    omp_dir.mkdir(parents=True, exist_ok=True)
+    bad_ledger = _sample_sim_ledger(
+        {
+            "control_baseline": {
+                "baseline_type": "heuristic",
+                "baseline_score": 0.5,
+                "candidate_score": 0.8,
+                "delta": 0.9,
+            },
+            "claim_evidence": {
+                "claims_verified": 1,
+                "unsupported_claims": 1,
+                "evidence_refs": ["test://check-1"],
+            },
+        }
+    )
+    (omp_dir / "sim.json").write_text(json.dumps(bad_ledger), encoding="utf-8")
+    report = run_memory_promotion_check(tmp_path, files=[".omp/sim.json"])
+    assert report.ok is False
+    joined = "\n".join(report.errors)
+    assert "control_baseline.delta" in joined
+    assert "claim_evidence.unsupported_claims" in joined

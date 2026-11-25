@@ -260,7 +260,7 @@ export const mnemopiBackend: MemoryBackend = {
 			scope: "bank",
 			extract: true,
 			extractEntities: true,
-			veracity: "user",
+			veracity: "stated",
 			memoryType: "fact",
 		});
 		return {

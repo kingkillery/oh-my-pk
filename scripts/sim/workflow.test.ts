@@ -241,4 +241,109 @@ describe("SIM deep workflow module (in-memory store + canned replay)", () => {
 		expect(carried.nextRound).toBe(1);
 		expect(carried.carriedFrom?.into).toBe("qwen3.5-v2");
 	});
+
+	it("records control_baseline and claim_evidence through predict -> replay -> record -> validate, blocks unsupported claims on accepted:true, and preserves byte-identical ledger on accepted:false", async () => {
+		const store = createInMemorySimStore();
+		const baseline: SimReplayBaselineMeta = {
+			passed_ids: [CASE_C],
+			failed_ids: [CASE_A, CASE_B],
+			model: "claude-opus-5.5",
+		};
+		const candidate = makeCannedReport({
+			passedIds: [CASE_A, CASE_C],
+			failedIds: [CASE_B],
+			model: "claude-opus-5.5",
+		});
+
+		const wf = createSimWorkflow({
+			rootDir: "/virtual/repo",
+			store,
+			runReplay: async () => candidate,
+			now: () => FIXED_NOW,
+		});
+
+		await wf.predict({
+			problem: "new",
+			name: "control-baseline and claim-evidence check",
+			predicted: [CASE_A],
+			what: "Add deterministic repair with verified evidence",
+			files: ["packages/ai/src/utils/json-parse.ts"],
+			model: "claude-opus-5.5",
+			domain: "parsers",
+			benchmark: "json-parse-repair",
+			baseline,
+		});
+
+		// Accepted attempt with unsupported_claims > 0 must fail closed before mutating ledger or consuming manifest.
+		await expect(
+			wf.record({
+				accepted: true,
+				controlBaseline: {
+					baseline_type: "unchanged",
+					baseline_score: 0.33,
+					candidate_score: 0.67,
+					delta: 0.34,
+				},
+				claimEvidence: {
+					claims_verified: 1,
+					unsupported_claims: 1,
+					evidence_refs: ["test://sim-replay-case-a"],
+				},
+			}),
+		).rejects.toMatchObject({ code: "validation" });
+		expect(store.peekText(wf.paths.ledgerPath)).toBeUndefined();
+
+		// Fixing unsupported_claims to 0 succeeds and validates cleanly.
+		const acceptedRec = await wf.record({
+			accepted: true,
+			controlBaseline: {
+				baseline_type: "unchanged",
+				baseline_score: 0.33,
+				candidate_score: 0.67,
+				delta: 0.34,
+				notes: "beats unchanged baseline by +0.34",
+			},
+			claimEvidence: {
+				claims_verified: 2,
+				unsupported_claims: 0,
+				evidence_refs: ["test://sim-replay-case-a"],
+			},
+		});
+		expect(acceptedRec.recorded).toBe(true);
+		const ledgerAfterAccept = store.peekText(wf.paths.ledgerPath);
+		expect(ledgerAfterAccept).toBeDefined();
+		expect((await wf.validate()).valid).toBe(true);
+
+		// A subsequent rejected candidate must leave sim.json byte-identical and log to sim-rejected.jsonl.
+		await wf.predict({
+			problem: "P1",
+			predicted: [CASE_B],
+			what: "Speculative regex fallback that missed",
+			files: ["packages/ai/src/utils/json-parse.ts"],
+			model: "claude-opus-5.5",
+			domain: "parsers",
+			benchmark: "json-parse-repair",
+			baseline: { passed_ids: [CASE_A, CASE_C], failed_ids: [CASE_B], model: "claude-opus-5.5" },
+		});
+		const rejectedRec = await wf.record({
+			accepted: false,
+			controlBaseline: {
+				baseline_type: "heuristic",
+				baseline_score: 0.67,
+				candidate_score: 0.67,
+				delta: 0,
+			},
+			claimEvidence: {
+				claims_verified: 0,
+				unsupported_claims: 1,
+				evidence_refs: ["test://sim-replay-case-b"],
+			},
+		});
+		expect(rejectedRec.recorded).toBe(false);
+		expect(store.peekText(wf.paths.ledgerPath)).toBe(ledgerAfterAccept);
+		const rejectedEntries = store.peekRejectedEntries(wf.paths.rejectedLogPath);
+		expect(rejectedEntries).toHaveLength(1);
+		expect(rejectedEntries[0]?.control_baseline?.baseline_type).toBe("heuristic");
+		expect(rejectedEntries[0]?.claim_evidence?.unsupported_claims).toBe(1);
+	});
 });

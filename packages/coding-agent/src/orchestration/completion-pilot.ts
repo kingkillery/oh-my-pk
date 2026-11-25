@@ -17,11 +17,13 @@ export type PilotCheck =
 export interface CompletionPilotInput {
 	readonly contract: ActiveTaskContractSnapshot;
 	readonly cwd: string;
-	/** Full commit ID for a clean candidate; dirty trees are not accepted. */
+	/** Full commit ID for a clean candidate (or base HEAD when allowDirtyTree is true). */
 	readonly revision: string;
 	readonly checks: readonly PilotCheck[];
 	readonly unresolvedBlockers?: readonly string[];
 	readonly timeoutMs?: number;
+	/** Opt-in mode: accept a dirty working tree pinned by a before/after SHA-256 workingTreeDigest. */
+	readonly allowDirtyTree?: boolean;
 }
 
 export interface CompletionPilotResult {
@@ -30,6 +32,8 @@ export interface CompletionPilotResult {
 	readonly contract: ActiveTaskContractSnapshot;
 	readonly workspace: string;
 	readonly observedAt: string;
+	readonly allowDirtyTree?: boolean;
+	readonly workingTreeDigest?: string;
 	readonly checks: readonly {
 		criterionId: string;
 		check: PilotCheck;
@@ -58,6 +62,25 @@ async function run(
 	}
 }
 
+async function runRaw(
+	command: readonly string[],
+	cwd: string,
+	timeoutMs: number,
+): Promise<{ code: number; bytes: Uint8Array }> {
+	const process = Bun.spawn([...command], { cwd, stdout: "pipe", stderr: "pipe" });
+	const timer = setTimeout(() => process.kill(), timeoutMs);
+	try {
+		const [buf, , code] = await Promise.all([
+			new Response(process.stdout).arrayBuffer(),
+			new Response(process.stderr).text(),
+			process.exited,
+		]);
+		return { code, bytes: new Uint8Array(buf) };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 async function candidateMatches(cwd: string, revision: string, timeoutMs: number): Promise<boolean> {
 	if (!/^[0-9a-f]{40}$/.test(revision)) return false;
 	try {
@@ -69,7 +92,56 @@ async function candidateMatches(cwd: string, revision: string, timeoutMs: number
 	}
 }
 
-/** Runs explicit checks against a clean commit and invalidates results if it changes. */
+/** Deterministic SHA-256 over HEAD + git diff HEAD + sorted untracked file contents. */
+export async function computeWorkingTreeDigest(
+	cwd: string,
+	revision: string,
+	timeoutMs: number,
+): Promise<string | null> {
+	if (!/^[0-9a-f]{40}$/.test(revision)) return null;
+	try {
+		const head = await run(["git", "rev-parse", "--verify", "HEAD"], cwd, timeoutMs);
+		if (head.code !== 0 || head.output !== revision) return null;
+
+		const diff = await runRaw(["git", "diff", "--binary", "HEAD"], cwd, timeoutMs);
+		if (diff.code !== 0) return null;
+
+		const untrackedRaw = await runRaw(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd, timeoutMs);
+		if (untrackedRaw.code !== 0) return null;
+
+		const untrackedPaths = new TextDecoder()
+			.decode(untrackedRaw.bytes)
+			.split("\0")
+			.filter(Boolean)
+			.sort();
+
+		const hasher = new Bun.CryptoHasher("sha256");
+		hasher.update(`HEAD:${revision}\n`);
+		hasher.update(`DIFF_LEN:${diff.bytes.byteLength}\n`);
+		hasher.update(diff.bytes);
+		hasher.update("\nUNTRACKED:\n");
+		for (const relPath of untrackedPaths) {
+			const absPath = await realpath(resolve(cwd, relPath));
+			const relCheck = relative(cwd, absPath);
+			if (
+				!relCheck ||
+				relCheck === ".." ||
+				relCheck.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+				isAbsolute(relCheck)
+			) {
+				return null;
+			}
+			const fileBytes = new Uint8Array(await Bun.file(absPath).arrayBuffer());
+			const fileDigest = new Bun.CryptoHasher("sha256").update(fileBytes).digest("hex");
+			hasher.update(`${relPath.replaceAll("\\", "/")}:${fileBytes.byteLength}:${fileDigest}\n`);
+		}
+		return hasher.digest("hex");
+	} catch {
+		return null;
+	}
+}
+
+/** Runs explicit checks against a clean commit (or pinned dirty workingTreeDigest) and invalidates if it changes. */
 export async function runCompletionPilot(input: CompletionPilotInput): Promise<CompletionPilotResult> {
 	const timeoutMs = input.timeoutMs ?? 30_000;
 	if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) throw new Error("Invalid pilot timeout");
@@ -88,7 +160,9 @@ export async function runCompletionPilot(input: CompletionPilotInput): Promise<C
 		)
 			throw new Error("Invalid artifact check");
 	}
-	const initial = await candidateMatches(root, input.revision, timeoutMs);
+	const allowDirtyTree = input.allowDirtyTree === true;
+	const initialDigest = allowDirtyTree ? await computeWorkingTreeDigest(root, input.revision, timeoutMs) : null;
+	const initial = allowDirtyTree ? initialDigest !== null : await candidateMatches(root, input.revision, timeoutMs);
 	const results: { criterionId: string; check: PilotCheck; status: "pass" | "fail" | "unproven"; detail: string }[] =
 		[];
 	const present = new Set<string>();
@@ -111,8 +185,10 @@ export async function runCompletionPilot(input: CompletionPilotInput): Promise<C
 						isAbsolute(rel)
 					)
 						throw new Error("Artifact outside candidate");
-					const tracked = await run(["git", "ls-files", "--error-unmatch", "--", rel], root, timeoutMs);
-					if (tracked.code !== 0) throw new Error("Artifact is not tracked");
+					if (!allowDirtyTree) {
+						const tracked = await run(["git", "ls-files", "--error-unmatch", "--", rel], root, timeoutMs);
+						if (tracked.code !== 0) throw new Error("Artifact is not tracked");
+					}
 					const digest = new Bun.CryptoHasher("sha256").update(await Bun.file(path).arrayBuffer()).digest("hex");
 					status = digest === check.sha256 ? "pass" : "fail";
 					detail = status === "pass" ? "Artifact digest matched" : "Artifact digest mismatch";
@@ -125,7 +201,10 @@ export async function runCompletionPilot(input: CompletionPilotInput): Promise<C
 		}
 		results.push({ criterionId: check.criterionId, check, status, detail });
 	}
-	const final = initial && (await candidateMatches(root, input.revision, timeoutMs));
+	const finalDigest = allowDirtyTree && initial ? await computeWorkingTreeDigest(root, input.revision, timeoutMs) : null;
+	const final = allowDirtyTree
+		? Boolean(initialDigest && finalDigest && initialDigest === finalDigest)
+		: initial && (await candidateMatches(root, input.revision, timeoutMs));
 	if (!final) {
 		present.clear();
 		for (const result of results) {
@@ -161,6 +240,7 @@ export async function runCompletionPilot(input: CompletionPilotInput): Promise<C
 		contract: input.contract,
 		workspace: root,
 		observedAt: new Date().toISOString(),
+		...(allowDirtyTree ? { allowDirtyTree: true, ...(initialDigest ? { workingTreeDigest: initialDigest } : {}) } : {}),
 		checks: results,
 		evaluation,
 	};

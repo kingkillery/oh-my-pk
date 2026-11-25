@@ -9,7 +9,9 @@ import type { CompletionGateInput } from "./completion-gate";
 import { type EvidenceKind, EvidenceLedger } from "./evidence-ledger";
 import type { ActiveTaskContractSnapshot } from "./task-contract";
 
-const VERIFICATION_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "read", "search", "grep", "eval", "find"]);
+// Bare read/search/grep/find calls inspect files but do not execute a verification
+// or test check; targeted_verification requires an observed command/eval result.
+const VERIFICATION_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "eval"]);
 const DELIVERABLE_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"write",
 	"edit",

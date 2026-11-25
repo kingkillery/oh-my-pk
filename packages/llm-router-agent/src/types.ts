@@ -422,6 +422,8 @@ export interface ToolRoutingTrainingHint {
 	namespace?: string;
 	phase: ToolUsePhase;
 	success: boolean | null;
+	downstreamSuccess?: boolean | null;
+	outcomeBasis?: "downstream_verified" | "tool_completion_only" | "tool_failed" | "pending";
 	contextPolicy:
 		| "metadata_only"
 		| "summary_only"
