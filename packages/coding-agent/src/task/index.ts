@@ -70,6 +70,7 @@ import {
 	delegatedIoToolNames,
 	isPathWithinWorkspace,
 } from "../session/delegated-io";
+import { isOrchestratorFusionActive } from "../session/fusion-router";
 import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/irc";
 import { formatBytes, formatDuration } from "../tools/render-utils";
@@ -109,7 +110,12 @@ import { loadOverallPlanReference } from "../plan-mode/plan-handoff";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { generateCommitMessage } from "../utils/commit-message-generator";
 import type { AssignmentVerifierRunners } from "./assignment-verifier";
-import { projectDelegatedIoResult, projectEvidenceDigest } from "./delegated-output";
+import {
+	formatCompactTaskReceipt,
+	projectDelegatedIoResult,
+	projectEvidenceDigest,
+	projectOrchestratorTaskReceipt,
+} from "./delegated-output";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { runSubprocess } from "./executor";
 import { generateTaskName } from "./name-generator";
@@ -2573,6 +2579,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					artifactManager: parentArtifactManager,
 					receipt: generatedReceipt,
 				});
+			} else if (isOrchestratorFusionActive(this.session.settings)) {
+				const projected = await projectOrchestratorTaskReceipt({
+					result,
+					artifactsDir: effectiveArtifactsDir,
+					artifactManager: parentArtifactManager,
+					mergeSummary,
+				});
+				result.compactReceiptText = projected.text;
 			}
 			return this.#buildResultPayload(result, projectAgentsDir, Date.now() - startTime, mergeSummary);
 		} catch (err) {
@@ -2600,6 +2614,20 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (result.delegatedIoKind) {
 			return {
 				content: [{ type: "text", text: result.output }],
+				details: { projectAgentsDir, results: [result], totalDurationMs, usage: result.usage },
+			};
+		}
+		if (isOrchestratorFusionActive(this.session.settings)) {
+			const receiptText =
+				result.compactReceiptText ??
+				formatCompactTaskReceipt({
+					result,
+					rawOutput: formatResultOutputFallback(result),
+					artifactRef: result.transcriptArtifact ?? `agent://${result.id}`,
+					mergeSummary,
+				}).output;
+			return {
+				content: [{ type: "text", text: receiptText }],
 				details: { projectAgentsDir, results: [result], totalDurationMs, usage: result.usage },
 			};
 		}

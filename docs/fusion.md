@@ -56,12 +56,12 @@ Use `/fusion` inside any interactive session to inspect, configure, and toggle F
 
 - **`/fusion on` / `/fusion off`**: Master toggle for Fusion.
 - **`/fusion status`**: Prints active Fusion mode, sidekick status, routing engine, and model pool.
-- **`/fusion mode <off|delegate|escalate|token-savings|autonomous>`**:
+- **`/fusion mode <off|delegate|escalate|token-savings|autonomous|orchestrator>`**:
   - `delegate`: Prompt-driven offloading to sidekick.
   - `escalate`: Cheap-first execution, escalating to frontier when tools fail or complex reasoning is needed.
   - `token-savings`: Aggressive cost minimization.
   - `autonomous`: Full self-directing sidekick and main agent pairing.
-
+  - `orchestrator`: Zero-latency deterministic pre-turn routing, cache-sticky fast orchestrator root, 1-failure progressive ladder climb across `fusion.modelPool` (with explicit `yield({ result: { escalate } })`), and `<= 1,200`-byte compact worker receipts backed by `artifact://`.
 ### Decision Routing Commands
 
 - **`/fusion decision on`** (or `/fusion --decision-mode on`):
@@ -107,7 +107,7 @@ All Fusion settings can be configured globally in `~/.ompk/agent/config.yml` or 
 | Key | Type | Default | Description |
 |:---|:---|:---|:---|
 | `fusion.enabled` | `boolean` | `false` | Master toggle for Fusion execution. |
-| `fusion.mode` | `enum` | `"escalate"` | Strategy mode (`off`, `delegate`, `escalate`, `token-savings`, `autonomous`). |
+| `fusion.mode` | `enum` | `"escalate"` | Strategy mode (`off`, `delegate`, `escalate`, `token-savings`, `autonomous`, `orchestrator`). |
 | `fusion.decisionRouting` | `boolean` | `false` | Routes the fusion pool through the decision model based on compaction summaries. |
 | `fusion.dynamicRouting` | `boolean` | `false` | Dynamic tier switching at compaction boundaries. |
 | `fusion.modelPool` | `array` | `[]` | List of `"<tier>=<selector>"` mappings (e.g. `["1=openai-codex/gpt-6.1-terra", "2=kimi-code/k3.1-pro"]`). |
@@ -128,3 +128,12 @@ In `token-savings` mode, `AgentSession` tracks per-model prompt-prefix token wat
 
 - **Delta-prefill break-even gate:** Below `fusion.tokenSavingsMinCacheContextTokens` (`16000`), continuing turns transition to `pi/task` immediately after `fusion.tokenSavingsDefaultCallLimit` calls. On deeper contexts with paid catalog models, switching requires `pi/task`'s expected cost over `max(fusion.tokenSavingsAmortizationCalls, openTodoCount)` steps (accounting for `cost.input`, `cost.cacheRead`, `cost.cacheWrite`, and each model's warm cached prefix delta) to beat staying on `default`. Models with `$0` catalog pricing (OAuth subscriptions, local/Colab endpoints) bypass price comparison so quota savings remain active.
 - **TTL-aware sticky `pi/task` retention:** Instead of unconditionally bouncing `pi/task -> default -> pi/task` on every prompt, rapid follow-up prompts within `fusion.tokenSavingsCacheTtlSeconds` (`300`s) on deep contexts stay sticky on `pi/task` while `pi/task` has run at most `fusion.tokenSavingsStickyMaxCalls` (`2`) calls since switching. `default` is restored automatically once cache TTL expires, context is below the floor, `fusion.tokenSavingsStickyMaxCalls` is `0`, or `fusion.escalateFailureStreak` escalates back to `default`. Once the `pi/task` tail is amortized, `default` is restored only when restoring it is at least as cheap as staying on `pi/task` over `fusion.tokenSavingsAmortizationCalls` steps; otherwise `pi/task` remains sticky until TTL expiry, failure-streak escalation, or a manual override.
+
+### Orchestrator Mode (`fusion.mode: "orchestrator"`)
+
+`orchestrator` mode drives the entire fast-path workflow from one toggle (`fusion.enabled`) and one ordered ladder (`fusion.modelPool`, falling back to `[pi/slow, pi/task, pi/smol]`):
+
+- **Zero-latency pre-turn routing:** Before token 1 of a root user turn, a deterministic classifier inspects file count, stack-trace/error signals, and hard/easy intent keywords without making any LLM call. On cold or small contexts (`< 16,000` tokens or expired cache TTL), easy prompts route to the fastest tier, default prompts route to the mid orchestrator tier, and hard/debugging prompts route straight to Tier 1.
+- **16k warm-cache sticky root:** Once the root prompt prefix reaches `fusion.tokenSavingsMinCacheContextTokens` (`16,000` tokens) within `fusion.tokenSavingsCacheTtlSeconds` (`300`s), the root stays sticky to preserve 100% prompt-cache hits. When hard reasoning arrives on a warm cache, Fusion injects a steering reminder to delegate architecture, root-cause debugging, or review to a Tier-1 `task` specialist (`oracle`, `plan`, or `reviewer`).
+- **1-failure progressive ladder climb + `ESCALATE` signal:** On the main thread, a single failed verification/tool cycle climbs one tier up `fusion.modelPool` (`Tier 5 -> 4 -> 3 -> 2 -> 1`). For `task` workers (`explore` -> Tier 5, `oracle`/`plan`/`reviewer` -> Tier 1, general `task` -> `[Tier 4, Tier 3, Tier 2, Tier 1]`), any failure or explicit `yield({ result: { escalate: "<reason>" } })` immediately spawns a fresh child on the next stronger tier with a `history://` recovery capsule.
+- **Compact 1.2 KB worker receipts:** Parent-facing `task` results are capped at `1,200` UTF-8 bytes with fenced code blocks > 12 lines elided and full output spilled to `artifact://`, while full worker output stays intact for TUI rendering. Warm sidekick subprocesses are skipped and legacy sidekick/compact controls are hidden from `/fusion` and `/fusion status`.

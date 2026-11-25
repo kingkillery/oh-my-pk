@@ -466,6 +466,10 @@ export interface BuildSystemPromptOptions {
 	fusionIoMinLines?: number;
 	/** Fusion autonomous mode: inject the planning-only root capability policy. */
 	fusionAutonomous?: boolean;
+	/** Fusion orchestrator mode: inject cache-sticky orchestrator and parallel worker guidance. */
+	fusionOrchestrator?: boolean;
+	/** Frontier (Tier 1) selector advertised in the fusion orchestrator guidance. */
+	orchestratorFrontierModel?: string;
 	/** Sidekick model selector advertised in the fusion delegation policy. */
 	sidekickModel?: string;
 	/** Allocated IRC id of the warm sidekick (may be "Sidekick-2" on a resumed session). */
@@ -532,7 +536,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		fusionEscalate = false,
 		fusionTokenSavings = false,
 		fusionAutonomous = false,
-		fusionIoDelegation = fusionTokenSavings || fusionAutonomous,
+		fusionOrchestrator = false,
+		orchestratorFrontierModel = "pi/slow",
+		fusionIoDelegation = fusionTokenSavings || fusionAutonomous || fusionOrchestrator,
 		fusionIoMinLines = 350,
 		sidekickModel = "pi/smol",
 		sidekickId = "Sidekick",
@@ -818,6 +824,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		fusionEscalate,
 		fusionTokenSavings,
 		fusionAutonomous,
+		fusionOrchestrator,
+		orchestratorFrontierModel,
 		fusionIoDelegation,
 		fusionIoMinLines,
 		sidekickModel,
@@ -838,6 +846,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 			["fusion-token-savings", fusionTokenSavings],
 			["fusion-autonomous", fusionAutonomous],
 			["bulk-work-delegation", fusionIoDelegation],
+			["fusion-orchestrator", fusionOrchestrator],
 			["fusion-sidekick", fusionSidekick],
 		] as const
 	).map(([tag, enabled]) => ({

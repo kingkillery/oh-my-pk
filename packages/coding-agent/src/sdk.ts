@@ -173,7 +173,13 @@ import {
 	isFusionIoDelegationActive,
 	resolveFusionIoMinLines,
 } from "./session/fusion-io-policy";
-import { isTokenSavingsFusionMode, parseFusionPoolEntries } from "./session/fusion-router";
+import {
+	isOrchestratorFusionActive,
+	isTokenSavingsFusionMode,
+	parseFusionPoolEntries,
+	resolveOrchestratorLadder,
+	resolveOrchestratorTierSlots,
+} from "./session/fusion-router";
 import {
 	type CustomMessage,
 	convertToLlm,
@@ -2755,6 +2761,9 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 					!simpleMode &&
 					settings.get("fusion.enabled") === true &&
 					settings.get("fusion.mode") === "autonomous",
+				fusionOrchestrator: agentKind === "main" && isOrchestratorFusionActive(settings),
+				orchestratorFrontierModel: resolveOrchestratorTierSlots(resolveOrchestratorLadder(settings)).frontier
+					.selector,
 				sidekickModel: settings.get("fusion.sidekickModel") || "pi/smol",
 				sidekickId,
 				secretsEnabled,

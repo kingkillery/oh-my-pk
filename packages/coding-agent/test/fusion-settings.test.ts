@@ -29,6 +29,7 @@ describe("fusion settings schema", () => {
 			"token-savings",
 			"savings",
 			"autonomous",
+			"orchestrator",
 		]);
 	});
 

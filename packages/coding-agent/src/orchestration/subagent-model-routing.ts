@@ -46,6 +46,11 @@ import {
 	type SubagentAliasRegistry,
 } from "../config/subagent-model-aliases";
 import { isFusionIoDelegationActive } from "../session/fusion-io-policy";
+import {
+	isOrchestratorFusionActive,
+	resolveOrchestratorLadder,
+	resolveOrchestratorTierSlots,
+} from "../session/fusion-router";
 
 /** Independent difficulty vocabulary for a fresh subagent spawn. Never aliased to {@link AgentTier}. */
 export type SubagentTaskDifficulty = "low" | "medium" | "high";
@@ -69,7 +74,8 @@ export type SubagentModelSelectionSource =
 	| "agent-definition"
 	| "parent-active"
 	| "session-default"
-	| "fusion-token-savings";
+	| "fusion-token-savings"
+	| "fusion-orchestrator";
 
 /**
  * Machine-readable provenance for a resolved (or attempted) subagent model
@@ -454,6 +460,79 @@ function resolveTokenSavingsFallbackRoute(request: SubagentModelRoutingRequest):
 	};
 }
 
+function buildOrchestratorClimbSelectors(
+	ladder: readonly { tier: number; selector: string }[],
+	startAtSecondFromBottom: boolean,
+): string[] {
+	const slots = resolveOrchestratorTierSlots(ladder);
+	const startIdx = startAtSecondFromBottom && ladder.length >= 4 ? ladder.length - 2 : ladder.length - 1;
+	const selectors: string[] = [];
+	for (let i = startIdx; i >= 0; i--) {
+		const sel = ladder[i]?.selector;
+		if (sel && !selectors.includes(sel)) selectors.push(sel);
+	}
+	if (!selectors.includes(slots.frontier.selector)) {
+		selectors.push(slots.frontier.selector);
+	}
+	return selectors;
+}
+
+/**
+ * Under `fusion.mode: "orchestrator"`, route subagents across `fusion.modelPool`:
+ * - `task.agentModelOverrides[agent]` still wins.
+ * - Browser agents -> browser models.
+ * - Planning/intelligence specialists (`oracle`, `plan`, `reviewer`, etc.) -> Tier 1 frontier.
+ * - Low-key context scouts (`explore`, etc.) -> fastest tier (bottom of ladder).
+ * - General `task`, `evidence-digest`, and `code-write` -> bottom-up climb list across the ladder
+ *   (starting at Tier 4 on a 4-5 tier pool, or bottom tier on smaller pools, climbing to Tier 1).
+ */
+function resolveOrchestratorFallbackRoute(request: SubagentModelRoutingRequest): SubagentModelRoutingResult {
+	const { agentName, settings } = request;
+	const settingsOverride = agentName ? settings.get("task.agentModelOverrides")[agentName] : undefined;
+	const overridePatterns = resolveConfiguredModelPatterns(settingsOverride, settings);
+	if (overridePatterns.length > 0) {
+		return {
+			ok: true,
+			decision: Object.freeze({
+				source: "agent-override",
+				candidateSelectors: freezeList(overridePatterns),
+			}),
+			modelPatterns: freezeList(overridePatterns),
+		};
+	}
+
+	const ladder = resolveOrchestratorLadder(settings);
+	const slots = resolveOrchestratorTierSlots(ladder);
+	let targetSelectors: string[];
+	if (request.taskKind === "evidence-digest" || request.taskKind === "code-write") {
+		targetSelectors = buildOrchestratorClimbSelectors(ladder, true);
+	} else if (isBrowserAgent(agentName)) {
+		targetSelectors = ["pi/browser-control", "pi/browser-operation"];
+	} else if (isPlanningOrIntelligenceAgent(agentName)) {
+		targetSelectors = [slots.frontier.selector];
+	} else if (isLowKeyOrContextAgent(agentName)) {
+		targetSelectors = [slots.fast.selector];
+	} else {
+		targetSelectors = buildOrchestratorClimbSelectors(ladder, true);
+	}
+
+	const resolved = targetSelectors.flatMap(sel => resolveConfiguredModelPatterns(sel, settings));
+	const dedupedResolved: string[] = [];
+	for (const sel of resolved.length > 0 ? resolved : targetSelectors) {
+		if (!dedupedResolved.includes(sel)) dedupedResolved.push(sel);
+	}
+
+	return {
+		ok: true,
+		decision: Object.freeze({
+			source: "fusion-orchestrator",
+			...(request.taskKind === "evidence-digest" ? { role: "task" as const } : {}),
+			candidateSelectors: freezeList(dedupedResolved),
+		}),
+		modelPatterns: freezeList(targetSelectors),
+	};
+}
+
 /**
  * Resolve one subagent spawn's model route. Pure and synchronous; performs no
  * allocation. `requestedModel` wins over `requestedDifficulty`, which wins
@@ -473,6 +552,10 @@ export function resolveSubagentModelRouting(request: SubagentModelRoutingRequest
 
 	if (requestedDifficulty) {
 		return resolveDifficultyRoute(requestedDifficulty, settings, modelRegistry);
+	}
+
+	if (isOrchestratorFusionActive(settings)) {
+		return resolveOrchestratorFallbackRoute(request);
 	}
 
 	if (isFusionIoDelegationActive(settings)) {

@@ -92,6 +92,7 @@ const ROUTING_SOURCE_LABEL: Partial<Record<SubagentModelSelectionSource, string>
 	"agent-definition": "agent-default",
 	"parent-active": "parent",
 	"fusion-token-savings": "fusion-savings",
+	"fusion-orchestrator": "fusion-orch",
 };
 
 function formatRoutingBadgeContext(routing: SubagentModelRoutingDecision): string | undefined {

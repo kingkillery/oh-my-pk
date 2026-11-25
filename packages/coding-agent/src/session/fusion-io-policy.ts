@@ -8,7 +8,7 @@ export function isFusionIoDelegationActive(settings: FusionIoSettings): boolean 
 	return (
 		settings.get("fusion.enabled") === true &&
 		settings.get("fusion.ioDelegation.enabled") !== false &&
-		(mode === "token-savings" || mode === "savings" || mode === "autonomous")
+		(mode === "token-savings" || mode === "savings" || mode === "autonomous" || mode === "orchestrator")
 	);
 }
 

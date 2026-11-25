@@ -17,7 +17,8 @@ export type AssignmentFailureClass =
 	| "timeout"
 	| "acceptance"
 	| "liveness"
-	| "tool_discipline";
+	| "tool_discipline"
+	| "escalate";
 
 export interface RecoveryBudgets {
 	readonly maxRequests: number;
@@ -321,5 +322,107 @@ export function toFusionRecoveryRetryInput(
 		capsule: decision.capsule,
 		attempt: decision.attempt,
 		suppressedProviders: Object.freeze([...decision.suppressedProviders]),
+	});
+}
+
+export interface OrderedLadderRecoveryInput {
+	readonly orderedSelectors: readonly string[];
+	readonly eligible: readonly SpawnRouteCandidate[];
+	readonly previousAttempts: readonly RecoveryAttempt[];
+	readonly suppressedProviders?: readonly string[];
+	readonly failedChildId: string;
+	readonly failure: RecoveryFailureFacts;
+	readonly contract: RecoveryContractRef;
+	readonly profileSnapshotRefs?: readonly string[];
+	readonly verifiedArtifactRefs?: readonly string[];
+	readonly verifiedPatchRefs?: readonly string[];
+}
+
+function matchesCandidateSelector(candidate: SpawnRouteCandidate, selector: string): boolean {
+	if (candidate.selector === selector) return true;
+	if (!candidate.provider || !candidate.modelId) return false;
+	const identity = `${candidate.provider}/${candidate.modelId}`;
+	return selector === identity || selector.startsWith(`${identity}:`);
+}
+
+/**
+ * Deterministic 1-failure ordered ladder climb for Fusion orchestrator workers.
+ * Advances strictly forward through `orderedSelectors` (weakest -> strongest),
+ * skipping suppressed providers and already-attempted selectors.
+ */
+export function nextOrderedLadderRecoveryAttempt(input: OrderedLadderRecoveryInput): RecoveryDecision {
+	const syntheticPolicyInput: RecoveryPolicyInput = {
+		workClass: "mechanical",
+		eligible: input.eligible,
+		previousAttempts: input.previousAttempts,
+		suppressedProviders: input.suppressedProviders,
+		outcome: {
+			terminal: true,
+			failedChildId: input.failedChildId,
+			failure: input.failure,
+		},
+		requestFallbackRemaining: false,
+		contract: input.contract,
+		profileSnapshotRefs: input.profileSnapshotRefs,
+		verifiedArtifactRefs: input.verifiedArtifactRefs,
+		verifiedPatchRefs: input.verifiedPatchRefs,
+	};
+	const capsule = buildCapsule(syntheticPolicyInput, input.failure);
+	const suppressedProviders = nextSuppressedProviders(syntheticPolicyInput, input.failure);
+	const suppressedSet = new Set(suppressedProviders);
+	const maxAttempts = Math.min(input.orderedSelectors.length, 5);
+	if (input.previousAttempts.length >= maxAttempts) {
+		return stop("recovery_exhausted", capsule, suppressedProviders);
+	}
+
+	const usedSelectors = new Set(input.previousAttempts.map(attempt => attempt.selector));
+	let lastIdx = -1;
+	for (const attempt of input.previousAttempts) {
+		const idx = input.orderedSelectors.findIndex(sel => {
+			if (sel === attempt.selector) return true;
+			if (!attempt.provider || !attempt.modelId) return false;
+			const identity = `${attempt.provider}/${attempt.modelId}`;
+			return sel === identity || sel.startsWith(`${identity}:`);
+		});
+		if (idx > lastIdx) lastIdx = idx;
+	}
+
+	let chosen: SpawnRouteCandidate | undefined;
+	for (let k = lastIdx + 1; k < input.orderedSelectors.length; k++) {
+		const sel = input.orderedSelectors[k];
+		const candidate = input.eligible.find(c => matchesCandidateSelector(c, sel));
+		if (!candidate) continue;
+		if (usedSelectors.has(candidate.selector)) continue;
+		const provider = providerKey(candidate);
+		if (provider && suppressedSet.has(provider)) continue;
+		chosen = candidate;
+		break;
+	}
+
+	if (!chosen) {
+		return stop("recovery_exhausted", capsule, suppressedProviders);
+	}
+
+	const budgets = Object.freeze({
+		maxRequests: chosen.maxRequests,
+		maxRuntimeMs: chosen.maxRuntimeMs,
+	});
+	const attempt: RecoveryAttempt = Object.freeze({
+		attempt: input.previousAttempts.length + 1,
+		selector: chosen.selector,
+		tier: chosen.tier,
+		provider: chosen.provider ?? providerKey(chosen),
+		modelId: chosen.modelId,
+		budgets,
+		maxRequests: budgets.maxRequests,
+		maxRuntimeMs: budgets.maxRuntimeMs,
+		freshChild: true as const,
+	});
+
+	return Object.freeze({
+		action: "retry",
+		attempt,
+		capsule,
+		suppressedProviders,
 	});
 }

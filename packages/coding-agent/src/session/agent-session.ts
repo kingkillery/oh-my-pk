@@ -370,6 +370,7 @@ import { getAutonomousRootToolBlockReason, isAutonomousRoot, resolveFusionIoMinL
 import {
 	classifyFusionRoute,
 	classifyFusionRouteViaDecision,
+	classifyPreTurnOrchestratorRoute,
 	DEFAULT_FUSION_TOKEN_SAVINGS_AMORTIZATION_CALLS,
 	DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS,
 	DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS,
@@ -381,10 +382,15 @@ import {
 	type FusionRoute,
 	getFusionModelWatermarkKey,
 	isFusionAutoDowngradedRoute,
+	isOrchestratorFusionActive,
+	isOrchestratorFusionMode,
 	isTokenSavingsFusionMode,
 	nextFusionToolFailureStreak,
 	parseFusionPoolEntries,
 	resolveEffectiveFusionRoute,
+	resolveNextFusionClimbSelector,
+	resolveOrchestratorLadder,
+	resolveOrchestratorTierSlots,
 	resolveSidekickRoute,
 	shouldRunFusionCompactionSwitch,
 } from "./fusion-router";
@@ -6884,6 +6890,9 @@ export class AgentSession {
 				text = expandSlashCommand(text, this.#slashCommands);
 			}
 		}
+		if (!this.isStreaming && userInitiated && this.#agentKind === "main") {
+			await this.#applyFusionOrchestratorPreTurn(text);
+		}
 
 		// Expand file-based prompt templates if requested
 		const expandedText = expandPromptTemplates ? expandPromptTemplate(text, [...this.#promptTemplates]) : text;
@@ -10968,7 +10977,9 @@ export class AgentSession {
 	 */
 	async #maybeEscalateFusionOnFailureStreak(): Promise<void> {
 		try {
-			const threshold = this.settings.get("fusion.escalateFailureStreak");
+			const orchestratorActive = isOrchestratorFusionActive(this.settings);
+			const configuredThreshold = this.settings.get("fusion.escalateFailureStreak");
+			const threshold = orchestratorActive ? (configuredThreshold === 0 ? 0 : 1) : configuredThreshold;
 			if (typeof threshold !== "number" || threshold <= 0) return;
 			if (this.#fusionToolFailureStreak < threshold) return;
 			if (this.settings.get("task.simpleMode")) return;
@@ -10985,16 +10996,36 @@ export class AgentSession {
 				logger.debug("Fusion dynamic routing disabled after manual model switch");
 				return;
 			}
-			if (!this.#modelRegistry.hasConfiguredAuth(baseModel)) return;
+			let nextModel: Model = baseModel;
+			if (orchestratorActive) {
+				const availableModels = this.#modelRegistry.getAvailable();
+				const resolveModel = (sel: string): Model | undefined => {
+					if (availableModels.length === 0) return undefined;
+					return (
+						resolveModelRoleValue(sel, availableModels, {
+							settings: this.settings,
+							matchPreferences: getModelMatchPreferences(this.settings),
+							modelRegistry: this.#modelRegistry,
+						}).model ?? resolveModelOverride([sel], this.#modelRegistry, this.settings).model
+					);
+				};
+				nextModel = resolveNextFusionClimbSelector({
+					currentModel,
+					ladder: resolveOrchestratorLadder(this.settings),
+					resolveModel,
+					baseModel,
+				});
+			}
+			if (!this.#modelRegistry.hasConfiguredAuth(nextModel)) return;
 			this.#fusionToolFailureStreak = 0;
-			await this.setModelTemporary(baseModel, undefined, { ephemeral: true });
+			await this.setModelTemporary(nextModel, undefined, { ephemeral: true });
 			this.#fusionTokenSavingsTaskCallsSinceSwitch = 0;
 			this.#fusionTokenSavingsLastSwitchAt = undefined;
-			this.#fusionLastAutoModel = this.model ?? baseModel;
+			this.#fusionLastAutoModel = this.model ?? nextModel;
 			logger.debug("Fusion failure-streak escalation", {
 				threshold,
 				from: `${currentModel.provider}/${currentModel.id}`,
-				to: `${baseModel.provider}/${baseModel.id}`,
+				to: `${nextModel.provider}/${nextModel.id}`,
 			});
 		} catch (error) {
 			logger.warn("Fusion failure-streak escalation failed", { error: String(error) });
@@ -11117,6 +11148,81 @@ export class AgentSession {
 		this.#fusionTokenSavingsLastSwitchAt = undefined;
 	}
 
+	async #applyFusionOrchestratorPreTurn(promptText: string): Promise<void> {
+		if (this.#agentKind !== "main") return;
+		if (!isOrchestratorFusionActive(this.settings)) return;
+		const currentModel = this.model;
+		const ladder = resolveOrchestratorLadder(this.settings);
+		const currentContextTokens = Math.max(
+			this.#fusionTokenSavingsLastContextTokens,
+			this.getContextUsage()?.tokens ?? 0,
+		);
+		const configuredMinTokens = this.settings.get("fusion.tokenSavingsMinCacheContextTokens");
+		const minStickyCacheTokens =
+			typeof configuredMinTokens === "number" && Number.isFinite(configuredMinTokens) && configuredMinTokens >= 0
+				? Math.floor(configuredMinTokens)
+				: DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS;
+		const decision = classifyPreTurnOrchestratorRoute({
+			promptText,
+			ladder,
+			routingDisabled: this.#fusionRoutingDisabled,
+			currentModel,
+			lastAutoModel: this.#fusionLastAutoModel,
+			currentContextTokens,
+			currentModelWatermark: currentModel
+				? this.#fusionModelWatermarks.get(getFusionModelWatermarkKey(currentModel))
+				: undefined,
+			minStickyCacheTokens,
+			cacheTtlMs: this.#resolveFusionTokenSavingsCacheTtlMs(),
+			now: Date.now(),
+		});
+
+		if (decision.action === "manual-override") {
+			this.#fusionRoutingDisabled = true;
+			logger.debug("Fusion orchestrator routing disabled after manual model switch");
+			return;
+		}
+		if (decision.action === "keep-sticky") {
+			if (decision.steerTier1Delegation) {
+				await this.steer(
+					"<system-reminder>Hard reasoning/debugging detected while orchestrator prompt cache is warm: keep orchestration here and delegate root-cause analysis, architecture, or final review to a `task` specialist (`oracle`, `plan`, or `reviewer`) on Tier 1.</system-reminder>",
+				);
+			}
+			return;
+		}
+		if (decision.action !== "switch" || !decision.targetSelector) return;
+
+		const availableModels = this.#modelRegistry.getAvailable();
+		const resolveSelector = (sel: string): Model | undefined => {
+			if (availableModels.length === 0) return undefined;
+			return (
+				resolveModelRoleValue(sel, availableModels, {
+					settings: this.settings,
+					matchPreferences: getModelMatchPreferences(this.settings),
+					modelRegistry: this.#modelRegistry,
+				}).model ?? resolveModelOverride([sel], this.#modelRegistry, this.settings).model
+			);
+		};
+
+		const targetModel = resolveSelector(decision.targetSelector);
+		if (!targetModel || !this.#modelRegistry.hasConfiguredAuth(targetModel)) {
+			logger.debug("Fusion orchestrator pre-turn target unresolved or unauthenticated", {
+				reason: decision.reason,
+				targetSelector: decision.targetSelector,
+			});
+			return;
+		}
+
+		const frontierModel = resolveSelector(resolveOrchestratorTierSlots(ladder).frontier.selector);
+		this.#fusionBaseModel ??= frontierModel ?? currentModel;
+		if (!currentModel || !modelsAreEqual(targetModel, currentModel)) {
+			await this.setModelTemporary(targetModel, undefined, { ephemeral: true });
+			this.#fusionLastAutoModel = this.model ?? targetModel;
+		} else {
+			this.#fusionLastAutoModel ??= currentModel;
+		}
+	}
+
 	async #maybeApplyFusionTokenSavingsLimit(
 		messages: AgentMessage[],
 		signal?: AbortSignal,
@@ -11127,7 +11233,8 @@ export class AgentSession {
 			if (this.#agentKind !== "main") return;
 			if (this.settings.get("task.simpleMode")) return;
 			if (this.settings.get("fusion.enabled") !== true) return;
-			if (!isTokenSavingsFusionMode(this.settings.get("fusion.mode"))) return;
+			const mode = this.settings.get("fusion.mode");
+			if (!isTokenSavingsFusionMode(mode) && !isOrchestratorFusionMode(mode)) return;
 
 			const currentModel = this.model;
 			if (!currentModel) return;
@@ -11143,6 +11250,7 @@ export class AgentSession {
 				this.#recordFusionModelWatermark(currentModel, currentContextTokens, now);
 			}
 
+			if (!isTokenSavingsFusionMode(mode)) return;
 			if (this.#fusionRoutingDisabled) return;
 			if (this.#fusionLastAutoModel && !modelsAreEqual(currentModel, this.#fusionLastAutoModel)) {
 				this.#fusionRoutingDisabled = true;

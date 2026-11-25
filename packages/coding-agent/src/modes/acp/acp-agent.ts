@@ -131,7 +131,7 @@ const ROUTING_CONFIG_ID = "routing";
 const FUSION_OFF = "off";
 const ROUTING_STATIC = "static";
 const ROUTING_DYNAMIC = "dynamic";
-const ACP_FUSION_MODES = ["off", "delegate", "escalate", "token-savings", "autonomous"] as const;
+const ACP_FUSION_MODES = ["off", "delegate", "escalate", "token-savings", "autonomous", "orchestrator"] as const;
 type AcpFusionMode = (typeof ACP_FUSION_MODES)[number];
 
 function isAcpFusionMode(value: string): value is AcpFusionMode {
@@ -2054,16 +2054,18 @@ export class AcpAgent implements Agent {
 			session.settings.override("fusion.mode", normalized);
 		}
 		await session.refreshBaseSystemPrompt?.();
-		await fusionSidekick.ensureFusionSidekick(
-			{
-				session,
-				settings: session.settings,
-				sessionManager: session.sessionManager,
-				mcpManager: record.mcpManager,
-				eventBus: undefined,
-			},
-			{},
-		);
+		if (normalized !== "orchestrator") {
+			await fusionSidekick.ensureFusionSidekick(
+				{
+					session,
+					settings: session.settings,
+					sessionManager: session.sessionManager,
+					mcpManager: record.mcpManager,
+					eventBus: undefined,
+				},
+				{},
+			);
+		}
 	}
 
 	async #setRoutingById(record: ManagedSessionRecord, value: string): Promise<void> {

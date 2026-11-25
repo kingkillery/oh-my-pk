@@ -126,7 +126,8 @@ async function ensureFusionSidekickOnce(host: FusionSidekickHost, options: { for
 		const fusionEnabled =
 			!settings.get("task.simpleMode") &&
 			settings.get("fusion.enabled") === true &&
-			settings.get("fusion.mode") !== "off";
+			settings.get("fusion.mode") !== "off" &&
+			settings.get("fusion.mode") !== "orchestrator";
 		if (!fusionEnabled) {
 			if (options.force) session.setFusionSidekickId(undefined);
 			return;
@@ -181,7 +182,8 @@ export async function reconcileFusionSidekickModel(host: FusionSidekickHost): Pr
 	if (
 		settings.get("task.simpleMode") ||
 		settings.get("fusion.enabled") !== true ||
-		settings.get("fusion.mode") === "off"
+		settings.get("fusion.mode") === "off" ||
+		settings.get("fusion.mode") === "orchestrator"
 	) {
 		return { note: "", sidekickLive: false };
 	}

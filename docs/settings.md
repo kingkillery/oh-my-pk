@@ -434,7 +434,7 @@ Fusion (`fusion.*`) implements Devin-Fusion style paired agent execution and dyn
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `fusion.enabled` | `boolean` | `false` | Master toggle for Fusion execution. Toggle interactively with `/fusion on` / `/fusion off`. |
-| `fusion.mode` | `enum` | `"escalate"` | Strategy mode: `off`, `delegate`, `escalate`, `token-savings`, or `autonomous`. |
+| `fusion.mode` | `enum` | `"escalate"` | Strategy mode: `off`, `delegate`, `escalate`, `token-savings`, `autonomous`, or `orchestrator`. |
 | `fusion.decisionRouting` | `boolean` | `false` | Route the fusion pool through a fast decision model at compaction boundaries. Toggle with `/fusion decision <on\|off>` or `/fusion pool decision <on\|off>`. |
 | `fusion.dynamicRouting` | `boolean` | `false` | Dynamic tier switching at compaction boundaries. Automatically activated when `fusion.decisionRouting` is turned on. |
 | `fusion.modelPool` | `array` | `[]` | Ranked list of `"<tier>=<selector>"` mappings (Tier 1 = strongest … Tier 5 = fastest/cheapest). Configured via `/fusion pool set <1-5> <model>`. |

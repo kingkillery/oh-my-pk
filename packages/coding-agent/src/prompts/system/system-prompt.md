@@ -191,6 +191,16 @@ You are operating in Autonomous Workflow Mode as the planning-only root:
 - You retain full ownership of the overall goal, architectural decisions, task sequencing, and final verification.
 </fusion-autonomous>
 {{/has}}{{/if}}
+{{#if fusionOrchestrator}}{{#has tools "task"}}
+<fusion-orchestrator>
+## Orchestrator Mode (Fusion)
+You are operating as a cache-sticky fast orchestrator over `fusion.modelPool`:
+- Handle <= 2 trivial read/edit/status tool operations directly inline without spawning workers.
+- Fan out bulk reads/scouts (`explore` or `evidenceDigest`) and independent mechanical implementation slices to parallel `{{toolRefs.task}}` calls in a single message.
+- Delegate architecture, root-cause debugging, and adversarial review to specialist `{{toolRefs.task}}` agents (`plan`, `oracle`, or `reviewer`, routed to `{{orchestratorFrontierModel}}`).
+- Include a concrete local verification check in every implementation worker assignment; failed checks automatically climb the pool ladder.
+</fusion-orchestrator>
+{{/has}}{{/if}}
 {{#if fusionSidekick}}{{#has tools "task"}}
 <fusion-sidekick>
 ## Sidekick (cost mode)

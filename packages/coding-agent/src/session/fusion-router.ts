@@ -39,9 +39,24 @@ export function isTokenSavingsFusionActive(settings: { get(key: string): unknown
 	);
 }
 
+/** Whether the given mode string indicates Fusion orchestrator mode. */
+export function isOrchestratorFusionMode(mode: string | undefined): boolean {
+	return mode === "orchestrator";
+}
+
+/** Whether Fusion orchestrator mode is active on the given settings. */
+export function isOrchestratorFusionActive(settings: { get(key: string): unknown }): boolean {
+	return (
+		settings.get("fusion.enabled") === true &&
+		settings.get("task.simpleMode") !== true &&
+		isOrchestratorFusionMode(settings.get("fusion.mode") as string | undefined)
+	);
+}
+
 export interface FusionAutoRouteState {
 	routingDisabled: boolean;
 	baseModel: Model | undefined;
+	frontierModel?: Model | undefined;
 	lastAutoModel: Model | undefined;
 	currentModel: Model | undefined;
 }
@@ -52,9 +67,10 @@ export interface FusionAutoRouteState {
  * frontier model or a manual choice they would pre-load a later streak.
  */
 export function isFusionAutoDowngradedRoute(state: FusionAutoRouteState): boolean {
-	const { routingDisabled, baseModel, lastAutoModel, currentModel } = state;
-	if (routingDisabled || !baseModel || !lastAutoModel || !currentModel) return false;
-	return !modelsAreEqual(baseModel, currentModel) && modelsAreEqual(lastAutoModel, currentModel);
+	const { routingDisabled, baseModel, frontierModel, lastAutoModel, currentModel } = state;
+	const referenceModel = frontierModel ?? baseModel;
+	if (routingDisabled || !referenceModel || !lastAutoModel || !currentModel) return false;
+	return !modelsAreEqual(referenceModel, currentModel) && modelsAreEqual(lastAutoModel, currentModel);
 }
 
 /**
@@ -172,6 +188,37 @@ export function parseFusionPoolEntries(entries: readonly string[]): FusionPoolTi
 /** Serialize pool tiers back to `fusion.modelPool` entries. */
 export function formatFusionPoolEntries(pool: readonly FusionPoolTier[]): string[] {
 	return [...pool].sort((a, b) => a.tier - b.tier).map(({ tier, selector }) => `${tier}=${selector}`);
+}
+
+const DEFAULT_ORCHESTRATOR_LADDER: readonly FusionPoolTier[] = [
+	{ tier: 1, selector: "pi/slow" },
+	{ tier: 3, selector: "pi/task" },
+	{ tier: 5, selector: "pi/smol" },
+];
+
+/**
+ * Resolve the ordered orchestrator ladder from `fusion.modelPool` (tier 1 strongest -> tier 5 fastest).
+ * Falls back to `[pi/slow, pi/task, pi/smol]` when fewer than 2 pool entries are configured.
+ */
+export function resolveOrchestratorLadder(settings: { get(key: string): unknown }): FusionPoolTier[] {
+	const rawPool = settings.get("fusion.modelPool");
+	const entries = Array.isArray(rawPool) ? rawPool.filter((v): v is string => typeof v === "string") : [];
+	const parsed = parseFusionPoolEntries(entries);
+	if (parsed.length >= 2) return parsed;
+	return DEFAULT_ORCHESTRATOR_LADDER.map(entry => ({ ...entry }));
+}
+
+/** Derive frontier (Tier 1), default orchestrator (mid), and fast (bottom) slots from an ordered ladder. */
+export function resolveOrchestratorTierSlots(ladder: readonly FusionPoolTier[]): {
+	frontier: FusionPoolTier;
+	orchestrator: FusionPoolTier;
+	fast: FusionPoolTier;
+} {
+	const effective = ladder.length > 0 ? ladder : DEFAULT_ORCHESTRATOR_LADDER;
+	const frontier = effective[0];
+	const fast = effective[effective.length - 1];
+	const orchestrator = effective.length >= 3 ? effective[Math.floor(effective.length / 2)] : fast;
+	return { frontier, orchestrator, fast };
 }
 
 /**
@@ -738,4 +785,166 @@ export function decideFusionTokenSavingsTurnStart(options: {
 		return { action: "restore-default", reason: "tail-amortized" };
 	}
 	return { action: "keep-sticky-task", reason: "sticky-default-cold" };
+}
+
+export interface OrchestratorPreTurnInput {
+	promptText: string;
+	ladder: readonly FusionPoolTier[];
+	routingDisabled: boolean;
+	currentModel?: Pick<Model<Api>, "provider" | "id">;
+	lastAutoModel?: Pick<Model<Api>, "provider" | "id">;
+	currentContextTokens: number;
+	currentModelWatermark?: FusionModelPrefixWatermark;
+	minStickyCacheTokens?: number;
+	cacheTtlMs?: number;
+	now: number;
+}
+
+export interface OrchestratorPreTurnDecision {
+	action: "noop" | "manual-override" | "keep-sticky" | "switch";
+	reason:
+		| "routing-disabled"
+		| "manual-override"
+		| "empty-prompt"
+		| "sticky-warm-cache"
+		| "cold-hard-tier1"
+		| "cold-easy-fast"
+		| "cold-default-orchestrator";
+	targetSelector?: string;
+	targetTier?: number;
+	steerTier1Delegation: boolean;
+	signals: {
+		fileCount: number;
+		hasErrorSignal: boolean;
+		hasHardIntent: boolean;
+		isEasyIntent: boolean;
+	};
+}
+
+const ORCHESTRATOR_PATH_RE = /\b(?:[A-Za-z]:[\\/]|(?:\.{1,2}[\\/])?[\w.-]+[\\/])[\w./\\-]+\.[A-Za-z0-9]{1,8}\b/g;
+const ORCHESTRATOR_BARE_FILE_RE = /\b[\w-]+\.(?:ts|tsx|js|mjs|cjs|py|rs|go|json|ya?ml|md|sql|sh)\b/g;
+const ORCHESTRATOR_ERROR_RE =
+	/(?:\b(?:TypeError|ReferenceError|SyntaxError|RangeError|Traceback|Exception|segfault|panic|ENOENT|EACCES|FAIL(?:ED)?|exit code [1-9])\b|\bError:|^\s+at\s+\S+\s+\()/m;
+const ORCHESTRATOR_HARD_INTENT_RE =
+	/\b(?:architect(?:ure|ural)?|root[- ]cause|race condition|deadlock|security audit|threat model|redesign|trade-?offs?|deep dive|investigate why)\b/i;
+const ORCHESTRATOR_EASY_INTENT_RE =
+	/\b(?:typo|rename|bump|format|lint|what is|where is|list|count|open|show|status|toggle|set)\b/i;
+
+function countDistinctPromptFiles(promptText: string): number {
+	const files = new Set<string>();
+	const stripped = promptText.replace(ORCHESTRATOR_PATH_RE, match => {
+		files.add(match.toLowerCase());
+		return " ";
+	});
+	for (const match of stripped.matchAll(ORCHESTRATOR_BARE_FILE_RE)) {
+		files.add(match[0].toLowerCase());
+	}
+	return files.size;
+}
+
+/**
+ * Deterministic, zero-latency pre-turn router for `fusion.mode: "orchestrator"`.
+ * Preserves hot prompt caches (>= 16k tokens within TTL) on the orchestrator root
+ * and steers Tier-1 delegation when hard reasoning arrives on a warm cache.
+ * Pure — exported for tests.
+ */
+export function classifyPreTurnOrchestratorRoute(input: OrchestratorPreTurnInput): OrchestratorPreTurnDecision {
+	const trimmed = input.promptText.trim();
+	const fileCount = countDistinctPromptFiles(input.promptText);
+	const hasErrorSignal = ORCHESTRATOR_ERROR_RE.test(input.promptText);
+	const hasHardIntent = fileCount >= 5 || ORCHESTRATOR_HARD_INTENT_RE.test(input.promptText);
+	const isEasyIntent =
+		!hasErrorSignal &&
+		!hasHardIntent &&
+		fileCount <= 2 &&
+		trimmed.length <= 600 &&
+		ORCHESTRATOR_EASY_INTENT_RE.test(trimmed);
+	const signals = { fileCount, hasErrorSignal, hasHardIntent, isEasyIntent };
+
+	if (input.routingDisabled) {
+		return { action: "noop", reason: "routing-disabled", steerTier1Delegation: false, signals };
+	}
+	if (
+		input.lastAutoModel &&
+		input.currentModel &&
+		(input.lastAutoModel.provider !== input.currentModel.provider || input.lastAutoModel.id !== input.currentModel.id)
+	) {
+		return { action: "manual-override", reason: "manual-override", steerTier1Delegation: false, signals };
+	}
+	if (!trimmed) {
+		return { action: "noop", reason: "empty-prompt", steerTier1Delegation: false, signals };
+	}
+
+	const minTokens = input.minStickyCacheTokens ?? DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS;
+	const warm = computeFusionWarmPrefixTokens({
+		currentContextTokens: input.currentContextTokens,
+		watermark: input.currentModelWatermark,
+		now: input.now,
+		cacheTtlMs: input.cacheTtlMs,
+	});
+	if (input.currentContextTokens >= minTokens && warm.withinTtl) {
+		return {
+			action: "keep-sticky",
+			reason: "sticky-warm-cache",
+			steerTier1Delegation: hasErrorSignal || hasHardIntent,
+			signals,
+		};
+	}
+
+	const slots = resolveOrchestratorTierSlots(input.ladder);
+	if (hasErrorSignal || hasHardIntent) {
+		return {
+			action: "switch",
+			reason: "cold-hard-tier1",
+			targetSelector: slots.frontier.selector,
+			targetTier: slots.frontier.tier,
+			steerTier1Delegation: false,
+			signals,
+		};
+	}
+	if (isEasyIntent) {
+		return {
+			action: "switch",
+			reason: "cold-easy-fast",
+			targetSelector: slots.fast.selector,
+			targetTier: slots.fast.tier,
+			steerTier1Delegation: false,
+			signals,
+		};
+	}
+	return {
+		action: "switch",
+		reason: "cold-default-orchestrator",
+		targetSelector: slots.orchestrator.selector,
+		targetTier: slots.orchestrator.tier,
+		steerTier1Delegation: false,
+		signals,
+	};
+}
+
+/**
+ * Step up one tier on the ordered orchestrator ladder (`0` = strongest).
+ * Scans upward from the current model's tier to find the first resolved model
+ * distinct from `currentModel`, falling back to `baseModel`.
+ * Pure — exported for tests.
+ */
+export function resolveNextFusionClimbSelector(options: {
+	currentModel: Pick<Model<Api>, "provider" | "id">;
+	ladder: readonly FusionPoolTier[];
+	resolveModel: (selector: string) => Model<Api> | undefined;
+	baseModel: Model<Api>;
+}): Model<Api> {
+	const resolvedLadder = options.ladder.map(entry => options.resolveModel(entry.selector));
+	const currentIdx = resolvedLadder.findIndex(
+		candidate => candidate !== undefined && modelsAreEqual(candidate, options.currentModel as Model<Api>),
+	);
+	if (currentIdx > 0) {
+		for (let j = currentIdx - 1; j >= 0; j--) {
+			const next = resolvedLadder[j];
+			if (next && !modelsAreEqual(next, options.currentModel as Model<Api>)) {
+				return next;
+			}
+		}
+	}
+	return options.baseModel;
 }

@@ -276,3 +276,52 @@ describe("/fusion menu", () => {
 		expect(statuses.join(" ")).toContain("Fusion enabled");
 	});
 });
+
+describe("/fusion orchestrator mode", () => {
+	test("sets mode to orchestrator, hides legacy status lines, and suppresses sidekick degraded warning", async () => {
+		const { store, outputs, result, runtime } = runFusion("mode orchestrator", {
+			"fusion.enabled": false,
+			"fusion.mode": "escalate",
+		});
+		await result;
+		expect(store.get("fusion.mode")).toBe("orchestrator");
+		expect(store.get("fusion.enabled")).toBe(true);
+
+		outputs.length = 0;
+		await handleFusionCommand({ name: "fusion", args: "status", text: "/fusion status" }, runtime);
+		const status = outputs.join("\n");
+		expect(status).toContain("Fusion is ON");
+		expect(status).toContain("Mode:            orchestrator");
+		expect(status).not.toContain("degraded: sidekick unavailable");
+		expect(status).not.toContain("Sidekick model:");
+		expect(status).not.toContain("Sidekick state:");
+		expect(status).not.toContain("Strong sidekick:");
+		expect(status).not.toContain("Compact model:");
+	});
+
+	test("showFusionMenu hides legacy sidekick/compact/routing rows in orchestrator mode", async () => {
+		const { runtime } = makeRuntime({ "fusion.enabled": true, "fusion.mode": "orchestrator" });
+		const capturedLabels: string[] = [];
+		const { ctx } = makeTuiContext();
+		Object.assign(ctx, {
+			session: runtime.session,
+			sessionManager: { getCwd: () => "." },
+			settings: runtime.settings,
+			showHookSelector: (_title: string, items: Array<string | { label: string }>) => {
+				capturedLabels.push(...items.map(i => (typeof i === "string" ? i : i.label)));
+				return Promise.resolve(undefined);
+			},
+			showHookInput: () => Promise.resolve(undefined),
+			showSettingsSelector: () => {},
+			showStatus: () => {},
+			editor: { setText: () => {} },
+			refreshSlashCommandState: () => Promise.resolve(),
+			ensureFusionSidekick: () => Promise.resolve(),
+			reconcileFusionSidekickModel: () => Promise.resolve(""),
+		});
+
+		await showFusionMenu(ctx);
+		const keys = capturedLabels.map(l => l.split(":", 1)[0]);
+		expect(keys).toEqual(["Fusion", "Mode", "Pool", "Setup", "Settings", "Status"]);
+	});
+});

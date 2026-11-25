@@ -539,6 +539,8 @@ export interface SingleResult {
 	/** Native parent projection mode; never trust worker prose as a receipt. */
 	delegatedIoKind?: "evidence-digest" | "code-write";
 	transcriptArtifact?: string;
+	/** Compact parent-facing receipt emitted in `fusion.mode: "orchestrator"`. */
+	compactReceiptText?: string;
 }
 
 /** Tool details for TUI rendering */

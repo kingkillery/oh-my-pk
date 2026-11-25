@@ -19,7 +19,7 @@ import { resolutionNote } from "./fusion-resolution";
 import { commandConsumed, parseSubcommand, usage } from "./parse";
 
 /** Valid `fusion.mode` values, mirrored from the settings schema enum. */
-const FUSION_MODES = ["off", "delegate", "escalate", "token-savings", "savings", "autonomous"] as const;
+const FUSION_MODES = ["off", "delegate", "escalate", "token-savings", "savings", "autonomous", "orchestrator"] as const;
 type FusionModeValue = (typeof FUSION_MODES)[number];
 
 function isFusionMode(value: string): value is FusionModeValue {
@@ -85,9 +85,10 @@ export function buildFusionStatusText(runtime: SlashCommandRuntime): string {
 		operationalStore?.close();
 	}
 	const active = enabled && mode !== "off";
+	const usesSidekick = mode !== "orchestrator" && mode !== "autonomous";
 	const sidekickState = describeSidekickState(runtime);
 	const header = `Fusion is ${active ? "ON" : "OFF"}${enabled && mode === "off" ? ' (enabled, but fusion.mode is "off")' : ""}${
-		active && sidekickState.degraded ? " (degraded: sidekick unavailable)" : ""
+		active && usesSidekick && sidekickState.degraded ? " (degraded: sidekick unavailable)" : ""
 	}`;
 	const lines = [
 		header,
@@ -96,16 +97,20 @@ export function buildFusionStatusText(runtime: SlashCommandRuntime): string {
 		`  I/O threshold:  ${ioMinLines} lines`,
 		`  Native tasks:   ${nativeTasks}`,
 		...(sessionTasks !== undefined ? [`  Session tasks:  ${sessionTasks}`] : []),
-		`  Sidekick model:  ${sidekick}`,
-		`  Sidekick state:  ${sidekickState.label}`,
-		`  Strong sidekick: ${strong || "(unset)"}`,
-		`  Compact model:   ${compact || "(unset)"}`,
+		...(mode !== "orchestrator"
+			? [
+					`  Sidekick model:  ${sidekick}`,
+					`  Sidekick state:  ${sidekickState.label}`,
+					`  Strong sidekick: ${strong || "(unset)"}`,
+					`  Compact model:   ${compact || "(unset)"}`,
+				]
+			: []),
 		`  Dynamic routing: ${dynamicRouting ? "on" : "off"}`,
 		`  Decision routing: ${decisionRouting ? `on (last ${decisionWindow}% + summary)` : "off"}`,
 	];
 	const poolStatus =
 		pool.length >= 2
-			? dynamicRouting && active
+			? (dynamicRouting || mode === "orchestrator") && active
 				? "active"
 				: "configured, waiting on fusion enabled + dynamic routing"
 			: pool.length === 1
@@ -252,7 +257,7 @@ export function disableFusion(runtime: SlashCommandRuntime): string {
 }
 
 export const FUSION_USAGE =
-	"Usage: /fusion [on|off|status|mode <off|delegate|escalate|token-savings|autonomous>|routing <on|off>|decision <on|off>|sidekick <model>|strong <model|clear>|compact <model|clear>|pool <list|set|remove|clear|decision <on|off>>|jobs|pause [job]|resume [job]|stop [job]]";
+	"Usage: /fusion [on|off|status|mode <off|delegate|escalate|token-savings|autonomous|orchestrator>|routing <on|off>|decision <on|off>|sidekick <model>|strong <model|clear>|compact <model|clear>|pool <list|set|remove|clear|decision <on|off>>|jobs|pause [job]|resume [job]|stop [job]]";
 
 /**
  * `/fusion jobs|pause|resume|stop` — session-scoped durable native_task
@@ -336,12 +341,12 @@ export async function handleFusionCommand(
 			const value = rest.trim().toLowerCase();
 			if (!value) {
 				await runtime.output(
-					`fusion.mode is "${runtime.settings.get("fusion.mode")}". Usage: /fusion mode <off|delegate|escalate|token-savings|autonomous>`,
+					`fusion.mode is "${runtime.settings.get("fusion.mode")}". Usage: /fusion mode <off|delegate|escalate|token-savings|autonomous|orchestrator>`,
 				);
 				return commandConsumed();
 			}
 			if (!isFusionMode(value)) {
-				return usage("Usage: /fusion mode <off|delegate|escalate|token-savings|autonomous>", runtime);
+				return usage("Usage: /fusion mode <off|delegate|escalate|token-savings|autonomous|orchestrator>", runtime);
 			}
 			const canonicalValue = value === "savings" ? "token-savings" : value;
 			runtime.settings.clearOverride("fusion.mode");

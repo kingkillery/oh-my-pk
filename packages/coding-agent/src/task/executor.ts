@@ -55,6 +55,7 @@ import type { ArtifactManager } from "../session/artifacts";
 import type { AuthStorage } from "../session/auth-storage";
 import type { ClientBridge } from "../session/client-bridge";
 import { type DelegatedIo, delegatedIoToolNames } from "../session/delegated-io";
+import { isOrchestratorFusionActive } from "../session/fusion-router";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
@@ -96,6 +97,7 @@ import { Semaphore } from "./parallel";
 import {
 	type AssignmentFailureClass,
 	classifyRecoveryFailure,
+	nextOrderedLadderRecoveryAttempt,
 	nextRecoveryAttempt,
 	type RecoveryAttempt,
 	type RecoveryCapsule,
@@ -670,7 +672,7 @@ function resolveFallbackCompletion(rawOutput: string, outputSchema: unknown): { 
 
 export interface YieldItem {
 	data?: unknown;
-	status?: "success" | "aborted";
+	status?: "success" | "aborted" | "escalate";
 	error?: string;
 	/**
 	 * Set by the in-tool yield validator when it exhausted its retry budget
@@ -706,6 +708,7 @@ interface FinalizeSubprocessOutputResult {
 	exitCode: number;
 	stderr: string;
 	abortedViaYield: boolean;
+	escalatedViaYield: boolean;
 	hasYield: boolean;
 }
 export const SUBAGENT_WARNING_SCHEMA_OVERRIDDEN =
@@ -745,12 +748,24 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 	let { rawOutput, exitCode, stderr } = args;
 	const { yieldItems, reportFindings, doneAborted, signalAborted, outputSchema } = args;
 	let abortedViaYield = false;
+	let escalatedViaYield = false;
 	const hasYield = Array.isArray(yieldItems) && yieldItems.length > 0;
 	const hadFailureBeforeYield = exitCode !== 0 && stderr.trim().length > 0;
 
 	if (hasYield) {
 		const lastYield = yieldItems[yieldItems.length - 1];
-		if (lastYield?.status === "aborted") {
+		if (lastYield?.status === "escalate") {
+			escalatedViaYield = true;
+			abortedViaYield = false;
+			exitCode = 1;
+			const reason = lastYield.error || "Subagent requested stronger tier";
+			stderr = `ESCALATE: ${reason}`;
+			try {
+				rawOutput = JSON.stringify({ escalate: true, reason }, null, 2);
+			} catch {
+				rawOutput = `{"escalate":true,"reason":${JSON.stringify(reason)}}`;
+			}
+		} else if (lastYield?.status === "aborted") {
 			abortedViaYield = true;
 			exitCode = 0;
 			stderr = lastYield.error || "Subagent aborted task";
@@ -802,44 +817,53 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 			}
 		}
 	} else {
-		const allowFallback = exitCode === 0 && !doneAborted && !signalAborted;
-		const { normalized: normalizedSchema, error: schemaError } = normalizeSchema(outputSchema);
-		const hasOutputSchema = normalizedSchema !== undefined && !schemaError;
-		const fallback = allowFallback ? resolveFallbackCompletion(rawOutput, outputSchema) : null;
-		if (fallback) {
-			const { validator } = buildOutputValidator(outputSchema);
-			const completeData = normalizeCompleteData(fallback.data, reportFindings, validator);
-			const result = validator?.validate(completeData) ?? { success: true as const };
-			if (!result.success) {
-				const summary = summarizeValidationFailure(result, completeData, validator?.requiredFields ?? []);
-				const outcome = buildSchemaViolationOutcome(summary, completeData);
-				rawOutput = outcome.rawOutput;
-				stderr = outcome.stderr;
-				exitCode = outcome.exitCode;
-			} else {
-				try {
-					rawOutput = JSON.stringify(completeData, null, 2) ?? "null";
-				} catch (err) {
-					const errorMessage = err instanceof Error ? err.message : String(err);
-					rawOutput = `{"error":"Failed to serialize fallback completion: ${errorMessage}"}`;
+		const escalateTextMatch = /^ESCALATE\b[:\s-]*(.*)$/im.exec(rawOutput.trim());
+		if (escalateTextMatch) {
+			escalatedViaYield = true;
+			exitCode = 1;
+			stderr = `ESCALATE: ${escalateTextMatch[1]?.trim() || "Subagent requested stronger tier"}`;
+		} else {
+			const allowFallback = exitCode === 0 && !doneAborted && !signalAborted;
+			const { normalized: normalizedSchema, error: schemaError } = normalizeSchema(outputSchema);
+			const hasOutputSchema = normalizedSchema !== undefined && !schemaError;
+			const fallback = allowFallback ? resolveFallbackCompletion(rawOutput, outputSchema) : null;
+			if (fallback) {
+				const { validator } = buildOutputValidator(outputSchema);
+				const completeData = normalizeCompleteData(fallback.data, reportFindings, validator);
+				const result = validator?.validate(completeData) ?? { success: true as const };
+				if (!result.success) {
+					const summary = summarizeValidationFailure(result, completeData, validator?.requiredFields ?? []);
+					const outcome = buildSchemaViolationOutcome(summary, completeData);
+					rawOutput = outcome.rawOutput;
+					stderr = outcome.stderr;
+					exitCode = outcome.exitCode;
+				} else {
+					try {
+						rawOutput = JSON.stringify(completeData, null, 2) ?? "null";
+					} catch (err) {
+						const errorMessage = err instanceof Error ? err.message : String(err);
+						rawOutput = `{"error":"Failed to serialize fallback completion: ${errorMessage}"}`;
+					}
+					exitCode = 0;
+					stderr = "";
 				}
+			} else if (!hasOutputSchema && allowFallback && rawOutput.trim().length > 0) {
 				exitCode = 0;
 				stderr = "";
-			}
-		} else if (!hasOutputSchema && allowFallback && rawOutput.trim().length > 0) {
-			exitCode = 0;
-			stderr = "";
-		} else if (exitCode === 0) {
-			const hasRawOutput = rawOutput.trim().length > 0;
-			rawOutput = rawOutput ? `${SUBAGENT_WARNING_MISSING_YIELD}\n\n${rawOutput}` : SUBAGENT_WARNING_MISSING_YIELD;
-			if (hasOutputSchema || !hasRawOutput) {
-				exitCode = 1;
-				stderr = SUBAGENT_WARNING_MISSING_YIELD;
+			} else if (exitCode === 0) {
+				const hasRawOutput = rawOutput.trim().length > 0;
+				rawOutput = rawOutput
+					? `${SUBAGENT_WARNING_MISSING_YIELD}\n\n${rawOutput}`
+					: SUBAGENT_WARNING_MISSING_YIELD;
+				if (hasOutputSchema || !hasRawOutput) {
+					exitCode = 1;
+					stderr = SUBAGENT_WARNING_MISSING_YIELD;
+				}
 			}
 		}
 	}
 
-	return { rawOutput, exitCode, stderr, abortedViaYield, hasYield };
+	return { rawOutput, exitCode, stderr, abortedViaYield, escalatedViaYield, hasYield };
 }
 
 /**
@@ -2314,7 +2338,10 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	}
 	const lastYield = yieldItems?.[yieldItems.length - 1];
 	const yieldAbortReason = lastYield?.status === "aborted" ? lastYield.error || "Subagent aborted task" : undefined;
-	const { abortedViaYield, hasYield } = finalized;
+	const { abortedViaYield, escalatedViaYield, hasYield } = finalized;
+	if (escalatedViaYield) {
+		progress.failureClass = "escalate";
+	}
 	let assignmentVerification: AssignmentVerificationOutcome | undefined;
 	if (args.assignmentContract) {
 		assignmentVerification = await verifyAssignmentYield({
@@ -2444,7 +2471,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		assignmentVerificationStatus: progress.assignmentVerificationStatus,
 		contractDigest: args.assignmentContract?.digest,
 		contractRevision: args.assignmentContract?.revision,
-		failureClass: progress.failureClass,
+		failureClass: escalatedViaYield ? "escalate" : progress.failureClass,
 		recoveryAttempt: args.recoveryAttempt?.attempt,
 		recoveryTier: args.recoveryAttempt?.tier,
 		recoveryProvider: args.recoveryAttempt?.provider,
@@ -3393,7 +3420,16 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 		isError: settled.isError ?? null,
 	});
 	const terminalFailure = settled.exitCode !== 0 || settled.isError === true || settled.aborted === true;
-	if (!terminalFailure || !options.assignmentContract || !options.spawnPlan || signal?.aborted) {
+	const orchestratorClimbEligible =
+		Boolean(options.settings && isOrchestratorFusionActive(options.settings)) &&
+		!settled.aborted &&
+		(settled.failureClass === "escalate" || settled.exitCode !== 0 || settled.isError === true) &&
+		(options.spawnPlan?.eligible.length ?? 0) >= 2;
+	if (
+		!((terminalFailure && options.assignmentContract) || orchestratorClimbEligible) ||
+		!options.spawnPlan ||
+		signal?.aborted
+	) {
 		return settled;
 	}
 
@@ -3409,23 +3445,48 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 		: [seedFailedRecoveryAttempt(options, settled)].filter(
 				(attempt): attempt is RecoveryAttempt => attempt !== undefined,
 			);
-	const decision = nextRecoveryAttempt({
-		workClass: options.spawnPlan.profile.workClass,
-		eligible: options.spawnPlan.eligible,
-		previousAttempts,
-		suppressedProviders: options.recoverySuppressedProviders,
-		outcome: {
-			terminal: true,
-			failedChildId: settled.id,
-			failure,
-		},
-		requestFallbackRemaining: false,
-		contract: options.assignmentContract,
-		profileSnapshotRefs: [`spawn-plan:${options.spawnPlan.correlationId}`],
-		verifiedArtifactRefs:
-			settled.assignmentVerificationStatus === "verified" && settled.outputPath ? [settled.outputPath] : undefined,
-		verifiedPatchRefs: settled.patchPath ? [settled.patchPath] : undefined,
-	});
+	const decision =
+		!options.assignmentContract && orchestratorClimbEligible
+			? nextOrderedLadderRecoveryAttempt({
+					orderedSelectors: options.spawnPlan.modelRouting?.candidateSelectors
+						? [...options.spawnPlan.modelRouting.candidateSelectors]
+						: normalizeModelPatterns(options.modelOverride),
+					eligible: options.spawnPlan.eligible,
+					previousAttempts,
+					suppressedProviders: options.recoverySuppressedProviders,
+					failedChildId: settled.id,
+					failure,
+					contract: {
+						id: `orchestrator-climb:${options.id}`,
+						revision: 1,
+						digest: options.spawnPlan.correlationId,
+					},
+					profileSnapshotRefs: [`spawn-plan:${options.spawnPlan.correlationId}`],
+					verifiedArtifactRefs:
+						settled.assignmentVerificationStatus === "verified" && settled.outputPath
+							? [settled.outputPath]
+							: undefined,
+					verifiedPatchRefs: settled.patchPath ? [settled.patchPath] : undefined,
+				})
+			: nextRecoveryAttempt({
+					workClass: options.spawnPlan.profile.workClass,
+					eligible: options.spawnPlan.eligible,
+					previousAttempts,
+					suppressedProviders: options.recoverySuppressedProviders,
+					outcome: {
+						terminal: true,
+						failedChildId: settled.id,
+						failure,
+					},
+					requestFallbackRemaining: false,
+					contract: options.assignmentContract!,
+					profileSnapshotRefs: [`spawn-plan:${options.spawnPlan.correlationId}`],
+					verifiedArtifactRefs:
+						settled.assignmentVerificationStatus === "verified" && settled.outputPath
+							? [settled.outputPath]
+							: undefined,
+					verifiedPatchRefs: settled.patchPath ? [settled.patchPath] : undefined,
+				});
 	settled.failureClass = failure.class;
 	settled.nextRecoveryAction = decision.action;
 	progress.failureClass = failure.class;

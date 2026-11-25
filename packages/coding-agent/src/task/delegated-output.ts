@@ -81,3 +81,118 @@ export async function projectDelegatedIoResult(options: {
 	result.outputPath = projectedPath;
 	result.outputMeta = { lineCount: result.output.split("\n").length, charCount: result.output.length };
 }
+
+export const ORCHESTRATOR_RECEIPT_MAX_BYTES = 1_200;
+const ORCHESTRATOR_MERGE_SUMMARY_MAX_BYTES = 240;
+const FENCED_BLOCK_RE = /```[\s\S]*?```/g;
+
+function sliceUtf8Bytes(text: string, maxBytes: number): string {
+	if (maxBytes <= 0) return "";
+	const encoder = new TextEncoder();
+	const bytes = encoder.encode(text);
+	if (bytes.byteLength <= maxBytes) return text;
+	return new TextDecoder().decode(bytes.subarray(0, maxBytes), { stream: true });
+}
+
+/**
+ * Format a thin parent-facing receipt (`<= 1,200` UTF-8 bytes) for a settled
+ * worker in `fusion.mode: "orchestrator"`. Elides fenced blocks > 12 lines and
+ * points the parent to `artifactRef` for full detail.
+ */
+export function formatCompactTaskReceipt(options: {
+	result: SingleResult;
+	rawOutput: string;
+	artifactRef: string;
+	mergeSummary?: string;
+}): { output: string; truncated: boolean } {
+	const { result, rawOutput, artifactRef, mergeSummary } = options;
+	const statusLabel = result.aborted
+		? "cancelled"
+		: result.isError === true
+			? "failed"
+			: result.exitCode === 0 && result.error
+				? "merge-failed"
+				: result.exitCode === 0
+					? "completed"
+					: `failed(${result.exitCode})`;
+	const header = `[receipt id=${result.id} agent=${result.agent} status=${statusLabel} model=${result.resolvedModel ?? "unknown"}${
+		result.recoveryAttempt ? ` climb=${result.recoveryAttempt}` : ""
+	}${result.changesApplied !== undefined ? ` changesApplied=${result.changesApplied}` : ""} full=${artifactRef}]`;
+
+	let elidedFence = false;
+	const sanitizedBody = rawOutput
+		.replace(FENCED_BLOCK_RE, block => {
+			if (block.split("\n").length > 12) {
+				elidedFence = true;
+				return `[fenced block elided -> ${artifactRef}]`;
+			}
+			return block;
+		})
+		.trim();
+
+	const parts = [header];
+	const trimmedMerge = mergeSummary?.trim();
+	if (trimmedMerge) {
+		parts.push(sliceUtf8Bytes(trimmedMerge, ORCHESTRATOR_MERGE_SUMMARY_MAX_BYTES));
+	}
+	if (sanitizedBody) {
+		parts.push(sanitizedBody);
+	}
+
+	const combined = parts.join("\n");
+	const encoder = new TextEncoder();
+	const bytes = encoder.encode(combined);
+	if (bytes.byteLength <= ORCHESTRATOR_RECEIPT_MAX_BYTES) {
+		return { output: combined, truncated: elidedFence };
+	}
+
+	const note = `\n[…truncated to 1,200B; read ${artifactRef}]`;
+	const noteBytes = encoder.encode(note).byteLength;
+	const budget = ORCHESTRATOR_RECEIPT_MAX_BYTES - noteBytes;
+	if (budget <= 0) {
+		return { output: sliceUtf8Bytes(combined, ORCHESTRATOR_RECEIPT_MAX_BYTES), truncated: true };
+	}
+	return {
+		output: sliceUtf8Bytes(combined, budget) + note,
+		truncated: true,
+	};
+}
+
+/**
+ * Persist full worker output to `artifact://` (falling back to `agent://<id>`)
+ * and build a compact `<= 1,200`-byte parent receipt without mutating `result.output`
+ * so TUI rendering keeps full visibility.
+ */
+export async function projectOrchestratorTaskReceipt(options: {
+	result: SingleResult;
+	artifactsDir: string;
+	artifactManager?: ArtifactManager;
+	mergeSummary?: string;
+}): Promise<{ text: string; truncated: boolean }> {
+	const { result, artifactManager, mergeSummary } = options;
+	const rawOutput = result.outputPath
+		? await fs.readFile(result.outputPath, "utf8").catch(() => result.output)
+		: result.output;
+	const fullText =
+		result.stderr && (result.exitCode !== 0 || result.isError || result.error)
+			? `${rawOutput}\n\n--- stderr ---\n${result.stderr}`
+			: rawOutput;
+
+	let reference = `agent://${result.id}`;
+	if (artifactManager) {
+		try {
+			const id = await artifactManager.save(fullText, "task-receipt");
+			reference = `artifact://${id}`;
+		} catch {
+			// Non-fatal: fall back to agent:// reference
+		}
+	}
+	result.transcriptArtifact = reference;
+	const formatted = formatCompactTaskReceipt({
+		result,
+		rawOutput,
+		artifactRef: reference,
+		mergeSummary,
+	});
+	return { text: formatted.output, truncated: formatted.truncated };
+}

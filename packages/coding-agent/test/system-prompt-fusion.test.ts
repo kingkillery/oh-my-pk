@@ -168,4 +168,25 @@ describe("system prompt fusion sidekick policy", () => {
 			expect(rendered).toContain(mode.fusionAutonomous ? "<fusion-autonomous>" : "<fusion-token-savings>");
 		},
 	);
+
+	it.each([false, true])(
+		"renders <fusion-orchestrator> at terminal position and keeps static prefix byte-identical (custom=%j)",
+		async custom => {
+			const opts = {
+				resolvedCustomPrompt: custom ? "<custom-base />" : undefined,
+				contextFiles: [{ path: "project-rules.txt", content: "<test-project-context />" }],
+			};
+			const normal = await renderBlocks(opts);
+			const orch = await renderBlocks({
+				...opts,
+				fusionOrchestrator: true,
+				orchestratorFrontierModel: "vendor/tier1-frontier",
+			});
+			expect(orch.slice(0, -2)).toEqual(normal);
+			expect(orch.at(-1)?.trim()).toMatch(
+				/^<fusion-orchestrator>[\s\S]*vendor\/tier1-frontier[\s\S]*<\/fusion-orchestrator>$/,
+			);
+			expect(orch.at(-2)?.trim()).toMatch(/^<bulk-work-delegation>[\s\S]*<\/bulk-work-delegation>$/);
+		},
+	);
 });

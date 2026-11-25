@@ -21,6 +21,7 @@ describe("Fusion I/O policy", () => {
 		[true, "token-savings", true, true],
 		[true, "autonomous", undefined, true],
 		[true, "autonomous", false, false],
+		[true, "orchestrator", undefined, true],
 		[true, "token-savings", false, false],
 	])("composes enabled=%j mode=%j io=%j as %j", (enabled, mode, ioEnabled, expected) => {
 		expect(

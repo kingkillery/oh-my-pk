@@ -921,7 +921,7 @@ export const SETTINGS_SCHEMA = {
 
 	"fusion.mode": {
 		type: "enum",
-		values: ["off", "delegate", "escalate", "token-savings", "savings", "autonomous"] as const,
+		values: ["off", "delegate", "escalate", "token-savings", "savings", "autonomous", "orchestrator"] as const,
 		default: "escalate",
 		ui: {
 			tab: "interaction",
@@ -951,6 +951,12 @@ export const SETTINGS_SCHEMA = {
 					label: "Autonomous",
 					description:
 						"Autonomous workflow: planning-only root, durable delegated work, isolated writing workers, and continuous replanning from rich handoffs.",
+				},
+				{
+					value: "orchestrator",
+					label: "Orchestrator",
+					description:
+						"Pre-turn deterministic routing, cache-sticky fast orchestrator, 1-failure ladder climb across fusion.modelPool, and compact worker receipts.",
 				},
 			],
 			condition: "fusionEnabled",

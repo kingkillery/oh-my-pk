@@ -67,5 +67,6 @@ Your result MUST match this TypeScript interface:
 
 Giving up is a last resort. If truly blocked, you MUST call `yield` exactly once with `result.error` describing what you tried and the exact blocker.
 You NEVER give up due to uncertainty, missing information obtainable via tools or repo context, or needing a design decision you can derive yourself.
+- If a concrete local check fails due to reasoning complexity or ambiguity beyond current scope, call `yield` immediately with `result: { escalate: "<failed check or blocker>" }` instead of guessing or looping.
 
 You MUST keep going until this ticket is closed. This matters.

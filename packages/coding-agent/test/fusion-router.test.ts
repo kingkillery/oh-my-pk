@@ -4,6 +4,7 @@ import type { TypeSafeAnswer } from "@pk-nerdsaver-ai/pi-coding-agent/lib/typesa
 import {
 	buildDecisionRouteState,
 	classifyFusionRouteViaDecision,
+	classifyPreTurnOrchestratorRoute,
 	computeFusionWarmPrefixTokens,
 	DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS,
 	DEFAULT_FUSION_TOKEN_SAVINGS_MIN_CACHE_CONTEXT_TOKENS,
@@ -21,6 +22,7 @@ import {
 	parseFusionRoute,
 	renderPoolClassifierPrompt,
 	resolveEffectiveFusionRoute,
+	resolveNextFusionClimbSelector,
 	resolveSidekickRoute,
 	shouldRunFusionCompactionSwitch,
 } from "@pk-nerdsaver-ai/pi-coding-agent/session/fusion-router";
@@ -564,5 +566,128 @@ describe("Fusion token-savings cache break-even & TTL stickiness helpers", () =>
 			now,
 		});
 		expect(decision).toEqual({ action: "restore-default", reason: "tail-amortized" });
+	});
+});
+
+describe("classifyPreTurnOrchestratorRoute", () => {
+	const ladder = [
+		{ tier: 1, selector: "p/tier1" },
+		{ tier: 2, selector: "p/tier2" },
+		{ tier: 3, selector: "p/tier3" },
+		{ tier: 4, selector: "p/tier4" },
+		{ tier: 5, selector: "p/tier5" },
+	];
+	const now = 2_000_000;
+
+	it("routes cold easy prompt to Tier 5 fast slot", () => {
+		const decision = classifyPreTurnOrchestratorRoute({
+			promptText: "rename foo in src/a.ts",
+			ladder,
+			routingDisabled: false,
+			currentContextTokens: 1_200,
+			now,
+		});
+		expect(decision.action).toBe("switch");
+		expect(decision.reason).toBe("cold-easy-fast");
+		expect(decision.targetSelector).toBe("p/tier5");
+		expect(decision.targetTier).toBe(5);
+		expect(decision.steerTier1Delegation).toBe(false);
+	});
+
+	it("routes cold default prompt to mid orchestrator slot (Tier 3)", () => {
+		const decision = classifyPreTurnOrchestratorRoute({
+			promptText: "implement pagination for the invoices endpoint and add tests",
+			ladder,
+			routingDisabled: false,
+			currentContextTokens: 4_000,
+			now,
+		});
+		expect(decision.action).toBe("switch");
+		expect(decision.reason).toBe("cold-default-orchestrator");
+		expect(decision.targetSelector).toBe("p/tier3");
+		expect(decision.targetTier).toBe(3);
+	});
+
+	it("routes cold stack trace or 5+ file prompt to Tier 1 frontier", () => {
+		const stackDecision = classifyPreTurnOrchestratorRoute({
+			promptText: "TypeError: x is undefined\n  at foo (b.ts:12)",
+			ladder,
+			routingDisabled: false,
+			currentContextTokens: 2_000,
+			now,
+		});
+		expect(stackDecision.action).toBe("switch");
+		expect(stackDecision.reason).toBe("cold-hard-tier1");
+		expect(stackDecision.targetSelector).toBe("p/tier1");
+		expect(stackDecision.targetTier).toBe(1);
+
+		const multiFileDecision = classifyPreTurnOrchestratorRoute({
+			promptText: "Update src/a.ts, src/b.ts, src/c.ts, src/d.ts, and src/e.ts consistently",
+			ladder,
+			routingDisabled: false,
+			currentContextTokens: 2_000,
+			now,
+		});
+		expect(multiFileDecision.action).toBe("switch");
+		expect(multiFileDecision.reason).toBe("cold-hard-tier1");
+		expect(multiFileDecision.signals.fileCount).toBe(5);
+	});
+
+	it("keeps warm cache sticky (>= 16k within TTL) and steers Tier 1 delegation on hard prompt", () => {
+		const decision = classifyPreTurnOrchestratorRoute({
+			promptText: "Investigate why the race condition happens in the queue worker",
+			ladder,
+			routingDisabled: false,
+			currentContextTokens: 24_000,
+			currentModelWatermark: { cachedTokens: 20_000, lastUsedAt: now - 30_000 },
+			cacheTtlMs: DEFAULT_FUSION_TOKEN_SAVINGS_CACHE_TTL_MS,
+			now,
+		});
+		expect(decision.action).toBe("keep-sticky");
+		expect(decision.reason).toBe("sticky-warm-cache");
+		expect(decision.steerTier1Delegation).toBe(true);
+	});
+
+	it("detects manual override when currentModel diverges from lastAutoModel", () => {
+		const decision = classifyPreTurnOrchestratorRoute({
+			promptText: "rename x in a.ts",
+			ladder,
+			routingDisabled: false,
+			currentModel: { provider: "p", id: "manual" },
+			lastAutoModel: { provider: "p", id: "tier3" },
+			currentContextTokens: 0,
+			now,
+		});
+		expect(decision.action).toBe("manual-override");
+		expect(decision.reason).toBe("manual-override");
+	});
+});
+
+describe("resolveNextFusionClimbSelector", () => {
+	const models = new Map<string, Model>([
+		["p/t1", { provider: "p", id: "t1" } as Model],
+		["p/t2", { provider: "p", id: "t2" } as Model],
+		["p/t3", { provider: "p", id: "t3" } as Model],
+		["p/t4", { provider: "p", id: "t4" } as Model],
+		["p/t5", { provider: "p", id: "t5" } as Model],
+	]);
+	const ladder = [
+		{ tier: 1, selector: "p/t1" },
+		{ tier: 2, selector: "p/t2" },
+		{ tier: 3, selector: "p/t3" },
+		{ tier: 4, selector: "p/t4" },
+		{ tier: 5, selector: "p/t5" },
+	];
+	const resolveModel = (sel: string) => models.get(sel);
+	const baseModel = models.get("p/t1")!;
+
+	it("climbs one tier at a time from Tier 5 -> 4 -> 3 -> 2 -> 1", () => {
+		let current = models.get("p/t5")!;
+		const visited: string[] = [current.id];
+		for (let step = 0; step < 4; step++) {
+			current = resolveNextFusionClimbSelector({ currentModel: current, ladder, resolveModel, baseModel });
+			visited.push(current.id);
+		}
+		expect(visited).toEqual(["t5", "t4", "t3", "t2", "t1"]);
 	});
 });

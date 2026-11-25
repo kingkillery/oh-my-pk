@@ -35,7 +35,8 @@ export async function handleFusionCommandTui(
 	};
 	const result = await handleFusionCommand(command, runtime);
 	const { verb, rest } = parseSubcommand(command.args);
-	const active = ctx.settings.get("fusion.enabled") === true && ctx.settings.get("fusion.mode") !== "off";
+	const mode = ctx.settings.get("fusion.mode");
+	const active = ctx.settings.get("fusion.enabled") === true && mode !== "off" && mode !== "orchestrator";
 	if ((verb === "on" || verb === "toggle" || verb === "mode") && active) {
 		if (ctx.session.getFusionSidekickId()) {
 			messages.push(await ctx.reconcileFusionSidekickModel());
@@ -88,6 +89,10 @@ async function pickFusionMode(ctx: InteractiveModeContext): Promise<string | und
 		{
 			label: "autonomous",
 			description: "Autonomous workflow: planning-only root, durable isolated workers, handoffs drive replanning",
+		},
+		{
+			label: "orchestrator",
+			description: "Sticky fast orchestrator + pre-turn routing + 1-failure pool climb + thin receipts",
 		},
 		{ label: "off", description: "Disable fusion behavior while keeping settings" },
 	]);
@@ -153,28 +158,34 @@ export async function showFusionMenu(ctx: InteractiveModeContext): Promise<void>
 		const cfg = ctx.settings;
 		const enabled = cfg.get("fusion.enabled") === true;
 		const pool = parseFusionPoolEntries(cfg.get("fusion.modelPool") ?? []);
+		const mode = cfg.get("fusion.mode");
+		const isOrchestrator = mode === "orchestrator";
 		const items: ExtensionUISelectItem[] = [
 			{ label: `Fusion: ${enabled ? "ON" : "OFF"}`, description: "Toggle cost mode (fusion.enabled)" },
 			{
-				label: `Mode: ${cfg.get("fusion.mode")}`,
-				description: "escalate | delegate | token-savings | autonomous | off",
+				label: `Mode: ${mode}`,
+				description: "escalate | delegate | token-savings | autonomous | orchestrator | off",
 			},
-			{
-				label: `Sidekick model: ${cfg.get("fusion.sidekickModel") || "pi/smol"}`,
-				description: "Cheap warm subagent for menial work",
-			},
-			{
-				label: `Strong sidekick: ${cfg.get("fusion.sidekickStrongModel")?.trim() || "(unset)"}`,
-				description: "Sidekick tier for hard stretches (dynamic routing)",
-			},
-			{
-				label: `Compact model: ${cfg.get("fusion.compactModel")?.trim() || "(unset)"}`,
-				description: "Main-model downgrade at compaction boundaries",
-			},
-			{
-				label: `Dynamic routing: ${cfg.get("fusion.dynamicRouting") === true ? "on" : "off"}`,
-				description: "Classifier re-tiers at each compaction",
-			},
+			...(!isOrchestrator
+				? [
+						{
+							label: `Sidekick model: ${cfg.get("fusion.sidekickModel") || "pi/smol"}`,
+							description: "Cheap warm subagent for menial work",
+						},
+						{
+							label: `Strong sidekick: ${cfg.get("fusion.sidekickStrongModel")?.trim() || "(unset)"}`,
+							description: "Sidekick tier for hard stretches (dynamic routing)",
+						},
+						{
+							label: `Compact model: ${cfg.get("fusion.compactModel")?.trim() || "(unset)"}`,
+							description: "Main-model downgrade at compaction boundaries",
+						},
+						{
+							label: `Dynamic routing: ${cfg.get("fusion.dynamicRouting") === true ? "on" : "off"}`,
+							description: "Classifier re-tiers at each compaction",
+						},
+					]
+				: []),
 			{
 				label: `Pool: ${pool.length > 0 ? `${pool.length} tier${pool.length === 1 ? "" : "s"} assigned` : "empty"}`,
 				description:

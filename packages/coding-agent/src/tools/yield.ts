@@ -25,7 +25,7 @@ import { buildOutputValidator, formatAllValidationIssues } from "./output-schema
 
 export interface YieldDetails {
 	data: unknown;
-	status: "success" | "aborted";
+	status: "success" | "aborted" | "escalate";
 	error?: string;
 	/**
 	 * Set when the yield tool exhausted its in-tool schema-retry budget
@@ -97,6 +97,15 @@ function wrapYieldParameters(dataSchema: Record<string, unknown>): Record<string
 							error: { type: "string", description: "error message" },
 						},
 						required: ["error"],
+					},
+					{
+						type: "object",
+						additionalProperties: false,
+						description: "task requires a stronger model tier",
+						properties: {
+							escalate: { type: "string", description: "concise reason or failed check requiring escalation" },
+						},
+						required: ["escalate"],
 					},
 				],
 			},
@@ -288,19 +297,35 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		}
 
 		const resultRecord = rawResult as Record<string, unknown>;
-		const errorMessage = typeof resultRecord.error === "string" ? resultRecord.error : undefined;
+		const rawError = typeof resultRecord.error === "string" ? resultRecord.error : undefined;
+		const rawEscalate = typeof resultRecord.escalate === "string" ? resultRecord.escalate : undefined;
 		const data = resultRecord.data;
 
-		if (errorMessage !== undefined && data !== undefined) {
-			throw new Error("result cannot contain both data and error");
+		const providedCount =
+			(data !== undefined ? 1 : 0) + (rawError !== undefined ? 1 : 0) + (rawEscalate !== undefined ? 1 : 0);
+		if (providedCount > 1) {
+			throw new Error("result must contain only one of `data`, `error`, or `escalate`");
 		}
-		if (errorMessage === undefined && data === undefined) {
+		if (providedCount === 0) {
 			throw new Error(
-				'result must contain either `data` or `error`. Use `{result: {data: <your output>}}` for success or `{result: {error: "message"}}` for failure.',
+				'result must contain `data`, `error`, or `escalate`. Use `{result: {data: <your output>}}` for success, `{result: {error: "message"}}` for failure, or `{result: {escalate: "reason"}}` to climb to a stronger tier.',
 			);
 		}
 
-		const status = errorMessage !== undefined ? "aborted" : "success";
+		let escalateMessage: string | undefined;
+		let errorMessage = rawError;
+		if (rawEscalate !== undefined) {
+			escalateMessage = rawEscalate.trim() || "Worker requested escalation";
+		} else if (errorMessage !== undefined) {
+			const escMatch = /^ESCALATE\b[:\s-]*(.*)$/i.exec(errorMessage.trim());
+			if (escMatch) {
+				escalateMessage = escMatch[1]?.trim() || "Worker requested escalation";
+				errorMessage = undefined;
+			}
+		}
+
+		const status: YieldDetails["status"] =
+			escalateMessage !== undefined ? "escalate" : errorMessage !== undefined ? "aborted" : "success";
 		let schemaValidationOverridden = false;
 		let gateOverridden = false;
 		if (status === "success") {
@@ -356,19 +381,21 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		}
 
 		const responseText =
-			status === "aborted"
-				? `Task aborted: ${errorMessage}`
-				: schemaValidationOverridden
-					? `Result submitted (schema validation overridden after ${this.#schemaValidationFailures} failed attempt(s)).`
-					: gateOverridden
-						? `Result submitted (completion gate overridden after ${MAX_GATE_REMINDERS} reminder(s)).`
-						: "Result submitted.";
+			status === "escalate"
+				? `Escalation requested: ${escalateMessage}`
+				: status === "aborted"
+					? `Task aborted: ${errorMessage}`
+					: schemaValidationOverridden
+						? `Result submitted (schema validation overridden after ${this.#schemaValidationFailures} failed attempt(s)).`
+						: gateOverridden
+							? `Result submitted (completion gate overridden after ${MAX_GATE_REMINDERS} reminder(s)).`
+							: "Result submitted.";
 		return {
 			content: [{ type: "text", text: responseText }],
 			details: {
 				data,
 				status,
-				error: errorMessage,
+				error: status === "escalate" ? escalateMessage : errorMessage,
 				schemaOverridden: schemaValidationOverridden || undefined,
 				gateOverridden: gateOverridden || undefined,
 			},
@@ -383,7 +410,7 @@ subprocessToolRegistry.register<YieldDetails>("yield", {
 		if (!details || typeof details !== "object") return undefined;
 		const record = details as Record<string, unknown>;
 		const status = record.status;
-		if (status !== "success" && status !== "aborted") return undefined;
+		if (status !== "success" && status !== "aborted" && status !== "escalate") return undefined;
 		return {
 			data: record.data,
 			status,
