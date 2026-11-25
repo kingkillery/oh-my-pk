@@ -976,14 +976,6 @@ export function createMCPProxyTools(mcpManager: MCPManager): CustomTool[] {
 	});
 }
 
-/**
- * Models whose subagents run in dry mode: no MCP, extensions, custom tools,
- * skills, browser, or image generation. Mirrors a stripped `codex exec`.
- */
-export function isDryModeModel(model: { id: string } | undefined): boolean {
-	return model !== undefined && /^gpt-6\.2-(sol|astra)(-|$)/.test(model.id);
-}
-
 export function createSubagentSettings(
 	baseSettings: Settings,
 	overrides?: Partial<Record<SettingPath, unknown>>,
@@ -2960,11 +2952,10 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 			}
 			sessionOpenedAt = performance.now();
 
-			// Fork mode keeps the parent's exact prefix for cache reuse, so it is never dry.
-			const dryMode = options.contextMode !== "fork" && isDryModeModel(model);
-			const sessionSettings = dryMode
-				? createSubagentSettings(subagentSettings, { "browser.enabled": false })
-				: subagentSettings;
+			// Dry mode (`dryMode.subagent`): no MCP, extensions, custom tools, skills,
+			// browser, or image generation. Fork mode keeps the parent's exact prefix
+			// for cache reuse, so it is never dry.
+			const dryMode = options.contextMode !== "fork" && settings.get("dryMode.subagent") === true;
 			const mcpManager = dryMode ? undefined : options.mcpManager;
 			const mcpProxyTools = mcpManager
 				? createMCPProxyTools(mcpManager).filter(
@@ -3050,7 +3041,7 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 				delegatedIo: options.delegatedIo,
 				authStorage,
 				modelRegistry,
-				settings: sessionSettings,
+				settings: subagentSettings,
 				model: fork && !options.modelOverride ? (fork.model ?? model) : model,
 				thinkingLevel: effectiveThinkingLevel,
 				toolNames: fork ? fork.toolNames : toolNames,
@@ -3064,7 +3055,7 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 				preloadedExtensionPaths: dryMode ? [] : options.preloadedExtensionPaths,
 				preloadedCustomToolPaths: dryMode ? [] : options.preloadedCustomToolPaths,
 				disableExtensionDiscovery: dryMode || undefined,
-				enableImageGen: !dryMode,
+				dryMode,
 				systemPrompt: defaultPrompt => {
 					if (fork) return fork.systemPrompt;
 					const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {

@@ -209,6 +209,17 @@ export default class Index extends Command {
 			options: ["always-ask", "write", "yolo"],
 			description: "Override tools.approvalMode for this session (always-ask|write|yolo)",
 		}),
+		// `--main` / `--subagent`: parsed in `cli/flag-tables.ts`, applied in `main.ts` as settings overrides.
+		main: Flags.string({
+			options: ["wet", "dry"],
+			description:
+				"dry starts the main agent without MCP, extensions, custom tools, skills, browser, or image generation",
+		}),
+		subagent: Flags.string({
+			options: ["wet", "dry"],
+			description:
+				"dry starts subagents without MCP, extensions, custom tools, skills, browser, or image generation",
+		}),
 	};
 
 	static examples = [

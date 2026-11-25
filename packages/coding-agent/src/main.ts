@@ -965,6 +965,16 @@ export async function buildSessionOptions(
 		options.additionalExtensionPaths = [];
 	}
 
+	// Dry main agent: no MCP, extensions, custom tools, skills, browser, or image generation.
+	if (activeSettings.get("dryMode.main")) {
+		options.dryMode = true;
+		options.enableMCP = false;
+		options.skills = [];
+		options.preloadedCustomToolPaths = [];
+		options.disableExtensionDiscovery = true;
+		options.additionalExtensionPaths = [];
+	}
+
 	return { options, titleSystemPrompt };
 }
 
@@ -1037,6 +1047,9 @@ export async function runRootCommand(
 		// setup-time checks (e.g. #wrapToolForAcpPermission) also see the yolo intent.
 		settingsInstance.override("tools.approvalMode", "yolo");
 	}
+	// --main / --subagent wet|dry: runtime overrides (not persisted).
+	if (parsedArgs.dryMain !== undefined) settingsInstance.override("dryMode.main", parsedArgs.dryMain);
+	if (parsedArgs.drySubagent !== undefined) settingsInstance.override("dryMode.subagent", parsedArgs.drySubagent);
 	if (parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui") {
 		applyRpcDefaultSettingOverrides(settingsInstance);
 	} else if (parsedArgs.mode === "acp") {

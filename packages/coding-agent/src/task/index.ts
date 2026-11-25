@@ -378,6 +378,7 @@ function renderDescription(
 	asyncEnabled: boolean,
 	ircEnabled: boolean,
 	parentSpawns: string,
+	drySubagents: boolean,
 ): string {
 	const spawningDisabled = parentSpawns === "";
 	let filteredAgents = disabledAgents.length > 0 ? agents.filter(a => !disabledAgents.includes(a.name)) : agents;
@@ -405,6 +406,7 @@ function renderDescription(
 		batchEnabled,
 		asyncEnabled,
 		ircEnabled,
+		drySubagents,
 	});
 }
 
@@ -798,6 +800,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			this.session.settings.get("async.enabled"),
 			isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
 			this.session.getSessionSpawns() ?? "*",
+			this.session.settings.get("dryMode.subagent"),
 		);
 	}
 	private constructor(

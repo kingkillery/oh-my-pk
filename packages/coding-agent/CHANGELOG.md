@@ -4,7 +4,7 @@
 
 ### Added
 
-- Subagents that run on `gpt-6.2-sol` or `gpt-6.2-astra` now start in dry mode: no MCP tools, extensions, custom tools, skills, browser, or image generation. Forked subagents are unaffected.
+- Added explicit wet/dry mode toggles (`dryMode.main` and `dryMode.subagent` settings, `--main wet|dry` and `--subagent wet|dry` CLI flags, and `/dry [main|subagent] [wet|dry]` slash command) replacing hardcoded `gpt-6.2-sol`/`gpt-6.2-astra` dry-mode detection. Dry mode omits MCP tools, extensions, custom tools, skills, browser, and image generation; forked subagents remain unaffected.
 - The Jev bash gate has two new modes, `switch` and `switch-shadow`, which judge a command in two steps. `switch-shadow` only observes: it appends a JSONL record to `~/.ompk/agent/logs/jev-bash-shadow.jsonl` (or the path in `OMP_JEV_BASH_SHADOW_LOG`) comparing the model's verdict with the built-in heuristic, with secrets scrubbed from the command preview and trace.
 
 ### Changed

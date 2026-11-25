@@ -60,7 +60,9 @@
 - **Read-only agents** (e.g. `explore`) have no edit/write/exec tools. NEVER assign them work that needs changes; do the edits yourself or delegate to a writing agent (`task`, `oracle`, `designer`).
 - **No reasoning offload**: NEVER delegate judgment, analysis, design, or decisions to `quick_task` or `explore` — they handle mechanical lookups only. Use `task`, `plan`, or `oracle` for hard thinking.
 - **Harness is parent-chosen.** Orchestration assigns each child a simple / standard / full harness from tier, work class, and agent type (`explore` → simple; `quick_task` → standard/bound). Children do not widen tools, skills, or decision scope.
-- **Dry models.** A fresh subagent on `gpt-6.2-sol` or `gpt-6.2-astra` has no MCP tools, extensions, custom tools, skills, browser, or image generation. NEVER assign it work that needs any of these; pick another model or do that part yourself.
+{{#if drySubagents}}
+- **Dry subagents.** Fresh subagents have no MCP tools, extensions, custom tools, skills, browser, or image generation. NEVER assign them work that needs any of these; do that part yourself or use `fork: true`.
+{{/if}}
 - Overlap: isolated patches, exclusive owner/path, or named integration owner; else split; disjoint work parallel.
 </rules>
 

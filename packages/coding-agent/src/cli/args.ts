@@ -71,6 +71,10 @@ export interface Args {
 	noTitle?: boolean;
 	autoApprove?: boolean;
 	approvalMode?: "always-ask" | "write" | "yolo";
+	/** `--main wet|dry`: true = dry. */
+	dryMain?: boolean;
+	/** `--subagent wet|dry`: true = dry. */
+	drySubagent?: boolean;
 	ethereal?: boolean;
 	workspaceMode?: "auto" | "copy" | "worktree";
 	workspaceRoot?: string;

@@ -236,6 +236,14 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 			});
 		}
 	},
+	"--main": (result, value, deps) => {
+		if (value === "wet" || value === "dry") result.dryMain = value === "dry";
+		else deps.logger.warn("Invalid value passed to --main", { value, validValues: ["wet", "dry"] });
+	},
+	"--subagent": (result, value, deps) => {
+		if (value === "wet" || value === "dry") result.drySubagent = value === "dry";
+		else deps.logger.warn("Invalid value passed to --subagent", { value, validValues: ["wet", "dry"] });
+	},
 };
 
 /**

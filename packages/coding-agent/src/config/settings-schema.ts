@@ -3887,6 +3887,30 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"dryMode.main": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Dry Main Agent",
+			description:
+				"Start the main agent without MCP tools, extensions, custom tools, skills, browser, or image generation. Takes effect on the next session",
+		},
+	},
+
+	"dryMode.subagent": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Dry Subagents",
+			description:
+				"Start subagents without MCP tools, extensions, custom tools, skills, browser, or image generation. Forked subagents are unaffected",
+		},
+	},
+
 	"checkpoint.enabled": {
 		type: "boolean",
 		default: false,

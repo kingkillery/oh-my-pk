@@ -3051,6 +3051,35 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handle: async (command, runtime) => handleRouteSlashCommand(command, runtime),
 	},
 	{
+		name: "dry",
+		description: "Toggle dry mode (no MCP, extensions, custom tools, skills, browser, image generation)",
+		acpDescription: "Toggle dry mode for the main agent or subagents",
+		inlineHint: "[main|subagent] [wet|dry]",
+		subcommands: [
+			{ name: "main", description: "Main agent; applies from the next session", usage: "<wet|dry>" },
+			{ name: "subagent", description: "Subagents; applies to the next spawn", usage: "<wet|dry>" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const match = /^(main|subagent)\s+(wet|dry)$/.exec(command.args.trim().toLowerCase());
+			if (match) {
+				const path = match[1] === "main" ? "dryMode.main" : "dryMode.subagent";
+				const dry = match[2] === "dry";
+				runtime.settings.set(path, dry);
+				if (runtime.settings.get(path) !== dry) runtime.settings.override(path, dry);
+				await runtime.notifyConfigChanged?.();
+			} else if (command.args.trim()) {
+				await runtime.output("Usage: /dry [main|subagent] [wet|dry]");
+				return commandConsumed();
+			}
+			const label = (dry: boolean) => (dry ? "dry" : "wet");
+			await runtime.output(
+				`Main agent: ${label(runtime.settings.get("dryMode.main"))} (changes apply from the next session). Subagents: ${label(runtime.settings.get("dryMode.subagent"))} (changes apply to the next spawn).`,
+			);
+			return commandConsumed();
+		},
+	},
+	{
 		name: "auto-handoffs",
 		aliases: ["auto-handoff", "notebook"],
 		description: "Configure automatic end-of-turn project-notebook handoffs",

@@ -636,8 +636,8 @@ export interface CreateAgentSessionOptions {
 
 	/** Enable MCP server discovery from .mcp.json files. Default: true */
 	enableMCP?: boolean;
-	/** Offer image generation tools when a provider supports them. Default: true */
-	enableImageGen?: boolean;
+	/** Dry mode: omit browser and image generation tools. Default: false */
+	dryMode?: boolean;
 	/** Enable local cross-process IRC discovery and delivery. Default: true. */
 	enableIrc?: boolean;
 	/** Existing MCP manager to reuse (skips discovery, propagates to toolSession). */
@@ -1953,7 +1953,9 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 		);
 
 		// Create built-in tools (already wrapped with meta notice formatting)
-		const builtinTools = await logger.time("createAllTools", createTools, toolSession, options.toolNames);
+		const builtinTools = (await logger.time("createAllTools", createTools, toolSession, options.toolNames)).filter(
+			tool => !(options.dryMode && tool.name === "browser"),
+		);
 
 		// Discover MCP tools from .mcp.json files
 		let mcpManager: MCPManager | undefined = options.mcpManager;
@@ -2116,10 +2118,9 @@ async function createAgentSessionImplementation(options: CreateAgentSessionOptio
 		if (mcpManager && !options.parentTaskPrefix) MCPManager.setInstance(mcpManager);
 
 		// Add image tools when the active model or configured image providers can generate images.
-		const imageGenTools =
-			options.enableImageGen === false
-				? []
-				: await logger.time("getImageGenTools", () => getImageGenTools(modelRegistry, model));
+		const imageGenTools = options.dryMode
+			? []
+			: await logger.time("getImageGenTools", () => getImageGenTools(modelRegistry, model));
 		if (imageGenTools.length > 0) {
 			customTools.push(...(imageGenTools as unknown as CustomTool[]));
 		}
