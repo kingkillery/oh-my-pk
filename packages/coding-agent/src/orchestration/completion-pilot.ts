@@ -109,11 +109,7 @@ export async function computeWorkingTreeDigest(
 		const untrackedRaw = await runRaw(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd, timeoutMs);
 		if (untrackedRaw.code !== 0) return null;
 
-		const untrackedPaths = new TextDecoder()
-			.decode(untrackedRaw.bytes)
-			.split("\0")
-			.filter(Boolean)
-			.sort();
+		const untrackedPaths = new TextDecoder().decode(untrackedRaw.bytes).split("\0").filter(Boolean).sort();
 
 		const hasher = new Bun.CryptoHasher("sha256");
 		hasher.update(`HEAD:${revision}\n`);
@@ -201,7 +197,8 @@ export async function runCompletionPilot(input: CompletionPilotInput): Promise<C
 		}
 		results.push({ criterionId: check.criterionId, check, status, detail });
 	}
-	const finalDigest = allowDirtyTree && initial ? await computeWorkingTreeDigest(root, input.revision, timeoutMs) : null;
+	const finalDigest =
+		allowDirtyTree && initial ? await computeWorkingTreeDigest(root, input.revision, timeoutMs) : null;
 	const final = allowDirtyTree
 		? Boolean(initialDigest && finalDigest && initialDigest === finalDigest)
 		: initial && (await candidateMatches(root, input.revision, timeoutMs));
@@ -240,7 +237,9 @@ export async function runCompletionPilot(input: CompletionPilotInput): Promise<C
 		contract: input.contract,
 		workspace: root,
 		observedAt: new Date().toISOString(),
-		...(allowDirtyTree ? { allowDirtyTree: true, ...(initialDigest ? { workingTreeDigest: initialDigest } : {}) } : {}),
+		...(allowDirtyTree
+			? { allowDirtyTree: true, ...(initialDigest ? { workingTreeDigest: initialDigest } : {}) }
+			: {}),
 		checks: results,
 		evaluation,
 	};

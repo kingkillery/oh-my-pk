@@ -73,7 +73,13 @@ describe("Track C sanitized proving-ground contract", () => {
 
 			// 2) Agent repeats wrong causal explanation 5x with inferred/unknown provenance.
 			for (let i = 0; i < 5; i++) {
-				consolidator.consolidateFact(caseId, "blocker_cause", "missing_form_signature", "inferred", `draft-turn-${i}`);
+				consolidator.consolidateFact(
+					caseId,
+					"blocker_cause",
+					"missing_form_signature",
+					"inferred",
+					`draft-turn-${i}`,
+				);
 				consolidator.consolidateFact(caseId, "blocker_cause", "stale_portal_note", "unknown", `transcript-${i}`);
 			}
 
@@ -118,7 +124,9 @@ describe("Track C sanitized proving-ground contract", () => {
 				toolResult("edit", 110, "updated sanitized-audit-receipt"),
 				toolResult("eval", 111, "all checks passed"),
 			];
-			const verifiedGate = evaluateCompletionGate(buildCompletionGateInputFromTranscript(contract, verifiedMessages, 50));
+			const verifiedGate = evaluateCompletionGate(
+				buildCompletionGateInputFromTranscript(contract, verifiedMessages, 50),
+			);
 			expect(verifiedGate.outcome).toBe("pass");
 
 			// 4) Emit and validate 8-dimension audit receipt + zero-PII boundary.
@@ -130,7 +138,10 @@ describe("Track C sanitized proving-ground contract", () => {
 					evidence: ["evidence://synthetic-status-check-1", "evidence://synthetic-meter-audit-1"],
 					authority: "within_scope",
 					process: "gate_enforced",
-					efficiency: { toolCalls: verifiedMessages.length, readOnlyRejected: readOnlyGate.outcome === "recoverable" },
+					efficiency: {
+						toolCalls: verifiedMessages.length,
+						readOnlyRejected: readOnlyGate.outcome === "recoverable",
+					},
 					persistence: {
 						promotedCause: byPredicate.get("blocker_cause")?.object ?? "",
 						quarantinedWrongCauses: ["missing_form_signature", "stale_portal_note"],

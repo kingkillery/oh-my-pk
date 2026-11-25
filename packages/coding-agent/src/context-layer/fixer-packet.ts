@@ -69,9 +69,7 @@ function classifySlice(
 	const defPattern = new RegExp(
 		`\\b(?:export\\s+)?(?:async\\s+)?(?:function|class|interface|type|const|let|var|enum|def)\\s+${escaped}\\b`,
 	);
-	const callOrImportPattern = new RegExp(
-		`(?:\\bimport\\b[^\\n]*\\b${escaped}\\b|\\b${escaped}\\s*\\()`,
-	);
+	const callOrImportPattern = new RegExp(`(?:\\bimport\\b[^\\n]*\\b${escaped}\\b|\\b${escaped}\\s*\\()`);
 	const wordPattern = new RegExp(`\\b${escaped}\\b`);
 	const file = candidate.file ?? "";
 	const isCodeFile = CODE_FILE_RE.test(file);
@@ -155,7 +153,12 @@ export async function rankAndBudgetFixerSlices(
 		const relFile = candidate.file.replaceAll("\\", "/");
 		const window = await readWindowSnippet(cwd, relFile, candidate.range, contextLines);
 		if (!window) continue;
-		const { reason, score, containsTarget } = classifySlice(normalizedTarget, candidate, window.snippet, preferredFile);
+		const { reason, score, containsTarget } = classifySlice(
+			normalizedTarget,
+			candidate,
+			window.snippet,
+			preferredFile,
+		);
 		const header = `// ${relFile}:${window.range.startLine}-${window.range.endLine} (${reason})\n`;
 		const snippet = `${header}${window.snippet}`;
 		built.push({

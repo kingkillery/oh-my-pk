@@ -318,7 +318,10 @@ export class VeracityConsolidator {
 				}
 				// Never downgrade higher-provenance veracity with a lower-provenance update.
 				const effectiveVeracity = higherVeracity(existing.veracity, incomingVeracity);
-				const newConfidence = Math.max(existing.confidence, this.bayesianUpdate(existing.confidence, incomingVeracity));
+				const newConfidence = Math.max(
+					existing.confidence,
+					this.bayesianUpdate(existing.confidence, incomingVeracity),
+				);
 				this.conn
 					.query(`
 						UPDATE consolidated_facts

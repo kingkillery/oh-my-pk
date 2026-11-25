@@ -207,7 +207,13 @@ describe("opt-in completion pilot", () => {
 					kind: "test",
 					command: [process.execPath, "-e", "require('fs').writeFileSync('midrun.tmp', 'mutated')"],
 				},
-				{ criterionId: "artifact", kind: "artifact", path: "artifact.txt", sha256: dirtySha, deliverable: "artifact" },
+				{
+					criterionId: "artifact",
+					kind: "artifact",
+					path: "artifact.txt",
+					sha256: dirtySha,
+					deliverable: "artifact",
+				},
 			],
 		});
 		expect(result.checks.every(c => c.status === "unproven")).toBe(true);

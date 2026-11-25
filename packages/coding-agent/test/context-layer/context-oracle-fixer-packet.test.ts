@@ -9,11 +9,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	estimateTokens,
-	rankAndBudgetFixerSlices,
-	scanWorkspaceForTarget,
-} from "../../src/context-layer/fixer-packet";
+import { estimateTokens, rankAndBudgetFixerSlices, scanWorkspaceForTarget } from "../../src/context-layer/fixer-packet";
 
 const tempDirs: string[] = [];
 afterAll(async () => {
@@ -73,7 +69,9 @@ describe("ContextOracle fixer-guided context packet", () => {
 
 		// Baseline: naive grep-matched full-file dump (all files containing targetSymbol).
 		const lexicalCandidates = await scanWorkspaceForTarget(dir, targetSymbol);
-		const matchedFiles = [...new Set(lexicalCandidates.map(item => item.file).filter((f): f is string => Boolean(f)))];
+		const matchedFiles = [
+			...new Set(lexicalCandidates.map(item => item.file).filter((f): f is string => Boolean(f))),
+		];
 		let naiveBaselineTokens = 0;
 		for (const rel of matchedFiles) {
 			const fullText = await fs.readFile(path.join(dir, rel), "utf8");
@@ -125,7 +123,12 @@ describe("ContextOracle fixer-guided context packet", () => {
 			"applyPolicyGuard",
 			[
 				{ type: "summary", file: "summary.ts", range: { startLine: 1, endLine: 25 }, detail: "large summary" },
-				{ type: "search", file: "target.ts", range: { startLine: 2, endLine: 4 }, detail: "export function applyPolicyGuard" },
+				{
+					type: "search",
+					file: "target.ts",
+					range: { startLine: 2, endLine: 4 },
+					detail: "export function applyPolicyGuard",
+				},
 			],
 			{ maxTokens: 120, contextLines: 2 },
 		);

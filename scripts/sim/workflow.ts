@@ -33,7 +33,6 @@ import {
 	evaluateReplayDiff,
 	mergeDuplicateProblems,
 	resolveProblemId,
-	type SimCarriedFrom,
 	type SimClaimEvidence,
 	type SimControlBaseline,
 	type SimLedger,

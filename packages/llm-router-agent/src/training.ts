@@ -67,9 +67,7 @@ export function computeExpectedCalibrationError(
 	numBins = 10,
 ): CalibrationReport {
 	const binCount = Math.max(1, Math.floor(numBins));
-	const valid = samples.filter(
-		sample => typeof sample.confidence === "number" && Number.isFinite(sample.confidence),
-	);
+	const valid = samples.filter(sample => typeof sample.confidence === "number" && Number.isFinite(sample.confidence));
 	if (valid.length === 0) {
 		return { ece: 0, samples: 0, numBins: binCount, bins: [] };
 	}
